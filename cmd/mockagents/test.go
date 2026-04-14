@@ -42,7 +42,7 @@ var (
 )
 
 func init() {
-	testCmd.Flags().StringVar(&testFormat, "format", "text", "Output format: text or json")
+	testCmd.Flags().StringVar(&testFormat, "format", "text", "Output format: text, json, or junit")
 	testCmd.Flags().StringVar(&testSuites, "suites-dir", "", "Directory containing TestSuite YAML files (defaults to --agents-dir)")
 	rootCmd.AddCommand(testCmd)
 }
@@ -125,6 +125,10 @@ func runTest(cmd *cobra.Command, args []string) error {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(allResults)
+	case "junit":
+		if err := runner.WriteJUnit(os.Stdout, allResults); err != nil {
+			return fmt.Errorf("writing junit xml: %w", err)
+		}
 	default:
 		printTextResults(allResults)
 	}

@@ -1,0 +1,44 @@
+# MockAgents GitLab CI template
+#
+# Drop this job into your .gitlab-ci.yml (or `include:` it from this
+# file) to run your TestSuite on every pipeline. Produces JUnit XML
+# that GitLab's built-in report parser renders in the Merge Request
+# UI under the "Tests" tab — no extra plugin required.
+#
+# Usage (include):
+#
+#   include:
+#     - project: mockagents/mockagents
+#       file: /deploy/ci/gitlab-ci.yml
+#       ref: main
+#
+# Usage (copy-paste): drop the `mockagents:test:` job below directly
+# into your .gitlab-ci.yml and adjust AGENTS_DIR / SUITES as needed.
+
+mockagents:test:
+  stage: test
+  image: golang:1.26-alpine
+  variables:
+    MOCKAGENTS_VERSION: latest     # pin to "v0.1.0" etc. for reproducibility
+    AGENTS_DIR: "./agents"
+    SUITES: ""                     # optional; defaults to AGENTS_DIR
+    REPORT_PATH: "mockagents-junit.xml"
+  before_script:
+    - apk add --no-cache git bash
+    - go install "github.com/mockagents/mockagents/cmd/mockagents@${MOCKAGENTS_VERSION}"
+    - export PATH="$(go env GOPATH)/bin:$PATH"
+  script:
+    - mockagents validate "${AGENTS_DIR}"
+    - |
+      if [ -n "${SUITES}" ]; then
+        mockagents test --agents-dir "${AGENTS_DIR}" --format junit "${SUITES}" > "${REPORT_PATH}"
+      else
+        mockagents test --agents-dir "${AGENTS_DIR}" --format junit > "${REPORT_PATH}"
+      fi
+  artifacts:
+    when: always
+    reports:
+      junit: "${REPORT_PATH}"
+    paths:
+      - "${REPORT_PATH}"
+    expire_in: 1 week

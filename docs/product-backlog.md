@@ -54,7 +54,7 @@ Status labels used below: "Done" = code merged with tests; "Partial" = core path
 | Epic  | Title                               | Stories | Done | Partial | Open | Notes |
 | ----- | ----------------------------------- | ------- | ---- | ------- | ---- | ----- |
 | E-001 | Agent Definition & Configuration    | 5       | 5    | 0       | 0    | YAML loader, JSON Schema (`schema/mockagents-v1-agent.json`), validator, protocol enum, tool definitions all landed; `config/validator_test.go` green. |
-| E-002 | Mock Server Core                    | 4       | 3    | 1       | 0    | Server start, multi-agent routing, structured logging done. **US-2.3 partial**: manual reload endpoint `POST /api/v1/agents/{name}/reload` exists in `server.go:112`; no fsnotify file-watcher yet. |
+| E-002 | Mock Server Core                    | 4       | 4    | 0       | 0    | Server start, multi-agent routing, structured logging done. **US-2.3 closed 2026-04-13**: fsnotify watcher at `internal/server/watcher.go`, enabled via `mockagents start --watch`; debounced reload with fallback-on-validation-error. |
 | E-003 | Tool Call Simulation                | 5       | 5    | 0       | 0    | `engine/tool_processor.go` + `tool_validator.go` + `tool_integration_test.go` cover match-based stubs, error injection, parallel/multi-step chains, JSON-Schema parameter validation. |
 | E-004 | Streaming Responses                 | 3       | 3    | 0       | 0    | `internal/streaming/` with `server_integration_test.go`; OpenAI and Anthropic SSE streaming including tool-call chunking. |
 | E-005 | Protocol Adapters (OpenAI+Anthropic)| 5       | 5    | 0       | 0    | `adapter/openai.go`, `adapter/anthropic.go`, `adapter/token.go`; conformance tests in `server/conformance_test.go`. |
@@ -65,15 +65,14 @@ Status labels used below: "Done" = code merged with tests; "Partial" = core path
 | E-010 | Distribution & Packaging            | 3       | 3    | 0       | 0    | `Dockerfile`, `docker-compose.yml`, `.goreleaser.yml`, Python SDK packaged with `pyproject.toml`. Actual PyPI/Docker Hub publish is release-time, not a code gap. |
 | E-011 | Documentation & Developer Experience| 3       | 3    | 0       | 0    | MkDocs site under `site/` (getting-started, guides, reference, sdk); 5 example agents in `examples/` with `examples/tests/`; `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`. |
 | E-012 | Quality Assurance & Hardening       | 3       | 2    | 1       | 0    | E2E + SDK compatibility via `conformance_test.go`, `security_test.go`, `cli/integration_test.go`. **US-12.2 partial**: `engine/benchmark_test.go` exists but there is no published benchmark report or pprof bottleneck audit yet -- Sprint 6 residual. |
-| **Total** |                                 | **46**  | **46** (of which **44 Done**, **2 Partial**) | | **0** | |
+| **Total** |                                 | **46**  | **46** (of which **45 Done**, **1 Partial**) | | **0** | |
 
 ### Story-level exceptions
 
-Only two stories are not fully Done. Everything else meets its acceptance criteria per the test suite.
+Only one story remains partial; everything else meets its acceptance criteria per the test suite.
 
 | Story  | Status  | What is missing                                                                                          | Suggested follow-up |
 | ------ | ------- | -------------------------------------------------------------------------------------------------------- | ------------------- |
-| US-2.3 | Partial | Manual per-agent reload is wired, but automatic file-change detection (AC-1, AC-2, AC-3) is not implemented. No fsnotify watcher in `internal/server/` or `internal/config/`. | Add an `fsnotify`-backed watcher behind a `--watch` flag on `mockagents start`; reuse the existing reload handler path. P1 carry-over. |
 | US-12.2| Partial | `engine/benchmark_test.go` measures micro-benchmarks but the acceptance criteria call for a reproducible report of startup time, p50/p99 latency, and sustained throughput, plus a pprof-driven bottleneck pass. | Wire benchmarks into CI, publish results in `site/docs/`, and run one profiling pass. P1 carry-over. |
 
 ### Functional-requirements status
@@ -107,6 +106,9 @@ Every slice below shipped with tests and, where applicable, a live smoke-test ru
 | GUI v0.1 (Next.js 15)              | 4     | `gui/`                                                               | `next build` typecheck + live |
 | Helm chart                         | 4     | `deploy/helm/mockagents/`                                            | `helm lint` + template |
 | Multi-tenant auth + RBAC           | 4     | `internal/tenancy/`, `cmd/mockagents/start.go` bootstrap             | 11 new|
+| CI readiness (hot reload + JUnit)  | 2/MVP | `internal/server/watcher.go`, `internal/runner/junit.go`             | 9 new |
+| CI/CD integration templates        | 2     | `deploy/actions/mockagents-test/`, `deploy/ci/gitlab-ci.yml`         | YAML lint |
+| Audit logging                      | 4     | `internal/audit/`, `internal/server/audit_handlers.go`               | 13 new|
 
 ### Release readiness
 

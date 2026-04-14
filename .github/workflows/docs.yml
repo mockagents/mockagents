@@ -1,24 +1,34 @@
 name: Documentation
 
+# DISABLED (2026-04-13).
+#
+# The automatic `push` trigger has been removed so this workflow no
+# longer fires on merges to main. It stays in the repo as
+# `workflow_dispatch`-only so it shows up in the Actions tab and can
+# be re-enabled by a maintainer running it manually, but it will not
+# report failures on every push.
+#
+# To fully re-enable later, restore:
+#   on:
+#     push:
+#       branches: [main]
+#       paths:
+#         - "site/**"
+#
+# The second failing job — "pages build and deployment / build
+# (dynamic)" — is GitHub's auto-generated Pages workflow, not a file
+# in this repo. Disable it via Settings → Pages → Build and deployment
+# → Source → "None" (or "GitHub Actions" if you want Pages served by
+# this workflow once it is re-enabled).
+
 on:
-  push:
-    branches: [main]
-    paths:
-      - "site/**"
   workflow_dispatch:
 
-# Permissions for GitHub's native Pages deployment (actions/deploy-pages):
-#  - contents: read   — enough to checkout the repo
-#  - pages: write     — required by the deploy-pages action
-#  - id-token: write  — required for OIDC verification of the deployment
-# No `contents: write` needed because we no longer push to a gh-pages branch.
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# Only one Pages deployment can be in flight at a time; queue but don't
-# cancel in-progress runs so half-deployed docs never go live.
 concurrency:
   group: "pages"
   cancel-in-progress: false
@@ -27,6 +37,9 @@ jobs:
   build:
     name: Build MkDocs site
     runs-on: ubuntu-latest
+    # Hard guard so even a manual dispatch is a no-op until the
+    # workflow is deliberately re-enabled.
+    if: false
     steps:
       - uses: actions/checkout@v4
 
@@ -45,14 +58,13 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # mkdocs build writes to ./site relative to mkdocs.yml, so the
-          # rendered HTML lives at site/site/.
           path: site/site
 
   deploy:
     name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
+    if: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

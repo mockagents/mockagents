@@ -92,16 +92,94 @@ spec:
 ## CLI Commands
 
 ```bash
-mockagents init [name]       # Scaffold a new project
-mockagents start             # Start the mock server
-mockagents validate [path]   # Validate agent definitions
-mockagents logs              # Query interaction logs
-mockagents test [path]       # Run TestSuite YAML files against agents/pipelines
-mockagents record            # Proxy a real upstream LLM API and record to a cassette
-mockagents replay            # Serve a recorded cassette over the mock endpoints
-mockagents mcp               # Serve a kind:MCPServer definition over HTTP or stdio
-mockagents contract          # extract or diff agent contracts (CI-friendly)
+mockagents init [name]         # Scaffold a new project
+mockagents start [--watch]     # Start the mock server (-w = fsnotify auto-reload)
+mockagents validate [path]     # Validate agent definitions
+mockagents logs                # Query interaction logs
+mockagents test [path] [--format text|json|junit]   # Run TestSuite YAML
+mockagents record              # Proxy a real upstream LLM API and record to a cassette
+mockagents replay              # Serve a recorded cassette over the mock endpoints
+mockagents mcp                 # Serve a kind:MCPServer definition over HTTP or stdio
+mockagents contract            # extract or diff agent contracts (CI-friendly)
 ```
+
+### CI integration
+
+`mockagents test --format junit > report.xml` produces a
+Jenkins-compatible JUnit XML file that drops straight into any
+test-reporter that speaks JUnit. The project ships ready-to-use
+wrappers for the two most common CI hosts so you don't have to
+write the boilerplate yourself.
+
+**GitHub Actions** — single-step composite action at
+`deploy/actions/mockagents-test`:
+
+```yaml
+- uses: mockagents/mockagents/deploy/actions/mockagents-test@main
+  id: mockagents
+  with:
+    agents-dir: ./agents
+    suites: ./tests
+- uses: mikepenz/action-junit-report@v5
+  if: always()
+  with:
+    report_paths: ${{ steps.mockagents.outputs.junit-report }}
+```
+
+The composite action installs the CLI via `go install`, validates
+agent definitions, runs the suite, and exposes the JUnit path as a
+step output. See `deploy/actions/mockagents-test/README.md` for all
+inputs.
+
+**GitLab CI** — include the template under `deploy/ci/gitlab-ci.yml`:
+
+```yaml
+include:
+  - project: mockagents/mockagents
+    file: /deploy/ci/gitlab-ci.yml
+    ref: main
+```
+
+The `mockagents:test` job installs the binary, validates the agents,
+writes JUnit XML, and attaches it as a GitLab `artifacts.reports.junit`
+so the results show up in the Merge Request UI automatically.
+
+For local development, `mockagents start --watch` adds an fsnotify
+hot-reload loop: saving any agent YAML file re-parses, validates, and
+re-registers it without restarting the server. Validation failures
+are logged; the previous known-good definition is preserved.
+
+## Audit logging
+
+Every control-plane mutation (tenant create/delete, API key
+create/delete, agent reload) is appended to a dedicated SQLite file
+(`.mockagents-audit.db`) and exposed for query at `GET /api/v1/audit`.
+Audit is always on — there's no flag to enable it because the cost is
+a handful of SQLite writes per admin action.
+
+```bash
+# Fetch all recent events
+curl -H "Authorization: Bearer $ADMIN_KEY" http://localhost:8080/api/v1/audit
+
+# Filter by kind + time window
+curl -H "Authorization: Bearer $ADMIN_KEY" \
+  "http://localhost:8080/api/v1/audit?kind=api_key.created&since=2026-04-13T00:00:00Z&limit=50"
+```
+
+Supported `kind` values: `tenant.created`, `tenant.deleted`,
+`api_key.created`, `api_key.deleted`, `agent.reloaded`. Additional
+filters: `actor` (exact-match actor name), `since` (RFC3339 lower
+bound), `limit` (default 100, max 1000).
+
+Each event records the authenticated principal's tenant id, key id,
+role, and remote IP. In single-tenant mode the actor is
+`"anonymous"`. Plaintext API keys are never written to the audit log
+— the `api_key.created` event carries only the key's opaque id, its
+public prefix, its name, and its role.
+
+When multi-tenant mode is enabled, `GET /api/v1/audit` requires the
+admin role; in single-tenant mode it is open (matching the rest of
+the management API).
 
 ## Multi-tenant mode (experimental)
 

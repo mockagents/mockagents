@@ -1,0 +1,95 @@
+name: "MockAgents Test"
+description: >-
+  Install the MockAgents CLI, validate agent definitions, and run a
+  TestSuite with JUnit XML output. Designed to drop into any GitHub
+  Actions workflow as a single step and pair with a JUnit test-reporter
+  action downstream.
+
+branding:
+  icon: "play-circle"
+  color: "purple"
+
+inputs:
+  version:
+    description: >-
+      mockagents binary version to install. Defaults to "latest" which
+      resolves to the most recent tagged release via `go install`.
+      Pin to a specific tag (e.g. v0.1.0) for reproducible CI runs.
+    required: false
+    default: "latest"
+
+  agents-dir:
+    description: "Directory containing kind:Agent YAML files."
+    required: false
+    default: "./agents"
+
+  suites:
+    description: >-
+      Path to a TestSuite YAML file or a directory of TestSuite files.
+      When empty, the action looks for TestSuites inside --agents-dir.
+    required: false
+    default: ""
+
+  junit-output:
+    description: >-
+      Path where the JUnit XML report will be written. The path is also
+      exposed as the `junit-report` step output so downstream reporter
+      actions (e.g. mikepenz/action-junit-report) can consume it without
+      needing to know the filename.
+    required: false
+    default: "mockagents-junit.xml"
+
+  go-version:
+    description: "Go version to install for building the CLI."
+    required: false
+    default: "1.26"
+
+  skip-validate:
+    description: "Set to 'true' to skip the validate step."
+    required: false
+    default: "false"
+
+outputs:
+  junit-report:
+    description: "Path to the generated JUnit XML report."
+    value: ${{ steps.run.outputs.report }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go-version }}
+
+    - name: Install mockagents CLI
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ "${{ inputs.version }}" == "latest" ]]; then
+          go install github.com/mockagents/mockagents/cmd/mockagents@latest
+        else
+          go install "github.com/mockagents/mockagents/cmd/mockagents@${{ inputs.version }}"
+        fi
+        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+    - name: Validate agent definitions
+      if: inputs.skip-validate != 'true'
+      shell: bash
+      run: mockagents validate "${{ inputs.agents-dir }}"
+
+    - name: Run mockagents test
+      id: run
+      shell: bash
+      env:
+        AGENTS_DIR: ${{ inputs.agents-dir }}
+        SUITES: ${{ inputs.suites }}
+        REPORT: ${{ inputs.junit-output }}
+      run: |
+        set -euo pipefail
+        args=( "test" "--agents-dir" "$AGENTS_DIR" "--format" "junit" )
+        if [[ -n "$SUITES" ]]; then
+          args+=( "$SUITES" )
+        fi
+        mockagents "${args[@]}" > "$REPORT"
+        echo "report=$REPORT" >> "$GITHUB_OUTPUT"

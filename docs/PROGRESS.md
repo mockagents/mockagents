@@ -1,6 +1,6 @@
 # MockAgents — Implementation Progress
 
-**Last updated:** 2026-04-13
+**Last updated:** 2026-04-13 (Audit logging slice)
 **Source of truth:** this file. Other `docs/` pages describe the *design
 intent* from the original product plan; when those pages and this file
 disagree, this file wins.
@@ -20,12 +20,13 @@ smoke-test run on the built binary.
 | Phase 3           | Chaos engineering, MCP server mocking                     | **Complete** (slices listed)  |
 | Phase 4           | Contracts, OTel, SDKs, GUI, Helm, multi-tenancy           | **v0.1 slices complete**      |
 
-Two residual P1 items from the original MVP are still carried:
+One residual P1 item from the original MVP is still carried:
 
 | Story   | Status  | Gap                                                      |
 | ------- | ------- | -------------------------------------------------------- |
-| US-2.3  | Partial | Manual reload endpoint exists; no fsnotify auto-watcher. |
 | US-12.2 | Partial | Benchmarks exist as Go tests; no published report.       |
+
+US-2.3 (hot reload) closed by the CI readiness slice below.
 
 ---
 
@@ -249,6 +250,100 @@ Ingress (gated), `helm test` Pod that wget's `/api/v1/health`.
 Agent definitions come from either `agents.inline` or
 `agents.existingConfigMap`.
 
+### 2.16 Audit logging  *(Phase 4)*
+
+| Item                | Location                                              |
+| ------------------- | ----------------------------------------------------- |
+| Types + store       | `internal/audit/{types,store,recorder}.go`            |
+| Server handler      | `internal/server/audit_handlers.go`                   |
+| Route + actor bridge| `internal/server/server.go` (`principalToActor`)      |
+| Recorder hook-ups   | `internal/server/{handlers,tenancy_handlers}.go`      |
+| CLI wiring          | `cmd/mockagents/start.go` (always-on, `.mockagents-audit.db`) |
+| Tests               | `internal/audit/audit_test.go` (13)                   |
+| Verification        | **Live**: single-tenant agent reload produced `{actor: anonymous, kind: agent.reloaded, target: echo-agent}`; multi-tenant `api_key.created` captured the admin actor (tenant_id + key_id + role + remote_ip) and anonymous reads of `/api/v1/audit` correctly returned 401. |
+
+Closes the Phase 4 **audit logging** row. Five event kinds —
+`tenant.created`, `tenant.deleted`, `api_key.created`,
+`api_key.deleted`, `agent.reloaded` — are recorded to a dedicated
+SQLite file (`.mockagents-audit.db`, independent of the interaction
+log and tenancy stores). The append API is lock-serialized; reads
+support filters `?kind=`, `?actor=`, `?since=` (RFC3339), `?limit=`
+(default 100, clamped at 1000). An unknown `kind` returns 400 with a
+hint listing the valid values.
+
+The recorder is import-cycle-safe by design: the server package owns
+`principalToActor` and passes it into `audit.NewRecorder`, so the
+audit package has zero knowledge of tenancy internals. In
+single-tenant mode every event records `actor: anonymous`; in
+multi-tenant mode the authenticated principal's key id, tenant id,
+and role are stamped on every event.
+
+The `/api/v1/audit` read endpoint is gated by the auth middleware
+like every other `/api/v1/*` route; when multi-tenant mode is on, it
+additionally requires the admin role (explicit `RequireRole` wrap)
+so the who-did-what surface stays private to operators.
+
+Remote IP capture prefers `X-Forwarded-For` (common behind
+Kubernetes ingresses) and falls back to `RemoteAddr`. Plaintext API
+keys are **never** written to the audit log — the actor field stores
+the bcrypt-hashed key's opaque id and the details blob for
+`api_key.created` carries only the public prefix, name, and role.
+
+### 2.15 CI/CD integration: GitHub Actions + GitLab CI  *(Phase 2)*
+
+| Item                                   | Location                                                            |
+| -------------------------------------- | ------------------------------------------------------------------- |
+| GitHub Actions composite action        | `deploy/actions/mockagents-test/action.yml`                         |
+| Composite action README with usage     | `deploy/actions/mockagents-test/README.md`                          |
+| GitLab CI job template                 | `deploy/ci/gitlab-ci.yml`                                           |
+| Verification                           | Both YAML files parse cleanly via `yaml.safe_load`; action has 6 inputs, 1 output, 4 composite steps; GitLab job declares `artifacts.reports.junit`. |
+
+Closes the Phase 2 **CI/CD integration** row from the implementation
+plan. Users now get a single-step drop-in for the two most common CI
+hosts instead of hand-rolling `go install` + validate + test +
+artifact-upload boilerplate.
+
+**GitHub Actions composite action** inputs: `version` (default `latest`,
+pinnable to any tag), `agents-dir`, `suites`, `junit-output`,
+`go-version` (default `1.26` to match `go.mod`), `skip-validate`.
+Exposes `junit-report` as a step output so downstream reporter
+actions (e.g. `mikepenz/action-junit-report@v5`) can consume the XML
+without hardcoding the path. Composite rather than Docker so it
+shares cache layers with other Go steps and starts in seconds.
+
+**GitLab CI template** is a single `mockagents:test` job usable
+either via `include:` or copy-paste. Runs on `golang:1.26-alpine`,
+installs via `go install`, and attaches the JUnit XML as a
+`artifacts.reports.junit` so GitLab's built-in MR-test-summary UI
+picks it up — no plugin required.
+
+### 2.14 CI readiness: fsnotify hot reload + JUnit XML  *(MVP carry-over + Phase 2)*
+
+| Item                          | Location                                              |
+| ----------------------------- | ----------------------------------------------------- |
+| fsnotify watcher              | `internal/server/watcher.go`                          |
+| `--watch` / `-w` flag         | `cmd/mockagents/start.go`                             |
+| JUnit reporter                | `internal/runner/junit.go`                            |
+| `--format junit` flag         | `cmd/mockagents/test.go`                              |
+| Tests                         | `internal/server/watcher_test.go` (5), `internal/runner/junit_test.go` (4) |
+| Verification                  | **Live**: `mockagents test … --format junit` prints valid JUnit XML; `mockagents start --watch --help` documents the flag |
+
+Closes two roadmap items in one slice:
+
+- **US-2.3 hot reload (MVP P1 carry-over).** `AgentDirWatcher` debounces
+  rapid Create/Write/Rename events (150 ms default), parses the file
+  through `config.LoadFile`, skips non-Agent kinds (Pipeline, TestSuite,
+  MCPServer), validates, and registers on success. Validation failures
+  are logged and the previous definition is kept — a bad save never
+  wipes a known-good agent. Enabled via `mockagents start --watch`.
+- **Phase 2 JUnit XML reporter.** `internal/runner.WriteJUnit` produces
+  Jenkins-compatible XML: `<testsuites>` → `<testsuite>` → `<testcase>`
+  with optional `<failure>`. Aggregate `tests`, `failures`, and `time`
+  counts roll up to the top level. Every case's ErrMessage or first
+  Failures entry becomes the `<failure message="...">` one-liner; the
+  chardata holds the full joined failure list. Drops directly into
+  GitHub Actions, GitLab, CircleCI, and Jenkins test reporters.
+
 ### 2.13 Multi-tenant auth + RBAC  *(Phase 4 — first SaaS slice)*
 
 | Item                 | Location                                        |
@@ -356,7 +451,6 @@ deferred deliberately:
 | GUI              | Workflow editor, config editor, WS live feed, auth       | GUI v0.2               |
 | Helm             | HPA, NetworkPolicy, Prometheus ServiceMonitor            | Helm v0.2              |
 | MCP              | Streaming notifications, `completion/complete`, `sampling`, `roots` | MCP v0.2    |
-| Hot reload (US-2.3) | fsnotify auto-watcher (manual reload endpoint exists) | Carry-over             |
 | Performance (US-12.2) | Published benchmark report, pprof bottleneck audit | Carry-over             |
 
 ---

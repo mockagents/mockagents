@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/mockagents/mockagents/internal/adapter"
+	"github.com/mockagents/mockagents/internal/audit"
 	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/observability"
+	pricingpkg "github.com/mockagents/mockagents/internal/pricing"
 	"github.com/mockagents/mockagents/internal/storage"
 	"github.com/mockagents/mockagents/internal/streaming"
 	"github.com/mockagents/mockagents/internal/tenancy"
@@ -43,6 +45,13 @@ type Config struct {
 	// /api/v1/* request then requires a valid API key and the routes
 	// /api/v1/tenants and /api/v1/keys are mounted for admin CRUD.
 	TenancyStore tenancy.Store
+	// AuditStore enables the audit log. When non-nil every
+	// control-plane write produces an audit event and the
+	// /api/v1/audit read endpoint is mounted.
+	AuditStore audit.Store
+	// Prices is the per-model cost table used by /api/v1/logs and
+	// /api/v1/costs. Nil disables cost annotation (fields are zero).
+	Prices *pricingpkg.Table
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -59,34 +68,45 @@ func DefaultConfig() Config {
 
 // Server wraps http.Server with the MockAgents router and lifecycle management.
 type Server struct {
-	httpServer  *http.Server
-	engine      *engine.Engine
-	handlers    *Handlers
-	tenancyH    *TenancyHandlers
-	logger      *slog.Logger
-	config      Config
-	listener    net.Listener
+	httpServer *http.Server
+	engine     *engine.Engine
+	handlers   *Handlers
+	tenancyH   *TenancyHandlers
+	auditH     *AuditHandlers
+	recorder   *audit.Recorder
+	logger     *slog.Logger
+	config     Config
+	listener   net.Listener
 }
 
 // New creates a new Server with the given engine and configuration.
 func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
+	// The recorder is always constructed so handlers can call it
+	// unconditionally. A nil store makes it a no-op.
+	recorder := audit.NewRecorder(cfg.AuditStore, principalToActor)
+
 	handlers := &Handlers{
 		Engine:    eng,
 		AgentsDir: cfg.AgentsDir,
 		StartTime: time.Now(),
 		Version:   cfg.Version,
 		Logger:    logger,
+		Recorder:  recorder,
 	}
 
 	mux := http.NewServeMux()
 	s := &Server{
 		engine:   eng,
 		handlers: handlers,
+		recorder: recorder,
 		logger:   logger,
 		config:   cfg,
 	}
 	if cfg.TenancyStore != nil {
-		s.tenancyH = &TenancyHandlers{Store: cfg.TenancyStore}
+		s.tenancyH = &TenancyHandlers{Store: cfg.TenancyStore, Recorder: recorder}
+	}
+	if cfg.AuditStore != nil {
+		s.auditH = &AuditHandlers{Store: cfg.AuditStore}
 	}
 	s.registerRoutes(mux)
 
@@ -140,6 +160,18 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		mux.Handle("DELETE /api/v1/keys/{id}", tenancy.RequireRole(tenancy.RoleAdmin, http.HandlerFunc(s.tenancyH.DeleteAPIKey)))
 	}
 
+	// Audit log read API. Open in single-tenant mode (it's a local
+	// dev tool); admin-only when multi-tenant mode is on so the
+	// who-did-what surface stays private to operators.
+	if s.auditH != nil {
+		listFn := http.HandlerFunc(s.auditH.ListEvents)
+		if s.tenancyH != nil {
+			mux.Handle("GET /api/v1/audit", tenancy.RequireRole(tenancy.RoleAdmin, listFn))
+		} else {
+			mux.Handle("GET /api/v1/audit", listFn)
+		}
+	}
+
 	// OpenAI-compatible endpoints.
 	openai := &adapter.OpenAIHandler{Engine: s.engine}
 	mux.HandleFunc("POST /v1/chat/completions", openai.HandleChatCompletions)
@@ -149,11 +181,21 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	anthropic := &adapter.AnthropicHandler{Engine: s.engine}
 	mux.HandleFunc("POST /v1/messages", anthropic.HandleMessages)
 
-	// Log query API.
-	logHandlers := &LogHandlers{Store: s.config.LogStore}
+	// Log query API. Prices is threaded in so rows returned by
+	// ListLogs carry a computed cost_usd field when a pricing table
+	// is configured.
+	logHandlers := &LogHandlers{Store: s.config.LogStore, Prices: s.config.Prices}
 	mux.HandleFunc("GET /api/v1/logs", logHandlers.ListLogs)
 	mux.HandleFunc("GET /api/v1/logs/{id}", logHandlers.GetLog)
 	mux.HandleFunc("DELETE /api/v1/logs", logHandlers.DeleteLogs)
+
+	// Cost aggregate endpoint. Silent no-op when the log store is
+	// absent — handler returns 503 in that case, matching the
+	// existing /api/v1/logs behavior.
+	if s.config.LogStore != nil {
+		costsH := &CostsHandlers{Store: s.config.LogStore, Prices: s.config.Prices}
+		mux.HandleFunc("GET /api/v1/costs", costsH.ListCosts)
+	}
 
 	// Generic engine endpoint (internal/testing).
 	mux.HandleFunc("POST /v1/engines/process", s.handleProcessRequest)
@@ -312,6 +354,22 @@ func decodeJSON(r *http.Request, v any) error {
 func isNotFound(err error) bool {
 	return errors.Is(err, engine.ErrAgentNotFound) ||
 		strings.Contains(err.Error(), engine.ErrAgentNotFound.Error())
+}
+
+// principalToActor extracts an audit.Actor from the authenticated
+// principal on the request context. Returns an anonymous actor when
+// the request is unauthenticated (single-tenant mode).
+func principalToActor(r *http.Request) audit.Actor {
+	p := tenancy.PrincipalFrom(r.Context())
+	if p == nil {
+		return audit.Actor{Name: "anonymous"}
+	}
+	return audit.Actor{
+		Name:     p.KeyID, // identified by key id; plaintext never logged
+		TenantID: p.TenantID,
+		KeyID:    p.KeyID,
+		Role:     string(p.Role),
+	}
 }
 
 // skipAuth lists paths that remain unauthenticated when multi-tenant

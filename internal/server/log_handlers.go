@@ -7,12 +7,41 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/mockagents/mockagents/internal/pricing"
 	"github.com/mockagents/mockagents/internal/storage"
 )
 
 // LogHandlers holds dependencies for log query API handlers.
 type LogHandlers struct {
-	Store *storage.SQLiteStore
+	Store  *storage.SQLiteStore
+	Prices *pricing.Table // optional; when nil, cost fields are zero.
+}
+
+// LogWithCost is the wire shape returned by ListLogs when a pricing
+// table is configured. It embeds InteractionLog and adds a computed
+// cost breakdown pulled from the response_body's usage block.
+type LogWithCost struct {
+	storage.InteractionLog
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	Model            string  `json:"model,omitempty"`
+	CostUSD          float64 `json:"cost_usd"`
+}
+
+// annotate wraps a row with its computed usage + cost. Returns a
+// zero-cost LogWithCost when the table is unset or the response body
+// has no usage block.
+func annotate(row storage.InteractionLog, table *pricing.Table) LogWithCost {
+	out := LogWithCost{InteractionLog: row}
+	if table == nil {
+		return out
+	}
+	usage := pricing.ExtractUsage([]byte(row.ResponseBody))
+	out.PromptTokens = usage.PromptTokens
+	out.CompletionTokens = usage.CompletionTokens
+	out.Model = usage.Model
+	out.CostUSD = table.Estimate(usage.Model, usage.PromptTokens, usage.CompletionTokens)
+	return out
 }
 
 // ListLogs handles GET /api/v1/logs with optional filtering.
@@ -64,7 +93,14 @@ func (h *LogHandlers) ListLogs(w http.ResponseWriter, r *http.Request) {
 	if logs == nil {
 		logs = []storage.InteractionLog{}
 	}
-	writeJSON(w, http.StatusOK, logs)
+	// Annotate every row with computed token counts and cost pulled
+	// from the stored response body. When Prices is unset this is a
+	// cheap zero-cost passthrough.
+	annotated := make([]LogWithCost, len(logs))
+	for i, row := range logs {
+		annotated[i] = annotate(row, h.Prices)
+	}
+	writeJSON(w, http.StatusOK, annotated)
 }
 
 // GetLog handles GET /api/v1/logs/{id}.
@@ -123,6 +159,11 @@ func (h *LogHandlers) DeleteLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 // InteractionCapture is middleware that captures request/response data for logging.
+//
+// The writer buffers up to maxCaptureBodyBytes of the response body
+// in memory so downstream cost-estimation (see internal/pricing) has
+// the usage block to parse. Streaming responses are recognized by
+// Content-Type and skip the body buffer to avoid pinning SSE chunks.
 func InteractionCapture(store *storage.SQLiteStore) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -139,9 +180,19 @@ func InteractionCapture(store *storage.SQLiteStore) func(http.Handler) http.Hand
 			}
 
 			start := time.Now()
-			cw := &captureWriter{ResponseWriter: w, statusCode: http.StatusOK}
+			cw := &captureWriter{
+				ResponseWriter: w,
+				statusCode:     http.StatusOK,
+				capture:        true,
+			}
 
 			next.ServeHTTP(cw, r)
+
+			// Snapshot into a local slice so the goroutine below
+			// cannot race the request-scoped captureWriter after the
+			// handler returns.
+			bodySnapshot := cw.snapshot()
+			streaming := cw.Header().Get("Content-Type") == "text/event-stream"
 
 			// Async log to avoid blocking the response.
 			go func() {
@@ -151,10 +202,21 @@ func InteractionCapture(store *storage.SQLiteStore) func(http.Handler) http.Hand
 					RequestPath:    path,
 					ResponseStatus: cw.statusCode,
 					LatencyMs:      time.Since(start).Milliseconds(),
-					Streaming:      cw.Header().Get("Content-Type") == "text/event-stream",
+					Streaming:      streaming,
+					ResponseBody:   string(bodySnapshot),
+				}
+				// Best-effort: extract the model name from the
+				// response body and use it as AgentName so the
+				// /api/v1/costs by_agent grouping is populated even
+				// without wiring engine metadata through the
+				// middleware. A follow-up slice will plumb the
+				// matched agent name through the request context.
+				if len(bodySnapshot) > 0 {
+					var probe struct{ Model string `json:"model"` }
+					_ = json.Unmarshal(bodySnapshot, &probe)
+					entry.AgentName = probe.Model
 				}
 
-				// Extract agent/session from response headers or context.
 				if reqID, ok := r.Context().Value(RequestIDKey).(string); ok {
 					entry.SessionID = reqID
 				}
@@ -165,21 +227,61 @@ func InteractionCapture(store *storage.SQLiteStore) func(http.Handler) http.Hand
 	}
 }
 
+// maxCaptureBodyBytes caps the response-body buffer used by the
+// interaction-capture middleware. 1 MiB is enough for every tool-call
+// response we care about in practice and bounds worst-case memory.
+const maxCaptureBodyBytes = 1 << 20
+
 func isLoggablePath(path string) bool {
 	return path == "/v1/chat/completions" ||
 		path == "/v1/messages" ||
 		path == "/v1/engines/process"
 }
 
-// captureWriter wraps ResponseWriter to capture status code.
+// captureWriter wraps ResponseWriter to capture the status code and,
+// optionally, the response body (up to maxCaptureBodyBytes) so the
+// interaction-capture middleware can persist it for downstream cost
+// estimation.
 type captureWriter struct {
 	http.ResponseWriter
 	statusCode int
+	capture    bool
+	body       []byte
+	truncated  bool
 }
 
 func (w *captureWriter) WriteHeader(code int) {
 	w.statusCode = code
 	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *captureWriter) Write(p []byte) (int, error) {
+	if w.capture && !w.truncated {
+		remaining := maxCaptureBodyBytes - len(w.body)
+		if remaining > 0 {
+			take := len(p)
+			if take > remaining {
+				take = remaining
+				w.truncated = true
+			}
+			w.body = append(w.body, p[:take]...)
+		} else {
+			w.truncated = true
+		}
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+// snapshot returns a defensive copy of the captured body for the
+// async logger goroutine. Empty when capture is off or the response
+// produced nothing.
+func (w *captureWriter) snapshot() []byte {
+	if !w.capture || len(w.body) == 0 {
+		return nil
+	}
+	out := make([]byte, len(w.body))
+	copy(out, w.body)
+	return out
 }
 
 func (w *captureWriter) Flush() {

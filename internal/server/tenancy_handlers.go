@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/mockagents/mockagents/internal/audit"
 	"github.com/mockagents/mockagents/internal/tenancy"
 )
 
@@ -12,7 +13,8 @@ import (
 // only mounted when multi-tenant mode is enabled; in single-tenant mode
 // these routes return 404 like any other unknown path.
 type TenancyHandlers struct {
-	Store tenancy.Store
+	Store    tenancy.Store
+	Recorder *audit.Recorder // optional; nil = audit disabled for these routes
 }
 
 // ListTenants handles GET /api/v1/tenants — admin only.
@@ -42,6 +44,8 @@ func (h *TenancyHandlers) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	h.Recorder.RecordHTTP(r, audit.EventTenantCreated, tenant.ID,
+		audit.MarshalDetails(map[string]any{"name": tenant.Name}))
 	writeJSON(w, http.StatusCreated, tenant)
 }
 
@@ -56,6 +60,7 @@ func (h *TenancyHandlers) DeleteTenant(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	h.Recorder.RecordHTTP(r, audit.EventTenantDeleted, id, "")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -99,6 +104,13 @@ func (h *TenancyHandlers) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	h.Recorder.RecordHTTP(r, audit.EventAPIKeyCreated, result.Key.ID,
+		audit.MarshalDetails(map[string]any{
+			"tenant_id": tenantID,
+			"name":      result.Key.Name,
+			"role":      string(result.Key.Role),
+			"prefix":    result.Key.Prefix,
+		}))
 	writeJSON(w, http.StatusCreated, result)
 }
 
@@ -113,5 +125,6 @@ func (h *TenancyHandlers) DeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	h.Recorder.RecordHTTP(r, audit.EventAPIKeyDeleted, id, "")
 	w.WriteHeader(http.StatusNoContent)
 }

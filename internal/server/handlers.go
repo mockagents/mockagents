@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/mockagents/mockagents/internal/audit"
 	"github.com/mockagents/mockagents/internal/config"
 	"github.com/mockagents/mockagents/internal/engine"
 )
@@ -19,6 +20,7 @@ type Handlers struct {
 	StartTime time.Time
 	Version   string
 	Logger    *slog.Logger
+	Recorder  *audit.Recorder // optional; nil = audit disabled
 }
 
 // HealthCheck returns server health status.
@@ -118,6 +120,10 @@ func (h *Handlers) ReloadAgent(w http.ResponseWriter, r *http.Request) {
 			"agent", name,
 			"file", filepath.Base(result.FilePath),
 		)
+		h.Recorder.RecordHTTP(r, audit.EventAgentReloaded, name,
+			audit.MarshalDetails(map[string]any{
+				"file": filepath.Base(result.FilePath),
+			}))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "reloaded",
 			"agent":  name,

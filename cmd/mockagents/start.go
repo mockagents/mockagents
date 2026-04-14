@@ -12,9 +12,11 @@ import (
 	"context"
 	"errors"
 
+	"github.com/mockagents/mockagents/internal/audit"
 	"github.com/mockagents/mockagents/internal/config"
 	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/engine/state"
+	"github.com/mockagents/mockagents/internal/pricing"
 	"github.com/mockagents/mockagents/internal/server"
 	"github.com/mockagents/mockagents/internal/storage"
 	"github.com/mockagents/mockagents/internal/tenancy"
@@ -33,6 +35,7 @@ and supports hot-reload via the management API.`,
 var (
 	port     int
 	jsonLogs bool
+	watchDir bool
 )
 
 func init() {
@@ -44,6 +47,7 @@ func init() {
 	}
 	startCmd.Flags().IntVarP(&port, "port", "p", defaultPort, "HTTP server port")
 	startCmd.Flags().BoolVar(&jsonLogs, "json-logs", false, "Output logs in JSON format")
+	startCmd.Flags().BoolVarP(&watchDir, "watch", "w", false, "Auto-reload agent YAML files on change (fsnotify)")
 }
 
 func runStart(cmd *cobra.Command, args []string) error {
@@ -121,6 +125,28 @@ func runStart(cmd *cobra.Command, args []string) error {
 	cfg.Version = version
 	cfg.LogStore = logStore
 
+	// Audit log: always enabled. Costs a few KB of SQLite and a
+	// handful of writes per control-plane mutation; the value is
+	// high and the overhead is invisible.
+	auditStore, auditErr := audit.NewSQLiteStore(".mockagents-audit.db")
+	if auditErr != nil {
+		logger.Warn("audit logging disabled", "error", auditErr)
+	} else {
+		defer auditStore.Close()
+		cfg.AuditStore = auditStore
+		logger.Info("audit logging enabled", "db", ".mockagents-audit.db")
+	}
+
+	// Cost estimation: always on with the built-in default price
+	// table; overridden at runtime via MOCKAGENTS_PRICING pointing at
+	// a YAML file of per-model overrides. Load failures are
+	// non-fatal — we fall through to the defaults.
+	prices, perr := pricing.FromEnv()
+	if perr != nil {
+		logger.Warn("custom pricing disabled, using defaults", "error", perr)
+	}
+	cfg.Prices = prices
+
 	// Optional multi-tenant mode (experimental). Enabled by setting
 	// MOCKAGENTS_MULTI_TENANT=1. On first boot we seed a "default"
 	// tenant and an admin API key; the plaintext is printed to stderr
@@ -138,6 +164,24 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	srv := server.New(eng, cfg, logger)
+
+	// Optional fsnotify auto-reload (US-2.3). When --watch is set we
+	// observe agentsDir for YAML changes and push new definitions
+	// into the registry in-place. Validation failures are logged and
+	// the previous definition is kept.
+	var watcher *server.AgentDirWatcher
+	if watchDir {
+		watcher = server.NewAgentDirWatcher(agentsDir, eng, logger)
+		if err := watcher.Start(); err != nil {
+			logger.Warn("agent watcher disabled", "error", err)
+			watcher = nil
+		}
+	}
+	defer func() {
+		if watcher != nil {
+			watcher.Stop()
+		}
+	}()
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	errCh := make(chan error, 1)
