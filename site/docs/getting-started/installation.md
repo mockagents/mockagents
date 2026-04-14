@@ -18,7 +18,7 @@ Download pre-built binaries from [GitHub Releases](https://github.com/mockagents
 go install github.com/mockagents/mockagents/cmd/mockagents@latest
 ```
 
-Requires Go 1.22+.
+Requires Go 1.26+.
 
 ## Docker
 

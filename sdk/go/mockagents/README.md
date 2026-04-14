@@ -11,7 +11,7 @@ real LLM tokens.
 go get github.com/mockagents/mockagents/sdk/go/mockagents
 ```
 
-Requires Go **1.22** or later. The `mockagents` Go binary must be
+Requires Go **1.26** or later. The `mockagents` Go binary must be
 available on your `PATH` or at `./mockagents` (or set `MOCKAGENTS_BIN`).
 Build it from the repo with `make build` or `go install
 github.com/mockagents/mockagents/cmd/mockagents@latest`.

@@ -37,7 +37,7 @@ Before working on MockAgents, ensure the following tools are installed on your d
 
 | Tool              | Minimum Version | Purpose                                  |
 |-------------------|-----------------|------------------------------------------|
-| **Go**            | 1.22+           | Core engine, CLI, and server compilation |
+| **Go**            | 1.26+           | Core engine, CLI, and server compilation |
 | **Python**        | 3.11+           | SDK development and SDK tests            |
 | **Docker**        | Latest stable   | Container builds and integration testing |
 | **Make**          | GNU Make 4+     | Build automation (all platforms)         |

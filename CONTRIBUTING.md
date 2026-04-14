@@ -10,7 +10,7 @@ cd mockagents
 make setup
 ```
 
-**Requirements:** Go 1.22+, Python 3.10+ (for SDK)
+**Requirements:** Go 1.26+, Python 3.10+ (for SDK)
 
 ## Running Tests
 

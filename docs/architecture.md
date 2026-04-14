@@ -1,5 +1,13 @@
 # MockAgents --- Architecture Document
 
+> **Implementation status (2026-04-13):** this architecture document
+> describes the target design. The current code layout —
+> `internal/{adapter,engine,server,streaming,storage,config,cli,types,contract,observability,mcp,recording,runner,tenancy}`,
+> `cmd/mockagents/`, `sdk/{python,typescript,go}/`, `gui/`, and
+> `deploy/helm/mockagents/` — is documented in [PROGRESS.md](./PROGRESS.md).
+> Treat PROGRESS.md as the source of truth for which components
+> actually exist and how they interconnect today.
+
 **A Platform for Simulating, Testing, and Validating AI Agent Integrations**
 
 | Field            | Value                                                        |

@@ -380,7 +380,7 @@ GitHub Release
 strategy:
   matrix:
     os: [ubuntu-latest, macos-latest, windows-latest]
-    go-version: ["1.22"]
+    go-version: ["1.26"]
     python-version: ["3.10", "3.11", "3.12"]
 ```
 

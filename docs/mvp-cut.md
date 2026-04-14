@@ -1,5 +1,12 @@
 # MockAgents — MVP Deployment Cut
 
+> **Implementation status (2026-04-13):** this document scopes the
+> original alpha release. The actual shipped feature set is larger —
+> Phase 2/3/4 v0.1 slices including chaos engine, MCP server mocking,
+> contract testing, OTel, TS/Go SDKs, GUI, Helm chart, and multi-tenant
+> auth have all landed. See [PROGRESS.md](./PROGRESS.md) for the
+> authoritative list.
+
 **Version:** 0.1.0-alpha  
 **Date:** April 7, 2026  
 **Author:** MockAgents Core Team  

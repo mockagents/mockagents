@@ -81,7 +81,7 @@ Testing follows the **test pyramid** defined in the Testing Strategy:
 | Environment       | Purpose                                    | Configuration                                    |
 |-------------------|--------------------------------------------|--------------------------------------------------|
 | Local Development | Developer workstation testing               | `go test`, `pytest`, manual CLI invocation        |
-| CI (GitHub Actions)| Automated testing on every PR and merge    | Matrix: Linux/macOS/Windows, Go 1.22, Python 3.10-3.12 |
+| CI (GitHub Actions)| Automated testing on every PR and merge    | Matrix: Linux/macOS/Windows, Go 1.26, Python 3.10-3.12 |
 | Docker            | Container-based testing                     | Multi-stage build, Alpine-based, smoke tests      |
 
 ### 2.5 Entry Criteria
@@ -278,7 +278,7 @@ tests/conformance/testdata/
 | Anthropic Python SDK | v0.40+                                           | NFR-027 |
 | Python version       | 3.10, 3.11, 3.12, 3.13                          | NFR-029 |
 | Platform             | Linux (amd64, arm64), macOS (amd64, arm64), Windows (amd64) | NFR-028 |
-| Go version           | 1.22+                                            | NFR-030 |
+| Go version           | 1.26+                                            | NFR-030 |
 
 **Approach:** CI matrix runs the full test suite across platform and language version combinations. SDK compatibility tests use the real `openai` and `anthropic` Python packages with `base_url` overridden to point at the mock server.
 

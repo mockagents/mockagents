@@ -1,5 +1,12 @@
 # MockAgents -- Implementation Plan
 
+> **Implementation status (2026-04-13):** the 12-week MVP plan below
+> is historical. Phase 1 shipped with 44/46 stories done (two carry-over
+> partials) and Phase 2/3/4 v0.1 slices have since landed (pipelines,
+> chaos, MCP, contracts, OTel, TS/Go SDKs, GUI, Helm, multi-tenant auth).
+> See [PROGRESS.md](./PROGRESS.md) for the authoritative status. This
+> plan is kept as-is for historical context.
+
 **Version:** 1.0
 **Date:** April 7, 2026
 **Status:** Draft

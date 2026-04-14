@@ -229,28 +229,54 @@ func (s *Server) handleStreamResponse(
 	}
 }
 
-// ListenAndServe starts the HTTP server. It blocks until the server is shut down.
-func (s *Server) ListenAndServe() error {
+// Listen binds the server socket synchronously. Call it from the main
+// goroutine before spawning a goroutine for Serve so tests can safely
+// observe ListenAddr without racing against the serve goroutine's
+// listener initialization. Calling Listen twice returns an error.
+func (s *Server) Listen() error {
+	if s.listener != nil {
+		return fmt.Errorf("server already listening on %s", s.listener.Addr())
+	}
 	ln, err := net.Listen("tcp", s.httpServer.Addr)
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", s.httpServer.Addr, err)
 	}
 	s.listener = ln
+	return nil
+}
 
-	addr := ln.Addr().(*net.TCPAddr)
+// Serve runs the HTTP server on the already-bound listener. Blocks
+// until the server is shut down. Must be preceded by a successful
+// Listen call.
+func (s *Server) Serve() error {
+	if s.listener == nil {
+		return fmt.Errorf("server not listening; call Listen first")
+	}
+	addr := s.listener.Addr().(*net.TCPAddr)
 	s.logger.Info("MockAgents server started",
 		"addr", fmt.Sprintf("http://localhost:%d", addr.Port),
 		"agents", s.engine.Registry.Count(),
 	)
-
-	if err := s.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+	if err := s.httpServer.Serve(s.listener); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("server error: %w", err)
 	}
 	return nil
 }
 
+// ListenAndServe is a convenience that binds and serves in a single
+// call. Note: callers that want to discover the actual listen address
+// (for example tests using port 0) must use Listen + go Serve instead,
+// because with the combined form the listener is written from the
+// serve goroutine and ListenAddr racy.
+func (s *Server) ListenAndServe() error {
+	if err := s.Listen(); err != nil {
+		return err
+	}
+	return s.Serve()
+}
+
 // ListenAddr returns the actual address the server is listening on.
-// Only valid after ListenAndServe has been called.
+// Only valid after Listen (or ListenAndServe) has been called.
 func (s *Server) ListenAddr() string {
 	if s.listener == nil {
 		return s.httpServer.Addr

@@ -40,20 +40,14 @@ func setupTestServer(t *testing.T, agents ...*types.AgentDefinition) (*Server, s
 
 	srv := New(eng, cfg, logger)
 
-	// Start server in background.
+	// Bind synchronously in the test goroutine so the listener field
+	// is fully initialized before the serve goroutine starts — that
+	// way ListenAddr is race-free.
+	require.NoError(t, srv.Listen(), "listen")
+	addr := fmt.Sprintf("http://%s", srv.ListenAddr())
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.ListenAndServe() }()
-
-	// Wait for server to be ready and get actual address.
-	var addr string
-	for i := 0; i < 50; i++ {
-		time.Sleep(10 * time.Millisecond)
-		if listenAddr := srv.ListenAddr(); listenAddr != ":0" {
-			addr = fmt.Sprintf("http://%s", listenAddr)
-			break
-		}
-	}
-	require.NotEmpty(t, addr, "server did not start in time")
+	go func() { errCh <- srv.Serve() }()
+	_ = errCh // serve errors surface via t.Cleanup → Shutdown
 
 	t.Cleanup(func() {
 		srv.Shutdown()

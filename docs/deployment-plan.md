@@ -163,7 +163,7 @@ A minimal Docker image for running MockAgents as a containerized mock server.
 # =============================================================================
 # Stage 1: Build the Go binary
 # =============================================================================
-FROM golang:1.22-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 # Install git for module downloads; ca-certificates for HTTPS
 RUN apk add --no-cache git ca-certificates
@@ -425,7 +425,7 @@ stages:
 
 test-with-mockagents:
   stage: test
-  image: golang:1.22
+  image: golang:1.26
   services:
     - name: mockagents/mockagents:v0.1.0
       alias: mockagents
@@ -630,7 +630,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.26"
 
       - name: Run unit tests
         run: go test ./... -race -coverprofile=coverage.out
@@ -652,7 +652,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.26"
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v5
@@ -1107,7 +1107,7 @@ shasum -a 256 --check --ignore-missing checksums.txt
 
 ### 7.2 Go Install
 
-Requires Go 1.22 or later:
+Requires Go 1.26 or later:
 
 ```bash
 go install github.com/mockagents/mockagents/cmd/mockagents@latest

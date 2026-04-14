@@ -32,7 +32,7 @@
 | Version          | 1.0                                                                   |
 | Date             | 2026-04-07                                                            |
 | Scope            | MVP / Phase 1                                                         |
-| Language         | Go 1.22+                                                              |
+| Language         | Go 1.26+                                                              |
 | Build System     | Go modules (monorepo)                                                 |
 | Database         | SQLite (via `modernc.org/sqlite` - pure Go, no CGO)                   |
 | Config Format    | YAML / JSON agent definitions                                         |

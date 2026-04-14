@@ -14,5 +14,5 @@
 //   - [Expect] integrates with testing.T and provides a fluent matcher
 //     API for tool calls, response content, latency, and status codes.
 //
-// Minimum supported Go version is 1.22.
+// Minimum supported Go version is 1.26.
 package mockagents

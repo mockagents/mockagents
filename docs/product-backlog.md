@@ -1,9 +1,10 @@
 # MockAgents -- Product Backlog
 
-**Version:** 1.1
-**Date:** 2026-04-13 (implementation status revision)
-**Status:** MVP feature-complete -- in hardening
+**Version:** 1.2
+**Date:** 2026-04-13 (Phase 2/3/4 slice landing revision)
+**Status:** MVP complete; Phase 2/3/4 v0.1 slices landed
 **Author:** MockAgents Product Team
+**Authoritative status:** [PROGRESS.md](./PROGRESS.md) — this file now covers backlog structure; live status lives in PROGRESS.md.
 **Related:** [PRD](./PRD.md) | [Implementation Plan](./implementation-plan.md)
 **Methodology:** 6 two-week sprints, 12-week MVP, 4-person team (3 Backend + 1 SDK/DevEx)
 
@@ -81,16 +82,35 @@ All P0 functional requirements (FR-001..FR-048 except P2 deferrals) have corresp
 
 ### Implementation-phase rollup
 
-| Phase from product plan                               | Status        | Evidence |
-| ----------------------------------------------------- | ------------- | -------- |
-| Phase 1 -- Foundation (single-agent OpenAI/Anthropic) | **Complete**  | Entire E-001..E-011 backlog landed; two P1 carry-overs tracked above. |
-| Phase 2 -- Testing & Multi-Agent                      | Not started   | Multi-agent topologies, CrewAI/LangGraph adapters, TS SDK, GUI v0.1 are still in the "Won't Have (Deferred)" table. |
-| Phase 3 -- Resilience & MCP                           | Not started   | Chaos engine, MCP server mocking, LLM-as-judge -- deferred. |
-| Phase 4 -- Enterprise & Scale                         | Not started   | Shared registry, RBAC, Helm chart, Go SDK, cloud SaaS -- deferred. |
+| Phase from product plan                               | Status                         | Evidence |
+| ----------------------------------------------------- | ------------------------------ | -------- |
+| Phase 1 -- Foundation (single-agent OpenAI/Anthropic) | **Complete**                   | Entire E-001..E-011 backlog landed; two P1 carry-overs tracked above. |
+| Phase 2 -- Testing & Multi-Agent                      | **v0.1 slices complete**       | Multi-agent pipelines + TestSuite runner, record/replay, CrewAI/LangGraph (Python) adapters. Details in PROGRESS.md §§2.2, 2.4, 2.5. |
+| Phase 3 -- Resilience & MCP                           | **v0.1 slices complete**       | Chaos engine (latency/errors/rate-limit), MCP server mocking (HTTP + stdio). Details in PROGRESS.md §§2.3, 2.6. |
+| Phase 4 -- Enterprise & Scale                         | **v0.1 slices complete**       | Contract testing, OpenTelemetry, TypeScript SDK, Go SDK, GUI v0.1, Helm chart, multi-tenant auth + RBAC. Details in PROGRESS.md §§2.7–2.13. |
+
+### Phase 2-4 slices landed (v0.1)
+
+Every slice below shipped with tests and, where applicable, a live smoke-test run. See [PROGRESS.md](./PROGRESS.md) for file paths and verification notes.
+
+| Slice                              | Phase | Flagship files                                                      | Tests |
+| ---------------------------------- | ----- | ------------------------------------------------------------------- | ----- |
+| Multi-agent pipelines + test runner| 2     | `internal/engine/pipeline.go`, `internal/runner/`, `cmd/mockagents/test.go` | 6 new |
+| Record and playback                | 2     | `internal/recording/`, `cmd/mockagents/{record,replay}.go`          | 8 new |
+| CrewAI / LangGraph adapters (Py)   | 2     | `sdk/python/mockagents/adapters/`                                   | 11 new|
+| Chaos engine                       | 3     | `internal/engine/chaos.go`, expanded `types.ChaosConfig`            | 9 new |
+| MCP server mocking                 | 3     | `internal/mcp/`, `kind: MCPServer`, `cmd/mockagents/mcp.go`         | 15 new|
+| Contract testing                   | 4     | `internal/contract/`, `cmd/mockagents/contract.go`                  | 9 new |
+| OpenTelemetry tracing              | 4     | `internal/observability/`, engine + HTTP instrumentation            | 5 new |
+| TypeScript SDK                     | 4     | `sdk/typescript/`                                                    | 25 new|
+| Go SDK                             | 4     | `sdk/go/mockagents/`                                                 | 17 new|
+| GUI v0.1 (Next.js 15)              | 4     | `gui/`                                                               | `next build` typecheck + live |
+| Helm chart                         | 4     | `deploy/helm/mockagents/`                                            | `helm lint` + template |
+| Multi-tenant auth + RBAC           | 4     | `internal/tenancy/`, `cmd/mockagents/start.go` bootstrap             | 11 new|
 
 ### Release readiness
 
-MVP alpha release is gated on closing the two P1 partials above (or consciously descoping US-2.3 to a `--watch` follow-up) and completing Sprint 6 release activities (`S6-16`..`S6-19`) which are pipeline/publish tasks rather than code.
+Phase 1 MVP alpha is still gated only on the two P1 carry-overs above (or descoping US-2.3 to a `--watch` follow-up) and the Sprint 6 release-pipeline tasks. Every Phase 2/3/4 v0.1 slice is independently shippable and documented in PROGRESS.md with known gaps enumerated there.
 
 ---
 

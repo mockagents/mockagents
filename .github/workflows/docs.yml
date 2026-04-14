@@ -5,14 +5,27 @@ on:
     branches: [main]
     paths:
       - "site/**"
+  workflow_dispatch:
 
+# Permissions for GitHub's native Pages deployment (actions/deploy-pages):
+#  - contents: read   — enough to checkout the repo
+#  - pages: write     — required by the deploy-pages action
+#  - id-token: write  — required for OIDC verification of the deployment
+# No `contents: write` needed because we no longer push to a gh-pages branch.
 permissions:
   contents: read
   pages: write
   id-token: write
 
+# Only one Pages deployment can be in flight at a time; queue but don't
+# cancel in-progress runs so half-deployed docs never go live.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
 jobs:
-  deploy:
+  build:
+    name: Build MkDocs site
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,8 +42,21 @@ jobs:
         working-directory: site
         run: mkdocs build
 
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: site/site
+          # mkdocs build writes to ./site relative to mkdocs.yml, so the
+          # rendered HTML lives at site/site/.
+          path: site/site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

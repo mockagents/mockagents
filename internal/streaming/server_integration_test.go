@@ -35,17 +35,11 @@ func startTestServer(t *testing.T, agents ...*types.AgentDefinition) string {
 	cfg.AgentsDir = t.TempDir()
 
 	srv := server.New(eng, cfg, logger)
-	go func() { srv.ListenAndServe() }()
-
-	var addr string
-	for i := 0; i < 50; i++ {
-		time.Sleep(10 * time.Millisecond)
-		if la := srv.ListenAddr(); la != ":0" {
-			addr = fmt.Sprintf("http://%s", la)
-			break
-		}
-	}
-	require.NotEmpty(t, addr)
+	// Bind synchronously so ListenAddr is race-free when we read it
+	// immediately after. See server.Listen / server.Serve for details.
+	require.NoError(t, srv.Listen())
+	addr := fmt.Sprintf("http://%s", srv.ListenAddr())
+	go func() { _ = srv.Serve() }()
 	t.Cleanup(func() { srv.Shutdown() })
 	return addr
 }

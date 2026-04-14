@@ -1,5 +1,12 @@
 # MockAgents -- High-Level Design Document
 
+> **Implementation status (2026-04-13):** this HLD captures the
+> original design intent. Code reality has moved ahead across every
+> phase — see [PROGRESS.md](./PROGRESS.md) for the live map of slices,
+> file paths, and test coverage. Sections below that describe
+> components not yet shipped are flagged implicitly by their absence
+> in PROGRESS.md §2.
+
 | Field        | Value                                                      |
 |--------------|------------------------------------------------------------|
 | **Version**  | 1.0                                                        |
@@ -332,13 +339,13 @@ Key design rule: **the mock engine has no knowledge of HTTP, SSE, or any wire pr
 
 | Layer                | Technology                         | Version   | Rationale                                                         |
 |----------------------|------------------------------------|-----------|-------------------------------------------------------------------|
-| Language             | Go                                 | 1.22+     | Single binary, excellent concurrency, fast compile times, strong stdlib |
+| Language             | Go                                 | 1.26+     | Single binary, excellent concurrency, fast compile times, strong stdlib |
 | HTTP router          | `go-chi/chi/v5`                    | 5.x       | Lightweight, idiomatic, middleware-friendly, stdlib-compatible     |
 | CLI framework        | `spf13/cobra`                      | 1.8+      | De facto standard for Go CLIs, flag parsing, help generation      |
 | YAML parsing         | `gopkg.in/yaml.v3`                 | 3.x       | Full YAML 1.2 support, struct tags, error positions               |
 | SQLite               | `modernc.org/sqlite`               | latest    | Pure Go -- no CGo, no C toolchain, single binary stays intact     |
-| Logging              | `log/slog` (stdlib)                | Go 1.22   | Structured logging in stdlib, JSON and text handlers              |
-| Template engine      | `text/template` (stdlib)           | Go 1.22   | Built-in, safe for non-HTML output, custom function support       |
+| Logging              | `log/slog` (stdlib)                | Go 1.26   | Structured logging in stdlib, JSON and text handlers              |
+| Template engine      | `text/template` (stdlib)           | Go 1.26   | Built-in, safe for non-HTML output, custom function support       |
 | Testing              | `testing` + `testify`              | latest    | Standard Go testing with assertion helpers                        |
 | Python SDK           | Python 3.10+                       | --        | Matches the AI/ML community's primary language                    |
 | Python HTTP client   | `httpx`                            | 0.27+     | Async support, streaming, modern API                              |
@@ -416,7 +423,7 @@ CGO_ENABLED=0 go build -ldflags="-s -w" -o mockagents ./cmd/mockagents
 ### 7.2 Docker Container
 
 ```dockerfile
-FROM golang:1.22-alpine AS builder
+FROM golang:1.26-alpine AS builder
 WORKDIR /src
 COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /mockagents ./cmd/mockagents

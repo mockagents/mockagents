@@ -1,5 +1,12 @@
 # MockAgents -- Product Requirements Document
 
+> **Implementation status (2026-04-13):** this document describes the
+> *intended* product. For the authoritative list of what actually ships
+> today — including every Phase 2/3/4 v0.1 slice landed (multi-agent
+> pipelines, chaos engine, MCP, contracts, OTel, TS/Go SDKs, GUI, Helm,
+> multi-tenant auth) — see [PROGRESS.md](./PROGRESS.md). When this PRD
+> and PROGRESS.md disagree, PROGRESS.md wins.
+
 ## 1. Document Info
 
 | Field          | Value                                                      |
@@ -333,7 +340,7 @@ The MVP exclusively targets the **AI Engineer (Builder Persona)**:
 | NFR-027 | Anthropic Python SDK compatibility                                                   | Tested against `anthropic` v0.40+ |
 | NFR-028 | Platform support                                                                     | Linux (amd64, arm64), macOS (amd64, arm64), Windows (amd64) |
 | NFR-029 | Python SDK compatibility                                                             | Python 3.10, 3.11, 3.12, 3.13 |
-| NFR-030 | Go version                                                                           | Go 1.22+ for building from source |
+| NFR-030 | Go version                                                                           | Go 1.26+ for building from source |
 
 ---
 
@@ -372,7 +379,7 @@ The following capabilities are explicitly deferred to Phase 2 and beyond. They a
 
 | ID   | Dependency                                                 | Type       | Risk    | Notes                                                       |
 | ---- | ---------------------------------------------------------- | ---------- | ------- | ----------------------------------------------------------- |
-| D-01 | Go 1.22+ toolchain                                        | Build      | Low     | Stable, well-supported language with predictable releases   |
+| D-01 | Go 1.26+ toolchain                                        | Build      | Low     | Stable, well-supported language with predictable releases   |
 | D-02 | SQLite (via `modernc.org/sqlite` or `mattn/go-sqlite3`)   | Runtime    | Low     | Pure Go or CGo binding; embedded, no external dependency    |
 | D-03 | OpenAI Chat Completions API specification                  | External   | Medium  | API evolves; adapter must track changes. Version-pin to a known spec snapshot. |
 | D-04 | Anthropic Messages API specification                       | External   | Medium  | API evolves; same mitigation as OpenAI.                     |
