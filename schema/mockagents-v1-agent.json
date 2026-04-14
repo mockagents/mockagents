@@ -1,0 +1,355 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mockagents.dev/schema/v1/agent.json",
+  "title": "MockAgents Agent Definition",
+  "description": "Declarative configuration for a MockAgents mock agent.",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "const": "mockagents/v1",
+      "description": "Schema version identifier."
+    },
+    "kind": {
+      "type": "string",
+      "const": "Agent",
+      "description": "Resource kind. Must be 'Agent'."
+    },
+    "metadata": {
+      "$ref": "#/$defs/Metadata"
+    },
+    "spec": {
+      "$ref": "#/$defs/AgentSpec"
+    }
+  },
+  "$defs": {
+    "Metadata": {
+      "type": "object",
+      "description": "Identifying information for the agent.",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "minLength": 1,
+          "maxLength": 63,
+          "description": "Unique agent name. Must be lowercase kebab-case."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the agent."
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Labels for categorizing the agent."
+        }
+      }
+    },
+    "AgentSpec": {
+      "type": "object",
+      "description": "Agent specification including protocol, tools, and behavior.",
+      "required": ["protocol", "behavior"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "enum": ["openai-chat-completions", "anthropic-messages"],
+          "description": "Wire protocol the agent speaks."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model name reported in API responses. Defaults to 'mock-agent'."
+        },
+        "systemPrompt": {
+          "type": "string",
+          "description": "System prompt included in responses where the protocol supports it."
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolDefinition"
+          },
+          "description": "Tools the agent can call."
+        },
+        "behavior": {
+          "$ref": "#/$defs/BehaviorConfig"
+        }
+      }
+    },
+    "ToolDefinition": {
+      "type": "object",
+      "description": "A tool the agent can invoke.",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Tool name. Must be snake_case."
+        },
+        "description": {
+          "type": "string",
+          "description": "What the tool does."
+        },
+        "parameters": {
+          "type": "object",
+          "description": "JSON Schema describing the tool's input parameters."
+        },
+        "responses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolResponseRule"
+          },
+          "description": "Response mappings for this tool."
+        }
+      }
+    },
+    "ToolResponseRule": {
+      "type": "object",
+      "description": "Maps a match condition to a tool response or error.",
+      "additionalProperties": false,
+      "properties": {
+        "match": {
+          "type": "object",
+          "description": "Parameter values to match against. Omit for default response."
+        },
+        "response": {
+          "description": "Tool output when matched."
+        },
+        "error": {
+          "$ref": "#/$defs/ToolError"
+        },
+        "default": {
+          "type": "boolean",
+          "description": "If true, this rule is the fallback when no other match succeeds."
+        }
+      }
+    },
+    "ToolError": {
+      "type": "object",
+      "description": "Simulated tool error.",
+      "required": ["code", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Error code."
+        },
+        "message": {
+          "type": "string",
+          "description": "Error message."
+        }
+      }
+    },
+    "BehaviorConfig": {
+      "type": "object",
+      "description": "Agent response behavior configuration.",
+      "required": ["scenarios"],
+      "additionalProperties": false,
+      "properties": {
+        "scenarios": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Scenario"
+          },
+          "minItems": 1,
+          "description": "Response scenarios. At least one is required."
+        },
+        "streaming": {
+          "$ref": "#/$defs/StreamingConfig"
+        },
+        "chaos": {
+          "$ref": "#/$defs/ChaosConfig"
+        }
+      }
+    },
+    "Scenario": {
+      "type": "object",
+      "description": "A pattern-matched response rule.",
+      "required": ["name", "response"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Scenario identifier."
+        },
+        "match": {
+          "$ref": "#/$defs/MatchRule"
+        },
+        "response": {
+          "$ref": "#/$defs/ScenarioResponse"
+        }
+      }
+    },
+    "MatchRule": {
+      "type": "object",
+      "description": "Conditions under which a scenario activates.",
+      "additionalProperties": false,
+      "properties": {
+        "content_contains": {
+          "type": "string",
+          "description": "Substring to match in user message."
+        },
+        "content_regex": {
+          "type": "string",
+          "description": "Regex to match in user message."
+        },
+        "turn_number": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Conversation turn number to match."
+        }
+      }
+    },
+    "ScenarioResponse": {
+      "type": "object",
+      "description": "Response produced when a scenario matches.",
+      "required": ["content"],
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "type": "string",
+          "description": "Response content text."
+        },
+        "tool_calls": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolCallSpec"
+          },
+          "description": "Tool calls to simulate in the response."
+        },
+        "metadata": {
+          "type": "object",
+          "description": "Arbitrary metadata to include in the response."
+        }
+      }
+    },
+    "ToolCallSpec": {
+      "type": "object",
+      "description": "A tool call the agent simulates.",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name of the tool to call."
+        },
+        "arguments": {
+          "type": "object",
+          "description": "Arguments to pass to the tool."
+        }
+      }
+    },
+    "StreamingConfig": {
+      "type": "object",
+      "description": "SSE streaming behavior configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether streaming is enabled. Default: false."
+        },
+        "chunk_size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Tokens per chunk. Default: 4."
+        },
+        "chunk_delay_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Delay between chunks in milliseconds. Default: 50."
+        }
+      }
+    },
+    "ChaosConfig": {
+      "type": "object",
+      "description": "Fault injection settings. All fields optional.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Explicitly toggle chaos on/off. Defaults to true when any sub-section is present."
+        },
+        "latency": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "distribution": {
+              "type": "string",
+              "enum": ["fixed", "uniform", "normal"],
+              "description": "Latency distribution. Defaults to uniform when min/max differ, else fixed."
+            },
+            "min_ms": { "type": "integer", "minimum": 0 },
+            "max_ms": { "type": "integer", "minimum": 0 },
+            "mean_ms": { "type": "integer", "minimum": 0, "description": "Mean for normal distribution." },
+            "stddev_ms": { "type": "integer", "minimum": 0, "description": "Stddev for normal distribution." }
+          }
+        },
+        "errors": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Probability of injecting an error (0.0 to 1.0)."
+            },
+            "status_code": {
+              "type": "integer",
+              "minimum": 400,
+              "maximum": 599,
+              "description": "HTTP status code for injected errors."
+            },
+            "status_codes": {
+              "type": "array",
+              "items": { "type": "integer", "minimum": 400, "maximum": 599 },
+              "description": "When set, a status code is picked uniformly at random from this list."
+            },
+            "timeout": {
+              "type": "boolean",
+              "description": "Force injected failures to simulate a timeout."
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "How long to sleep before returning the synthetic timeout."
+            },
+            "message": {
+              "type": "string",
+              "description": "Human-readable error message surfaced to clients."
+            }
+          }
+        },
+        "rate_limit": {
+          "type": "object",
+          "required": ["requests", "window_ms"],
+          "additionalProperties": false,
+          "properties": {
+            "requests": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Maximum requests allowed per window."
+            },
+            "window_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Rolling window size in milliseconds."
+            }
+          }
+        }
+      }
+    }
+  }
+}

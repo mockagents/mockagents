@@ -1,0 +1,318 @@
+package adapter
+
+import (
+	"crypto/rand"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/mockagents/mockagents/internal/engine"
+	"github.com/mockagents/mockagents/internal/streaming"
+	"github.com/mockagents/mockagents/internal/types"
+)
+
+// --- OpenAI Request Types ---
+
+// ChatCompletionRequest represents an OpenAI Chat Completions API request.
+type ChatCompletionRequest struct {
+	Model       string              `json:"model"`
+	Messages    []OpenAIMessage     `json:"messages"`
+	Tools       []OpenAITool        `json:"tools,omitempty"`
+	ToolChoice  any                 `json:"tool_choice,omitempty"`
+	Stream      bool                `json:"stream,omitempty"`
+	Temperature *float64            `json:"temperature,omitempty"`
+	MaxTokens   *int                `json:"max_tokens,omitempty"`
+}
+
+// OpenAIMessage represents a message in an OpenAI request/response.
+type OpenAIMessage struct {
+	Role       string              `json:"role"`
+	Content    any                 `json:"content"`
+	ToolCalls  []OpenAIToolCall    `json:"tool_calls,omitempty"`
+	ToolCallID string              `json:"tool_call_id,omitempty"`
+}
+
+// OpenAITool represents a tool definition in an OpenAI request.
+type OpenAITool struct {
+	Type     string          `json:"type"`
+	Function OpenAIFunction  `json:"function"`
+}
+
+// OpenAIFunction describes a function tool.
+type OpenAIFunction struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+}
+
+// OpenAIToolCall represents a tool call in an OpenAI response.
+type OpenAIToolCall struct {
+	ID       string             `json:"id"`
+	Type     string             `json:"type"`
+	Function OpenAIFunctionCall `json:"function"`
+}
+
+// OpenAIFunctionCall represents the function invocation in a tool call.
+type OpenAIFunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// --- OpenAI Response Types ---
+
+// ChatCompletionResponse represents an OpenAI Chat Completions API response.
+type ChatCompletionResponse struct {
+	ID      string                   `json:"id"`
+	Object  string                   `json:"object"`
+	Created int64                    `json:"created"`
+	Model   string                   `json:"model"`
+	Choices []ChatCompletionChoice   `json:"choices"`
+	Usage   OpenAIUsage              `json:"usage"`
+}
+
+// ChatCompletionChoice represents a single choice in the response.
+type ChatCompletionChoice struct {
+	Index        int                    `json:"index"`
+	Message      OpenAIResponseMessage  `json:"message"`
+	FinishReason string                 `json:"finish_reason"`
+}
+
+// OpenAIResponseMessage is the assistant message in a choice.
+type OpenAIResponseMessage struct {
+	Role      string           `json:"role"`
+	Content   *string          `json:"content"`
+	ToolCalls []OpenAIToolCall `json:"tool_calls,omitempty"`
+}
+
+// OpenAIUsage represents token usage in the response.
+type OpenAIUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+// --- OpenAI Handler ---
+
+// OpenAIHandler handles OpenAI Chat Completions API requests.
+type OpenAIHandler struct {
+	Engine *engine.Engine
+}
+
+// HandleChatCompletions handles POST /v1/chat/completions.
+func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	var req ChatCompletionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("invalid JSON: %s", err))
+		return
+	}
+	defer r.Body.Close()
+
+	if req.Model == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return
+	}
+	if len(req.Messages) == 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "messages array is required and must not be empty")
+		return
+	}
+
+	// Convert to engine request.
+	inbound := &engine.InboundRequest{
+		Model:     req.Model,
+		SessionID: extractSessionID(r),
+		Messages:  convertOpenAIMessages(req.Messages),
+		Stream:    req.Stream,
+	}
+
+	// Process through engine.
+	resp, err := h.Engine.ProcessRequest(inbound)
+	if err != nil {
+		if ce := engine.AsChaosError(err); ce != nil {
+			if ce.RetryAfter > 0 {
+				w.Header().Set("Retry-After", fmt.Sprintf("%d", int(ce.RetryAfter.Seconds())))
+			}
+			writeError(w, ce.StatusCode, chaosErrorType(ce), ce.Message)
+			return
+		}
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		} else if strings.Contains(err.Error(), "empty") {
+			status = http.StatusBadRequest
+		}
+		writeError(w, status, "invalid_request_error", err.Error())
+		return
+	}
+
+	// Stream or JSON response.
+	if req.Stream {
+		agent := h.Engine.Registry.GetByModel(req.Model)
+		if agent == nil {
+			agents := h.Engine.Registry.List()
+			if len(agents) == 1 {
+				agent = agents[0]
+			}
+		}
+		var streamCfg *types.StreamingConfig
+		if agent != nil {
+			streamCfg = agent.Spec.Behavior.Streaming
+		}
+		if err := streaming.StreamOpenAI(r.Context(), w, resp, streamCfg); err != nil {
+			// Already started streaming; can't write error JSON.
+			return
+		}
+		return
+	}
+
+	// Build non-streaming response.
+	promptTokens := estimatePromptTokens(req.Messages)
+	completionTokens := EstimateTokens(resp.Content)
+
+	openAIResp := formatOpenAIResponse(resp, promptTokens, completionTokens)
+	writeJSON(w, http.StatusOK, openAIResp)
+}
+
+// HandleModels handles GET /v1/models.
+func (h *OpenAIHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
+	agents := h.Engine.Registry.List()
+	models := make([]map[string]any, 0, len(agents))
+	for _, a := range agents {
+		models = append(models, map[string]any{
+			"id":       a.Spec.Model,
+			"object":   "model",
+			"created":  time.Now().Unix(),
+			"owned_by": "mockagents",
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"object": "list",
+		"data":   models,
+	})
+}
+
+// --- Conversion Helpers ---
+
+func convertOpenAIMessages(msgs []OpenAIMessage) []engine.RequestMessage {
+	result := make([]engine.RequestMessage, 0, len(msgs))
+	for _, m := range msgs {
+		content := extractStringContent(m.Content)
+		result = append(result, engine.RequestMessage{
+			Role:    m.Role,
+			Content: content,
+		})
+	}
+	return result
+}
+
+func extractStringContent(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		// Content array format — extract text parts.
+		var parts []string
+		for _, item := range v {
+			if m, ok := item.(map[string]any); ok {
+				if t, ok := m["text"].(string); ok {
+					parts = append(parts, t)
+				}
+			}
+		}
+		return strings.Join(parts, " ")
+	default:
+		if v == nil {
+			return ""
+		}
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+func formatOpenAIResponse(resp *engine.Response, promptTokens, completionTokens int) *ChatCompletionResponse {
+	finishReason := "stop"
+	var toolCalls []OpenAIToolCall
+
+	if len(resp.ToolCalls) > 0 {
+		finishReason = "tool_calls"
+		for i, tc := range resp.ToolCalls {
+			callID := fmt.Sprintf("call_%d", i)
+			if i < len(resp.ToolResults) {
+				callID = resp.ToolResults[i].ID
+			}
+			argsJSON, _ := json.Marshal(tc.Arguments)
+			toolCalls = append(toolCalls, OpenAIToolCall{
+				ID:   callID,
+				Type: "function",
+				Function: OpenAIFunctionCall{
+					Name:      tc.Name,
+					Arguments: string(argsJSON),
+				},
+			})
+		}
+	}
+
+	var content *string
+	if resp.Content != "" {
+		content = &resp.Content
+	}
+
+	return &ChatCompletionResponse{
+		ID:      fmt.Sprintf("chatcmpl-%s", generateID()),
+		Object:  "chat.completion",
+		Created: time.Now().Unix(),
+		Model:   resp.Model,
+		Choices: []ChatCompletionChoice{
+			{
+				Index: 0,
+				Message: OpenAIResponseMessage{
+					Role:      "assistant",
+					Content:   content,
+					ToolCalls: toolCalls,
+				},
+				FinishReason: finishReason,
+			},
+		},
+		Usage: OpenAIUsage{
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      promptTokens + completionTokens,
+		},
+	}
+}
+
+func estimatePromptTokens(msgs []OpenAIMessage) int {
+	total := 0
+	for _, m := range msgs {
+		total += EstimateTokens(extractStringContent(m.Content))
+	}
+	return total
+}
+
+func extractSessionID(r *http.Request) string {
+	if id := r.Header.Get("X-Session-Id"); id != "" {
+		return id
+	}
+	return fmt.Sprintf("sess-%s", generateID())
+}
+
+func generateID() string {
+	b := make([]byte, 12)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("%x", b)
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, status int, errType, message string) {
+	writeJSON(w, status, map[string]any{
+		"error": map[string]string{
+			"type":    errType,
+			"message": message,
+		},
+	})
+}

@@ -1,0 +1,56 @@
+site_name: MockAgents Documentation
+site_url: https://mockagents.github.io/mockagents
+site_description: Simulate, test, and validate AI agent integrations
+repo_url: https://github.com/mockagents/mockagents
+repo_name: mockagents/mockagents
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Light mode
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+    - content.code.annotate
+    - search.suggest
+    - search.highlight
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Quickstart: getting-started/quickstart.md
+    - Installation: getting-started/installation.md
+  - Guides:
+    - CLI Reference: guides/cli-reference.md
+    - YAML Schema: guides/yaml-schema.md
+    - Management API: guides/management-api.md
+  - Python SDK:
+    - Usage Guide: sdk/python-sdk.md
+  - Reference:
+    - Agent Definition: reference/agent-definition.md
+  - Contributing: contributing.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true

@@ -1,0 +1,149 @@
+# Default values for the mockagents Helm chart.
+# Override with `helm install --values my-values.yaml` or `--set key=value`.
+
+# -- Number of replicas. MockAgents is stateful only via its optional
+# -- SQLite interaction log; for a pure mock server multiple replicas
+# -- behave as independent servers, which is fine for load-balanced
+# -- read-only traffic.
+replicaCount: 1
+
+image:
+  # -- Container image to pull. Must contain the mockagents Go binary.
+  repository: mockagents/mockagents
+  # -- Image tag. Defaults to .Chart.AppVersion when empty.
+  tag: ""
+  # -- imagePullPolicy passed to the Deployment.
+  pullPolicy: IfNotPresent
+
+# -- imagePullSecrets for private registries.
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Whether to create a dedicated ServiceAccount for this release.
+  create: true
+  # -- Extra annotations on the ServiceAccount (e.g. IAM role bindings).
+  annotations: {}
+  # -- Name of the ServiceAccount. Generated when empty.
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+# -- Pod-level security context.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 100
+  fsGroup: 100
+
+# -- Container security context.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# -- Resource requests and limits. Defaults are intentionally modest
+# -- because the Go binary idles under 30 MiB.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# -- Node placement controls.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# -- Server log level: debug, info, warn, error.
+logLevel: info
+
+service:
+  type: ClusterIP
+  # -- HTTP port exposed to clients.
+  port: 8080
+  # -- Explicit nodePort when type=NodePort. Leave empty to auto-assign.
+  nodePort: ""
+  annotations: {}
+
+ingress:
+  # -- Set to true to create an Ingress resource in front of the service.
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: mockagents.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Agent definitions to mount into the container at /agents. There are
+# two ways to provide them:
+#
+#   1. agents.inline: a map of filename -> YAML string. The chart
+#      renders a ConfigMap from this map. Good for small demos and
+#      single-agent deployments.
+#
+#   2. agents.existingConfigMap: name of a pre-created ConfigMap whose
+#      keys are agent YAML files. Good for production where agents are
+#      versioned alongside infrastructure code or GitOps manifests.
+#
+# When both are empty the Deployment still starts, but the server will
+# exit with "no valid agent definitions found" because /agents is empty.
+agents:
+  existingConfigMap: ""
+  inline: {}
+  # inline:
+  #   minimal.yaml: |
+  #     apiVersion: mockagents/v1
+  #     kind: Agent
+  #     metadata:
+  #       name: echo-agent
+  #     spec:
+  #       protocol: openai-chat-completions
+  #       behavior:
+  #         scenarios:
+  #           - name: default
+  #             response:
+  #               content: "I received your message."
+
+# -- Liveness and readiness probe tuning. Defaults hit /api/v1/health.
+probes:
+  liveness:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    initialDelaySeconds: 2
+    periodSeconds: 5
+    timeoutSeconds: 1
+    failureThreshold: 3
+
+# -- Optional ephemeral data directory for the SQLite interaction log.
+# -- When enabled, an emptyDir volume is mounted at /data. Set to a
+# -- specific PVC name to persist the log across pod restarts.
+persistence:
+  enabled: false
+  existingClaim: ""
+  size: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  storageClass: ""
+
+# -- Extra environment variables merged into the container env.
+env: {}
+# env:
+#   OTEL_EXPORTER_OTLP_ENDPOINT: http://collector.monitoring.svc:4318
+
+# -- Extra command-line flags appended to `mockagents start`.
+extraArgs: []

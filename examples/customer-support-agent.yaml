@@ -1,0 +1,75 @@
+# examples/customer-support-agent.yaml
+# Full-featured example demonstrating all supported agent definition fields.
+# Run: mockagents validate examples/customer-support-agent.yaml
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: customer-support-agent
+  description: Mock of the customer support AI agent
+  tags: [support, production, tier-1]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-4o
+  systemPrompt: |
+    You are a helpful customer support agent for Acme Corp.
+
+  tools:
+    - name: lookup_order
+      description: Look up an order by ID
+      parameters:
+        type: object
+        properties:
+          order_id: { type: string }
+        required: [order_id]
+      responses:
+        - match:
+            order_id: "ORD-12345"
+          response:
+            status: shipped
+            tracking: "1Z999AA10123456784"
+            eta: "2026-04-10"
+        - match:
+            order_id: "ORD-99999"
+          error:
+            code: NOT_FOUND
+            message: Order not found
+        - default: true
+          response:
+            status: processing
+            tracking: null
+            eta: "2026-04-13"
+
+    - name: get_customer
+      description: Retrieve customer profile
+      parameters:
+        type: object
+        properties:
+          customer_id: { type: string }
+        required: [customer_id]
+      responses:
+        - default: true
+          response:
+            name: Jane Doe
+            email: jane@example.com
+
+  behavior:
+    scenarios:
+      - name: happy-path
+        match:
+          content_contains: "order status"
+        response:
+          content: "I'd be happy to help you check your order status. Could you provide your order ID?"
+      - name: greeting
+        match:
+          content_contains: "hello"
+        response:
+          content: "Hello! Welcome to Acme Corp support. How can I help you today?"
+      - name: default
+        response:
+          content: "Thank you for contacting Acme Corp support. How can I help you today?"
+
+    streaming:
+      enabled: true
+      chunk_size: 4
+      chunk_delay_ms: 50

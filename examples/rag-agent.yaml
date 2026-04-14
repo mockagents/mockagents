@@ -1,0 +1,85 @@
+# examples/rag-agent.yaml
+# RAG (Retrieval-Augmented Generation) agent demonstrating multi-turn state and tool chains.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: rag-agent
+  description: A mock RAG agent that retrieves documents and generates answers
+  tags: [example, rag, multi-turn]
+
+spec:
+  protocol: anthropic-messages
+  model: claude-3-opus
+  systemPrompt: |
+    You are a knowledge assistant that retrieves relevant documents to answer questions.
+
+  tools:
+    - name: retrieve_documents
+      description: Search the knowledge base for relevant documents
+      parameters:
+        type: object
+        properties:
+          query:
+            type: string
+            description: Search query
+          top_k:
+            type: integer
+            description: Number of results to return
+        required: [query]
+      responses:
+        - match:
+            query: "billing"
+          response:
+            documents:
+              - id: "doc-1"
+                title: "Billing FAQ"
+                content: "Invoices are sent on the 1st of each month."
+                relevance: 0.95
+              - id: "doc-2"
+                title: "Payment Methods"
+                content: "We accept credit cards, bank transfers, and PayPal."
+                relevance: 0.87
+        - default: true
+          response:
+            documents:
+              - id: "doc-0"
+                title: "General Help"
+                content: "Please visit our help center for more information."
+                relevance: 0.5
+
+    - name: rank_results
+      description: Re-rank retrieved documents by relevance
+      parameters:
+        type: object
+        properties:
+          document_ids:
+            type: array
+        required: [document_ids]
+      responses:
+        - default: true
+          response:
+            ranked_ids: ["doc-1", "doc-2"]
+            scores: [0.95, 0.87]
+
+  behavior:
+    scenarios:
+      - name: billing-question
+        match:
+          content_contains: "billing"
+        response:
+          content: "Let me search our knowledge base for billing information."
+          tool_calls:
+            - name: retrieve_documents
+              arguments:
+                query: "billing"
+                top_k: 5
+
+      - name: follow-up
+        match:
+          turn_number: 2
+        response:
+          content: "Based on the documents I found, invoices are sent on the 1st of each month. We accept credit cards, bank transfers, and PayPal. Is there anything else you'd like to know?"
+
+      - name: default
+        response:
+          content: "I'm your knowledge assistant. Ask me a question and I'll search our knowledge base to find the answer."

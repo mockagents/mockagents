@@ -1,0 +1,21 @@
+services:
+  mockagents:
+    build: .
+    container_name: mockagents
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./agents:/agents:ro
+      - mockagents-data:/data
+    environment:
+      MOCKAGENTS_LOG_LEVEL: debug
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  mockagents-data:

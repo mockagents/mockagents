@@ -1,0 +1,267 @@
+package adapter
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+
+	"github.com/mockagents/mockagents/internal/engine"
+	"github.com/mockagents/mockagents/internal/streaming"
+	"github.com/mockagents/mockagents/internal/types"
+)
+
+// --- Anthropic Request Types ---
+
+// AnthropicRequest represents an Anthropic Messages API request.
+type AnthropicRequest struct {
+	Model     string             `json:"model"`
+	Messages  []AnthropicMessage `json:"messages"`
+	System    string             `json:"system,omitempty"`
+	Tools     []AnthropicTool    `json:"tools,omitempty"`
+	MaxTokens int               `json:"max_tokens,omitempty"`
+	Stream    bool               `json:"stream,omitempty"`
+}
+
+// AnthropicMessage represents a message in an Anthropic request.
+type AnthropicMessage struct {
+	Role    string `json:"role"`
+	Content any    `json:"content"`
+}
+
+// AnthropicTool represents a tool in an Anthropic request.
+type AnthropicTool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	InputSchema map[string]any `json:"input_schema,omitempty"`
+}
+
+// --- Anthropic Response Types ---
+
+// AnthropicResponse represents an Anthropic Messages API response.
+type AnthropicResponse struct {
+	ID           string                `json:"id"`
+	Type         string                `json:"type"`
+	Role         string                `json:"role"`
+	Content      []AnthropicContent    `json:"content"`
+	Model        string                `json:"model"`
+	StopReason   string                `json:"stop_reason"`
+	StopSequence *string               `json:"stop_sequence"`
+	Usage        AnthropicUsage        `json:"usage"`
+}
+
+// AnthropicContent represents a content block in the response.
+type AnthropicContent struct {
+	Type  string         `json:"type"`
+	Text  string         `json:"text,omitempty"`
+	ID    string         `json:"id,omitempty"`
+	Name  string         `json:"name,omitempty"`
+	Input map[string]any `json:"input,omitempty"`
+}
+
+// AnthropicUsage represents token usage.
+type AnthropicUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
+// --- Anthropic Handler ---
+
+// AnthropicHandler handles Anthropic Messages API requests.
+type AnthropicHandler struct {
+	Engine *engine.Engine
+}
+
+// HandleMessages handles POST /v1/messages.
+func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
+	var req AnthropicRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("invalid JSON: %s", err))
+		return
+	}
+	defer r.Body.Close()
+
+	if req.Model == "" {
+		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return
+	}
+	if len(req.Messages) == 0 {
+		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "messages is required")
+		return
+	}
+
+	// Validate API key header.
+	apiKey := r.Header.Get("X-Api-Key")
+	authHeader := r.Header.Get("Authorization")
+	if apiKey == "" && !strings.HasPrefix(authHeader, "Bearer ") {
+		writeAnthropicError(w, http.StatusUnauthorized, "authentication_error", "missing API key")
+		return
+	}
+
+	// Convert to engine request.
+	inbound := &engine.InboundRequest{
+		Model:     req.Model,
+		SessionID: extractSessionID(r),
+		Messages:  convertAnthropicMessages(req.Messages, req.System),
+		Stream:    req.Stream,
+	}
+
+	resp, err := h.Engine.ProcessRequest(inbound)
+	if err != nil {
+		if ce := engine.AsChaosError(err); ce != nil {
+			if ce.RetryAfter > 0 {
+				w.Header().Set("Retry-After", fmt.Sprintf("%d", int(ce.RetryAfter.Seconds())))
+			}
+			writeAnthropicError(w, ce.StatusCode, chaosErrorType(ce), ce.Message)
+			return
+		}
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		} else if strings.Contains(err.Error(), "empty") {
+			status = http.StatusBadRequest
+		}
+		writeAnthropicError(w, status, "invalid_request_error", err.Error())
+		return
+	}
+
+	// Stream or JSON.
+	if req.Stream {
+		agent := h.Engine.Registry.GetByModel(req.Model)
+		if agent == nil {
+			agents := h.Engine.Registry.List()
+			if len(agents) == 1 {
+				agent = agents[0]
+			}
+		}
+		var streamCfg *types.StreamingConfig
+		if agent != nil {
+			streamCfg = agent.Spec.Behavior.Streaming
+		}
+		if err := streaming.StreamAnthropic(r.Context(), w, resp, streamCfg); err != nil {
+			return
+		}
+		return
+	}
+
+	// Non-streaming response.
+	inputTokens := estimateAnthropicPromptTokens(req.Messages, req.System)
+	outputTokens := EstimateTokens(resp.Content)
+
+	anthropicResp := formatAnthropicResponse(resp, inputTokens, outputTokens)
+	writeJSON(w, http.StatusOK, anthropicResp)
+}
+
+// --- Conversion Helpers ---
+
+func convertAnthropicMessages(msgs []AnthropicMessage, system string) []engine.RequestMessage {
+	var result []engine.RequestMessage
+
+	// Prepend system message if provided.
+	if system != "" {
+		result = append(result, engine.RequestMessage{
+			Role:    "system",
+			Content: system,
+		})
+	}
+
+	for _, m := range msgs {
+		content := extractAnthropicContent(m.Content)
+		result = append(result, engine.RequestMessage{
+			Role:    m.Role,
+			Content: content,
+		})
+	}
+	return result
+}
+
+func extractAnthropicContent(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		var parts []string
+		for _, block := range v {
+			if m, ok := block.(map[string]any); ok {
+				blockType, _ := m["type"].(string)
+				switch blockType {
+				case "text":
+					if text, ok := m["text"].(string); ok {
+						parts = append(parts, text)
+					}
+				case "tool_result":
+					if c, ok := m["content"].(string); ok {
+						parts = append(parts, c)
+					}
+				}
+			}
+		}
+		return strings.Join(parts, " ")
+	default:
+		if v == nil {
+			return ""
+		}
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+func formatAnthropicResponse(resp *engine.Response, inputTokens, outputTokens int) *AnthropicResponse {
+	var content []AnthropicContent
+
+	// Text content block.
+	if resp.Content != "" {
+		content = append(content, AnthropicContent{
+			Type: "text",
+			Text: resp.Content,
+		})
+	}
+
+	// Tool use blocks.
+	stopReason := "end_turn"
+	if len(resp.ToolCalls) > 0 {
+		stopReason = "tool_use"
+		for i, tc := range resp.ToolCalls {
+			toolID := fmt.Sprintf("toolu_%s", generateID())
+			if i < len(resp.ToolResults) {
+				toolID = resp.ToolResults[i].ID
+			}
+			content = append(content, AnthropicContent{
+				Type:  "tool_use",
+				ID:    toolID,
+				Name:  tc.Name,
+				Input: tc.Arguments,
+			})
+		}
+	}
+
+	return &AnthropicResponse{
+		ID:         fmt.Sprintf("msg_%s", generateID()),
+		Type:       "message",
+		Role:       "assistant",
+		Content:    content,
+		Model:      resp.Model,
+		StopReason: stopReason,
+		Usage: AnthropicUsage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+		},
+	}
+}
+
+func estimateAnthropicPromptTokens(msgs []AnthropicMessage, system string) int {
+	total := EstimateTokens(system)
+	for _, m := range msgs {
+		total += EstimateTokens(extractAnthropicContent(m.Content))
+	}
+	return total
+}
+
+func writeAnthropicError(w http.ResponseWriter, status int, errType, message string) {
+	writeJSON(w, status, map[string]any{
+		"type": "error",
+		"error": map[string]string{
+			"type":    errType,
+			"message": message,
+		},
+	})
+}

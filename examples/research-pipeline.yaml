@@ -1,0 +1,19 @@
+# examples/research-pipeline.yaml
+# A sequential multi-agent research + summarization pipeline.
+# The router passes user input to the researcher, whose output is then
+# summarized. Every node must already be loaded as an Agent in the same
+# agents directory.
+apiVersion: mockagents/v1
+kind: Pipeline
+metadata:
+  name: research-pipeline
+  description: Multi-agent research and summarization pipeline
+  tags: [multi-agent, demo]
+
+spec:
+  topology: sequential
+  agents:
+    - id: researcher
+      ref: web-researcher
+    - id: summarizer
+      ref: summary-writer

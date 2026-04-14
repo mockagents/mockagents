@@ -1,0 +1,25 @@
+# examples/research-suite.yaml
+# Declarative test suite targeting the research-pipeline.
+# Run with: mockagents test --agents-dir examples examples/research-suite.yaml
+apiVersion: mockagents/v1
+kind: TestSuite
+metadata:
+  name: research-pipeline-suite
+  description: Happy-path checks for the research pipeline topology.
+
+spec:
+  target:
+    pipeline: research-pipeline
+  cases:
+    - name: summarizes-research
+      steps:
+        - role: user
+          content: "transformers in biology"
+      assertions:
+        - type: response_contains
+          value: "Summary:"
+        - type: response_contains
+          value: "Research findings"
+          node_id: researcher
+        - type: latency_ms_lt
+          max_ms: 5000

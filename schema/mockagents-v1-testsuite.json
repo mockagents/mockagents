@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mockagents.dev/schema/v1/testsuite.json",
+  "title": "MockAgents TestSuite Definition",
+  "description": "Declarative test cases executed by 'mockagents test'.",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": { "type": "string", "const": "mockagents/v1" },
+    "kind": { "type": "string", "const": "TestSuite" },
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$", "maxLength": 63 },
+        "description": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": ["target", "cases"],
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "type": "object",
+          "description": "Exactly one of agent or pipeline must be set.",
+          "properties": {
+            "agent": { "type": "string" },
+            "pipeline": { "type": "string" }
+          },
+          "oneOf": [
+            { "required": ["agent"] },
+            { "required": ["pipeline"] }
+          ]
+        },
+        "cases": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["name", "steps"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "steps": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "required": ["content"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "role": { "type": "string", "enum": ["user", "assistant", "system"] },
+                    "content": { "type": "string" }
+                  }
+                }
+              },
+              "assertions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["type"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": ["tool_call", "response_contains", "scenario_matched", "latency_ms_lt"]
+                    },
+                    "tool": { "type": "string" },
+                    "arguments": { "type": "object" },
+                    "value": { "type": "string" },
+                    "max_ms": { "type": "integer", "minimum": 0 },
+                    "node_id": { "type": "string", "description": "Scope the assertion to a specific pipeline node." }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

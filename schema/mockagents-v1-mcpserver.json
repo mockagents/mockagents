@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mockagents.dev/schema/v1/mcpserver.json",
+  "title": "MockAgents MCPServer Definition",
+  "description": "Declarative configuration for a mock Model Context Protocol server.",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": { "type": "string", "const": "mockagents/v1" },
+    "kind": { "type": "string", "const": "MCPServer" },
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$", "maxLength": 63 },
+        "description": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": { "type": "string", "description": "MCP protocol version returned by initialize." },
+        "capabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "tools":     { "type": "boolean" },
+            "resources": { "type": "boolean" },
+            "prompts":   { "type": "boolean" },
+            "logging":   { "type": "boolean" }
+          }
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "additionalProperties": false,
+            "properties": {
+              "name":        { "type": "string" },
+              "description": { "type": "string" },
+              "inputSchema": { "type": "object" },
+              "responses": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "match":   { "type": "object" },
+                    "default": { "type": "boolean" },
+                    "isError": { "type": "boolean" },
+                    "content": {
+                      "type": "array",
+                      "items": { "$ref": "#/$defs/ContentBlock" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["uri"],
+            "additionalProperties": false,
+            "properties": {
+              "uri":         { "type": "string" },
+              "name":        { "type": "string" },
+              "description": { "type": "string" },
+              "mimeType":    { "type": "string" },
+              "text":        { "type": "string" },
+              "blob":        { "type": "string", "description": "Base64-encoded binary content." }
+            }
+          }
+        },
+        "prompts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "additionalProperties": false,
+            "properties": {
+              "name":        { "type": "string" },
+              "description": { "type": "string" },
+              "arguments": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["name"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "name":        { "type": "string" },
+                    "description": { "type": "string" },
+                    "required":    { "type": "boolean" }
+                  }
+                }
+              },
+              "messages": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["role", "content"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "role":    { "type": "string", "enum": ["user", "assistant", "system"] },
+                    "content": { "$ref": "#/$defs/ContentBlock" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "ContentBlock": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type":     { "type": "string", "enum": ["text", "image", "resource"] },
+        "text":     { "type": "string" },
+        "data":     { "type": "string", "description": "Base64-encoded data for image content." },
+        "mimeType": { "type": "string" },
+        "uri":      { "type": "string" }
+      }
+    }
+  }
+}

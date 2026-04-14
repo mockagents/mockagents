@@ -1,0 +1,56 @@
+package types
+
+const (
+	TestSuiteKind = "TestSuite"
+
+	AssertToolCall         = "tool_call"
+	AssertResponseContains = "response_contains"
+	AssertScenarioMatched  = "scenario_matched"
+	AssertLatencyMsLT      = "latency_ms_lt"
+)
+
+// TestSuiteDefinition is a declarative collection of test cases that run
+// against an agent or pipeline defined elsewhere in the project.
+type TestSuiteDefinition struct {
+	APIVersion string        `yaml:"apiVersion" json:"apiVersion"`
+	Kind       string        `yaml:"kind" json:"kind"`
+	Metadata   Metadata      `yaml:"metadata" json:"metadata"`
+	Spec       TestSuiteSpec `yaml:"spec" json:"spec"`
+}
+
+// TestSuiteSpec lists the target and the cases to run.
+type TestSuiteSpec struct {
+	Target TestTarget `yaml:"target" json:"target"`
+	Cases  []TestCase `yaml:"cases" json:"cases"`
+}
+
+// TestTarget identifies which agent or pipeline the suite exercises.
+// Exactly one of Agent or Pipeline must be set.
+type TestTarget struct {
+	Agent    string `yaml:"agent,omitempty" json:"agent,omitempty"`
+	Pipeline string `yaml:"pipeline,omitempty" json:"pipeline,omitempty"`
+}
+
+// TestCase is a single scenario with steps and assertions.
+type TestCase struct {
+	Name       string          `yaml:"name" json:"name"`
+	Steps      []TestStep      `yaml:"steps" json:"steps"`
+	Assertions []TestAssertion `yaml:"assertions,omitempty" json:"assertions,omitempty"`
+}
+
+// TestStep is a single message exchange in a test case.
+type TestStep struct {
+	Role    string `yaml:"role" json:"role"`
+	Content string `yaml:"content" json:"content"`
+}
+
+// TestAssertion is a declarative check against the test case result.
+// The Type field selects which other fields are meaningful.
+type TestAssertion struct {
+	Type     string         `yaml:"type" json:"type"`
+	Tool     string         `yaml:"tool,omitempty" json:"tool,omitempty"`
+	Args     map[string]any `yaml:"arguments,omitempty" json:"arguments,omitempty"`
+	Value    string         `yaml:"value,omitempty" json:"value,omitempty"`
+	MaxMs    int64          `yaml:"max_ms,omitempty" json:"max_ms,omitempty"`
+	NodeID   string         `yaml:"node_id,omitempty" json:"node_id,omitempty"`
+}

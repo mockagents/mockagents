@@ -1,0 +1,45 @@
+# Exercised by `helm template` / `helm lint` to validate every template
+# path: ingress enabled, inline agents, persistence, env vars, extraArgs.
+image:
+  repository: mockagents/mockagents
+  tag: "0.1.0"
+
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: mockagents.test.local
+      paths:
+        - path: /
+          pathType: Prefix
+
+agents:
+  inline:
+    echo.yaml: |
+      apiVersion: mockagents/v1
+      kind: Agent
+      metadata:
+        name: echo-agent
+      spec:
+        protocol: openai-chat-completions
+        behavior:
+          scenarios:
+            - name: default
+              response:
+                content: "hello from helm"
+
+persistence:
+  enabled: true
+
+env:
+  MOCKAGENTS_LOG_LEVEL: debug
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.monitoring.svc:4318
+
+extraArgs:
+  - --json-logs

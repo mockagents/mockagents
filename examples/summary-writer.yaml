@@ -1,0 +1,13 @@
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: summary-writer
+  description: Mock summarizer that condenses upstream research output.
+spec:
+  protocol: openai-chat-completions
+  model: mock-summarizer
+  behavior:
+    scenarios:
+      - name: summarize
+        response:
+          content: "Summary: {{ .Message }}"

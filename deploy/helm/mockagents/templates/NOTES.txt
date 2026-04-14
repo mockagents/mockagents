@@ -1,0 +1,58 @@
+MockAgents v{{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
+
+1. Get the in-cluster URL:
+
+{{- if contains "NodePort" .Values.service.type }}
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} \
+    -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "mockagents.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} \
+    -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT
+{{- else if contains "LoadBalancer" .Values.service.type }}
+  kubectl get svc {{ include "mockagents.fullname" . }} \
+    --namespace {{ .Release.Namespace }} \
+    -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+{{- else if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- else }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "mockagents.fullname" . }} 8080:{{ .Values.service.port }}
+  # then: curl http://localhost:8080/api/v1/health
+{{- end }}
+
+2. List loaded agents:
+
+  kubectl --namespace {{ .Release.Namespace }} exec deploy/{{ include "mockagents.fullname" . }} -- \
+    wget -qO- http://localhost:{{ .Values.service.port }}/api/v1/agents
+
+3. Point your OpenAI or Anthropic SDK at the service URL above. The
+   mock server accepts any API key — there is no auth layer.
+
+{{- if and (not .Values.agents.existingConfigMap) (not .Values.agents.inline) }}
+
+WARNING: You installed with no agents defined. The server will start
+but every request will fail with "no valid agent definitions found".
+
+Provide agents one of two ways:
+
+  1. Inline in values.yaml:
+       agents:
+         inline:
+           minimal.yaml: |
+             apiVersion: mockagents/v1
+             kind: Agent
+             metadata:
+               name: echo-agent
+             spec:
+               protocol: openai-chat-completions
+               behavior:
+                 scenarios:
+                   - name: default
+                     response:
+                       content: "hello from k8s"
+
+  2. Reference an existing ConfigMap:
+       agents:
+         existingConfigMap: my-agents
+{{- end }}

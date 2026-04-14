@@ -1,0 +1,13 @@
+.git
+.github
+.idea
+.claude
+*.exe
+*.db
+docs/
+sdk/python/tests/
+sdk/python/.pytest_cache/
+**/__pycache__
+**/*.pyc
+.mockagents.db
+coverage.out

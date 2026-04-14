@@ -1,0 +1,69 @@
+# examples/code-assistant.yaml
+# Code assistant agent demonstrating template expressions and dynamic responses.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: code-assistant
+  description: A mock code assistant that helps with programming questions
+  tags: [example, code, templates]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-4o
+  systemPrompt: |
+    You are a helpful code assistant.
+
+  tools:
+    - name: search_docs
+      description: Search documentation for a topic
+      parameters:
+        type: object
+        properties:
+          query:
+            type: string
+        required: [query]
+      responses:
+        - match:
+            query: "python"
+          response:
+            title: "Python Documentation"
+            url: "https://docs.python.org/3/"
+            snippet: "Python is a programming language that lets you work quickly."
+        - default: true
+          response:
+            title: "General Documentation"
+            url: "https://example.com/docs"
+            snippet: "Documentation for your query."
+
+  behavior:
+    scenarios:
+      - name: python-help
+        match:
+          content_regex: "(?i)python|pip|pytest"
+        response:
+          content: "I can help with Python! Here's what I found."
+          tool_calls:
+            - name: search_docs
+              arguments:
+                query: "python"
+
+      - name: code-review
+        match:
+          content_contains: "review"
+        response:
+          content: "I'd be happy to review your code. Please share the snippet and I'll provide feedback."
+
+      - name: explain
+        match:
+          content_contains: "explain"
+        response:
+          content: "Let me explain that concept. This is turn {{ .TurnNumber }} of our conversation."
+
+      - name: default
+        response:
+          content: "I'm your code assistant. Ask me about Python, code reviews, or programming concepts!"
+
+    streaming:
+      enabled: true
+      chunk_size: 3
+      chunk_delay_ms: 30

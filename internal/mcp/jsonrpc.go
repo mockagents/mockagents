@@ -1,0 +1,67 @@
+// Package mcp implements a mock Model Context Protocol server.
+//
+// The server speaks JSON-RPC 2.0 and supports the standard MCP methods
+// `initialize`, `tools/list`, `tools/call`, `resources/list`,
+// `resources/read`, `prompts/list`, `prompts/get`, and `ping`. Two
+// transports are exposed: HTTP (POST /mcp) and stdio (line-delimited
+// JSON over stdin/stdout). Streaming notifications are out of scope
+// for v1.
+package mcp
+
+import (
+	"encoding/json"
+)
+
+// JSON-RPC 2.0 error codes used by the server.
+const (
+	ErrParseError     = -32700
+	ErrInvalidRequest = -32600
+	ErrMethodNotFound = -32601
+	ErrInvalidParams  = -32602
+	ErrInternal       = -32603
+)
+
+// Request is an incoming JSON-RPC 2.0 call or notification.
+// ID is left as json.RawMessage so it can be numeric, string, or null and
+// round-trip faithfully back to the client.
+type Request struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params,omitempty"`
+}
+
+// IsNotification returns true when the request carries no ID and must
+// not receive a response per the JSON-RPC 2.0 spec.
+func (r *Request) IsNotification() bool {
+	return len(r.ID) == 0 || string(r.ID) == "null"
+}
+
+// Response is an outgoing JSON-RPC 2.0 result or error.
+type Response struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Result  any             `json:"result,omitempty"`
+	Error   *RPCError       `json:"error,omitempty"`
+}
+
+// RPCError models the error object in a JSON-RPC 2.0 response.
+type RPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
+}
+
+// newError builds a Response carrying an error for the given request id.
+func newError(id json.RawMessage, code int, message string, data any) *Response {
+	return &Response{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error:   &RPCError{Code: code, Message: message, Data: data},
+	}
+}
+
+// newResult builds a successful Response for the given request id.
+func newResult(id json.RawMessage, result any) *Response {
+	return &Response{JSONRPC: "2.0", ID: id, Result: result}
+}

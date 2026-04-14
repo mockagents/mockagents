@@ -1,0 +1,32 @@
+# examples/chaos-agent.yaml
+# Demonstrates chaos injection: 100-300ms uniform latency, 10% 503s,
+# and a rate limit of 20 requests per minute.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: flaky-agent
+  description: Agent pre-configured to inject latency, errors, and rate limits.
+  tags: [chaos, demo]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-4o-flaky
+  behavior:
+    scenarios:
+      - name: default
+        response:
+          content: "You're lucky this one got through."
+
+    chaos:
+      enabled: true
+      latency:
+        distribution: uniform
+        min_ms: 100
+        max_ms: 300
+      errors:
+        rate: 0.1
+        status_codes: [503, 504]
+        message: "Upstream provider temporarily unavailable"
+      rate_limit:
+        requests: 20
+        window_ms: 60000

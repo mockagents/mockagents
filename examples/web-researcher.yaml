@@ -1,0 +1,13 @@
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: web-researcher
+  description: Mock researcher that returns canned findings for a topic.
+spec:
+  protocol: openai-chat-completions
+  model: mock-researcher
+  behavior:
+    scenarios:
+      - name: research
+        response:
+          content: "Research findings for: {{ .Message }}"

@@ -1,0 +1,59 @@
+# examples/weather-mcp.yaml
+# A minimal mock MCP server with a tool, a static resource, and a prompt.
+# Serve over HTTP: mockagents mcp --transport http --port 8081 --agents-dir examples
+# Or stdio:       mockagents mcp --transport stdio --agents-dir examples
+apiVersion: mockagents/v1
+kind: MCPServer
+metadata:
+  name: weather-mcp
+  description: Mock Model Context Protocol server for weather data.
+  tags: [mcp, demo]
+
+spec:
+  capabilities:
+    tools: true
+    resources: true
+    prompts: true
+
+  tools:
+    - name: get_forecast
+      description: Return a canned weather forecast for a city.
+      inputSchema:
+        type: object
+        properties:
+          city:
+            type: string
+        required: [city]
+      responses:
+        - match:
+            city: tokyo
+          content:
+            - type: text
+              text: "Tokyo: sunny, 22C"
+        - match:
+            city: london
+          content:
+            - type: text
+              text: "London: drizzle, 14C"
+        - default: true
+          content:
+            - type: text
+              text: "Unknown city: overcast, 15C (default)"
+
+  resources:
+    - uri: mock://weather/today
+      name: Today's Forecast
+      mimeType: text/plain
+      text: "Global outlook: mostly clear."
+
+  prompts:
+    - name: greet
+      description: Short greeting prompt.
+      arguments:
+        - name: name
+          required: true
+      messages:
+        - role: user
+          content:
+            type: text
+            text: "Hello {{name}}, want a forecast?"

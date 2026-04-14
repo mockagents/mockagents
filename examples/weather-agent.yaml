@@ -1,0 +1,67 @@
+# examples/weather-agent.yaml
+# Example demonstrating tool call simulation with match-based responses.
+# Run: mockagents validate examples/weather-agent.yaml
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: weather-agent
+  description: Agent demonstrating tool call simulation
+  tags: [example, tools]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-4o
+  systemPrompt: |
+    You are a weather assistant.
+
+  tools:
+    - name: get_weather
+      description: Get weather for a location
+      parameters:
+        type: object
+        properties:
+          location:
+            type: string
+            description: City name
+          units:
+            type: string
+            description: Temperature units
+        required: [location]
+      responses:
+        - match:
+            location: "NYC"
+          response:
+            temperature: 72
+            condition: sunny
+            humidity: 45
+        - match:
+            location: "SF"
+          response:
+            temperature: 65
+            condition: cloudy
+            humidity: 70
+        - match:
+            location: "INVALID"
+          error:
+            code: LOCATION_NOT_FOUND
+            message: "Location not found"
+        - default: true
+          response:
+            temperature: 70
+            condition: moderate
+            humidity: 50
+
+  behavior:
+    scenarios:
+      - name: weather-query
+        match:
+          content_contains: "weather"
+        response:
+          content: "I'll check the weather for you."
+          tool_calls:
+            - name: get_weather
+              arguments:
+                location: "NYC"
+      - name: default
+        response:
+          content: "I'm a weather assistant. Ask me about the weather!"

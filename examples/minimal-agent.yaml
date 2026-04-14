@@ -1,0 +1,15 @@
+# examples/minimal-agent.yaml
+# Minimal valid agent definition with only required fields.
+# Run: mockagents validate examples/minimal-agent.yaml
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: echo-agent
+
+spec:
+  protocol: anthropic-messages
+  behavior:
+    scenarios:
+      - name: default
+        response:
+          content: "I received your message."

@@ -1,0 +1,13 @@
+{{- if and (not .Values.agents.existingConfigMap) .Values.agents.inline -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mockagents.agentsConfigMapName" . }}
+  labels:
+    {{- include "mockagents.labels" . | nindent 4 }}
+data:
+{{- range $filename, $body := .Values.agents.inline }}
+  {{ $filename }}: |
+    {{- $body | nindent 4 }}
+{{- end }}
+{{- end -}}

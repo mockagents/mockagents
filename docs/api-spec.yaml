@@ -1,0 +1,1102 @@
+openapi: 3.1.0
+info:
+  title: MockAgents API
+  version: 0.1.0-alpha
+  description: >
+    MockAgents is a platform for mocking AI agent integrations. It exposes a
+    Management API for configuring agents, viewing interaction logs, and
+    performing health checks, as well as Protocol Endpoints that mimic real
+    LLM provider APIs (OpenAI Chat Completions and Anthropic Messages).
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+tags:
+  - name: Health
+    description: Server health and status
+  - name: Agents
+    description: Manage mock agent definitions
+  - name: Logs
+    description: Interaction logs
+  - name: Sessions
+    description: Conversation sessions
+  - name: OpenAI
+    description: OpenAI-compatible protocol endpoint
+  - name: Anthropic
+    description: Anthropic-compatible protocol endpoint
+
+paths:
+  # ---------------------------------------------------------------------------
+  # Management API
+  # ---------------------------------------------------------------------------
+  /api/v1/health:
+    get:
+      operationId: getHealth
+      summary: Health check
+      description: Returns server health status, version, uptime, and number of loaded agents.
+      tags: [Health]
+      responses:
+        "200":
+          description: Server is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/agents:
+    get:
+      operationId: listAgents
+      summary: List all loaded agents
+      description: Returns a summary array of every agent currently loaded in the server.
+      tags: [Agents]
+      responses:
+        "200":
+          description: List of agent summaries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AgentSummary"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/agents/{name}:
+    get:
+      operationId: getAgent
+      summary: Get full agent definition
+      description: Returns the complete parsed agent configuration for the given agent name.
+      tags: [Agents]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Unique agent name.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Full agent definition.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentDefinition"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/agents/reload:
+    post:
+      operationId: reloadAgents
+      summary: Reload agent definitions from disk
+      description: >
+        Re-reads all agent definition files from disk and reloads them into the
+        server. Returns the count of successfully reloaded agents and any errors
+        encountered.
+      tags: [Agents]
+      responses:
+        "200":
+          description: Reload completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReloadResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/logs:
+    get:
+      operationId: listLogs
+      summary: List interaction logs
+      description: Returns a paginated list of interaction logs, optionally filtered by agent or session.
+      tags: [Logs]
+      parameters:
+        - name: agent
+          in: query
+          description: Filter logs by agent name.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of logs to return.
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 1000
+        - name: offset
+          in: query
+          description: Number of logs to skip (for pagination).
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: session_id
+          in: query
+          description: Filter logs by session ID.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of interaction log summaries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/InteractionLog"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      operationId: clearLogs
+      summary: Clear all logs
+      description: Deletes every stored interaction log.
+      tags: [Logs]
+      responses:
+        "200":
+          description: Logs cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted_count]
+                properties:
+                  deleted_count:
+                    type: integer
+                    description: Number of log entries deleted.
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/logs/{id}:
+    get:
+      operationId: getLog
+      summary: Get full interaction detail
+      description: Returns the complete interaction record including full request and response bodies.
+      tags: [Logs]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Interaction log ID.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Full interaction detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InteractionDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/sessions:
+    get:
+      operationId: listSessions
+      summary: List active sessions
+      description: Returns all currently active conversation sessions.
+      tags: [Sessions]
+      responses:
+        "200":
+          description: List of active sessions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Session"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/sessions/{id}:
+    delete:
+      operationId: deleteSession
+      summary: Delete a session
+      description: Removes an active session and its associated state.
+      tags: [Sessions]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Session ID.
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Session deleted successfully.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ---------------------------------------------------------------------------
+  # Protocol Endpoints
+  # ---------------------------------------------------------------------------
+  /v1/chat/completions:
+    post:
+      operationId: openaiChatCompletions
+      summary: OpenAI-compatible Chat Completions
+      description: >
+        Accepts requests in the OpenAI Chat Completions format, matches the
+        model name to a loaded mock agent, and returns a mock response that
+        follows the OpenAI response schema. Supports both synchronous JSON
+        responses and streaming via Server-Sent Events.
+      tags: [OpenAI]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OpenAIChatCompletionRequest"
+      responses:
+        "200":
+          description: >
+            Chat completion response. When `stream` is false (or omitted) the
+            response is a single JSON object. When `stream` is true the
+            response is a stream of Server-Sent Events with `Content-Type:
+            text/event-stream`; each event carries a
+            `OpenAIChatCompletionChunk` JSON payload, and the stream ends with
+            a `data: [DONE]` sentinel.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenAIChatCompletionResponse"
+            text/event-stream:
+              schema:
+                description: >
+                  SSE stream of `OpenAIChatCompletionChunk` objects. Each
+                  event is prefixed with `data: ` followed by a JSON line.
+                  The stream terminates with `data: [DONE]`.
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /v1/messages:
+    post:
+      operationId: anthropicMessages
+      summary: Anthropic-compatible Messages
+      description: >
+        Accepts requests in the Anthropic Messages format, matches the model
+        name to a loaded mock agent, and returns a mock response that follows
+        the Anthropic response schema. Supports both synchronous JSON
+        responses and streaming via Server-Sent Events with Anthropic event
+        types (message_start, content_block_start, content_block_delta,
+        content_block_stop, message_delta, message_stop).
+      tags: [Anthropic]
+      parameters:
+        - name: x-api-key
+          in: header
+          description: Anthropic API key (accepted but not validated by the mock).
+          schema:
+            type: string
+        - name: anthropic-version
+          in: header
+          description: Anthropic API version header.
+          schema:
+            type: string
+            example: "2023-06-01"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnthropicMessagesRequest"
+      responses:
+        "200":
+          description: >
+            Messages response. When `stream` is false (or omitted) the response
+            is a single JSON object. When `stream` is true the response is a
+            stream of Server-Sent Events with `Content-Type: text/event-stream`;
+            each event has an `event:` type field (message_start,
+            content_block_start, content_block_delta, content_block_stop,
+            message_delta, message_stop) and a `data:` JSON payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnthropicMessagesResponse"
+            text/event-stream:
+              schema:
+                description: >
+                  SSE stream using Anthropic event types. Each frame consists
+                  of an `event:` line and a `data:` JSON line.
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+# =============================================================================
+# Components
+# =============================================================================
+components:
+  # ---------------------------------------------------------------------------
+  # Reusable Schemas
+  # ---------------------------------------------------------------------------
+  schemas:
+    # -- Management Schemas ---------------------------------------------------
+    HealthResponse:
+      type: object
+      required: [status, version, uptime_seconds, agents_loaded]
+      properties:
+        status:
+          type: string
+          example: ok
+        version:
+          type: string
+          example: "0.1.0"
+        uptime_seconds:
+          type: integer
+          example: 3621
+        agents_loaded:
+          type: integer
+          example: 4
+
+    AgentSummary:
+      type: object
+      required: [name, description, protocol, tags, tools_count, scenarios_count, status]
+      properties:
+        name:
+          type: string
+          example: weather-agent
+        description:
+          type: string
+          example: A mock weather-lookup agent.
+        protocol:
+          type: string
+          enum: [openai, anthropic]
+        tags:
+          type: array
+          items:
+            type: string
+          example: [weather, demo]
+        tools_count:
+          type: integer
+          example: 2
+        scenarios_count:
+          type: integer
+          example: 3
+        status:
+          type: string
+          enum: [active, inactive, error]
+          example: active
+
+    AgentDefinition:
+      type: object
+      description: >
+        The full agent configuration as parsed from its YAML/JSON definition
+        file on disk. The exact shape depends on the agent author; the
+        properties below represent the common top-level fields.
+      required: [name, protocol]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        protocol:
+          type: string
+          enum: [openai, anthropic]
+        model:
+          type: string
+          description: The model name this agent responds to.
+        tags:
+          type: array
+          items:
+            type: string
+        system_prompt:
+          type: string
+        tools:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          description: Tool definitions exposed by this agent.
+        scenarios:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          description: Predefined request/response scenarios.
+        config:
+          type: object
+          additionalProperties: true
+          description: Additional agent-specific configuration.
+
+    InteractionLog:
+      type: object
+      required:
+        - id
+        - timestamp
+        - agent_name
+        - session_id
+        - protocol
+        - request_summary
+        - response_summary
+        - latency_ms
+        - tool_calls_count
+      properties:
+        id:
+          type: string
+          format: uuid
+        timestamp:
+          type: string
+          format: date-time
+        agent_name:
+          type: string
+        session_id:
+          type: string
+        protocol:
+          type: string
+          enum: [openai, anthropic]
+        request_summary:
+          type: string
+          description: Truncated or summarised view of the request.
+        response_summary:
+          type: string
+          description: Truncated or summarised view of the response.
+        latency_ms:
+          type: integer
+        tool_calls_count:
+          type: integer
+
+    InteractionDetail:
+      type: object
+      description: Full interaction record with complete request and response bodies.
+      required:
+        - id
+        - timestamp
+        - agent_name
+        - session_id
+        - protocol
+        - latency_ms
+        - request
+        - response
+      properties:
+        id:
+          type: string
+          format: uuid
+        timestamp:
+          type: string
+          format: date-time
+        agent_name:
+          type: string
+        session_id:
+          type: string
+        protocol:
+          type: string
+          enum: [openai, anthropic]
+        latency_ms:
+          type: integer
+        tool_calls_count:
+          type: integer
+        request:
+          type: object
+          additionalProperties: true
+          description: The complete inbound request body.
+        response:
+          type: object
+          additionalProperties: true
+          description: The complete outbound response body.
+        request_headers:
+          type: object
+          additionalProperties:
+            type: string
+        response_headers:
+          type: object
+          additionalProperties:
+            type: string
+
+    Session:
+      type: object
+      required: [session_id, agent_name, created_at, last_active, message_count]
+      properties:
+        session_id:
+          type: string
+        agent_name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        last_active:
+          type: string
+          format: date-time
+        message_count:
+          type: integer
+
+    ReloadResponse:
+      type: object
+      required: [reloaded_count, errors]
+      properties:
+        reloaded_count:
+          type: integer
+          example: 4
+        errors:
+          type: array
+          items:
+            type: string
+          example: []
+
+    # -- Error Schema ---------------------------------------------------------
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: not_found
+            message:
+              type: string
+              example: The requested resource was not found.
+            details:
+              type: object
+              additionalProperties: true
+
+    # -- OpenAI Schemas -------------------------------------------------------
+    OpenAIChatCompletionRequest:
+      type: object
+      required: [model, messages]
+      properties:
+        model:
+          type: string
+          description: >
+            Model identifier. MockAgents uses this to resolve the target mock
+            agent.
+          example: weather-agent
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/OpenAIChatMessage"
+          minItems: 1
+        tools:
+          type: array
+          items:
+            $ref: "#/components/schemas/OpenAITool"
+        tool_choice:
+          description: >
+            Controls which (if any) tool is called. Can be "none", "auto",
+            "required", or an object specifying a particular function.
+          oneOf:
+            - type: string
+              enum: [none, auto, required]
+            - type: object
+              required: [type, function]
+              properties:
+                type:
+                  type: string
+                  enum: [function]
+                function:
+                  type: object
+                  required: [name]
+                  properties:
+                    name:
+                      type: string
+        stream:
+          type: boolean
+          default: false
+          description: If true, partial message deltas are sent as SSE events.
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+          default: 1
+        max_tokens:
+          type: integer
+          minimum: 1
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 1
+        frequency_penalty:
+          type: number
+          minimum: -2
+          maximum: 2
+        presence_penalty:
+          type: number
+          minimum: -2
+          maximum: 2
+        stop:
+          description: Up to 4 sequences where the API will stop generating.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+              maxItems: 4
+        n:
+          type: integer
+          minimum: 1
+          default: 1
+        user:
+          type: string
+
+    OpenAIChatMessage:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          description: Message content; string or array of content parts.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                    enum: [text, image_url]
+                  text:
+                    type: string
+                  image_url:
+                    type: object
+                    properties:
+                      url:
+                        type: string
+                        format: uri
+        name:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            $ref: "#/components/schemas/OpenAIToolCall"
+        tool_call_id:
+          type: string
+          description: Required when role is "tool".
+
+    OpenAITool:
+      type: object
+      required: [type, function]
+      properties:
+        type:
+          type: string
+          enum: [function]
+        function:
+          type: object
+          required: [name]
+          properties:
+            name:
+              type: string
+            description:
+              type: string
+            parameters:
+              type: object
+              additionalProperties: true
+              description: JSON Schema describing the function parameters.
+
+    OpenAIToolCall:
+      type: object
+      required: [id, type, function]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [function]
+        function:
+          type: object
+          required: [name, arguments]
+          properties:
+            name:
+              type: string
+            arguments:
+              type: string
+              description: JSON-encoded arguments string.
+
+    OpenAIChatCompletionResponse:
+      type: object
+      required: [id, object, created, model, choices, usage]
+      properties:
+        id:
+          type: string
+          example: chatcmpl-abc123
+        object:
+          type: string
+          enum: [chat.completion]
+        created:
+          type: integer
+          description: Unix timestamp.
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            required: [index, message, finish_reason]
+            properties:
+              index:
+                type: integer
+              message:
+                $ref: "#/components/schemas/OpenAIChatMessage"
+              finish_reason:
+                type: string
+                enum: [stop, length, tool_calls, content_filter]
+        usage:
+          $ref: "#/components/schemas/OpenAIUsage"
+        system_fingerprint:
+          type: string
+
+    OpenAIUsage:
+      type: object
+      required: [prompt_tokens, completion_tokens, total_tokens]
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+
+    OpenAIChatCompletionChunk:
+      type: object
+      description: A single chunk in a streamed Chat Completion response.
+      required: [id, object, created, model, choices]
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum: [chat.completion.chunk]
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            required: [index, delta]
+            properties:
+              index:
+                type: integer
+              delta:
+                type: object
+                properties:
+                  role:
+                    type: string
+                  content:
+                    type: string
+                  tool_calls:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        index:
+                          type: integer
+                        id:
+                          type: string
+                        type:
+                          type: string
+                        function:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                            arguments:
+                              type: string
+              finish_reason:
+                type:
+                  - string
+                  - "null"
+                enum: [stop, length, tool_calls, content_filter, null]
+        usage:
+          oneOf:
+            - $ref: "#/components/schemas/OpenAIUsage"
+            - type: "null"
+
+    # -- Anthropic Schemas ----------------------------------------------------
+    AnthropicMessagesRequest:
+      type: object
+      required: [model, messages, max_tokens]
+      properties:
+        model:
+          type: string
+          description: >
+            Model identifier. MockAgents uses this to resolve the target mock
+            agent.
+          example: weather-agent
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/AnthropicMessage"
+          minItems: 1
+        system:
+          description: System prompt; string or array of content blocks.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                    enum: [text]
+                  text:
+                    type: string
+        tools:
+          type: array
+          items:
+            $ref: "#/components/schemas/AnthropicTool"
+        tool_choice:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [auto, any, tool]
+            name:
+              type: string
+              description: Required when type is "tool".
+        max_tokens:
+          type: integer
+          minimum: 1
+          example: 1024
+        stream:
+          type: boolean
+          default: false
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 1
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 1
+        top_k:
+          type: integer
+          minimum: 0
+        stop_sequences:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          properties:
+            user_id:
+              type: string
+
+    AnthropicMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          description: Message content; string or array of content blocks.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                $ref: "#/components/schemas/AnthropicContentBlock"
+
+    AnthropicContentBlock:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [text, image, tool_use, tool_result]
+        text:
+          type: string
+          description: Present when type is "text".
+        source:
+          type: object
+          description: Present when type is "image".
+          properties:
+            type:
+              type: string
+              enum: [base64]
+            media_type:
+              type: string
+              enum: [image/jpeg, image/png, image/gif, image/webp]
+            data:
+              type: string
+              format: byte
+        id:
+          type: string
+          description: Tool use ID. Present when type is "tool_use".
+        name:
+          type: string
+          description: Tool name. Present when type is "tool_use".
+        input:
+          type: object
+          additionalProperties: true
+          description: Tool input. Present when type is "tool_use".
+        tool_use_id:
+          type: string
+          description: References a tool_use ID. Present when type is "tool_result".
+        content:
+          description: Tool result content. Present when type is "tool_result".
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                  text:
+                    type: string
+        is_error:
+          type: boolean
+          description: Present when type is "tool_result".
+
+    AnthropicTool:
+      type: object
+      required: [name, input_schema]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        input_schema:
+          type: object
+          additionalProperties: true
+          description: JSON Schema describing the tool input.
+
+    AnthropicMessagesResponse:
+      type: object
+      required: [id, type, role, content, model, stop_reason, usage]
+      properties:
+        id:
+          type: string
+          example: msg_abc123
+        type:
+          type: string
+          enum: [message]
+        role:
+          type: string
+          enum: [assistant]
+        content:
+          type: array
+          items:
+            $ref: "#/components/schemas/AnthropicContentBlock"
+        model:
+          type: string
+        stop_reason:
+          type:
+            - string
+            - "null"
+          enum: [end_turn, max_tokens, stop_sequence, tool_use, null]
+        stop_sequence:
+          type:
+            - string
+            - "null"
+        usage:
+          $ref: "#/components/schemas/AnthropicUsage"
+
+    AnthropicUsage:
+      type: object
+      required: [input_tokens, output_tokens]
+      properties:
+        input_tokens:
+          type: integer
+        output_tokens:
+          type: integer
+
+    AnthropicStreamEvent:
+      type: object
+      description: >
+        Represents one SSE frame in an Anthropic streaming response. The
+        `type` field determines which payload fields are present.
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum:
+            - message_start
+            - content_block_start
+            - content_block_delta
+            - content_block_stop
+            - message_delta
+            - message_stop
+            - ping
+        message:
+          $ref: "#/components/schemas/AnthropicMessagesResponse"
+          description: Present on message_start.
+        index:
+          type: integer
+          description: Content block index. Present on content_block_start, content_block_delta, content_block_stop.
+        content_block:
+          $ref: "#/components/schemas/AnthropicContentBlock"
+          description: Present on content_block_start.
+        delta:
+          type: object
+          description: Present on content_block_delta and message_delta.
+          properties:
+            type:
+              type: string
+              enum: [text_delta, input_json_delta]
+            text:
+              type: string
+            partial_json:
+              type: string
+            stop_reason:
+              type: string
+            stop_sequence:
+              type:
+                - string
+                - "null"
+        usage:
+          $ref: "#/components/schemas/AnthropicUsage"
+          description: Present on message_delta.
+
+  # ---------------------------------------------------------------------------
+  # Reusable Responses
+  # ---------------------------------------------------------------------------
+  responses:
+    BadRequest:
+      description: The request was malformed or contained invalid parameters.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: bad_request
+              message: "Invalid value for parameter 'limit': must be a positive integer."
+              details: {}
+
+    NotFound:
+      description: The requested resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: not_found
+              message: The requested resource was not found.
+              details: {}
+
+    InternalServerError:
+      description: An unexpected server error occurred.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: internal_error
+              message: An unexpected error occurred.
+              details: {}
