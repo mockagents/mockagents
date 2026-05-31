@@ -14,12 +14,12 @@ _None. (Two S0 candidates were refuted: F-PL-001/002 nil-deref is unreachable; t
   - **Where:** `engine.go` (`scopedSessionKey` helper + namespaced `GetOrCreate`; `TemplateContext.SessionID` now uses the logical client id).
   - **Fix shipped:** chose the compose-the-key option — sessions are keyed `tenantID + "\x00" + sessionID`. NUL never appears in a server-generated tenant id, so no client `session_id` can forge another tenant's namespace. Empty tenant (anonymous/single-tenant) reproduces the pre-tenancy key space, so single-tenant behavior is byte-identical. `Store` interface left unchanged (zero ripple). Two internal tests that fetched the store by raw id were updated to scope their lookups.
   - **Done when:** ✅ `TestEngine_SessionsIsolatedAcrossTenants` (two tenants + anonymous reusing one `session_id` stay independent) and `TestEngine_SingleTenantSessionBehaviorUnchanged` pass; regression-verified (test fails `turn=3` when the helper is neutered). Full suite green; gofmt/vet clean.
-  - **Note:** `X-03` (sessions also ignore `agentName` for an existing id) is **still open** — this change scopes by tenant only, not by agent. See P2.
+  - **Note:** `X-03` (sessions also ignored `agentName` for an existing id) was **fixed as a follow-up** — the key now includes the agent (see P2).
 
 ## P2 — Schedule
 
-- [ ] **Key sessions by agent (and tenant) — stop `GetOrCreate` ignoring `agentName`** — `X-03` · effort:S · folds into X-02
-  - `engine.go:127` + `store.go:58-71`. **Done when:** a request naming agent B with an id first used by agent A does not receive A's session.
+- [x] **Key sessions by agent (and tenant) — stop `GetOrCreate` ignoring `agentName`** — `X-03` · effort:S · owner:claude · **DONE 2026-05-30**
+  - `scopedSessionKey(tenantID, agentName, sessionID)` now includes the agent (`tenant\x00agent\x00session`). Pipelines were already per-node-scoped (`pipeline.go:202`), so nothing relied on cross-agent session sharing. **Done when:** ✅ `TestEngine_SessionsIsolatedAcrossAgents` (two agents reusing one `session_id` stay independent; regression-verified — fails `turn=3` when the agent component is dropped). Full suite green.
 - [ ] **Thread `context` through the engine pipeline + chaos sleeps** — `X-01` / `F-EN-004` / `F-CH-001` · effort:M
   - Pass `ctx` into `ApplyTurn`/`Generator`/`ProcessToolCalls`/`Save` and `Chaos.Before/After`; sleep via `select { case <-time.After(d): case <-ctx.Done(): }`; add `ctx` to pipeline `Run`. **Done when:** a cancelled request aborts before/at the next turn boundary and injected latency returns early on cancel.
 - [ ] **Clamp unbounded sleeps/allocations from config** — `F-CH-002` + `F-RG-002` · effort:S

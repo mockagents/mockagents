@@ -60,8 +60,8 @@ func TestProcessRequestSameSessionConcurrentTurns(t *testing.T) {
 		t.Fatalf("ProcessRequestContext: %v", err)
 	}
 
-	// Anonymous requests store under the tenant-namespaced key.
-	session := store.Get(scopedSessionKey("", "shared-session"))
+	// Sessions store under the tenant+agent-namespaced key.
+	session := store.Get(scopedSessionKey("", "turn-agent", "shared-session"))
 	if session == nil {
 		t.Fatal("session not found")
 	}

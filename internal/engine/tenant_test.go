@@ -212,42 +212,51 @@ func equalStringSlices(a, b []string) bool {
 
 // --- Session tenant isolation (review finding X-02) ---
 
-// newTurnEchoEngine builds an engine with one global agent whose response
-// echoes the turn number, so a test can observe whether two callers that
-// reuse the same session_id share conversation state.
+// newTurnEchoEngine builds an engine with two global agents whose response
+// echoes the turn number, so a test can observe whether callers that reuse
+// the same session_id (across tenants or across agents) share state.
 func newTurnEchoEngine(t *testing.T) *Engine {
 	t.Helper()
-	r := NewAgentRegistry()
-	r.Register(&types.AgentDefinition{
-		Metadata: types.Metadata{Name: "echo", TenantID: ""},
-		Spec: types.AgentSpec{
-			Model: "echo-model",
-			Behavior: types.BehaviorConfig{
-				Scenarios: []types.Scenario{{
-					Name:     "default",
-					Response: types.ScenarioResponse{Content: "turn={{ .TurnNumber }}"},
-				}},
+	echoAgent := func(name, model string) *types.AgentDefinition {
+		return &types.AgentDefinition{
+			Metadata: types.Metadata{Name: name, TenantID: ""},
+			Spec: types.AgentSpec{
+				Model: model,
+				Behavior: types.BehaviorConfig{
+					Scenarios: []types.Scenario{{
+						Name:     "default",
+						Response: types.ScenarioResponse{Content: "turn={{ .TurnNumber }}"},
+					}},
+				},
 			},
-		},
-	})
+		}
+	}
+	r := NewAgentRegistry()
+	r.Register(echoAgent("echo", "echo-model"))
+	r.Register(echoAgent("echo2", "echo2-model"))
 	return NewEngine(r, state.NewMemoryStore(0), slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
 }
 
-func turnFor(t *testing.T, e *Engine, tenantID, sessionID string) string {
+func turnForAgent(t *testing.T, e *Engine, agentName, tenantID, sessionID string) string {
 	t.Helper()
 	ctx := context.Background()
 	if tenantID != "" {
 		ctx = WithTenantID(ctx, tenantID)
 	}
 	resp, err := e.ProcessRequestContext(ctx, &InboundRequest{
-		AgentName: "echo",
+		AgentName: agentName,
 		Messages:  []RequestMessage{{Role: "user", Content: "hi"}},
 		SessionID: sessionID,
 	})
 	if err != nil {
-		t.Fatalf("process (tenant=%q session=%q): %v", tenantID, sessionID, err)
+		t.Fatalf("process (agent=%q tenant=%q session=%q): %v", agentName, tenantID, sessionID, err)
 	}
 	return resp.Content
+}
+
+func turnFor(t *testing.T, e *Engine, tenantID, sessionID string) string {
+	t.Helper()
+	return turnForAgent(t, e, "echo", tenantID, sessionID)
 }
 
 func TestEngine_SessionsIsolatedAcrossTenants(t *testing.T) {
@@ -274,6 +283,31 @@ func TestEngine_SessionsIsolatedAcrossTenants(t *testing.T) {
 	// ten_b advances on its own namespace, unaffected by the others.
 	if got := turnFor(t, e, "ten_b", "shared"); got != "turn=2" {
 		t.Fatalf("ten_b second turn = %q, want turn=2", got)
+	}
+}
+
+func TestEngine_SessionsIsolatedAcrossAgents(t *testing.T) {
+	e := newTurnEchoEngine(t)
+
+	// Same tenant (anonymous) and same client session_id, two different
+	// agents. Each agent must keep its own conversation (review finding
+	// X-03 — GetOrCreate previously ignored the agent for an existing id).
+	if got := turnForAgent(t, e, "echo", "", "shared"); got != "turn=1" {
+		t.Fatalf("echo first turn = %q, want turn=1", got)
+	}
+	if got := turnForAgent(t, e, "echo", "", "shared"); got != "turn=2" {
+		t.Fatalf("echo second turn = %q, want turn=2", got)
+	}
+	// Before X-03 this returned turn=3 (echo2 inherited echo's session).
+	if got := turnForAgent(t, e, "echo2", "", "shared"); got != "turn=1" {
+		t.Fatalf("cross-agent leak: echo2 turn = %q, want turn=1", got)
+	}
+	if got := turnForAgent(t, e, "echo2", "", "shared"); got != "turn=2" {
+		t.Fatalf("echo2 second turn = %q, want turn=2", got)
+	}
+	// echo is unaffected by echo2's activity.
+	if got := turnForAgent(t, e, "echo", "", "shared"); got != "turn=3" {
+		t.Fatalf("echo third turn = %q, want turn=3", got)
 	}
 }
 
