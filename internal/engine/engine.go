@@ -123,8 +123,12 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 		return nil, ErrEmptyMessage
 	}
 
-	// 3. Get or create session.
-	session := e.States.GetOrCreate(req.SessionID, agent.Metadata.Name)
+	// 3. Get or create session. Session state is namespaced by tenant so
+	// two tenants that independently pick the same client session_id never
+	// share conversation history or variables (review finding X-02).
+	// Anonymous / single-tenant callers share the empty-tenant namespace,
+	// so their behavior is identical to before tenancy existed.
+	session := e.States.GetOrCreate(scopedSessionKey(tenantID, req.SessionID), agent.Metadata.Name)
 	var resp *Response
 	if err := session.ApplyTurn(userMsg, func(turnCount int, variables map[string]any) (string, []state.ToolCallMsg, error) {
 		// 4. Match scenario.
@@ -160,9 +164,10 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 			Agent:      agent,
 			Message:    userMsg,
 			TurnNumber: turnCount,
-			SessionID:  session.ID,
-			Vars:       variables,
-			Match:      captures,
+			// The logical client id, not the tenant-namespaced store key.
+			SessionID: req.SessionID,
+			Vars:      variables,
+			Match:     captures,
 		}
 		generated, err := e.Generator.Generate(agent, scenario, tmplCtx)
 		if err != nil {
@@ -259,6 +264,17 @@ func (e *Engine) resolveAgentForTenant(req *InboundRequest, tenantID string) (*t
 	}
 	return nil, fmt.Errorf("%w: %q (available: %v)",
 		ErrAgentNotFound, identifier, e.Registry.ListNamesForTenant(tenantID))
+}
+
+// scopedSessionKey namespaces a client-supplied session id by tenant so
+// session state cannot leak across tenants (review finding X-02). The
+// separator is NUL, which never appears in a server-generated tenant id,
+// so no client-chosen session_id can be crafted to land in another
+// tenant's namespace. An empty tenantID (anonymous / single-tenant mode)
+// reproduces the pre-tenancy key space exactly, so single-tenant behavior
+// is unchanged.
+func scopedSessionKey(tenantID, sessionID string) string {
+	return tenantID + "\x00" + sessionID
 }
 
 func latestUserMessage(messages []RequestMessage) string {

@@ -10,12 +10,11 @@ _None. (Two S0 candidates were refuted: F-PL-001/002 nil-deref is unreachable; t
 
 ## P1 — High (do this cycle)
 
-- [ ] **Tenant/owner-scope the session store** — `X-02` / `F-ST-001` · effort:M · owner:unassigned
-  - **Where:** `engine.go:127` + `state/store.go:44-71` (and the `Store` interface).
-  - **Problem:** agents are tenant-isolated but sessions are keyed on the raw client `session_id`; two tenants sharing an id share conversation state in multi-tenant mode.
-  - **Fix:** thread `tenantID` into the store (or compose the key `tenantID + "\x00" + id`) so lookups are tenant-namespaced; keep single-tenant behavior identical when `tenantID==""`.
-  - **Done when:** two requests with the same `session_id` under different tenant ids get distinct sessions, proven by a test; single-tenant path unchanged.
-  - **Decision needed:** confirm whether per-tenant session isolation is a product guarantee — if yes, this is S0, do it first.
+- [x] **Tenant/owner-scope the session store** — `X-02` / `F-ST-001` · effort:M · owner:claude · **DONE 2026-05-30**
+  - **Where:** `engine.go` (`scopedSessionKey` helper + namespaced `GetOrCreate`; `TemplateContext.SessionID` now uses the logical client id).
+  - **Fix shipped:** chose the compose-the-key option — sessions are keyed `tenantID + "\x00" + sessionID`. NUL never appears in a server-generated tenant id, so no client `session_id` can forge another tenant's namespace. Empty tenant (anonymous/single-tenant) reproduces the pre-tenancy key space, so single-tenant behavior is byte-identical. `Store` interface left unchanged (zero ripple). Two internal tests that fetched the store by raw id were updated to scope their lookups.
+  - **Done when:** ✅ `TestEngine_SessionsIsolatedAcrossTenants` (two tenants + anonymous reusing one `session_id` stay independent) and `TestEngine_SingleTenantSessionBehaviorUnchanged` pass; regression-verified (test fails `turn=3` when the helper is neutered). Full suite green; gofmt/vet clean.
+  - **Note:** `X-03` (sessions also ignore `agentName` for an existing id) is **still open** — this change scopes by tenant only, not by agent. See P2.
 
 ## P2 — Schedule
 

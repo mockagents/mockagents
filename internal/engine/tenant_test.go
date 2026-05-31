@@ -209,3 +209,85 @@ func equalStringSlices(a, b []string) bool {
 	}
 	return true
 }
+
+// --- Session tenant isolation (review finding X-02) ---
+
+// newTurnEchoEngine builds an engine with one global agent whose response
+// echoes the turn number, so a test can observe whether two callers that
+// reuse the same session_id share conversation state.
+func newTurnEchoEngine(t *testing.T) *Engine {
+	t.Helper()
+	r := NewAgentRegistry()
+	r.Register(&types.AgentDefinition{
+		Metadata: types.Metadata{Name: "echo", TenantID: ""},
+		Spec: types.AgentSpec{
+			Model: "echo-model",
+			Behavior: types.BehaviorConfig{
+				Scenarios: []types.Scenario{{
+					Name:     "default",
+					Response: types.ScenarioResponse{Content: "turn={{ .TurnNumber }}"},
+				}},
+			},
+		},
+	})
+	return NewEngine(r, state.NewMemoryStore(0), slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+}
+
+func turnFor(t *testing.T, e *Engine, tenantID, sessionID string) string {
+	t.Helper()
+	ctx := context.Background()
+	if tenantID != "" {
+		ctx = WithTenantID(ctx, tenantID)
+	}
+	resp, err := e.ProcessRequestContext(ctx, &InboundRequest{
+		AgentName: "echo",
+		Messages:  []RequestMessage{{Role: "user", Content: "hi"}},
+		SessionID: sessionID,
+	})
+	if err != nil {
+		t.Fatalf("process (tenant=%q session=%q): %v", tenantID, sessionID, err)
+	}
+	return resp.Content
+}
+
+func TestEngine_SessionsIsolatedAcrossTenants(t *testing.T) {
+	e := newTurnEchoEngine(t)
+
+	// The same client session_id "shared" is used by two tenants and an
+	// anonymous caller; each must keep an independent conversation.
+	if got := turnFor(t, e, "ten_a", "shared"); got != "turn=1" {
+		t.Fatalf("ten_a first turn = %q, want turn=1", got)
+	}
+	if got := turnFor(t, e, "ten_a", "shared"); got != "turn=2" {
+		t.Fatalf("ten_a second turn = %q, want turn=2", got)
+	}
+	// Before X-02 this returned turn=3 (state leaked from ten_a).
+	if got := turnFor(t, e, "ten_b", "shared"); got != "turn=1" {
+		t.Fatalf("cross-tenant leak: ten_b turn = %q, want turn=1", got)
+	}
+	if got := turnFor(t, e, "", "shared"); got != "turn=1" {
+		t.Fatalf("anonymous leak: turn = %q, want turn=1", got)
+	}
+	if got := turnFor(t, e, "", "shared"); got != "turn=2" {
+		t.Fatalf("anonymous second turn = %q, want turn=2", got)
+	}
+	// ten_b advances on its own namespace, unaffected by the others.
+	if got := turnFor(t, e, "ten_b", "shared"); got != "turn=2" {
+		t.Fatalf("ten_b second turn = %q, want turn=2", got)
+	}
+}
+
+func TestEngine_SingleTenantSessionBehaviorUnchanged(t *testing.T) {
+	e := newTurnEchoEngine(t)
+	// No tenant context: consecutive requests with the same id accumulate,
+	// and a different id is independent — exactly as before tenancy.
+	if got := turnFor(t, e, "", "s1"); got != "turn=1" {
+		t.Fatalf("first = %q", got)
+	}
+	if got := turnFor(t, e, "", "s1"); got != "turn=2" {
+		t.Fatalf("second = %q", got)
+	}
+	if got := turnFor(t, e, "", "s2"); got != "turn=1" {
+		t.Fatalf("other id should be independent = %q", got)
+	}
+}

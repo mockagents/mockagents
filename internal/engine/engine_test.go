@@ -152,8 +152,9 @@ func TestEngine_ProcessRequest_SessionPersistence(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Verify session state has accumulated.
-	session := eng.States.Get("sess-persist")
+	// Verify session state has accumulated. Anonymous requests store under
+	// the tenant-namespaced key, so look up with the same scoping.
+	session := eng.States.Get(scopedSessionKey("", "sess-persist"))
 	require.NotNil(t, session)
 	assert.Equal(t, 2, session.TurnCount)
 	assert.Len(t, session.Messages, 4) // 2 user + 2 assistant
