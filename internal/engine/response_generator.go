@@ -10,20 +10,22 @@ import (
 	"sync"
 	"text/template"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/mockagents/mockagents/internal/types"
 )
 
 // Response represents the engine's output for a processed request.
 type Response struct {
-	AgentName    string              `json:"agent_name"`
-	Model        string              `json:"model"`
-	Content      string              `json:"content"`
+	AgentName    string               `json:"agent_name"`
+	Model        string               `json:"model"`
+	Content      string               `json:"content"`
 	ToolCalls    []types.ToolCallSpec `json:"tool_calls,omitempty"`
-	ToolResults  []ToolCallResult    `json:"tool_results,omitempty"`
-	ScenarioName string              `json:"scenario_name"`
-	SystemPrompt string              `json:"system_prompt,omitempty"`
-	Metadata     map[string]any      `json:"metadata,omitempty"`
+	ToolResults  []ToolCallResult     `json:"tool_results,omitempty"`
+	ScenarioName string               `json:"scenario_name"`
+	SystemPrompt string               `json:"system_prompt,omitempty"`
+	Metadata     map[string]any       `json:"metadata,omitempty"`
 }
 
 // TemplateContext provides data available to Go templates in response content.
@@ -33,7 +35,7 @@ type TemplateContext struct {
 	TurnNumber int
 	SessionID  string
 	Timestamp  string
-	Vars       map[string]any // Session variables
+	Vars       map[string]any    // Session variables
 	Match      map[string]string // Regex capture groups from scenario matching
 }
 
@@ -240,10 +242,13 @@ func fakeEmail() string {
 
 // title upper-cases the first letter of each whitespace-separated word,
 // lower-casing the rest. A non-deprecated stand-in for strings.Title.
+// Whitespace is normalized: runs of spaces collapse and leading/trailing
+// space is trimmed (via strings.Fields). Rune-safe for non-ASCII input.
 func title(s string) string {
 	words := strings.Fields(s)
 	for i, w := range words {
-		words[i] = strings.ToUpper(w[:1]) + strings.ToLower(w[1:])
+		r, sz := utf8.DecodeRuneInString(w)
+		words[i] = string(unicode.ToUpper(r)) + strings.ToLower(w[sz:])
 	}
 	return strings.Join(words, " ")
 }

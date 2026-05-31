@@ -24,12 +24,17 @@ make lint            # go vet ./...
 make fmt             # gofmt -w .
 make validate        # build, then `./mockagents validate examples/`
 make run             # build, then start server with examples/ and debug logs
-make bench           # go test -bench=. -benchmem ./internal/engine/...
+make bench           # go test -run=^$ -bench=. -benchmem -benchtime=1s ./internal/engine/...
 make bench-report    # tools/benchreport: refresh docs/benchmarks/latest.{json,md}
 make docker          # build Docker image
-make helm-lint       # helm lint deploy/helm/mockagents
+make docker-up       # docker compose up -d
+make docker-down     # docker compose down
+make helm-lint       # helm lint deploy/helm/mockagents (with ci/test-values.yaml)
 make helm-template   # helm template demo deploy/helm/mockagents
 make gui-dev         # cd gui && npm run dev (Next.js 15 console)
+make gui-build       # cd gui && npm run build (tsc --strict gate)
+make release         # goreleaser release --snapshot --clean (dry run)
+make setup           # install goimports + editable Python SDK
 ```
 
 Run a single Go test:
@@ -90,3 +95,4 @@ Outside `internal/`:
 - **Page files in `gui/app/`** can only export `default` plus a small set of config keys. Helper components must live in sibling `.tsx` files (e.g. `LogsTable.tsx` next to `logs/page.tsx`, `DAGViewer.tsx` next to `pipelines/[name]/page.tsx`, `YamlEditor.tsx` next to `editor/page.tsx`).
 - **GUI auth**: `gui/lib/api.ts` `fetchJSON` reads `mockagents_api_key` from `next/headers` cookies and injects `Authorization: Bearer` on every upstream fetch. Single-tenant mode sets no cookie and calls go through anonymously. `/login` is the only surface that accepts a raw key — subsequent requests read it from the HttpOnly cookie.
 - **GUI test story**: `npm run build` under `tsc --strict` is the current coverage surface (component-level unit tests still TBD). Every GUI slice must keep the strict build green.
+- **`CLAUDE.md` mirrors this file** (it targets Claude Code). The two share most content verbatim — when you change project overview, commands, or architecture here, apply the same edit to `CLAUDE.md` so they stay in sync.

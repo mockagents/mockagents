@@ -118,8 +118,12 @@ Use Go template syntax in `response.content`:
 | `{{ date_offset 3 "days" }}` | `{{ date_offset 3 "days" }}` | Date offset |
 | `{{ fake_name }}` | `{{ fake_name }}` | Random person name |
 | `{{ fake_email }}` | `{{ fake_email }}` | Random email |
+| `{{ fake_phone }}` | `{{ fake_phone }}` | Random phone, e.g. `(415) 555-0182` |
+| `{{ fake_company }}` | `{{ fake_company }}` | Random company, e.g. `Acme Inc` |
+| `{{ fake_username }}` | `{{ fake_username }}` | Random username, e.g. `alice_smith42` |
 | `{{ upper "text" }}` | `{{ upper "hello" }}` | HELLO |
 | `{{ lower "TEXT" }}` | `{{ lower "HELLO" }}` | hello |
+| `{{ title "text" }}` | `{{ title "hello world" }}` | Hello World |
 | `{{ to_json .Agent.Metadata }}` | | JSON-encoded value |
 
 ## `spec.behavior.streaming`

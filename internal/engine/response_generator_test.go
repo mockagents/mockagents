@@ -122,6 +122,21 @@ func TestResponseGenerator_TemplateFunctions(t *testing.T) {
 			check:    func(t *testing.T, c string) { assert.Equal(t, "Hello World", c) },
 		},
 		{
+			name:     "title_non_ascii",
+			template: `{{title "über"}}`,
+			check:    func(t *testing.T, c string) { assert.Equal(t, "Über", c) },
+		},
+		{
+			name:     "title_empty",
+			template: `{{title ""}}`,
+			check:    func(t *testing.T, c string) { assert.Equal(t, "", c) },
+		},
+		{
+			name:     "title_collapses_whitespace",
+			template: `{{title "a   b"}}`,
+			check:    func(t *testing.T, c string) { assert.Equal(t, "A B", c) },
+		},
+		{
 			name:     "fake_phone",
 			template: "P: {{fake_phone}}",
 			check: func(t *testing.T, c string) {
@@ -133,8 +148,7 @@ func TestResponseGenerator_TemplateFunctions(t *testing.T) {
 			name:     "fake_company",
 			template: "C: {{fake_company}}",
 			check: func(t *testing.T, c string) {
-				assert.Contains(t, c, "C: ")
-				assert.NotEqual(t, "C: ", c)
+				assert.Regexp(t, `^C: \w+ \w+$`, c)
 			},
 		},
 		{
