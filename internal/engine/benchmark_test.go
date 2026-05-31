@@ -89,6 +89,54 @@ func BenchmarkProcessRequest_WithToolCalls(b *testing.B) {
 	}
 }
 
+// multiToolAgent emits several tool calls from one scenario so the
+// per-turn toolCallMsgs slice is appended to repeatedly. Exercises the
+// F-EN-006 pre-size: a nil slice would reallocate (cap 1→2→4) on the way
+// up, the pre-sized slice allocates its backing array once.
+func multiToolAgent() *types.AgentDefinition {
+	tools := make([]types.ToolDefinition, 4)
+	calls := make([]types.ToolCallSpec, 4)
+	for i, name := range []string{"alpha", "beta", "gamma", "delta"} {
+		tools[i] = types.ToolDefinition{
+			Name:      name,
+			Responses: []types.ToolResponseRule{{IsDefault: true, Response: map[string]any{"ok": true}}},
+		}
+		calls[i] = types.ToolCallSpec{Name: name, Arguments: map[string]any{"i": i}}
+	}
+	return &types.AgentDefinition{
+		Metadata: types.Metadata{Name: "multi-tool-agent"},
+		Spec: types.AgentSpec{
+			Model: "gpt-4o",
+			Tools: tools,
+			Behavior: types.BehaviorConfig{
+				Scenarios: []types.Scenario{
+					{Name: "fanout", Match: &types.MatchRule{ContentContains: "fan"}, Response: types.ScenarioResponse{
+						Content:   "Fanning out.",
+						ToolCalls: calls,
+					}},
+				},
+			},
+		},
+	}
+}
+
+func BenchmarkProcessRequest_MultipleToolCalls(b *testing.B) {
+	registry := NewAgentRegistry()
+	registry.Register(multiToolAgent())
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	eng := NewEngine(registry, state.NewMemoryStore(0), logger)
+	req := &InboundRequest{
+		AgentName: "multi-tool-agent",
+		SessionID: "bench-multitool",
+		Messages:  []RequestMessage{{Role: "user", Content: "please fan out"}},
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req.SessionID = "bench-multitool-" + string(rune(i%26+'a'))
+		eng.ProcessRequest(req)
+	}
+}
+
 func BenchmarkProcessRequest_RegexMatch(b *testing.B) {
 	eng := benchEngine()
 	req := &InboundRequest{
@@ -141,6 +189,28 @@ func BenchmarkScenarioMatcher_Default(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		m.Match(scenarios, "no match at all", 1)
+	}
+}
+
+// BenchmarkScenarioMatcher_MixedCaseManyScenarios runs a mixed-case
+// message past several non-matching content_contains rules before the
+// hit. Exercises the F-SM-007 lower-once: the old code re-lowered the
+// full message (a fresh allocation, since the case actually differs)
+// once per scenario; the new code lowers it a single time per match.
+func BenchmarkScenarioMatcher_MixedCaseManyScenarios(b *testing.B) {
+	m := NewScenarioMatcher()
+	scenarios := []types.Scenario{
+		{Name: "s1", Match: &types.MatchRule{ContentContains: "invoice"}},
+		{Name: "s2", Match: &types.MatchRule{ContentContains: "refund"}},
+		{Name: "s3", Match: &types.MatchRule{ContentContains: "shipment"}},
+		{Name: "s4", Match: &types.MatchRule{ContentContains: "warranty"}},
+		{Name: "s5", Match: &types.MatchRule{ContentContains: "subscription"}},
+		{Name: "s6", Match: &types.MatchRule{ContentContains: "catalog"}},
+	}
+	const msg = "Please Look For The SPECIAL Item In The CATALOG Today"
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m.Match(scenarios, msg, 1)
 	}
 }
 

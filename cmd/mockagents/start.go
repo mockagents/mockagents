@@ -114,21 +114,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Load pipeline definitions alongside the agent registry so the
 	// GUI's /pipelines surface and the management API have something
-	// to list. Failures to register a pipeline are logged but not
-	// fatal — the server can still serve agent traffic even if a
-	// pipeline YAML is malformed.
-	pipelineReg := engine.NewPipelineRegistry()
-	for _, pr := range docs.Pipelines {
-		if pr == nil || pr.Definition == nil {
-			continue
-		}
-		pipelineReg.Register(pr.Definition)
-		logger.Info("loaded pipeline",
-			"name", pr.Definition.Metadata.Name,
-			"topology", pr.Definition.Spec.Topology,
-			"agents", len(pr.Definition.Spec.Agents),
-		)
-	}
+	// to list.
+	pipelineReg := registerPipelines(docs.Pipelines, logger)
 
 	// Initialize engine.
 	store := state.NewMemoryStore(state.DefaultSessionTTL)
@@ -239,6 +226,40 @@ func runStart(cmd *cobra.Command, args []string) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+// registerPipelines validates each loaded pipeline definition and
+// registers the valid ones. Validation runs the same cycle +
+// reachability checks `mockagents validate` performs (config.
+// ValidatePipeline), so a malformed or cyclic pipeline is logged and
+// skipped here at server start rather than silently registered and
+// failing later in the executor — mirroring the agent path above.
+// Failures are non-fatal: the server can still serve agent traffic
+// even if every pipeline YAML is malformed.
+//
+// Note: pipelines are not live-reloadable (the watcher only reacts to
+// Agent-kind documents), so this runs once at boot.
+func registerPipelines(pipelines []*config.PipelineLoadResult, logger *slog.Logger) *engine.PipelineRegistry {
+	reg := engine.NewPipelineRegistry()
+	for _, pr := range pipelines {
+		if pr == nil || pr.Definition == nil {
+			continue
+		}
+		if errList := config.ValidatePipeline(pr.Definition, pr.FilePath, pr.Node); errList != nil {
+			logger.Warn("skipping invalid pipeline",
+				"file", pr.FilePath,
+				"errors", errList.Error(),
+			)
+			continue
+		}
+		reg.Register(pr.Definition)
+		logger.Info("loaded pipeline",
+			"name", pr.Definition.Metadata.Name,
+			"topology", pr.Definition.Spec.Topology,
+			"agents", len(pr.Definition.Spec.Agents),
+		)
+	}
+	return reg
 }
 
 // bootstrapTenancy creates a "default" tenant and an admin API key if

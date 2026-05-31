@@ -44,6 +44,11 @@ func (m *ScenarioMatcher) Match(scenarios []types.Scenario, userMessage string, 
 func (m *ScenarioMatcher) MatchWithCaptures(scenarios []types.Scenario, userMessage string, turnNumber int) *MatchResult {
 	var defaultScenario *types.Scenario
 
+	// Lower-case the user message once for the whole scenario sweep. Every
+	// content_contains rule does a case-insensitive compare; doing it here
+	// avoids re-allocating a lowered copy of the full message per scenario.
+	lowerMessage := strings.ToLower(userMessage)
+
 	for i := range scenarios {
 		sc := &scenarios[i]
 		if sc.Match == nil {
@@ -53,7 +58,7 @@ func (m *ScenarioMatcher) MatchWithCaptures(scenarios []types.Scenario, userMess
 			continue
 		}
 
-		captures := m.evaluate(sc.Match, userMessage, turnNumber)
+		captures := m.evaluate(sc.Match, userMessage, lowerMessage, turnNumber)
 		if captures != nil {
 			return &MatchResult{Scenario: sc, Captures: captures}
 		}
@@ -79,9 +84,12 @@ var matchedSentinel = map[string]string{}
 // The captures map is allocated lazily — only when a content_regex
 // rule with named groups actually matches. ContentContains-only
 // scenarios (the common case) pay zero map allocations.
-func (m *ScenarioMatcher) evaluate(rule *types.MatchRule, userMessage string, turnNumber int) map[string]string {
+// lowerMessage is userMessage pre-lowered by the caller for the
+// case-insensitive content_contains compare; userMessage stays in its
+// original case for regex matching and capture extraction.
+func (m *ScenarioMatcher) evaluate(rule *types.MatchRule, userMessage, lowerMessage string, turnNumber int) map[string]string {
 	if rule.ContentContains != "" {
-		if !strings.Contains(strings.ToLower(userMessage), strings.ToLower(rule.ContentContains)) {
+		if !strings.Contains(lowerMessage, strings.ToLower(rule.ContentContains)) {
 			return nil
 		}
 	}
