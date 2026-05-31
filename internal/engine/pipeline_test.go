@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -186,5 +187,114 @@ func TestPipelineGraphWithConditionalEdge(t *testing.T) {
 	}
 	if got := res.ResponseByNodeID("b").Content; got != "b-ran" {
 		t.Errorf("worker-b content = %q, want %q", got, "b-ran")
+	}
+}
+
+// TestPipelineGraphMultiRoot covers F-PL-004: a graph with more than one
+// zero-incoming root must visit every node, not just the first root's
+// reachable subgraph. The old executor walked a single start node, so r2
+// and its descendant b were silently dropped from res.Nodes.
+func TestPipelineGraphMultiRoot(t *testing.T) {
+	eng := newPipelineTestEngine(t, "alpha", "beta", "gamma", "delta")
+	exec := NewPipelineExecutor(eng)
+
+	def := &types.PipelineDefinition{
+		Metadata: types.Metadata{Name: "multiroot"},
+		Spec: types.PipelineSpec{
+			Topology: types.TopologyGraph,
+			Agents: []types.PipelineAgent{
+				{ID: "r1", Ref: "alpha"},
+				{ID: "r2", Ref: "beta"},
+				{ID: "a", Ref: "gamma"},
+				{ID: "b", Ref: "delta"},
+			},
+			Edges: []types.PipelineEdge{
+				{From: "r1", To: "a"},
+				{From: "r2", To: "b"},
+			},
+		},
+	}
+
+	res, err := exec.Run(def, "hello", "session-mr")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(res.Nodes) != 4 {
+		t.Fatalf("expected all 4 nodes to run, got %d: %+v", len(res.Nodes), res.Nodes)
+	}
+	for _, id := range []string{"r1", "r2", "a", "b"} {
+		if res.ResponseByNodeID(id) == nil {
+			t.Errorf("node %q was dropped (not executed)", id)
+		}
+	}
+	// Roots see the pipeline input; descendants see their root's output.
+	if got := res.ResponseByNodeID("a").Content; got != "gamma:alpha:hello" {
+		t.Errorf("node a content = %q, want %q", got, "gamma:alpha:hello")
+	}
+	if got := res.ResponseByNodeID("b").Content; got != "delta:beta:hello" {
+		t.Errorf("node b content = %q, want %q", got, "delta:beta:hello")
+	}
+}
+
+// TestPipelineGraphCycleErrors covers F-PL-005: a fully cyclic graph has no
+// zero-incoming node. The old executor fell back to Agents[0] as the start
+// and let `visited` truncate the walk, running a partial subset and
+// reporting success. It must now error.
+func TestPipelineGraphCycleErrors(t *testing.T) {
+	eng := newPipelineTestEngine(t, "alpha", "beta")
+	exec := NewPipelineExecutor(eng)
+
+	def := &types.PipelineDefinition{
+		Metadata: types.Metadata{Name: "cyclic"},
+		Spec: types.PipelineSpec{
+			Topology: types.TopologyGraph,
+			Agents: []types.PipelineAgent{
+				{ID: "a", Ref: "alpha"},
+				{ID: "b", Ref: "beta"},
+			},
+			Edges: []types.PipelineEdge{
+				{From: "a", To: "b"},
+				{From: "b", To: "a"},
+			},
+		},
+	}
+
+	res, err := exec.Run(def, "hello", "session-cyc")
+	if !errors.Is(err, ErrPipelineCycle) {
+		t.Fatalf("expected ErrPipelineCycle, got err=%v", err)
+	}
+	if len(res.Nodes) != 0 {
+		t.Errorf("cycle must abort before executing nodes, ran %d", len(res.Nodes))
+	}
+}
+
+// TestPipelineGraphCycleWithFeederErrors covers F-PL-003/F-PL-005 together:
+// a graph that *does* have a valid root (s) but also contains a downstream
+// cycle (a<->b). The old code started at the root and silently stopped when
+// `visited` blocked the back-edge, hiding the cycle. It must now error.
+func TestPipelineGraphCycleWithFeederErrors(t *testing.T) {
+	eng := newPipelineTestEngine(t, "src", "alpha", "beta")
+	exec := NewPipelineExecutor(eng)
+
+	def := &types.PipelineDefinition{
+		Metadata: types.Metadata{Name: "feeder-cycle"},
+		Spec: types.PipelineSpec{
+			Topology: types.TopologyGraph,
+			Agents: []types.PipelineAgent{
+				{ID: "s", Ref: "src"},
+				{ID: "a", Ref: "alpha"},
+				{ID: "b", Ref: "beta"},
+			},
+			Edges: []types.PipelineEdge{
+				{From: "s", To: "a"},
+				{From: "a", To: "b"},
+				{From: "b", To: "a"},
+			},
+		},
+	}
+
+	_, err := exec.Run(def, "hello", "session-fc")
+	if !errors.Is(err, ErrPipelineCycle) {
+		t.Fatalf("expected ErrPipelineCycle, got err=%v", err)
 	}
 }
