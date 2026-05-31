@@ -222,7 +222,7 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 			)
 		}
 
-		var toolCallMsgs []state.ToolCallMsg
+		toolCallMsgs := make([]state.ToolCallMsg, 0, len(resp.ToolCalls))
 		for _, tc := range resp.ToolCalls {
 			toolCallMsgs = append(toolCallMsgs, state.ToolCallMsg{
 				Name:      tc.Name,
