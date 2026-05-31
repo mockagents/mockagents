@@ -59,6 +59,13 @@ func (r *PipelineResult) ResponseByNodeID(id string) *Response {
 // ErrUnknownTopology is returned when a pipeline spec uses an unsupported topology.
 var ErrUnknownTopology = errors.New("unknown pipeline topology")
 
+// ErrPipelineCycle is returned by the graph executor when the pipeline's
+// edges form a cycle. The config validator already rejects cyclic
+// pipelines at load, but programmatic pipelines reach the executor
+// directly, so this keeps the "cyclic pipelines unsupported" contract
+// honest instead of silently executing a truncated traversal.
+var ErrPipelineCycle = errors.New("pipeline graph has a cycle")
+
 // Run executes a pipeline definition with the given initial user message and
 // session id. Each agent invocation creates its own session scoped by the
 // pipeline node so state does not collide across nodes.
@@ -140,28 +147,43 @@ func (p *PipelineExecutor) runGraph(def *types.PipelineDefinition, userMsg, sess
 	for _, n := range def.Spec.Agents {
 		nodesByID[n.ID] = n
 	}
+
+	// outgoing keeps the real edges (with their When conditions) for the
+	// execution walk. indegree counts only edges between known nodes and
+	// ignores self-loops, mirroring config.validatePipelineGraph so the
+	// executor and the load-time validator agree on what is cyclic and on
+	// which nodes are roots — otherwise a pipeline could pass `validate`
+	// yet error at runtime (or vice versa).
 	outgoing := make(map[string][]types.PipelineEdge)
-	incoming := make(map[string]int)
+	indegree := make(map[string]int, len(def.Spec.Agents))
+	for _, n := range def.Spec.Agents {
+		indegree[n.ID] = 0
+	}
 	for _, e := range def.Spec.Edges {
 		outgoing[e.From] = append(outgoing[e.From], e)
-		incoming[e.To]++
-	}
-
-	// Start from nodes with zero incoming edges; fall back to the first agent
-	// when every node has an inbound edge (cyclic pipelines are unsupported).
-	var start string
-	for _, n := range def.Spec.Agents {
-		if incoming[n.ID] == 0 {
-			start = n.ID
-			break
+		if e.From == e.To {
+			continue
+		}
+		_, fromKnown := nodesByID[e.From]
+		_, toKnown := nodesByID[e.To]
+		// Count an inbound edge only when both endpoints are real nodes.
+		// An edge from an unknown source is never peeled by Kahn's, so
+		// counting it would leave the target permanently stuck and falsely
+		// reported as cyclic; the walk surfaces the dangling ref instead.
+		if fromKnown && toKnown {
+			indegree[e.To]++
 		}
 	}
-	if start == "" {
-		start = def.Spec.Agents[0].ID
+
+	// Reject cycles before executing anything (F-PL-003 / F-PL-005). The old
+	// code fell back to Agents[0] when no zero-indegree node existed and let
+	// the `visited` set silently truncate the traversal, so a cyclic pipeline
+	// ran a partial, order-dependent subset of its nodes and reported success.
+	if cyclic := cyclicNodes(def.Spec.Agents, outgoing, indegree); len(cyclic) > 0 {
+		return fmt.Errorf("%w: nodes %v", ErrPipelineCycle, cyclic)
 	}
 
 	visited := make(map[string]bool)
-	results := make(map[string]*NodeResult)
 
 	var walk func(id, input string) error
 	walk = func(id, input string) error {
@@ -174,7 +196,6 @@ func (p *PipelineExecutor) runGraph(def *types.PipelineDefinition, userMsg, sess
 			return fmt.Errorf("pipeline %q references unknown node id %q", def.Metadata.Name, id)
 		}
 		nr, err := p.invokeNode(def.Metadata.Name, node, input, sessionID)
-		results[id] = nr
 		res.Nodes = append(res.Nodes, nr)
 		if err != nil {
 			return err
@@ -190,7 +211,67 @@ func (p *PipelineExecutor) runGraph(def *types.PipelineDefinition, userMsg, sess
 		return nil
 	}
 
-	return walk(start, userMsg)
+	// Walk from every root (zero incoming edges), in definition order. The old
+	// code started from a single root, so a multi-root or disconnected DAG had
+	// every node outside the first root's reachable subgraph silently dropped
+	// from res.Nodes (F-PL-004). In an acyclic graph every node is reachable
+	// from some root, so the only nodes left unvisited are those deliberately
+	// pruned by an unmet edge `When` condition.
+	for _, n := range def.Spec.Agents {
+		if indegree[n.ID] == 0 {
+			if err := walk(n.ID, userMsg); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// cyclicNodes runs Kahn's algorithm over the node set and returns the ids
+// that cannot be peeled by repeatedly removing zero-indegree nodes — i.e.
+// the nodes in, or reachable only through, a cycle. An empty result means
+// the graph is acyclic. indegree is treated as read-only (a working copy
+// is used) so the caller can reuse it for root selection. The returned
+// list is in definition order for a stable error message.
+func cyclicNodes(agents []types.PipelineAgent, outgoing map[string][]types.PipelineEdge, indegree map[string]int) []string {
+	remaining := make(map[string]int, len(indegree))
+	for id, d := range indegree {
+		remaining[id] = d
+	}
+	queue := make([]string, 0, len(remaining))
+	for id, d := range remaining {
+		if d == 0 {
+			queue = append(queue, id)
+		}
+	}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		delete(remaining, id)
+		for _, e := range outgoing[id] {
+			if e.From == e.To {
+				continue
+			}
+			if _, ok := remaining[e.To]; !ok {
+				continue
+			}
+			remaining[e.To]--
+			if remaining[e.To] == 0 {
+				queue = append(queue, e.To)
+			}
+		}
+	}
+	if len(remaining) == 0 {
+		return nil
+	}
+	var cyclic []string
+	for _, n := range agents {
+		if _, ok := remaining[n.ID]; ok {
+			cyclic = append(cyclic, n.ID)
+			delete(remaining, n.ID) // de-dup if agents repeats an id
+		}
+	}
+	return cyclic
 }
 
 func (p *PipelineExecutor) invokeNode(pipelineName string, node types.PipelineAgent, input, sessionID string) (*NodeResult, error) {
