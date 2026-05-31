@@ -192,10 +192,24 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 		}
 
 		// 6. Process tool calls — resolve responses against tool definitions.
-		if len(resp.ToolCalls) > 0 && len(agent.Spec.Tools) > 0 {
+		// Best-effort by design: every result carries its own IsError/Error,
+		// so an unresolved or failed call surfaces to the client as an error
+		// *result* rather than failing the whole turn (mirroring how a real
+		// API returns tool calls whose execution failed). We log so the two
+		// silent-failure modes the old guard hid stay visible.
+		if len(resp.ToolCalls) > 0 {
+			if len(agent.Spec.Tools) == 0 {
+				// Misconfiguration: the scenario emitted tool calls but the
+				// agent defines no tools, so every call resolves to an error
+				// result below instead of being silently dropped.
+				e.Logger.Warn("scenario emitted tool calls but agent declares no tools",
+					"agent", agent.Metadata.Name,
+					"tool_calls", len(resp.ToolCalls),
+				)
+			}
 			results, err := e.ToolProcessor.ProcessToolCalls(resp.ToolCalls, agent.Spec.Tools)
 			if err != nil {
-				e.Logger.Warn("tool call processing error",
+				e.Logger.Warn("tool call processing returned errors (surfaced as error results)",
 					"agent", agent.Metadata.Name,
 					"error", err,
 				)

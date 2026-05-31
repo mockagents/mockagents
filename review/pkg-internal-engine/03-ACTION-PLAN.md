@@ -29,8 +29,9 @@ _None. (Two S0 candidates were refuted: F-PL-001/002 nil-deref is unreachable; t
 - [x] **Extract one type-aware scalar comparison** — `X-04` / `F-TP-001` / `F-TV-005` · effort:S · owner:claude · **DONE 2026-05-30**
   - Added shared `equalScalar(a,b)` + `toFloat` in `tool_validator.go`: numeric kinds (int/int32/int64/float32/float64) compare by value (`1 == 1.0`), everything else via `reflect.DeepEqual` (safe across mismatched kinds). `valuesEqual` (tool_processor) and `inEnum` (tool_validator) now both delegate to it; the duplicated `fmt.Sprintf("%v")` logic is gone.
   - **Done when:** ✅ `1 != "1"`, `true != "true"` in both match-rule and enum checks; `1 == 1.0` still matches. Tests: extended `TestValuesEqual`, new `TestEqualScalar_TypeAware` + `TestToolValidator_inEnum_TypeAware`. Full suite green.
-- [ ] **Fix tool-call swallow cases** — `F-EN-001` / `F-EN-002` · effort:S
-  - Warn (or process) when a scenario emits tool calls but the agent declares none; decide abort-vs-best-effort on `ProcessToolCalls` error and stop surfacing a failed resolution as success. **Done when:** both cases log/return distinctly; documented.
+- [x] **Fix tool-call swallow cases** — `F-EN-001` / `F-EN-002` · effort:S · owner:claude · **DONE 2026-05-30**
+  - Dropped the `&& len(agent.Spec.Tools) > 0` guard so tool calls are always processed; the no-tools misconfiguration now (a) logs a distinct warning and (b) surfaces each call as an error *result* (`TOOL_NOT_FOUND`) instead of silent-empty (F-EN-001). Documented the **best-effort** contract: per-call `IsError`/`Error` carry failures, the turn doesn't fail, and the error path logs "surfaced as error results" (F-EN-002).
+  - **Done when:** ✅ `TestEngine_ToolCallsWithoutToolDefs_SurfacedAsErrorResults` — turn succeeds, `ToolResults[0].IsError` + `TOOL_NOT_FOUND`. Full suite green.
 - [ ] **Validate object schemas that omit top-level `type`** — `F-TV-003` (+ `F-TV-001`/`F-TV-002`) · effort:M
   - Treat absent `type` with `properties`/`required` as an object; don't early-return on malformed `properties`; recurse nested schemas (or document the single-level limit). **Done when:** a `parameters` block without `type: object` still enforces `required`; tests in `F-TV-009`.
 - [ ] **Pipeline graph: detect cycles, don't drop nodes** — `F-PL-003` / `F-PL-004` / `F-PL-005` · effort:M

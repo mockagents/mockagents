@@ -60,6 +60,39 @@ func TestEngine_ProcessRequest_BasicFlow(t *testing.T) {
 	assert.Equal(t, "gpt-4o", resp.Model)
 }
 
+func TestEngine_ToolCallsWithoutToolDefs_SurfacedAsErrorResults(t *testing.T) {
+	// Scenario emits a tool call but the agent declares no tools (F-EN-001):
+	// the call must surface as an error result, not be silently dropped, and
+	// the turn still succeeds (best-effort, F-EN-002).
+	agent := &types.AgentDefinition{
+		Metadata: types.Metadata{Name: "no-tools"},
+		Spec: types.AgentSpec{
+			Behavior: types.BehaviorConfig{
+				Scenarios: []types.Scenario{{
+					Name: "default",
+					Response: types.ScenarioResponse{
+						Content:   "calling a tool",
+						ToolCalls: []types.ToolCallSpec{{Name: "search", Arguments: map[string]any{"q": "x"}}},
+					},
+				}},
+			},
+		},
+	}
+	eng := newTestEngine(agent)
+
+	resp, err := eng.ProcessRequest(&InboundRequest{
+		AgentName: "no-tools",
+		SessionID: "s1",
+		Messages:  []RequestMessage{{Role: "user", Content: "hi"}},
+	})
+	require.NoError(t, err) // turn succeeds...
+	require.Len(t, resp.ToolResults, 1)
+	assert.True(t, resp.ToolResults[0].IsError) // ...but the call is an error result
+	assert.Equal(t, "search", resp.ToolResults[0].ToolName)
+	require.NotNil(t, resp.ToolResults[0].Error)
+	assert.Equal(t, "TOOL_NOT_FOUND", resp.ToolResults[0].Error.Code)
+}
+
 func TestEngine_ProcessRequest_DefaultScenario(t *testing.T) {
 	eng := newTestEngine(fullAgent("test-agent", "gpt-4o"))
 
