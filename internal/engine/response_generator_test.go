@@ -116,6 +116,35 @@ func TestResponseGenerator_TemplateFunctions(t *testing.T) {
 			template: `{{lower "HELLO"}}`,
 			check:    func(t *testing.T, c string) { assert.Equal(t, "hello", c) },
 		},
+		{
+			name:     "title",
+			template: `{{title "hello WORLD"}}`,
+			check:    func(t *testing.T, c string) { assert.Equal(t, "Hello World", c) },
+		},
+		{
+			name:     "fake_phone",
+			template: "P: {{fake_phone}}",
+			check: func(t *testing.T, c string) {
+				p := strings.TrimPrefix(c, "P: ")
+				assert.Regexp(t, `^\(\d{3}\) 555-\d{4}$`, p)
+			},
+		},
+		{
+			name:     "fake_company",
+			template: "C: {{fake_company}}",
+			check: func(t *testing.T, c string) {
+				assert.Contains(t, c, "C: ")
+				assert.NotEqual(t, "C: ", c)
+			},
+		},
+		{
+			name:     "fake_username",
+			template: "U: {{fake_username}}",
+			check: func(t *testing.T, c string) {
+				u := strings.TrimPrefix(c, "U: ")
+				assert.Regexp(t, `^[a-z]+_[a-z]+\d{1,2}$`, u)
+			},
+		},
 	}
 
 	for _, tt := range tests {

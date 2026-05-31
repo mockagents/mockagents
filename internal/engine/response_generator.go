@@ -71,13 +71,17 @@ func NewResponseGenerator() *ResponseGenerator {
 		// String functions
 		"upper": strings.ToUpper,
 		"lower": strings.ToLower,
+		"title": title,
 
 		// Data functions
 		"to_json": toJSON,
 
 		// Fake data functions
-		"fake_name":  fakeName,
-		"fake_email": fakeEmail,
+		"fake_name":     fakeName,
+		"fake_email":    fakeEmail,
+		"fake_phone":    fakePhone,
+		"fake_company":  fakeCompany,
+		"fake_username": fakeUsername,
 	}
 	return g
 }
@@ -232,4 +236,41 @@ func fakeEmail() string {
 	domains := []string{"example.com", "test.com", "mock.dev", "acme.org"}
 	domain := domains[randomInt(0, len(domains)-1)]
 	return fmt.Sprintf("%s.%s@%s", first, last, domain)
+}
+
+// title upper-cases the first letter of each whitespace-separated word,
+// lower-casing the rest. A non-deprecated stand-in for strings.Title.
+func title(s string) string {
+	words := strings.Fields(s)
+	for i, w := range words {
+		words[i] = strings.ToUpper(w[:1]) + strings.ToLower(w[1:])
+	}
+	return strings.Join(words, " ")
+}
+
+// fakePhone returns a fake US-style phone number using a reserved 555 exchange.
+func fakePhone() string {
+	return fmt.Sprintf("(%03d) 555-%04d", randomInt(200, 999), randomInt(0, 9999))
+}
+
+var fakeCompanyRoots = []string{
+	"Acme", "Globex", "Initech", "Umbrella", "Hooli",
+	"Soylent", "Stark", "Wayne", "Wonka", "Cyberdyne",
+}
+
+var fakeCompanySuffixes = []string{
+	"Inc", "LLC", "Corp", "Group", "Labs", "Systems",
+}
+
+func fakeCompany() string {
+	root := fakeCompanyRoots[randomInt(0, len(fakeCompanyRoots)-1)]
+	suffix := fakeCompanySuffixes[randomInt(0, len(fakeCompanySuffixes)-1)]
+	return root + " " + suffix
+}
+
+// fakeUsername returns a fake username like "alice_smith42".
+func fakeUsername() string {
+	first := strings.ToLower(fakeFirstNames[randomInt(0, len(fakeFirstNames)-1)])
+	last := strings.ToLower(fakeLastNames[randomInt(0, len(fakeLastNames)-1)])
+	return fmt.Sprintf("%s_%s%d", first, last, randomInt(0, 99))
 }
