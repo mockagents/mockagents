@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -45,7 +46,7 @@ func TestChaosLatencyFixed(t *testing.T) {
 		Latency: &types.ChaosLatencyConfig{Distribution: "fixed", MinMs: 250},
 	})
 
-	inj.After(agent)
+	inj.After(context.Background(), agent)
 
 	if len(*sleeps) != 1 {
 		t.Fatalf("expected 1 sleep call, got %d", len(*sleeps))
@@ -62,7 +63,7 @@ func TestChaosLatencyUniformBounds(t *testing.T) {
 	})
 
 	for i := 0; i < 50; i++ {
-		inj.After(agent)
+		inj.After(context.Background(), agent)
 	}
 	if len(*sleeps) != 50 {
 		t.Fatalf("expected 50 sleeps, got %d", len(*sleeps))
@@ -80,7 +81,7 @@ func TestChaosErrorInjectionAlways(t *testing.T) {
 		Errors: &types.ChaosErrorConfig{Rate: 1.0, StatusCode: http.StatusInternalServerError},
 	})
 
-	err := inj.Before(agent)
+	err := inj.Before(context.Background(), agent)
 	ce := AsChaosError(err)
 	if ce == nil {
 		t.Fatalf("expected ChaosError, got %v", err)
@@ -95,7 +96,7 @@ func TestChaosErrorInjectionNever(t *testing.T) {
 	agent := agentWithChaos(&types.ChaosConfig{
 		Errors: &types.ChaosErrorConfig{Rate: 0.0, StatusCode: http.StatusInternalServerError},
 	})
-	if err := inj.Before(agent); err != nil {
+	if err := inj.Before(context.Background(), agent); err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}
 }
@@ -110,7 +111,7 @@ func TestChaosErrorStatusCodesPicked(t *testing.T) {
 	})
 	seen := make(map[int]bool)
 	for i := 0; i < 30; i++ {
-		err := inj.Before(agent)
+		err := inj.Before(context.Background(), agent)
 		ce := AsChaosError(err)
 		if ce == nil {
 			t.Fatalf("expected ChaosError at iter %d, got %v", i, err)
@@ -128,7 +129,7 @@ func TestChaosTimeoutSleepsAndErrors(t *testing.T) {
 		Errors: &types.ChaosErrorConfig{Rate: 1.0, Timeout: true, TimeoutMs: 750},
 	})
 
-	err := inj.Before(agent)
+	err := inj.Before(context.Background(), agent)
 	ce := AsChaosError(err)
 	if ce == nil || !ce.Timeout {
 		t.Fatalf("expected timeout ChaosError, got %v", err)
@@ -144,13 +145,13 @@ func TestChaosRateLimitBlocksAfterBudget(t *testing.T) {
 		RateLimit: &types.ChaosRateLimitConfig{Requests: 2, WindowMs: 1000},
 	})
 
-	if err := inj.Before(agent); err != nil {
+	if err := inj.Before(context.Background(), agent); err != nil {
 		t.Fatalf("request 1: %v", err)
 	}
-	if err := inj.Before(agent); err != nil {
+	if err := inj.Before(context.Background(), agent); err != nil {
 		t.Fatalf("request 2: %v", err)
 	}
-	err := inj.Before(agent)
+	err := inj.Before(context.Background(), agent)
 	ce := AsChaosError(err)
 	if ce == nil || ce.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("expected 429 ChaosError, got %v", err)
@@ -158,7 +159,7 @@ func TestChaosRateLimitBlocksAfterBudget(t *testing.T) {
 
 	// Advance past the window and the agent should be unblocked.
 	*nowPtr = nowPtr.Add(2 * time.Second)
-	if err := inj.Before(agent); err != nil {
+	if err := inj.Before(context.Background(), agent); err != nil {
 		t.Errorf("after window expired, got %v", err)
 	}
 }
@@ -209,5 +210,47 @@ func TestAsChaosErrorReturnsNilForOther(t *testing.T) {
 	}
 	if ce := AsChaosError(errors.New("plain")); ce != nil {
 		t.Errorf("plain -> want nil, got %v", ce)
+	}
+}
+
+// --- Context cancellation (review finding X-01) ---
+
+func TestChaos_AfterHonorsContextCancellation(t *testing.T) {
+	// Real injector (Sleep nil) so After uses the ctx-aware sleep path.
+	inj := &ChaosInjector{
+		RandSrc: rand.New(rand.NewSource(1)),
+		buckets: make(map[string]*rateBucket),
+	}
+	agent := &types.AgentDefinition{
+		Spec: types.AgentSpec{
+			Behavior: types.BehaviorConfig{
+				Chaos: &types.ChaosConfig{
+					Latency: &types.ChaosLatencyConfig{Distribution: "fixed", MinMs: 10_000},
+				},
+			},
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancelled before the sleep starts
+
+	start := time.Now()
+	inj.After(ctx, agent)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("After ignored cancellation: blocked %s of a 10s latency", elapsed)
+	}
+}
+
+func TestEngine_CancelledContextShortCircuits(t *testing.T) {
+	e := newTurnEchoEngine(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := e.ProcessRequestContext(ctx, &InboundRequest{
+		AgentName: "echo",
+		Messages:  []RequestMessage{{Role: "user", Content: "hi"}},
+		SessionID: "s",
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled request: got err = %v, want context.Canceled", err)
 	}
 }

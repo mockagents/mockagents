@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -10,6 +11,12 @@ import (
 
 	"github.com/mockagents/mockagents/internal/types"
 )
+
+// maxChaosLatencyMs caps a single injected latency draw so a misconfigured
+// or long-tailed (normal-distribution) value cannot block a request
+// goroutine for minutes. Combined with ctx-aware sleeping, injected
+// latency is always bounded and cancellable.
+const maxChaosLatencyMs = 60_000
 
 // ChaosError is returned by ChaosInjector when an agent is configured to
 // inject a fault before or after response generation. HTTP handlers unwrap
@@ -53,13 +60,33 @@ type ChaosInjector struct {
 }
 
 // NewChaosInjector returns an injector that uses the real wall clock and a
-// time-seeded math/rand source.
+// time-seeded math/rand source. Sleep is left nil so the real, ctx-aware
+// sleep path is used; tests may set Sleep to a deterministic recorder.
 func NewChaosInjector() *ChaosInjector {
 	return &ChaosInjector{
 		Now:     time.Now,
-		Sleep:   time.Sleep,
 		RandSrc: rand.New(rand.NewSource(time.Now().UnixNano())),
 		buckets: make(map[string]*rateBucket),
+	}
+}
+
+// sleep blocks for d, but returns early if ctx is cancelled. When a Sleep
+// hook is set (tests) it is used as-is for deterministic, non-blocking
+// behavior; the hook does not observe ctx, which is fine because cancel
+// tests use the real path.
+func (c *ChaosInjector) sleep(ctx context.Context, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	if c.Sleep != nil {
+		c.Sleep(d)
+		return
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
 	}
 }
 
@@ -73,7 +100,7 @@ type rateBucket struct {
 // Before evaluates rate-limit and error-injection rules that must run prior
 // to response generation. When it returns a ChaosError the engine should
 // abort the request with that error as-is.
-func (c *ChaosInjector) Before(agent *types.AgentDefinition) error {
+func (c *ChaosInjector) Before(ctx context.Context, agent *types.AgentDefinition) error {
 	cfg := chaosFor(agent)
 	if cfg == nil {
 		return nil
@@ -84,7 +111,7 @@ func (c *ChaosInjector) Before(agent *types.AgentDefinition) error {
 		}
 	}
 	if cfg.Errors != nil && cfg.Errors.Rate > 0 {
-		if err := c.maybeInjectError(cfg.Errors); err != nil {
+		if err := c.maybeInjectError(ctx, cfg.Errors); err != nil {
 			return err
 		}
 	}
@@ -94,15 +121,12 @@ func (c *ChaosInjector) Before(agent *types.AgentDefinition) error {
 // After sleeps for the configured latency distribution. Called once response
 // generation has completed successfully, so latency is visible to clients
 // without blocking error injection above.
-func (c *ChaosInjector) After(agent *types.AgentDefinition) {
+func (c *ChaosInjector) After(ctx context.Context, agent *types.AgentDefinition) {
 	cfg := chaosFor(agent)
 	if cfg == nil || cfg.Latency == nil {
 		return
 	}
-	d := c.sampleLatency(cfg.Latency)
-	if d > 0 {
-		c.Sleep(d)
-	}
+	c.sleep(ctx, c.sampleLatency(cfg.Latency))
 }
 
 // chaosFor returns the effective chaos config for an agent, or nil when
@@ -154,14 +178,19 @@ func (c *ChaosInjector) sampleLatency(l *types.ChaosLatencyConfig) time.Duration
 		if ms < 0 {
 			ms = 0
 		}
+		if ms > maxChaosLatencyMs {
+			ms = maxChaosLatencyMs
+		}
 		return time.Duration(ms) * time.Millisecond
 	default:
 		return time.Duration(l.MinMs) * time.Millisecond
 	}
 }
 
-// maybeInjectError returns a *ChaosError with probability Rate.
-func (c *ChaosInjector) maybeInjectError(e *types.ChaosErrorConfig) error {
+// maybeInjectError returns a *ChaosError with probability Rate. When the
+// timeout fault is selected it sleeps for the configured duration, cut
+// short if ctx is cancelled.
+func (c *ChaosInjector) maybeInjectError(ctx context.Context, e *types.ChaosErrorConfig) error {
 	c.mu.Lock()
 	draw := c.RandSrc.Float64()
 	c.mu.Unlock()
@@ -171,9 +200,7 @@ func (c *ChaosInjector) maybeInjectError(e *types.ChaosErrorConfig) error {
 
 	if e.Timeout {
 		timeout := time.Duration(e.TimeoutMs) * time.Millisecond
-		if timeout > 0 {
-			c.Sleep(timeout)
-		}
+		c.sleep(ctx, timeout)
 		return &ChaosError{
 			StatusCode: http.StatusGatewayTimeout,
 			Message:    "request timed out",

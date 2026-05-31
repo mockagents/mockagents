@@ -101,10 +101,17 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 		)
 	}
 
+	// Bail out cheaply if the client already cancelled or timed out before
+	// we do any work (chaos sleeps, matching, generation).
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	// 1a. Chaos injection runs before any work so 429s and injected errors
-	// are cheap and latency is tacked on at the end.
+	// are cheap and latency is tacked on at the end. Injected sleeps honor
+	// ctx cancellation (see ChaosInjector.sleep).
 	if e.Chaos != nil {
-		if chaosErr := e.Chaos.Before(agent); chaosErr != nil {
+		if chaosErr := e.Chaos.Before(ctx, agent); chaosErr != nil {
 			e.Logger.Info("chaos injected", "agent", agent.Metadata.Name, "error", chaosErr)
 			if traceOn {
 				observability.RecordError(span, chaosErr)
@@ -112,7 +119,6 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 			return nil, chaosErr
 		}
 	}
-	_ = ctx
 
 	// 2. Extract latest user message.
 	userMsg := latestUserMessage(req.Messages)
@@ -217,8 +223,9 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 
 	// 8. Inject latency now that the real work is done. Sleeping here keeps
 	// behavior visible to clients without blocking error injection above.
+	// The sleep is cut short if the client cancels.
 	if e.Chaos != nil {
-		e.Chaos.After(agent)
+		e.Chaos.After(ctx, agent)
 	}
 
 	return resp, nil

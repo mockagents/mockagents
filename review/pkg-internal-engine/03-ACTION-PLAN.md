@@ -20,10 +20,12 @@ _None. (Two S0 candidates were refuted: F-PL-001/002 nil-deref is unreachable; t
 
 - [x] **Key sessions by agent (and tenant) — stop `GetOrCreate` ignoring `agentName`** — `X-03` · effort:S · owner:claude · **DONE 2026-05-30**
   - `scopedSessionKey(tenantID, agentName, sessionID)` now includes the agent (`tenant\x00agent\x00session`). Pipelines were already per-node-scoped (`pipeline.go:202`), so nothing relied on cross-agent session sharing. **Done when:** ✅ `TestEngine_SessionsIsolatedAcrossAgents` (two agents reusing one `session_id` stay independent; regression-verified — fails `turn=3` when the agent component is dropped). Full suite green.
-- [ ] **Thread `context` through the engine pipeline + chaos sleeps** — `X-01` / `F-EN-004` / `F-CH-001` · effort:M
-  - Pass `ctx` into `ApplyTurn`/`Generator`/`ProcessToolCalls`/`Save` and `Chaos.Before/After`; sleep via `select { case <-time.After(d): case <-ctx.Done(): }`; add `ctx` to pipeline `Run`. **Done when:** a cancelled request aborts before/at the next turn boundary and injected latency returns early on cancel.
-- [ ] **Clamp unbounded sleeps/allocations from config** — `F-CH-002` + `F-RG-002` · effort:S
-  - Cap normal-distribution latency to a max; clamp/guard `random_string` length (`length<=0`→"", cap ~4096). **Done when:** a pathological `stddev_ms`/`random_string N` can't block seconds / allocate GBs.
+- [x] **Honor request cancellation — ctx-aware chaos sleeps + early-out** — `X-01` / `F-EN-004` / `F-CH-001` · effort:M · owner:claude · **DONE 2026-05-30**
+  - `Chaos.Before/After` now take `ctx`; injected latency/timeout sleep via `select { <-timer.C / <-ctx.Done() }` (`ChaosInjector.sleep`). Engine adds a cheap `ctx.Err()` early-out before any work and passes `ctx` to chaos. Also removed the dead `_ = ctx` (F-EN-003).
+  - **Scope boundary (deliberate):** did **not** thread `ctx` into `Matcher`/`Generator`/`ProcessToolCalls`/`Save` — those are CPU-bound and non-blocking, so a ctx check there is noise; the single early-out + cancellable sleeps cover the real blocking paths. Pipeline `Run` ctx (`F-PL-009`) is still **open** (separable, low value).
+  - **Done when:** ✅ `TestChaos_AfterHonorsContextCancellation` (10 s latency returns <1 s on cancel) and `TestEngine_CancelledContextShortCircuits` (returns `context.Canceled`). Full suite green.
+- [x] **Clamp unbounded chaos latency** — `F-CH-002` · effort:S · **DONE 2026-05-30** — normal-distribution draw capped at `maxChaosLatencyMs` (60 s). _(`F-RG-002` `random_string` length clamp is **still open** — separate file, P2 below.)_
+- [ ] **Clamp `random_string` length** — `F-RG-002` · effort:S — guard `length<=0`→"" and cap (~4096) in `response_generator.go`. **Done when:** `{{ random_string 1e9 }}` can't allocate GBs.
 - [ ] **Extract one type-aware scalar comparison** — `X-04` / `F-TP-001` / `F-TV-005` · effort:S
   - Replace both `fmt.Sprintf("%v",…)` compares with a shared `equalScalar` (numeric→float compare, else typed). **Done when:** `1 != "1"` and `true != "true"` in both match-rule and enum checks, with a test.
 - [ ] **Fix tool-call swallow cases** — `F-EN-001` / `F-EN-002` · effort:S
@@ -44,7 +46,7 @@ _None. (Two S0 candidates were refuted: F-PL-001/002 nil-deref is unreachable; t
 
 ## P3 — Opportunistic (cheap, low-risk)
 
-- [ ] `F-EN-003` remove dead `_ = ctx` · `F-EN-009` remove dead `resolveAgent` + stale comment · `F-TP-002` dead `&& !rule.IsDefault` · `F-TP-006` unused `ErrNoToolResponse` · `F-TV-008` unused `FormatValidationError` · `F-SM-006` dead guard — **dead-code sweep**, effort:S total.
+- [ ] ~~`F-EN-003` remove dead `_ = ctx`~~ ✅ (done with X-01) · `F-EN-009` remove dead `resolveAgent` + stale comment · `F-TP-002` dead `&& !rule.IsDefault` · `F-TP-006` unused `ErrNoToolResponse` · `F-TV-008` unused `FormatValidationError` · `F-SM-006` dead guard — **dead-code sweep**, effort:S total.
 - [ ] `F-ST-004`/`X-06` remove redundant `Save` · `F-ST-006`/`F-ST-007` document aliasing + key on `id` · `F-SS-003` single `time.Now()` · `F-SS-006` clamp `NewSession` ttl=0 · `F-SS-001` document closure re-entry rule.
 - [ ] `F-RG-003`/`F-RG-008` document quantized/floor behavior · `F-RG-007` restrict `to_json` · `F-RG-001` bound template cache (or assert author-static) · `F-RG-004` decide `missingkey` policy.
 - [ ] `F-CH-003` lock only around RNG draws · `F-CH-004` clamp `rate` · `F-CH-006` note bucket growth · `F-AR-004`/`F-PR-002` nil-`def` guards · `F-PR-003` note List cost · `F-RM-001` reword "clears".
