@@ -176,6 +176,31 @@ func TestToolValidator_EnumConstraint(t *testing.T) {
 	assert.Contains(t, errs[0], "not in allowed values")
 }
 
+func TestEqualScalar_TypeAware(t *testing.T) {
+	// Numeric kinds coerce by value (YAML int vs JSON float64).
+	assert.True(t, equalScalar(1, 1.0))
+	assert.True(t, equalScalar(int64(7), 7.0))
+	assert.True(t, equalScalar(float64(3), int32(3)))
+	// Cross-kind must never match (review finding X-04).
+	assert.False(t, equalScalar(1, "1"))
+	assert.False(t, equalScalar(true, "true"))
+	assert.False(t, equalScalar("red", 0))
+	// Same kind compares normally.
+	assert.True(t, equalScalar("red", "red"))
+	assert.False(t, equalScalar("red", "blue"))
+}
+
+func TestToolValidator_inEnum_TypeAware(t *testing.T) {
+	v := NewToolValidator()
+	// JSON-decoded float64 arg matches an int enum entry by value.
+	assert.True(t, v.inEnum(2.0, []any{1, 2, 3}))
+	// But the string "2" must NOT match a numeric enum (was a bug).
+	assert.False(t, v.inEnum("2", []any{1, 2, 3}))
+	// String enums are unaffected.
+	assert.True(t, v.inEnum("green", []any{"red", "green", "blue"}))
+	assert.False(t, v.inEnum("purple", []any{"red", "green", "blue"}))
+}
+
 func TestToolValidator_StringMinMaxLength(t *testing.T) {
 	v := NewToolValidator()
 	schema := objectSchema(

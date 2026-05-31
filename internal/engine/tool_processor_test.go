@@ -343,6 +343,18 @@ func TestValuesEqual(t *testing.T) {
 	assert.True(t, valuesEqual(true, true))
 	assert.False(t, valuesEqual("hello", "world"))
 	assert.False(t, valuesEqual(1, 2))
+
+	// Numeric kinds coerce by value (legit YAML int vs JSON float64).
+	assert.True(t, valuesEqual(1, 1.0))
+	assert.True(t, valuesEqual(int64(5), 5.0))
+	assert.True(t, valuesEqual(float64(2), int32(2)))
+
+	// X-04: kinds must NOT be conflated by stringification.
+	assert.False(t, valuesEqual(1, "1"))
+	assert.False(t, valuesEqual("1", 1))
+	assert.False(t, valuesEqual(true, "true"))
+	assert.False(t, valuesEqual("true", true))
+	assert.False(t, valuesEqual(0, false))
 }
 
 // --- generateToolCallID ---

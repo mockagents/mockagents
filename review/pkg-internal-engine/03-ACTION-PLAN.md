@@ -26,8 +26,9 @@ _None. (Two S0 candidates were refuted: F-PL-001/002 nil-deref is unreachable; t
   - **Done when:** ✅ `TestChaos_AfterHonorsContextCancellation` (10 s latency returns <1 s on cancel) and `TestEngine_CancelledContextShortCircuits` (returns `context.Canceled`). Full suite green.
 - [x] **Clamp unbounded chaos latency** — `F-CH-002` · effort:S · **DONE 2026-05-30** — normal-distribution draw capped at `maxChaosLatencyMs` (60 s). _(`F-RG-002` `random_string` length clamp is **still open** — separate file, P2 below.)_
 - [ ] **Clamp `random_string` length** — `F-RG-002` · effort:S — guard `length<=0`→"" and cap (~4096) in `response_generator.go`. **Done when:** `{{ random_string 1e9 }}` can't allocate GBs.
-- [ ] **Extract one type-aware scalar comparison** — `X-04` / `F-TP-001` / `F-TV-005` · effort:S
-  - Replace both `fmt.Sprintf("%v",…)` compares with a shared `equalScalar` (numeric→float compare, else typed). **Done when:** `1 != "1"` and `true != "true"` in both match-rule and enum checks, with a test.
+- [x] **Extract one type-aware scalar comparison** — `X-04` / `F-TP-001` / `F-TV-005` · effort:S · owner:claude · **DONE 2026-05-30**
+  - Added shared `equalScalar(a,b)` + `toFloat` in `tool_validator.go`: numeric kinds (int/int32/int64/float32/float64) compare by value (`1 == 1.0`), everything else via `reflect.DeepEqual` (safe across mismatched kinds). `valuesEqual` (tool_processor) and `inEnum` (tool_validator) now both delegate to it; the duplicated `fmt.Sprintf("%v")` logic is gone.
+  - **Done when:** ✅ `1 != "1"`, `true != "true"` in both match-rule and enum checks; `1 == 1.0` still matches. Tests: extended `TestValuesEqual`, new `TestEqualScalar_TypeAware` + `TestToolValidator_inEnum_TypeAware`. Full suite green.
 - [ ] **Fix tool-call swallow cases** — `F-EN-001` / `F-EN-002` · effort:S
   - Warn (or process) when a scenario emits tool calls but the agent declares none; decide abort-vs-best-effort on `ProcessToolCalls` error and stop surfacing a failed resolution as success. **Done when:** both cases log/return distinctly; documented.
 - [ ] **Validate object schemas that omit top-level `type`** — `F-TV-003` (+ `F-TV-001`/`F-TV-002`) · effort:M

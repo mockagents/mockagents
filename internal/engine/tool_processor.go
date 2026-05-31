@@ -188,14 +188,11 @@ func matchArgs(match, args map[string]any) bool {
 	return true
 }
 
-// valuesEqual compares two values for equality, handling type coercions
-// common in YAML/JSON (e.g., int vs float64).
+// valuesEqual compares an expected match value against an actual tool-call
+// argument. It coerces across numeric kinds (int vs float64) but does not
+// conflate a number with its string form — see equalScalar (X-04).
 func valuesEqual(expected, actual any) bool {
-	// Direct equality.
-	if fmt.Sprintf("%v", expected) == fmt.Sprintf("%v", actual) {
-		return true
-	}
-	return false
+	return equalScalar(expected, actual)
 }
 
 func indexTools(tools []types.ToolDefinition) map[string]*types.ToolDefinition {

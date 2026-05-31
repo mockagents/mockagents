@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/mockagents/mockagents/internal/types"
@@ -164,13 +165,50 @@ func (v *ToolValidator) checkType(name string, val any, expectedType string) str
 }
 
 func (v *ToolValidator) inEnum(val any, allowed []any) bool {
-	valStr := fmt.Sprintf("%v", val)
 	for _, a := range allowed {
-		if fmt.Sprintf("%v", a) == valStr {
+		if equalScalar(a, val) {
 			return true
 		}
 	}
 	return false
+}
+
+// equalScalar reports whether two decoded JSON/YAML values are equal.
+// All numeric kinds (int, int32, int64, float32, float64) compare by
+// value, so 1 == 1.0 — the legitimate int-vs-float coercion. But kinds
+// are never conflated: a number never equals a string, and a bool never
+// equals the string "true". This replaces the previous
+// fmt.Sprintf("%v") comparison, which matched 1 == "1" and true ==
+// "true" (review finding X-04).
+func equalScalar(a, b any) bool {
+	if af, ok := toFloat(a); ok {
+		bf, ok := toFloat(b)
+		return ok && af == bf
+	}
+	if _, ok := toFloat(b); ok {
+		return false // non-number vs number
+	}
+	// Neither is numeric: DeepEqual handles strings, bools, and nested
+	// arrays/objects, and returns false across mismatched dynamic types.
+	return reflect.DeepEqual(a, b)
+}
+
+// toFloat returns the float value of any numeric kind decoded from
+// JSON/YAML, and false for non-numeric values.
+func toFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case int:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case float32:
+		return float64(n), true
+	case float64:
+		return n, true
+	}
+	return 0, false
 }
 
 func getPropertyNames(schema types.JSONSchemaObject) map[string]bool {
