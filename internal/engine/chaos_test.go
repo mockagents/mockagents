@@ -75,6 +75,46 @@ func TestChaosLatencyUniformBounds(t *testing.T) {
 	}
 }
 
+func TestClampUnitInterval(t *testing.T) {
+	// F-CH-004: probabilities must be bounded to [0,1].
+	cases := []struct{ in, want float64 }{
+		{-0.5, 0}, {0, 0}, {0.3, 0.3}, {1, 1}, {1.5, 1}, {1e9, 1},
+	}
+	for _, c := range cases {
+		if got := clampUnitInterval(c.in); got != c.want {
+			t.Errorf("clampUnitInterval(%v) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestChaosLatencyNormalCappedAndNonNegative(t *testing.T) {
+	// Exercises the restructured normal branch (F-CH-003 lock narrowing)
+	// plus the F-CH-002 upper clamp. A mean far above the cap must produce
+	// exactly maxChaosLatencyMs; a zero-mean distribution must never sleep
+	// for a negative duration.
+	injHigh, sleepsHigh, _ := newChaosInjectorForTest(7)
+	high := agentWithChaos(&types.ChaosConfig{
+		Latency: &types.ChaosLatencyConfig{Distribution: "normal", MeanMs: 10_000_000, StddevMs: 1},
+	})
+	injHigh.After(context.Background(), high)
+	if got := (*sleepsHigh)[0]; got != maxChaosLatencyMs*time.Millisecond {
+		t.Errorf("capped normal sleep = %s, want %dms", got, maxChaosLatencyMs)
+	}
+
+	injZero, sleepsZero, _ := newChaosInjectorForTest(7)
+	zero := agentWithChaos(&types.ChaosConfig{
+		Latency: &types.ChaosLatencyConfig{Distribution: "normal", MeanMs: 0, StddevMs: 1000},
+	})
+	for i := 0; i < 50; i++ {
+		injZero.After(context.Background(), zero)
+	}
+	for i, s := range *sleepsZero {
+		if s < 0 {
+			t.Errorf("normal sleep %d = %s is negative", i, s)
+		}
+	}
+}
+
 func TestChaosErrorInjectionAlways(t *testing.T) {
 	inj, _, _ := newChaosInjectorForTest(1)
 	agent := agentWithChaos(&types.ChaosConfig{

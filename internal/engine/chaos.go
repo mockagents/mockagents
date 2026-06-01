@@ -56,6 +56,10 @@ type ChaosInjector struct {
 	Sleep   func(time.Duration)
 	RandSrc *rand.Rand
 	mu      sync.Mutex
+	// buckets holds one rolling-window counter per agent name. It grows by
+	// at most one entry per rate-limited agent and is never pruned (F-CH-006);
+	// that is bounded by the number of configured agents (a fixed, small
+	// set), not by request volume, so unbounded growth is not a concern.
 	buckets map[string]*rateBucket
 }
 
@@ -151,6 +155,18 @@ func hasAnyChaosSection(cfg *types.ChaosConfig) bool {
 	return cfg.Latency != nil || cfg.Errors != nil || cfg.RateLimit != nil
 }
 
+// clampUnitInterval bounds a probability to [0,1] so an out-of-range
+// config value can't silently flip a rate into always/never.
+func clampUnitInterval(r float64) float64 {
+	if r < 0 {
+		return 0
+	}
+	if r > 1 {
+		return 1
+	}
+	return r
+}
+
 // sampleLatency draws a delay from the configured distribution.
 func (c *ChaosInjector) sampleLatency(l *types.ChaosLatencyConfig) time.Duration {
 	dist := l.Distribution
@@ -162,8 +178,11 @@ func (c *ChaosInjector) sampleLatency(l *types.ChaosLatencyConfig) time.Duration
 		}
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// Lock only around the RandSrc draws (F-CH-003): the fixed/default
+	// branches use no randomness, so serializing them on c.mu needlessly
+	// blocked concurrent requests. math/rand's Rand is not safe for
+	// concurrent use, so the uniform/normal draws still take the lock — but
+	// for the minimum span: a single Intn/NormFloat64 call.
 	switch dist {
 	case "fixed":
 		return time.Duration(l.MinMs) * time.Millisecond
@@ -172,9 +191,15 @@ func (c *ChaosInjector) sampleLatency(l *types.ChaosLatencyConfig) time.Duration
 			return time.Duration(l.MinMs) * time.Millisecond
 		}
 		span := l.MaxMs - l.MinMs
-		return time.Duration(l.MinMs+c.RandSrc.Intn(span+1)) * time.Millisecond
+		c.mu.Lock()
+		n := c.RandSrc.Intn(span + 1)
+		c.mu.Unlock()
+		return time.Duration(l.MinMs+n) * time.Millisecond
 	case "normal":
-		ms := c.RandSrc.NormFloat64()*float64(l.StddevMs) + float64(l.MeanMs)
+		c.mu.Lock()
+		norm := c.RandSrc.NormFloat64()
+		c.mu.Unlock()
+		ms := norm*float64(l.StddevMs) + float64(l.MeanMs)
 		if ms < 0 {
 			ms = 0
 		}
@@ -191,10 +216,14 @@ func (c *ChaosInjector) sampleLatency(l *types.ChaosLatencyConfig) time.Duration
 // timeout fault is selected it sleeps for the configured duration, cut
 // short if ctx is cancelled.
 func (c *ChaosInjector) maybeInjectError(ctx context.Context, e *types.ChaosErrorConfig) error {
+	// Clamp Rate to [0,1] (F-CH-004): an out-of-range rate otherwise
+	// silently means "always" (>1) or "never" (<0). Since draw is in
+	// [0,1), a clamped rate of 1 always injects and 0 never does.
+	rate := clampUnitInterval(e.Rate)
 	c.mu.Lock()
 	draw := c.RandSrc.Float64()
 	c.mu.Unlock()
-	if draw >= e.Rate {
+	if draw >= rate {
 		return nil
 	}
 
