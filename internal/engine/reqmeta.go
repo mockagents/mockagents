@@ -28,10 +28,13 @@ type RequestMeta struct {
 type tenantKey struct{}
 
 // WithTenantID returns a new context that carries the given tenant
-// id. Empty string clears any previous value. Used by adapter
-// handlers and the management-API handlers when a request can be
-// associated with a tenant (either via an authenticated principal
-// or an opt-in `X-Mockagents-Tenant` header).
+// id. Passing "" does not remove a previously stored id — context
+// values are immutable, so it layers an empty value that shadows the
+// old one; TenantIDFromContext then reads back "", which the registry
+// treats as no tenant (global agents only). Used by adapter handlers
+// and the management-API handlers when a request can be associated
+// with a tenant (either via an authenticated principal or an opt-in
+// `X-Mockagents-Tenant` header).
 func WithTenantID(ctx context.Context, tenantID string) context.Context {
 	return context.WithValue(ctx, tenantKey{}, tenantID)
 }
