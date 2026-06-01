@@ -75,6 +75,24 @@ func TestChaosLatencyUniformBounds(t *testing.T) {
 	}
 }
 
+func TestChaosLatencyUniformDegradesToFixed(t *testing.T) {
+	// F-CH-005: an explicit "uniform" with MaxMs <= MinMs returns MinMs
+	// (silently behaves like "fixed") rather than erroring.
+	for _, tc := range []struct{ min, max, want int }{
+		{200, 100, 200}, // mis-ordered
+		{150, 150, 150}, // single value
+	} {
+		inj, sleeps, _ := newChaosInjectorForTest(1)
+		agent := agentWithChaos(&types.ChaosConfig{
+			Latency: &types.ChaosLatencyConfig{Distribution: "uniform", MinMs: tc.min, MaxMs: tc.max},
+		})
+		inj.After(context.Background(), agent)
+		if got := (*sleeps)[0]; got != time.Duration(tc.want)*time.Millisecond {
+			t.Errorf("uniform(min=%d,max=%d) = %s, want %dms", tc.min, tc.max, got, tc.want)
+		}
+	}
+}
+
 func TestClampUnitInterval(t *testing.T) {
 	// F-CH-004: probabilities must be bounded to [0,1].
 	cases := []struct{ in, want float64 }{

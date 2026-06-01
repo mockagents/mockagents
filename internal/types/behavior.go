@@ -23,9 +23,9 @@ type MatchRule struct {
 
 // ScenarioResponse is the response produced when a scenario matches.
 type ScenarioResponse struct {
-	Content   string            `yaml:"content" json:"content"`
-	ToolCalls []ToolCallSpec    `yaml:"tool_calls,omitempty" json:"tool_calls,omitempty"`
-	Metadata  map[string]any    `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	Content   string         `yaml:"content" json:"content"`
+	ToolCalls []ToolCallSpec `yaml:"tool_calls,omitempty" json:"tool_calls,omitempty"`
+	Metadata  map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
 // ToolCallSpec describes a tool call the agent should simulate in a response.
@@ -64,10 +64,12 @@ type ChaosLatencyConfig struct {
 }
 
 // ChaosErrorConfig defines random error injection.
-// Rate is a probability in [0.0, 1.0]; StatusCode/StatusCodes/Types select
-// the error surface. When StatusCodes is set, one is picked uniformly per
-// injected error. Timeout forces the request to sleep past Timeouts.AfterMs
-// and return a synthetic timeout error.
+// Rate is a probability in [0.0, 1.0]. StatusCode and StatusCodes select
+// the error surface: when StatusCodes is set one is picked uniformly per
+// injected error, otherwise StatusCode is used (defaulting to 500). Message
+// overrides the body text (defaults to the status text). When Timeout is
+// true the request goroutine BLOCKS for TimeoutMs — a real sleep, cut short
+// only by request-context cancellation — and then returns a synthetic 504.
 type ChaosErrorConfig struct {
 	Rate        float64 `yaml:"rate,omitempty" json:"rate,omitempty"`
 	StatusCode  int     `yaml:"status_code,omitempty" json:"status_code,omitempty"`

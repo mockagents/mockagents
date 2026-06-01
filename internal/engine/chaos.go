@@ -168,6 +168,12 @@ func clampUnitInterval(r float64) float64 {
 }
 
 // sampleLatency draws a delay from the configured distribution.
+//
+// Degenerate ranges fall back rather than erroring (F-CH-005): an explicit
+// "uniform" with MaxMs <= MinMs returns MinMs — i.e. it silently acts like
+// "fixed" — and "normal" with StddevMs == 0 collapses to MeanMs. So a
+// mis-ordered or single-value range still produces a sensible fixed delay
+// instead of a panic or validation failure.
 func (c *ChaosInjector) sampleLatency(l *types.ChaosLatencyConfig) time.Duration {
 	dist := l.Distribution
 	if dist == "" {
@@ -213,8 +219,10 @@ func (c *ChaosInjector) sampleLatency(l *types.ChaosLatencyConfig) time.Duration
 }
 
 // maybeInjectError returns a *ChaosError with probability Rate. When the
-// timeout fault is selected it sleeps for the configured duration, cut
-// short if ctx is cancelled.
+// timeout fault is selected it BLOCKS the calling request goroutine for the
+// full TimeoutMs before returning the 504 (F-CH-007) — this is a real sleep
+// on the request's critical path, not a deadline annotation. It is cut short
+// only if ctx is cancelled (e.g. the client disconnects).
 func (c *ChaosInjector) maybeInjectError(ctx context.Context, e *types.ChaosErrorConfig) error {
 	// Clamp Rate to [0,1] (F-CH-004): an out-of-range rate otherwise
 	// silently means "always" (>1) or "never" (<0). Since draw is in
