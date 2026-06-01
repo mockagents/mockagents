@@ -19,8 +19,16 @@ func NewPipelineRegistry() *PipelineRegistry {
 	return &PipelineRegistry{pipelines: make(map[string]*types.PipelineDefinition)}
 }
 
-// Register adds or replaces a pipeline definition.
+// Register adds or replaces a pipeline definition. A nil def or one with
+// an empty Metadata.Name is ignored (F-PR-002): the nil case would panic
+// on the Name deref under the write lock, and an empty name would key the
+// pipeline under "" where it shadows any other unnamed pipeline and can
+// never be looked up. Callers validate first, so this only guards
+// programmatic misuse.
 func (r *PipelineRegistry) Register(def *types.PipelineDefinition) {
+	if def == nil || def.Metadata.Name == "" {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.pipelines[def.Metadata.Name] = def

@@ -95,6 +95,16 @@ func TestAgentRegistry_Replace(t *testing.T) {
 	assert.Equal(t, 1, r.Count())
 }
 
+func TestAgentRegistry_RegisterNilIgnored(t *testing.T) {
+	// F-AR-004: a nil def must not panic on the Name deref under the lock.
+	r := NewAgentRegistry()
+	assert.NotPanics(t, func() { r.Register(nil) })
+	assert.Equal(t, 0, r.Count())
+	// A real agent still registers normally afterwards.
+	r.Register(makeAgent("ok", "m"))
+	assert.Equal(t, 1, r.Count())
+}
+
 func TestAgentRegistry_ConcurrentAccess(t *testing.T) {
 	r := NewAgentRegistry()
 	var wg sync.WaitGroup

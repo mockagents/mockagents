@@ -31,6 +31,13 @@ func NewAgentRegistry() *AgentRegistry {
 // same name is being replaced, its previous model entry is cleared
 // first so stale model mappings never leak.
 func (r *AgentRegistry) Register(def *types.AgentDefinition) {
+	// Guard before locking (F-AR-004): a nil def would panic on the
+	// def.Metadata.Name deref below — under the write lock — taking down
+	// the request that triggered the reload. Callers validate first, so
+	// this only fires on a programmatic misuse; drop it silently.
+	if def == nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if prev, ok := r.agents[def.Metadata.Name]; ok && prev.Spec.Model != "" {

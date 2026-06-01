@@ -289,6 +289,14 @@ func (p *PipelineExecutor) invokeNode(pipelineName string, node types.PipelineAg
 	start := time.Now()
 	resp, err := p.Engine.ProcessRequest(req)
 	latency := time.Since(start)
+	// Defensive (F-PL-001/002): callers read nr.Response.Content directly,
+	// so a nil Response with no error would nil-deref. ProcessRequest is
+	// expected to always return a non-nil resp on success (ApplyTurn
+	// guarantees it), but if that invariant ever breaks, surface it as a
+	// node error here — the error paths return before any deref.
+	if err == nil && resp == nil {
+		err = fmt.Errorf("pipeline %q node %q: engine returned no response", pipelineName, node.ID)
+	}
 	return &NodeResult{
 		NodeID:    node.ID,
 		AgentName: node.Ref,
