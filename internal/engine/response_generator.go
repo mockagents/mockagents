@@ -113,11 +113,23 @@ func (g *ResponseGenerator) renderContent(content string, ctx TemplateContext) (
 		return content, nil
 	}
 
-	// Check template cache.
+	// Template cache (F-RG-001): keyed on the full content string and never
+	// evicted. This is safe because `content` is always a scenario's
+	// authored response body — a finite, static set loaded from YAML, never
+	// per-request data — so the cache is bounded by the number of distinct
+	// scenario templates. If a future caller ever passes content that
+	// interpolates request data, the key space becomes unbounded and this
+	// sync.Map must be swapped for a bounded/LRU cache.
 	var tmpl *template.Template
 	if cached, ok := g.cache.Load(content); ok {
 		tmpl = cached.(*template.Template)
 	} else {
+		// Missing-key policy (F-RG-004): intentionally lenient — no
+		// Option("missingkey=error"), so {{ .Vars.absent }} renders the
+		// stdlib default "<no value>" instead of failing the turn. A mock
+		// server favors fast author iteration over strict templates;
+		// switching to strict would be a project-wide behavior change, not a
+		// local tweak.
 		var err error
 		tmpl, err = template.New("response").Funcs(g.funcMap).Parse(content)
 		if err != nil {
@@ -161,6 +173,11 @@ func generateUUID() string {
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
+// randomInt returns a uniformly random int in the INCLUSIVE range
+// [min, max]. A degenerate min >= max returns min with no error or
+// diagnostic (F-RG-008) — e.g. {{ random_int 10 5 }} renders 10 — so a
+// mis-ordered template renders a stable value instead of panicking; swap
+// the arguments to get a real range.
 func randomInt(min, max int) int {
 	if min >= max {
 		return min
@@ -197,6 +214,11 @@ func randomString(length int) string {
 	return string(b)
 }
 
+// randomFloat returns a random float64 in the HALF-OPEN range [min, max),
+// quantized to 10^6 evenly spaced steps (F-RG-003): the draw is
+// min + (max-min)*k/1e6 for k in [0, 1e6), so max itself is never returned
+// and results land on a 1e-6*(max-min) grid rather than the full float
+// continuum. A degenerate min >= max returns min.
 func randomFloat(min, max float64) float64 {
 	if min >= max {
 		return min
@@ -219,6 +241,12 @@ func randomChoice(args ...any) any {
 	return args[n.Int64()]
 }
 
+// toJSON marshals any value to a JSON string, falling back to fmt %v on a
+// marshal error. It serializes whatever it is handed (F-RG-007), so
+// {{ to_json . }} dumps the entire TemplateContext — including the agent's
+// SystemPrompt and the session Vars. Templates are author-controlled, so
+// this is a "pass explicit data" guideline rather than a sandbox boundary:
+// prefer {{ to_json .Vars }} or a specific field over the whole context.
 func toJSON(v any) string {
 	data, err := json.Marshal(v)
 	if err != nil {
