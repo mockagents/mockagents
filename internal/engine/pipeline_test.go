@@ -168,8 +168,8 @@ func TestPipelineGraphWithConditionalEdge(t *testing.T) {
 				{ID: "b", Ref: "worker-b"},
 			},
 			Edges: []types.PipelineEdge{
-				{From: "r", To: "a", When: "route-to-a"},
-				{From: "r", To: "b", When: "route-to-b"},
+				{From: "r", To: "a", WhenContains: "route-to-a"},
+				{From: "r", To: "b", WhenContains: "route-to-b"},
 			},
 		},
 	}
@@ -187,6 +187,47 @@ func TestPipelineGraphWithConditionalEdge(t *testing.T) {
 	}
 	if got := res.ResponseByNodeID("b").Content; got != "b-ran" {
 		t.Errorf("worker-b content = %q, want %q", got, "b-ran")
+	}
+}
+
+// TestPipelineGraphWhenContainsIsSubstring locks the F-PL-010 contract:
+// edge.WhenContains is a SUBSTRING guard, not exact equality. The router
+// echoes "router:another"; the edge guard "no" appears inside that string
+// (a-no-ther) but is not equal to it, so substring semantics fire the edge
+// while equality semantics would prune it. A second edge guarded by a
+// string that is absent must be pruned. This pins the behavior so a future
+// "tighten to equality" change is caught.
+func TestPipelineGraphWhenContainsIsSubstring(t *testing.T) {
+	eng := newPipelineTestEngine(t, "router", "worker-a", "worker-b")
+	exec := NewPipelineExecutor(eng)
+
+	def := &types.PipelineDefinition{
+		Metadata: types.Metadata{Name: "substring-guard"},
+		Spec: types.PipelineSpec{
+			Topology: types.TopologyGraph,
+			Agents: []types.PipelineAgent{
+				{ID: "r", Ref: "router"},
+				{ID: "a", Ref: "worker-a"},
+				{ID: "b", Ref: "worker-b"},
+			},
+			Edges: []types.PipelineEdge{
+				// "router:another" contains "no" but does not equal it.
+				{From: "r", To: "a", WhenContains: "no"},
+				// "router:another" does not contain "zzz".
+				{From: "r", To: "b", WhenContains: "zzz"},
+			},
+		},
+	}
+
+	res, err := exec.Run(def, "another", "session-substr")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if res.ResponseByNodeID("a") == nil {
+		t.Error("worker-a should have run: substring guard \"no\" matches \"router:another\"")
+	}
+	if res.ResponseByNodeID("b") != nil {
+		t.Error("worker-b should have been pruned: \"zzz\" is not a substring of \"router:another\"")
 	}
 }
 

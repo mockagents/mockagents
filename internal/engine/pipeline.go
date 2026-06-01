@@ -201,7 +201,11 @@ func (p *PipelineExecutor) runGraph(def *types.PipelineDefinition, userMsg, sess
 			return err
 		}
 		for _, edge := range outgoing[id] {
-			if edge.When != "" && !strings.Contains(nr.Response.Content, edge.When) {
+			// WhenContains is a substring guard (see types.PipelineEdge): an
+			// empty guard is unconditional, otherwise the edge fires only when
+			// the upstream output contains it. Deliberately strings.Contains,
+			// not equality — routing on a keyword anywhere in the output.
+			if edge.WhenContains != "" && !strings.Contains(nr.Response.Content, edge.WhenContains) {
 				continue
 			}
 			if err := walk(edge.To, nr.Response.Content); err != nil {

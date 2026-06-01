@@ -30,10 +30,16 @@ type PipelineAgent struct {
 }
 
 // PipelineEdge describes a directed connection in a graph topology.
-// When empty, the edge is unconditional; when set, the edge fires only if
-// the upstream node's output content contains the substring.
+//
+// WhenContains is a guard, not a predicate: when empty the edge is
+// unconditional, and when set the edge fires only if the upstream node's
+// output content contains it as a substring (case-sensitive
+// strings.Contains, not an exact-equality or word-boundary match). So
+// WhenContains:"no" also fires on upstream output "another". The field is
+// named for that substring contract and serializes as `when_contains` on
+// the wire to keep the semantics obvious to config authors.
 type PipelineEdge struct {
-	From string `yaml:"from" json:"from"`
-	To   string `yaml:"to" json:"to"`
-	When string `yaml:"when_contains,omitempty" json:"when_contains,omitempty"`
+	From         string `yaml:"from" json:"from"`
+	To           string `yaml:"to" json:"to"`
+	WhenContains string `yaml:"when_contains,omitempty" json:"when_contains,omitempty"`
 }

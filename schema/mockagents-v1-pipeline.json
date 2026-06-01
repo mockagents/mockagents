@@ -54,7 +54,7 @@
               "to": { "type": "string" },
               "when_contains": {
                 "type": "string",
-                "description": "If set, the edge fires only when the upstream content contains this substring."
+                "description": "If set, the edge fires only when the upstream node's output contains this value as a case-sensitive substring (not an exact or word-boundary match). For example \"no\" also matches output \"another\"."
               }
             }
           }
