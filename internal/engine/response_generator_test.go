@@ -198,6 +198,40 @@ func TestRandomString_Clamped(t *testing.T) {
 	assert.Len(t, randomString(1_000_000_000), maxRandomStringLen)
 }
 
+func TestRandomInt_DocumentedRange(t *testing.T) {
+	// F-RG-008: degenerate min>=max returns min with no diagnostic.
+	assert.Equal(t, 10, randomInt(10, 5))
+	assert.Equal(t, 5, randomInt(5, 5))
+
+	// Documented as INCLUSIVE [min,max]: over many draws of a 2-wide range
+	// both endpoints must appear.
+	sawMin, sawMax := false, false
+	for i := 0; i < 200; i++ {
+		switch randomInt(1, 2) {
+		case 1:
+			sawMin = true
+		case 2:
+			sawMax = true
+		default:
+			t.Fatal("randomInt(1,2) returned a value outside [1,2]")
+		}
+	}
+	assert.True(t, sawMin && sawMax, "inclusive range should yield both 1 and 2")
+}
+
+func TestRandomFloat_DocumentedRange(t *testing.T) {
+	// F-RG-003: degenerate min>=max returns min.
+	assert.Equal(t, 2.0, randomFloat(2, 1))
+	assert.Equal(t, 5.0, randomFloat(5, 5))
+
+	// Documented as HALF-OPEN [min,max): max is never returned.
+	for i := 0; i < 500; i++ {
+		v := randomFloat(0, 1)
+		assert.GreaterOrEqual(t, v, 0.0)
+		assert.Less(t, v, 1.0)
+	}
+}
+
 func TestResponseGenerator_ToolCalls(t *testing.T) {
 	g := NewResponseGenerator()
 	agent := testAgent()
