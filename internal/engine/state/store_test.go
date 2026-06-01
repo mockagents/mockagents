@@ -1,6 +1,7 @@
 package state
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -69,6 +70,64 @@ func TestMemoryStore_CleanupTickerStops(t *testing.T) {
 	// Just verify it doesn't panic.
 	time.Sleep(100 * time.Millisecond)
 	stop()
+}
+
+func TestMemoryStore_GetExpired_DoesNotClobberFreshSession(t *testing.T) {
+	// F-ST-003: when Get evicts an expired session it must delete only that
+	// pointer, not a fresh session another caller stored under the same id
+	// in the window between Get's RUnlock and the delete.
+	store := NewMemoryStore(time.Hour)
+	stale := NewSession("sess", "agent", time.Nanosecond)
+	time.Sleep(time.Millisecond) // stale is now expired
+
+	fresh := store.GetOrCreate("sess", "agent") // live, ttl 1h, same id
+	// deleteIfSame is exactly what Get calls after reading a now-stale
+	// pointer; the map holds `fresh`, so evicting `stale` must be a no-op.
+	store.deleteIfSame("sess", stale)
+
+	assert.Same(t, fresh, store.Get("sess"))
+	assert.Equal(t, 1, store.Count())
+}
+
+func TestMemoryStore_Cleanup_RemovesExpiredKeepsActive(t *testing.T) {
+	// F-ST-005: the snapshot-based Cleanup must still drop expired sessions
+	// while leaving active ones untouched.
+	store := NewMemoryStore(time.Hour)
+	store.GetOrCreate("active", "a") // fresh, ttl 1h
+	store.sessions["stale"] = NewSession("stale", "a", time.Nanosecond)
+	time.Sleep(time.Millisecond)
+
+	store.Cleanup()
+
+	assert.NotNil(t, store.Get("active"))
+	assert.Nil(t, store.Get("stale"))
+	assert.Equal(t, 1, store.Count())
+}
+
+func TestMemoryStore_ConcurrentGetCreateCleanup(t *testing.T) {
+	// Smoke test for deadlocks/panics on the hardened store paths. `-race`
+	// is unavailable on this codebase (no cgo), so this stresses the lock
+	// ordering (store -> session) by inspection-backed load instead.
+	store := NewMemoryStore(2 * time.Millisecond)
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := "sess-" + string(rune('a'+i%8))
+			for j := 0; j < 100; j++ {
+				store.GetOrCreate(id, "agent")
+				store.Get(id)
+				if j%10 == 0 {
+					store.Cleanup()
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	// No assertion on Count (sessions expire mid-run); reaching here without
+	// a deadlock or panic is the signal.
+	assert.GreaterOrEqual(t, store.Count(), 0)
 }
 
 func TestSession_AppendMessages(t *testing.T) {

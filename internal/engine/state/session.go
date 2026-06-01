@@ -35,6 +35,12 @@ type Session struct {
 // WithLocked runs fn while holding the session's mutation lock. Use it
 // for multi-step read/modify/write sequences that must stay atomic for
 // one conversation turn.
+//
+// Re-entry constraint (F-SS-001): s.mu is a non-reentrant sync.Mutex, so
+// fn must NOT call any other exported method that locks it
+// (LatestUserMessage, IsExpired, AppendUserMessage, AppendAssistantMessage,
+// ApplyTurn, or a nested WithLocked) — doing so self-deadlocks. fn should
+// touch only the session's fields directly.
 func (s *Session) WithLocked(fn func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -46,6 +52,15 @@ func (s *Session) WithLocked(fn func()) {
 // returned by build. The whole turn is guarded by the session lock so
 // concurrent requests for the same session cannot interleave history
 // updates or scenario matching.
+//
+// build runs while s.mu is held, which gives it two contracts:
+//   - Variables (F-SS-002): the map passed in is the session's *live*
+//     Variables, not a copy. build may read and mutate it freely, but
+//     ONLY from within this call — the session lock is the only thing
+//     serializing access, so stashing the map and touching it later races
+//     with the next turn. No accessor exposes Variables outside the lock.
+//   - Re-entry (F-SS-001): build must not call back into a session method
+//     that locks s.mu (see WithLocked) — the mutex is non-reentrant.
 func (s *Session) ApplyTurn(
 	userContent string,
 	build func(turnCount int, variables map[string]any) (assistantContent string, toolCalls []ToolCallMsg, err error),
