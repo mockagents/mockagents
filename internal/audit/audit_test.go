@@ -218,6 +218,34 @@ func TestListFilterByActor(t *testing.T) {
 	}
 }
 
+func TestListFilterByActorTenant(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	for i, e := range []*Event{
+		{Kind: EventAPIKeyCreated, Target: "key_a1", Actor: Actor{Name: "a-admin", TenantID: "ten_a"}, Timestamp: time.Now().Add(-3 * time.Minute)},
+		{Kind: EventAPIKeyCreated, Target: "key_b1", Actor: Actor{Name: "b-admin", TenantID: "ten_b"}, Timestamp: time.Now().Add(-2 * time.Minute)},
+		{Kind: EventAPIKeyDeleted, Target: "key_a1", Actor: Actor{Name: "a-admin", TenantID: "ten_a"}, Timestamp: time.Now().Add(-1 * time.Minute)},
+		{Kind: EventAuthDenied, Target: "", Actor: Actor{Name: "anonymous"}, Timestamp: time.Now()}, // empty tenant (system)
+	} {
+		if err := s.Append(ctx, e); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+
+	out, err := s.List(ctx, Query{ActorTenant: "ten_a"})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("expected 2 ten_a events, got %d", len(out))
+	}
+	for _, e := range out {
+		if e.Actor.TenantID != "ten_a" {
+			t.Errorf("tenant filter leaked event from %q", e.Actor.TenantID)
+		}
+	}
+}
+
 func TestListFilterBySince(t *testing.T) {
 	s := newTestStore(t)
 	seedEvents(t, s)

@@ -170,6 +170,10 @@ func (s *SQLiteStore) List(ctx context.Context, q Query) ([]*Event, error) {
 		where = append(where, "actor_name = ?")
 		args = append(args, q.Actor)
 	}
+	if q.ActorTenant != "" {
+		where = append(where, "actor_tenant = ?")
+		args = append(args, q.ActorTenant)
+	}
 	if !q.Since.IsZero() {
 		where = append(where, "timestamp >= ?")
 		args = append(args, q.Since.UTC().Format(time.RFC3339Nano))
