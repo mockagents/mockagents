@@ -53,6 +53,14 @@ type AgentDirWatcher struct {
 	// (the file's content is gone by the time we react). Guarded by mu.
 	fileAgents map[string]string
 	mu         sync.Mutex
+	// closed is set by Stop under mu so no new debounce timer is armed and
+	// any timer firing during/after Stop bails instead of mutating the
+	// registry post-teardown (F-WT-001). stopOnce makes Stop safe under
+	// concurrent calls (F-WT-003); wg tracks in-flight reloadFile callbacks
+	// so Stop can wait for them to finish.
+	closed   bool
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 // NewAgentDirWatcher constructs a watcher but does not start it.
@@ -92,19 +100,40 @@ func (w *AgentDirWatcher) Start() error {
 	return nil
 }
 
-// Stop terminates the watcher and releases the OS-level handles.
-// Idempotent.
+// Stop terminates the watcher and releases the OS-level handles. It is
+// safe to call concurrently and more than once (F-WT-003): the teardown
+// body runs exactly once under stopOnce.
+//
+// Ordering guarantees so nothing touches the registry after Stop returns
+// (F-WT-001): under mu we set closed (no new debounce timer is armed and
+// any timer that fires from here on bails) and Stop every pending timer;
+// then we cancel the loop, wait for it to exit, and wg.Wait() for any
+// reloadFile callback that had already started before closed was set.
+// Only then is the fsnotify handle closed.
 func (w *AgentDirWatcher) Stop() {
-	if w.cancel == nil {
-		return
-	}
-	w.cancel()
-	w.cancel = nil
-	<-w.done
-	if w.fsw != nil {
-		_ = w.fsw.Close()
-		w.fsw = nil
-	}
+	w.stopOnce.Do(func() {
+		w.mu.Lock()
+		w.closed = true
+		for path, timer := range w.pending {
+			timer.Stop()
+			delete(w.pending, path)
+		}
+		w.mu.Unlock()
+
+		if w.cancel != nil {
+			w.cancel()
+		}
+		if w.done != nil {
+			<-w.done
+		}
+		// Drain reload callbacks that slipped past the closed check before
+		// it was set, so the registry is quiescent before we release the
+		// OS handle.
+		w.wg.Wait()
+		if w.fsw != nil {
+			_ = w.fsw.Close()
+		}
+	})
 }
 
 // loop drains fsnotify events and dispatches them to schedule().
@@ -142,15 +171,32 @@ func (w *AgentDirWatcher) loop(ctx context.Context) {
 // schedule queues a reload for path, collapsing bursts of events that
 // land inside the debounce window into a single reload.
 func (w *AgentDirWatcher) schedule(path string) {
+	// Normalize so the same file referenced via different separators or a
+	// "./" prefix collapses to one pending entry / fileAgents key (F-WT-004).
+	path = filepath.Clean(path)
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.closed {
+		return // teardown in progress; do not arm new reloads
+	}
 	if timer, ok := w.pending[path]; ok {
 		timer.Stop()
 	}
 	w.pending[path] = time.AfterFunc(w.Debounce, func() {
 		w.mu.Lock()
 		delete(w.pending, path)
+		if w.closed {
+			// Stop() ran after this timer fired but before it took mu.
+			// Skip the reload so we never mutate the registry post-teardown.
+			w.mu.Unlock()
+			return
+		}
+		// Register the in-flight reload before releasing mu so Stop's
+		// wg.Wait() cannot miss it. The Add is under the same lock that
+		// guards closed, so it strictly precedes Stop setting closed.
+		w.wg.Add(1)
 		w.mu.Unlock()
+		defer w.wg.Done()
 		w.reloadFile(path)
 	})
 }
@@ -159,6 +205,9 @@ func (w *AgentDirWatcher) schedule(path string) {
 // resulting agent with the engine's registry. Pipeline and TestSuite
 // documents are ignored here; they have no server-side effect.
 func (w *AgentDirWatcher) reloadFile(path string) {
+	// Canonicalize so a path arriving via a direct call matches the keys
+	// schedule()/rememberFile() use for pending and fileAgents (F-WT-004).
+	path = filepath.Clean(path)
 	result, err := config.LoadFile(path)
 	if err != nil {
 		if isTransientMissing(err) {
