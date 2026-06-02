@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -258,5 +259,93 @@ func TestWatcher_RenamedAgentNameRemovesOld(t *testing.T) {
 	}
 	if eng.Registry.Get("old-name") != nil {
 		t.Error("old-name should have been unregistered after the in-file rename")
+	}
+}
+
+// TestWatcher_StopCancelsPendingReload verifies that a reload still sitting
+// in the debounce window when Stop is called is cancelled, not applied
+// (F-WT-001). A long debounce makes the window deterministic: we arm the
+// timer, Stop before it fires, then confirm the agent never registers even
+// after the debounce interval has elapsed.
+func TestWatcher_StopCancelsPendingReload(t *testing.T) {
+	dir := t.TempDir()
+	eng := newTestEngineFromReg()
+	w := NewAgentDirWatcher(dir, eng, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w.Debounce = 500 * time.Millisecond
+	if err := w.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	writeAgentYAML(t, dir, "pending", "hi")
+	// Wait until the debounce timer is armed but has not yet fired.
+	if !waitFor(t, 2*time.Second, func() bool {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return len(w.pending) > 0
+	}) {
+		t.Fatal("watcher never armed a pending reload")
+	}
+
+	w.Stop() // must stop the pending timer and not register the agent
+
+	// Give the original debounce window time to elapse; a leaked timer would
+	// register the agent in this interval.
+	time.Sleep(700 * time.Millisecond)
+	if eng.Registry.Get("pending") != nil {
+		t.Error("pending reload fired after Stop; timer was not cancelled")
+	}
+}
+
+// TestWatcher_ConcurrentStop hammers Stop from several goroutines to prove
+// the stopOnce guard makes it race-safe and non-blocking (F-WT-003).
+func TestWatcher_ConcurrentStop(t *testing.T) {
+	dir := t.TempDir()
+	eng := newTestEngineFromReg()
+	w := NewAgentDirWatcher(dir, eng, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := w.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w.Stop()
+		}()
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent Stop deadlocked")
+	}
+}
+
+// TestWatcher_PathNormalization confirms that the same file referenced with a
+// redundant "./" prefix collapses onto one fileAgents key (F-WT-004), so a
+// later canonical-path delete unregisters the agent.
+func TestWatcher_PathNormalization(t *testing.T) {
+	dir := t.TempDir()
+	eng := newTestEngineFromReg()
+	w := NewAgentDirWatcher(dir, eng, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	clean := writeAgentYAML(t, dir, "norm", "hi") // dir/norm.yaml
+	messy := filepath.Join(dir, ".", "norm.yaml") // same file, non-canonical
+	w.reloadFile(messy)
+	if eng.Registry.Get("norm") == nil {
+		t.Fatal("agent norm should be registered")
+	}
+
+	w.mu.Lock()
+	_, hasClean := w.fileAgents[filepath.Clean(clean)]
+	keyCount := len(w.fileAgents)
+	w.mu.Unlock()
+	if !hasClean {
+		t.Error("fileAgents not keyed by the canonical path")
+	}
+	if keyCount != 1 {
+		t.Errorf("expected exactly one fileAgents key, got %d", keyCount)
 	}
 }
