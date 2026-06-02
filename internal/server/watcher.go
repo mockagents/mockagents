@@ -25,6 +25,18 @@ import (
 // The watcher debounces fsnotify events so saves that produce a
 // Create+Write pair (the typical "atomic save" pattern from editors)
 // don't trigger two reloads.
+//
+// Reload model (X-05): this is an incremental, add/replace-only reload.
+// Each file change re-registers exactly one agent via a single
+// Registry.Register call. Register holds the registry's write lock while
+// every read holds the read lock, so a concurrent request never observes a
+// half-updated agent — no transactional bulk-replace is needed because
+// there is no bulk replace (pipelines are not reloaded at all; they are
+// boot-only). Known limitation: the watcher reacts only to
+// Create/Write/Rename, so an agent whose file is DELETED or whose
+// metadata.name is RENAMED stays registered under its old key until the
+// server restarts (Registry.Remove exists but is not wired to fsnotify
+// Remove events, which would require tracking file→agent-name mappings).
 type AgentDirWatcher struct {
 	Dir      string
 	Engine   *engine.Engine
