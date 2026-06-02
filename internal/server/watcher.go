@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -317,8 +318,11 @@ func isTransientMissing(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "no such file") ||
-		strings.Contains(msg, "cannot find the file") ||
+	// errors.Is(fs.ErrNotExist) is the locale- and wrapping-robust way to
+	// detect "file is gone": config.LoadFile wraps os.ReadFile's *PathError
+	// with %w, and ENOENT (Unix) / ERROR_FILE_NOT_FOUND (Windows) both
+	// satisfy fs.ErrNotExist — so this replaces the old fragile substring
+	// match on "no such file" / "cannot find the file" (F-WT-005).
+	return errors.Is(err, fs.ErrNotExist) ||
 		errors.Is(err, fsnotify.ErrEventOverflow)
 }
