@@ -172,3 +172,30 @@ func TestLogWorker_ConcurrentSubmit(t *testing.T) {
 		t.Errorf("written (%d) exceeds submitted (%d)", m.Written, m.Submitted)
 	}
 }
+
+// TestLogWorker_SubmitDuringShutdown stresses the F-LW-001 race: many
+// goroutines hammer Submit while another calls Shutdown. Before the fix,
+// a Submit could send on the just-closed queue and panic. With the
+// RWMutex serializing the send against the close, this must never panic
+// regardless of interleaving. (-race is unavailable here, so we rely on
+// volume + repetition.)
+func TestLogWorker_SubmitDuringShutdown(t *testing.T) {
+	for iter := 0; iter < 50; iter++ {
+		store := newWorkerStore(t)
+		w := NewLogWorker(store, nil, LogWorkerConfig{Workers: 2, QueueSize: 8})
+
+		var wg sync.WaitGroup
+		for g := 0; g < 16; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 0; i < 200; i++ {
+					w.Submit(makeEntry(i)) // must never panic
+				}
+			}()
+		}
+		// Shut down concurrently with the submitters.
+		w.Shutdown(time.Second)
+		wg.Wait()
+	}
+}

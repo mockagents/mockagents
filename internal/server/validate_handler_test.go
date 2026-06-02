@@ -134,3 +134,20 @@ func TestValidateHandler_MethodNotAllowed(t *testing.T) {
 		t.Errorf("status = %d", resp.StatusCode)
 	}
 }
+
+func TestValidateHandler_OversizedBody(t *testing.T) {
+	// X-DOS-001: a body over the cap must be rejected with 413 rather than
+	// read unbounded into memory.
+	srv := httptest.NewServer(NewValidateHandler())
+	defer srv.Close()
+
+	big := strings.Repeat("x", maxValidateBodyBytes+1024)
+	resp, err := http.Post(srv.URL, "application/x-yaml", strings.NewReader(big))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413", resp.StatusCode)
+	}
+}

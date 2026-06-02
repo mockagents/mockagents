@@ -413,3 +413,28 @@ func TestServer_GracefulShutdown(t *testing.T) {
 	err := srv.Shutdown()
 	assert.NoError(t, err)
 }
+
+// TestReloadAgent_GatedInMultiTenant covers F-HD-001: in multi-tenant mode
+// the reload route is now behind RequireRole(Editor), so an anonymous
+// caller is refused (401) while an admin (editor+) still reloads.
+func TestReloadAgent_GatedInMultiTenant(t *testing.T) {
+	// A global agent (no tenant_id) so the on-disk file's empty tenant
+	// matches the registered one (F-HD-002 tenant match).
+	global := testFullAgent("gate-bot", "gate-model")
+	_, addr, adminKey := setupTenantServer(t, global)
+
+	// Anonymous reload → 401 (the route is gated now).
+	req, _ := http.NewRequest("POST", addr+"/api/v1/agents/gate-bot/reload", nil)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode, "anonymous reload must be 401")
+
+	// Admin (editor+) reload still works.
+	req2, _ := http.NewRequest("POST", addr+"/api/v1/agents/gate-bot/reload", nil)
+	req2.Header.Set("Authorization", "Bearer "+adminKey)
+	resp2, err := http.DefaultClient.Do(req2)
+	require.NoError(t, err)
+	resp2.Body.Close()
+	assert.Equal(t, http.StatusOK, resp2.StatusCode, "admin reload should succeed")
+}

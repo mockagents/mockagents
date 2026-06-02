@@ -52,7 +52,14 @@ type LogWorker struct {
 
 	wg       sync.WaitGroup
 	stopOnce sync.Once
-	stopped  atomic.Bool
+	// mu serializes the stopped-check + queue-send in Submit against the
+	// close(queue) in Shutdown (F-LW-001). Without it, a Submit that passes
+	// the stopped check before Shutdown closes the queue could send on a
+	// closed channel and panic. Submit takes RLock (the send is
+	// non-blocking, so it's held only briefly); Shutdown takes the write
+	// Lock before closing, so no in-flight send can overlap the close.
+	mu      sync.RWMutex
+	stopped atomic.Bool
 }
 
 // LogWorkerConfig tunes a LogWorker. Zero values fall back to the
@@ -107,6 +114,10 @@ func (w *LogWorker) Submit(entry *storage.InteractionLog) bool {
 	if w == nil || w.store == nil {
 		return true
 	}
+	// Hold RLock so the stopped-check and the send below cannot straddle
+	// Shutdown's close(queue) (F-LW-001).
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 	if w.stopped.Load() {
 		w.dropped.Add(1)
 		return false
@@ -138,8 +149,12 @@ func (w *LogWorker) Shutdown(timeout time.Duration) {
 		return
 	}
 	w.stopOnce.Do(func() {
+		// Take the write lock so the close cannot race an in-flight
+		// Submit's send (F-LW-001).
+		w.mu.Lock()
 		w.stopped.Store(true)
 		close(w.queue)
+		w.mu.Unlock()
 	})
 
 	done := make(chan struct{})

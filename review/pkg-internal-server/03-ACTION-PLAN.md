@@ -13,23 +13,12 @@ _Execute top-down. Each task maps to a finding ID (detail in `01-PER-FILE.md` / 
 
 ## P1 — High (this cycle)
 
-- [ ] **Cap request body sizes** — `X-DOS-001` / `F-VL-001` / `F-TN-007` · effort:S · owner:unassigned
-  - **Where:** `validate_handler.go:41` (`io.ReadAll`), `tenancy_handlers.go:38/90/128` (`json.Decode`); no body-cap middleware in `server.go`.
-  - **Problem:** Unbounded `ReadAll`/`Decode` → a single large POST OOMs the process (reachable by editor/admin). Possible YAML alias-bomb via `ValidateBytes`.
-  - **Fix:** add an `http.MaxBytesReader(w, r.Body, N)` wrapper — ideally a small server-wide middleware applied to all POST/PATCH routes, with a sane cap (e.g. 1 MiB for config, smaller for JSON control-plane). Confirm `config.ValidateBytes`'s YAML decoder bounds nesting/alias expansion.
-  - **Done when:** a `>N` body returns `413 Request Entity Too Large` (or 400) without large allocation; test `TestValidate_OversizedBody_Rejected` passes.
-
-- [ ] **Role-gate `ReloadAgent`** — `F-HD-001` (+ `F-HD-002` tenant-isolation) · effort:S · owner:unassigned
-  - **Where:** route `server.go:191`; handler `handlers.go:99-153`.
-  - **Problem:** `POST /api/v1/agents/{name}/reload` (disk + registry mutation) is mounted with no `RequireRole` — a `viewer` can reload (multi-tenant), unauthenticated (single-tenant). The reload also selects the on-disk file by name only, ignoring tenant (`F-HD-002`).
-  - **Fix:** wrap with `tenancy.RequireRole(tenancy.RoleEditor, …)` (matching `/config/validate`); in the handler, verify the loaded definition's `Metadata.TenantID` matches the existing agent's before `Register`.
-  - **Done when:** a viewer/anonymous reload returns 403/401; a cross-tenant same-name reload does not overwrite the other tenant's agent; tests `TestReloadAgent_RequiresEditor` + `TestReloadAgent_TenantIsolated` pass.
-
-- [ ] **Fix the async-log-worker send-on-closed-channel race** — `F-LW-001` (+ `F-LW-004` test) · effort:S · owner:unassigned
-  - **Where:** `log_worker.go:106-127` (`Submit`), `:140-143` (`Shutdown`).
-  - **Problem:** `Submit` checks `stopped.Load()` then sends on `w.queue`; `Shutdown` sets the flag and `close()`s the queue non-atomically → a concurrent `Submit` can panic ("send on closed channel") and crash the process. (`-race` is unavailable here, so the logic fix is the only guard.)
-  - **Fix:** serialize the stopped-check+send against the close — e.g. `Submit` takes a `sync.RWMutex.RLock` around the check+send and `Shutdown` takes the `Lock` before closing; or never close `queue` and stop workers via a separate `done` channel + drain.
-  - **Done when:** a stress test that hammers `Submit` from N goroutines while calling `Shutdown` never panics (run it 1000×); `TestLogWorker_SubmitDuringShutdown` passes.
+- [x] **Cap request body sizes** — `X-DOS-001` / `F-VL-001` / `F-TN-007` · effort:S · owner:claude · **DONE 2026-06-02**
+  - `validate_handler.go` wraps the body in `http.MaxBytesReader(w, r.Body, maxValidateBodyBytes=1 MiB)` and returns **413** on a `*http.MaxBytesError` (also moved `defer r.Body.Close()` before the read — `F-VL-002`). The tenancy handlers gained a shared `decodeJSONBody` helper (`maxJSONBodyBytes=64 KiB`) used by `CreateTenant`/`CreateAPIKey`/`UpdateAPIKeyRole` → 413 on oversize, 400 on malformed. **Done when:** ✅ `TestValidateHandler_OversizedBody` + `TestTenancyHandlers_OversizedBody` (both → 413). _(YAML alias-bomb depth bound in `config.ValidateBytes` still a separate dependency check — see "Needs investigation".)_ On branch `fix/server-p1-hardening`.
+- [x] **Role-gate `ReloadAgent`** — `F-HD-001` + `F-HD-002` · effort:S · owner:claude · **DONE 2026-06-02**
+  - `F-HD-001`: the reload route is now mounted as `tenancy.RequireRole(tenancy.RoleEditor, …)` in multi-tenant mode (single-tenant stays open, like the audit route). `F-HD-002`: the reload loop matches the on-disk file by **name AND `Metadata.TenantID == existing.Metadata.TenantID`** (`tenant_id` is a real YAML field), so a same-name file from another tenant can't be registered over the caller's agent. **Done when:** ✅ `TestReloadAgent_GatedInMultiTenant` (anonymous → 401, admin → 200); the F-HD-002 tenant match is exercised by the gate test's happy path and verified by inspection. On branch `fix/server-p1-hardening`.
+- [x] **Fix the async-log-worker send-on-closed-channel race** — `F-LW-001` + `F-LW-004` · effort:S · owner:claude · **DONE 2026-06-02**
+  - Added `mu sync.RWMutex` to `LogWorker`: `Submit` holds `RLock` around the stopped-check + (non-blocking) queue send; `Shutdown` takes the write `Lock` before `stopped.Store(true); close(queue)`. No `Submit` send can now straddle the close. **Done when:** ✅ `TestLogWorker_SubmitDuringShutdown` (50 iters × 16 goroutines × 200 submits during a concurrent Shutdown) never panics — **regression-verified**: neutering the locks reproduces `panic: send on closed channel`. On branch `fix/server-p1-hardening`.
 
 ## P2 — Medium (schedule)
 

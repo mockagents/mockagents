@@ -188,7 +188,16 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/health", s.handlers.HealthCheck)
 	mux.HandleFunc("GET /api/v1/agents", s.handlers.ListAgents)
 	mux.HandleFunc("GET /api/v1/agents/{name}", s.handlers.GetAgent)
-	mux.HandleFunc("POST /api/v1/agents/{name}/reload", s.handlers.ReloadAgent)
+	// ReloadAgent re-reads an agent's YAML from disk and replaces it in the
+	// registry — a write. Gate it like one: Editor role in multi-tenant
+	// mode (F-HD-001). Single-tenant mode runs without auth (local dev
+	// tool), so it stays open there, consistent with the audit route.
+	if s.tenancyH != nil {
+		mux.Handle("POST /api/v1/agents/{name}/reload",
+			tenancy.RequireRole(tenancy.RoleEditor, http.HandlerFunc(s.handlers.ReloadAgent)))
+	} else {
+		mux.HandleFunc("POST /api/v1/agents/{name}/reload", s.handlers.ReloadAgent)
+	}
 
 	// Tenancy CRUD — only mounted when multi-tenant mode is enabled.
 	// All routes below require the admin role at the middleware level.

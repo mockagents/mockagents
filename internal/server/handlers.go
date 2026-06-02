@@ -118,7 +118,12 @@ func (h *Handlers) ReloadAgent(w http.ResponseWriter, r *http.Request) {
 	validator := &config.Validator{}
 	for _, result := range results {
 		config.ApplyDefaults(result.Definition)
-		if result.Definition.Metadata.Name != name {
+		// Match by name AND tenant (F-HD-002): if two tenants own
+		// same-named agents, reload only the file belonging to the same
+		// tenant as the agent the caller is authorized for — never
+		// register another tenant's definition over it.
+		if result.Definition.Metadata.Name != name ||
+			result.Definition.Metadata.TenantID != existing.Metadata.TenantID {
 			continue
 		}
 		found = true

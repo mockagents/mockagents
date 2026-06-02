@@ -21,10 +21,10 @@ type AuditHandlers struct {
 //
 // Query parameters:
 //
-//   kind    one of tenant.created|tenant.deleted|api_key.created|api_key.deleted|api_key.role_changed|agent.reloaded|auth.denied
-//   actor   exact-match actor name (e.g. "bootstrap-admin")
-//   since   RFC3339 timestamp; returns events with timestamp >= since
-//   limit   max rows to return (default 100, max 1000)
+//	kind    one of tenant.created|tenant.deleted|api_key.created|api_key.deleted|api_key.role_changed|agent.reloaded|auth.denied
+//	actor   exact-match actor name (e.g. "bootstrap-admin")
+//	since   RFC3339 timestamp; returns events with timestamp >= since
+//	limit   max rows to return (default 100, max 1000)
 func (h *AuditHandlers) ListEvents(w http.ResponseWriter, r *http.Request) {
 	q := audit.Query{
 		Kind:  audit.EventKind(r.URL.Query().Get("kind")),

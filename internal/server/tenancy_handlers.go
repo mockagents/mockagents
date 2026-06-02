@@ -47,6 +47,28 @@ func (h *TenancyHandlers) ensureOwnTenant(w http.ResponseWriter, r *http.Request
 	return pathTenant, true
 }
 
+// maxJSONBodyBytes caps control-plane JSON request bodies (X-DOS-001).
+// The management API only ever accepts tiny objects (a name + a role), so
+// 64 KiB is far more than enough while stopping an unbounded decode.
+const maxJSONBodyBytes = 64 << 10
+
+// decodeJSONBody reads a size-capped JSON body into dst. On a too-large
+// body it writes 413 and returns false; on malformed JSON it writes 400
+// and returns false; on success returns true.
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "request body too large"})
+			return false
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return false
+	}
+	return true
+}
+
 // ListTenants handles GET /api/v1/tenants — admin only.
 func (h *TenancyHandlers) ListTenants(w http.ResponseWriter, r *http.Request) {
 	tenants, err := h.Store.ListTenants(r.Context())
@@ -65,8 +87,7 @@ type CreateTenantRequest struct {
 // CreateTenant handles POST /api/v1/tenants — admin only.
 func (h *TenancyHandlers) CreateTenant(w http.ResponseWriter, r *http.Request) {
 	var req CreateTenantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	tenant, err := h.Store.CreateTenant(r.Context(), req.Name)
@@ -123,8 +144,7 @@ func (h *TenancyHandlers) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req CreateAPIKeyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if !req.Role.IsValid() {
@@ -165,8 +185,7 @@ func (h *TenancyHandlers) UpdateAPIKeyRole(w http.ResponseWriter, r *http.Reques
 	}
 	id := r.PathValue("id")
 	var req UpdateAPIKeyRoleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if !req.Role.IsValid() {

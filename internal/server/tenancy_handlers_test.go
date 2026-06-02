@@ -502,3 +502,23 @@ func TestTenancyHandlers_CrossTenantIDOR_Returns404(t *testing.T) {
 		t.Errorf("tenant B key count = %d, want 1 (no cross-tenant create/delete)", len(keys))
 	}
 }
+
+func TestTenancyHandlers_OversizedBody(t *testing.T) {
+	// X-DOS-001: a control-plane JSON body over the cap is rejected 413.
+	store := newRotateTestStore(t)
+	recorder := audit.NewRecorder(nil, func(*http.Request) audit.Actor { return audit.Actor{Name: "test"} })
+	h := &TenancyHandlers{Store: store, Recorder: recorder}
+
+	srv := httptest.NewServer(http.HandlerFunc(h.CreateTenant))
+	defer srv.Close()
+
+	big := `{"name":"` + strings.Repeat("a", maxJSONBodyBytes+1024) + `"}`
+	resp, err := http.Post(srv.URL, "application/json", strings.NewReader(big))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413", resp.StatusCode)
+	}
+}

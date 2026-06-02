@@ -2,12 +2,19 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/mockagents/mockagents/internal/config"
 )
+
+// maxValidateBodyBytes caps the YAML/JSON a caller may submit to the
+// validate endpoint (X-DOS-001). Agent definitions are small; 1 MiB is
+// generous and stops an unbounded ReadAll / YAML alias-bomb from OOMing
+// the process.
+const maxValidateBodyBytes = 1 << 20
 
 // ValidateHandler serves POST /api/v1/config/validate. It accepts a
 // raw YAML (or JSON) agent definition body, runs it through the
@@ -38,12 +45,18 @@ func (h *ValidateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxValidateBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "request body too large"})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "reading body: " + err.Error()})
 		return
 	}
-	defer r.Body.Close()
 
 	// Support both framings: raw YAML body (the default for the GUI
 	// editor) and a JSON wrapper `{"yaml": "..."}` so curl scripts
