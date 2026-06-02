@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync/atomic"
 )
 
 // contextKey is unexported so other packages can't accidentally collide
@@ -29,28 +30,42 @@ func PrincipalFrom(ctx context.Context) *Principal {
 	return p
 }
 
-// DenialHook is invoked synchronously by AuthMiddleware and
-// RequireRole whenever a request is rejected with 401 or 403. The
-// server wiring installs a hook that forwards the event into the
-// audit log. Kept as a package-level variable so existing call sites
-// (tests, alternative transports) do not have to learn a new
-// signature; a nil hook is a cheap no-op.
-//
-// Hooks must not block: they run on the hot request path before the
-// 401/403 response is written. The reference implementation in the
-// server package records asynchronously via audit.Recorder.
-var DenialHook func(r *http.Request, status int, reason string)
+// denialFn is the denial-callback signature. The hook is invoked
+// synchronously by AuthMiddleware and RequireRole whenever a request is
+// rejected with 401 or 403; the server wiring installs one that forwards the
+// event into the audit log. Hooks must not block — they run on the hot
+// request path before the 401/403 response is written (the reference
+// implementation records asynchronously via audit.Recorder).
+type denialFn = func(r *http.Request, status int, reason string)
 
-// SetDenialHook installs h as the package-wide denial callback. Pass
-// nil to disable. Safe to call exactly once at startup; not safe for
-// concurrent re-binding during request handling.
-func SetDenialHook(h func(r *http.Request, status int, reason string)) {
-	DenialHook = h
+// denialHook holds the package-wide denial callback, accessed atomically so
+// SetDenialHook (called at server construction) cannot data-race the reads on
+// the hot request path in fireDenial (F-SV-007). This matters because the
+// codebase can't run `go test -race` (no cgo), so a plain-variable race here
+// would go undetected. A nil pointer is a cheap no-op.
+//
+// Semantics are last-writer-wins: there is a single process-wide hook.
+// Constructing two Servers in one process is race-free, but the second New()
+// replaces the first's hook, so denials from both route to the most recently
+// installed audit recorder. Single-server-per-process is the normal
+// deployment, and the hook only forwards 401/403 events to an audit log, so
+// the shared-global trade-off is intentional.
+var denialHook atomic.Pointer[denialFn]
+
+// SetDenialHook installs h as the package-wide denial callback. Pass nil to
+// disable. The store is atomic, so this is safe to call concurrently with
+// request handling; in practice it is called once at server construction.
+func SetDenialHook(h denialFn) {
+	if h == nil {
+		denialHook.Store(nil)
+		return
+	}
+	denialHook.Store(&h)
 }
 
 func fireDenial(r *http.Request, status int, reason string) {
-	if DenialHook != nil {
-		DenialHook(r, status, reason)
+	if fn := denialHook.Load(); fn != nil {
+		(*fn)(r, status, reason)
 	}
 }
 
