@@ -184,62 +184,45 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 
 // registerRoutes mounts the management API, protocol adapters, and engine endpoints.
 func (s *Server) registerRoutes(mux *http.ServeMux) {
-	// Management API under /api/v1/
-	mux.HandleFunc("GET /api/v1/health", s.handlers.HealthCheck)
-	mux.HandleFunc("GET /api/v1/agents", s.handlers.ListAgents)
-	mux.HandleFunc("GET /api/v1/agents/{name}", s.handlers.GetAgent)
-	// ReloadAgent re-reads an agent's YAML from disk and replaces it in the
-	// registry — a write. Gate it like one: Editor role in multi-tenant
-	// mode (F-HD-001). Single-tenant mode runs without auth (local dev
-	// tool), so it stays open there, consistent with the audit route.
-	if s.tenancyH != nil {
-		mux.Handle("POST /api/v1/agents/{name}/reload",
-			tenancy.RequireRole(tenancy.RoleEditor, http.HandlerFunc(s.handlers.ReloadAgent)))
-	} else {
-		mux.HandleFunc("POST /api/v1/agents/{name}/reload", s.handlers.ReloadAgent)
-	}
+	// Management API under /api/v1/. Every route below goes through
+	// mountManaged, which applies the role floor declared in
+	// managementRouteFloors (the single authorization source of truth) when
+	// multi-tenant mode is on. ReloadAgent is a write (re-reads YAML and
+	// replaces the registry entry) so its floor is Editor (F-HD-001).
+	s.mountManaged(mux, "GET /api/v1/health", http.HandlerFunc(s.handlers.HealthCheck))
+	s.mountManaged(mux, "GET /api/v1/agents", http.HandlerFunc(s.handlers.ListAgents))
+	s.mountManaged(mux, "GET /api/v1/agents/{name}", http.HandlerFunc(s.handlers.GetAgent))
+	s.mountManaged(mux, "POST /api/v1/agents/{name}/reload", http.HandlerFunc(s.handlers.ReloadAgent))
 
 	// Tenancy CRUD — only mounted when multi-tenant mode is enabled.
-	// All routes below require the admin role at the middleware level.
+	// Per-route floors (admin for tenant/key writes, editor for key list,
+	// viewer for self-service rotate/burn) live in managementRouteFloors.
 	if s.tenancyH != nil {
-		mux.Handle("GET /api/v1/tenants", tenancy.RequireRole(tenancy.RoleAdmin, http.HandlerFunc(s.tenancyH.ListTenants)))
-		mux.Handle("POST /api/v1/tenants", tenancy.RequireRole(tenancy.RoleAdmin, http.HandlerFunc(s.tenancyH.CreateTenant)))
-		mux.Handle("DELETE /api/v1/tenants/{id}", tenancy.RequireRole(tenancy.RoleAdmin, http.HandlerFunc(s.tenancyH.DeleteTenant)))
-		mux.Handle("GET /api/v1/tenants/{id}/keys", tenancy.RequireRole(tenancy.RoleEditor, http.HandlerFunc(s.tenancyH.ListAPIKeys)))
-		mux.Handle("POST /api/v1/tenants/{id}/keys", tenancy.RequireRole(tenancy.RoleAdmin, http.HandlerFunc(s.tenancyH.CreateAPIKey)))
-		// Bulk rotation: emergency response to a tenant-wide
-		// suspected compromise. Rotates every key in the tenant
-		// inside one transaction so operators never end up with a
-		// mix of rotated + unrotated credentials. Admin only.
-		mux.Handle("POST /api/v1/tenants/{id}/keys/rotate", tenancy.RequireRole(tenancy.RoleAdmin, http.HandlerFunc(s.tenancyH.BulkRotateTenantKeys)))
-		mux.Handle("PATCH /api/v1/keys/{id}", tenancy.RequireRole(tenancy.RoleAdmin, http.HandlerFunc(s.tenancyH.UpdateAPIKeyRole)))
-		mux.Handle("POST /api/v1/keys/{id}/rotate", tenancy.RequireRole(tenancy.RoleAdmin, http.HandlerFunc(s.tenancyH.RotateAPIKey)))
-		// Self-rotation: any authenticated principal can rotate
-		// its own secret. Viewer role is sufficient because the
-		// handler reads the caller's key id from the request
-		// context — there's no path parameter to abuse.
-		mux.Handle("POST /api/v1/keys/me/rotate", tenancy.RequireRole(tenancy.RoleViewer, http.HandlerFunc(s.tenancyH.RotateMyAPIKey)))
-		// Rotate-then-burn: rotates the caller's key without
-		// returning the new plaintext. Operators who suspect a
-		// compromised browser session use this to kill their
-		// own credential without the fresh secret ever touching
-		// the compromised machine. Viewer role is fine — same
-		// argument as /me/rotate, the handler only ever touches
-		// its own key.
-		mux.Handle("POST /api/v1/keys/me/burn", tenancy.RequireRole(tenancy.RoleViewer, http.HandlerFunc(s.tenancyH.BurnMyAPIKey)))
-		mux.Handle("DELETE /api/v1/keys/{id}", tenancy.RequireRole(tenancy.RoleAdmin, http.HandlerFunc(s.tenancyH.DeleteAPIKey)))
+		s.mountManaged(mux, "GET /api/v1/tenants", http.HandlerFunc(s.tenancyH.ListTenants))
+		s.mountManaged(mux, "POST /api/v1/tenants", http.HandlerFunc(s.tenancyH.CreateTenant))
+		s.mountManaged(mux, "DELETE /api/v1/tenants/{id}", http.HandlerFunc(s.tenancyH.DeleteTenant))
+		s.mountManaged(mux, "GET /api/v1/tenants/{id}/keys", http.HandlerFunc(s.tenancyH.ListAPIKeys))
+		s.mountManaged(mux, "POST /api/v1/tenants/{id}/keys", http.HandlerFunc(s.tenancyH.CreateAPIKey))
+		// Bulk rotation: emergency response to a tenant-wide suspected
+		// compromise. Rotates every key in the tenant inside one
+		// transaction so operators never end up with a mix of rotated +
+		// unrotated credentials. Admin only.
+		s.mountManaged(mux, "POST /api/v1/tenants/{id}/keys/rotate", http.HandlerFunc(s.tenancyH.BulkRotateTenantKeys))
+		s.mountManaged(mux, "PATCH /api/v1/keys/{id}", http.HandlerFunc(s.tenancyH.UpdateAPIKeyRole))
+		s.mountManaged(mux, "POST /api/v1/keys/{id}/rotate", http.HandlerFunc(s.tenancyH.RotateAPIKey))
+		// Self-service rotate/burn: any authenticated principal acts on
+		// its own key (the handler reads the caller's key id from context,
+		// no path param to abuse), so viewer is sufficient.
+		s.mountManaged(mux, "POST /api/v1/keys/me/rotate", http.HandlerFunc(s.tenancyH.RotateMyAPIKey))
+		s.mountManaged(mux, "POST /api/v1/keys/me/burn", http.HandlerFunc(s.tenancyH.BurnMyAPIKey))
+		s.mountManaged(mux, "DELETE /api/v1/keys/{id}", http.HandlerFunc(s.tenancyH.DeleteAPIKey))
 	}
 
-	// Audit log read API. Open in single-tenant mode (it's a local
-	// dev tool); admin-only when multi-tenant mode is on so the
-	// who-did-what surface stays private to operators.
+	// Audit log read API. Open in single-tenant mode (local dev tool);
+	// admin-only when multi-tenant mode is on so the who-did-what surface
+	// stays private to operators (floor in managementRouteFloors).
 	if s.auditH != nil {
-		listFn := http.HandlerFunc(s.auditH.ListEvents)
-		if s.tenancyH != nil {
-			mux.Handle("GET /api/v1/audit", tenancy.RequireRole(tenancy.RoleAdmin, listFn))
-		} else {
-			mux.Handle("GET /api/v1/audit", listFn)
-		}
+		s.mountManaged(mux, "GET /api/v1/audit", http.HandlerFunc(s.auditH.ListEvents))
 	}
 
 	// OpenAI-compatible endpoints.
@@ -259,9 +242,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		Prices:      s.config.Prices,
 		Broadcaster: s.logBroadcaster,
 	}
-	mux.HandleFunc("GET /api/v1/logs", logHandlers.ListLogs)
-	mux.HandleFunc("GET /api/v1/logs/{id}", logHandlers.GetLog)
-	mux.HandleFunc("DELETE /api/v1/logs", logHandlers.DeleteLogs)
+	s.mountManaged(mux, "GET /api/v1/logs", http.HandlerFunc(logHandlers.ListLogs))
+	s.mountManaged(mux, "GET /api/v1/logs/{id}", http.HandlerFunc(logHandlers.GetLog))
+	s.mountManaged(mux, "DELETE /api/v1/logs", http.HandlerFunc(logHandlers.DeleteLogs))
 	// Live feed via SSE. Only mounted when the broadcaster was
 	// constructed (i.e. when a log store is configured). Nothing
 	// subscribes to the /api/v1/logs/stream endpoint in single-
@@ -272,14 +255,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// buffer utilization. Admin-gated in multi-tenant so viewers
 	// can't fingerprint the operator's browser tabs.
 	if s.logBroadcaster != nil {
-		mux.HandleFunc("GET /api/v1/logs/stream", logHandlers.StreamLogs)
-		streamMetrics := http.HandlerFunc(logHandlers.StreamMetrics)
-		if s.tenancyH != nil {
-			mux.Handle("GET /api/v1/logs/stream/metrics",
-				tenancy.RequireRole(tenancy.RoleAdmin, streamMetrics))
-		} else {
-			mux.Handle("GET /api/v1/logs/stream/metrics", streamMetrics)
-		}
+		s.mountManaged(mux, "GET /api/v1/logs/stream", http.HandlerFunc(logHandlers.StreamLogs))
+		s.mountManaged(mux, "GET /api/v1/logs/stream/metrics", http.HandlerFunc(logHandlers.StreamMetrics))
 	}
 
 	// Cost aggregate endpoint. Silent no-op when the log store is
@@ -287,7 +264,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// existing /api/v1/logs behavior.
 	if s.config.LogStore != nil {
 		costsH := &CostsHandlers{Store: s.config.LogStore, Prices: s.config.Prices}
-		mux.HandleFunc("GET /api/v1/costs", costsH.ListCosts)
+		s.mountManaged(mux, "GET /api/v1/costs", http.HandlerFunc(costsH.ListCosts)) // F-CO-005
 	}
 
 	// Pipeline management API. Read-only list + detail used by the
@@ -297,8 +274,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// well-formed response.
 	if s.config.Pipelines != nil {
 		pipelineH := &PipelineHandlers{Registry: s.config.Pipelines}
-		mux.HandleFunc("GET /api/v1/pipelines", pipelineH.ListPipelines)
-		mux.HandleFunc("GET /api/v1/pipelines/{name}", pipelineH.GetPipeline)
+		s.mountManaged(mux, "GET /api/v1/pipelines", http.HandlerFunc(pipelineH.ListPipelines))        // F-PL-001
+		s.mountManaged(mux, "GET /api/v1/pipelines/{name}", http.HandlerFunc(pipelineH.GetPipeline)) // F-PL-001
 	}
 
 	// Agent config validation endpoint. Open in single-tenant mode
@@ -306,11 +283,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// multi-tenant mode so viewers don't get a free surface for
 	// spraying YAML at the parser.
 	validateH := NewValidateHandler()
-	if s.tenancyH != nil {
-		mux.Handle("POST /api/v1/config/validate", tenancy.RequireRole(tenancy.RoleEditor, validateH))
-	} else {
-		mux.Handle("POST /api/v1/config/validate", validateH)
-	}
+	s.mountManaged(mux, "POST /api/v1/config/validate", validateH)
 
 	// Generic engine endpoint (internal/testing).
 	mux.HandleFunc("POST /v1/engines/process", s.handleProcessRequest)
