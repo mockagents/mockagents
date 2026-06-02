@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"bytes"
+	"log/slog"
 	"testing"
 
 	"github.com/mockagents/mockagents/internal/types"
@@ -143,4 +145,27 @@ func TestScenarioMatcher_InvalidRegexNoMatch(t *testing.T) {
 	sc, err := m.Match(scenarios, "test", 1)
 	require.NoError(t, err)
 	assert.Equal(t, "default", sc.Name)
+}
+
+func TestScenarioMatcher_BadRegexIsLogged(t *testing.T) {
+	// F-SM-001: a content_regex that fails to compile must be logged (so it is
+	// diagnosable rather than a silent non-match) and logged only once.
+	var buf bytes.Buffer
+	m := NewScenarioMatcher()
+	m.log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	scenarios := []types.Scenario{
+		{Name: "bad", Match: &types.MatchRule{ContentRegex: "[invalid"}},
+	}
+
+	// First evaluation: non-match (no default scenario) plus a logged warning.
+	assert.Nil(t, m.MatchWithCaptures(scenarios, "anything", 1))
+	assert.Contains(t, buf.String(), "failed to compile")
+	assert.Contains(t, buf.String(), "[invalid")
+
+	// Second evaluation: still a non-match, but the bad pattern is cached so it
+	// is neither recompiled nor re-logged.
+	sizeAfterFirst := buf.Len()
+	assert.Nil(t, m.MatchWithCaptures(scenarios, "anything", 1))
+	assert.Equal(t, sizeAfterFirst, buf.Len(), "bad pattern should log once, not per request")
 }

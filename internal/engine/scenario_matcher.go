@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"log/slog"
 	"regexp"
 	"strings"
 	"sync"
@@ -20,12 +21,25 @@ type MatchResult struct {
 
 // ScenarioMatcher evaluates scenarios against incoming messages.
 type ScenarioMatcher struct {
-	regexCache sync.Map // string -> *regexp.Regexp
+	regexCache sync.Map // string -> *regexp.Regexp (typed-nil marks a known-bad pattern)
+	// log surfaces compile failures (F-SM-001). Optional: NewScenarioMatcher
+	// leaves it nil and the matcher falls back to slog.Default(); the engine
+	// sets it to the request logger.
+	log *slog.Logger
 }
 
 // NewScenarioMatcher creates a new ScenarioMatcher.
 func NewScenarioMatcher() *ScenarioMatcher {
 	return &ScenarioMatcher{}
+}
+
+// logger returns the configured logger, or the process default when none was
+// set (e.g. matchers built directly in tests).
+func (m *ScenarioMatcher) logger() *slog.Logger {
+	if m.log != nil {
+		return m.log
+	}
+	return slog.Default()
 }
 
 // Match evaluates scenarios in definition order and returns the first match.
@@ -131,13 +145,21 @@ func (m *ScenarioMatcher) evaluate(rule *types.MatchRule, userMessage, lowerMess
 	return captures
 }
 
-// compileRegex compiles a regex pattern with caching.
+// compileRegex compiles a regex pattern with caching. A pattern that fails to
+// compile is logged once and cached as a typed-nil so it is neither recompiled
+// nor re-logged on every request (F-SM-001). Returns nil for a bad pattern, so
+// callers treat it as a non-match — but the failure is now diagnosable in the
+// logs instead of being silently indistinguishable from a legitimate non-match.
 func (m *ScenarioMatcher) compileRegex(pattern string) *regexp.Regexp {
 	if cached, ok := m.regexCache.Load(pattern); ok {
-		return cached.(*regexp.Regexp)
+		re, _ := cached.(*regexp.Regexp) // typed-nil for a known-bad pattern
+		return re
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
+		m.logger().Warn("scenario content_regex failed to compile; treating as non-match",
+			"pattern", pattern, "error", err)
+		m.regexCache.Store(pattern, (*regexp.Regexp)(nil))
 		return nil
 	}
 	m.regexCache.Store(pattern, re)
