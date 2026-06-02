@@ -54,14 +54,36 @@ func fireDenial(r *http.Request, status int, reason string) {
 	}
 }
 
+// ParseBearerToken extracts the credential from an Authorization header
+// value. It matches the "Bearer" scheme case-insensitively and tolerates
+// surrounding whitespace (F-MW-002), so `bearer x`, `  Bearer  x  `, etc. are
+// all accepted, while a header that is not a well-formed bearer credential
+// returns ok=false — a deliberate reject rather than a silent fall-through to
+// anonymous on a near-miss like `Bearertoken`.
+func ParseBearerToken(authHeader string) (string, bool) {
+	authHeader = strings.TrimSpace(authHeader)
+	const scheme = "bearer"
+	if len(authHeader) <= len(scheme) || !strings.EqualFold(authHeader[:len(scheme)], scheme) {
+		return "", false
+	}
+	// The scheme must be delimited by whitespace so "Bearertoken" is not a
+	// match.
+	rest := authHeader[len(scheme):]
+	if rest[0] != ' ' && rest[0] != '\t' {
+		return "", false
+	}
+	token := strings.TrimSpace(rest)
+	if token == "" {
+		return "", false
+	}
+	return token, true
+}
+
 // ExtractAPIKey pulls a bearer token from the Authorization header or
 // X-Api-Key header, in that order. Empty on miss.
 func ExtractAPIKey(r *http.Request) string {
-	if auth := r.Header.Get("Authorization"); auth != "" {
-		const bearer = "Bearer "
-		if strings.HasPrefix(auth, bearer) {
-			return strings.TrimSpace(auth[len(bearer):])
-		}
+	if token, ok := ParseBearerToken(r.Header.Get("Authorization")); ok {
+		return token
 	}
 	return strings.TrimSpace(r.Header.Get("X-Api-Key"))
 }
