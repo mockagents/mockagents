@@ -497,3 +497,32 @@ func TestStreamLogsEmitsDroppedFrame(t *testing.T) {
 		t.Fatal("never saw event: dropped frame")
 	}
 }
+
+// TestLogBroadcaster_Close covers F-SV-001: Close closes every active
+// subscriber's channel (so SSE handlers exit), Subscribe-after-Close hands
+// back an already-closed subscription, a subscriber's cancel after Close is
+// a no-op (no double-close panic), and Close is idempotent.
+func TestLogBroadcaster_Close(t *testing.T) {
+	b := &LogBroadcaster{}
+	sub, cancel := b.Subscribe(4)
+
+	b.Close()
+
+	// Active subscriber's channel must be closed.
+	if _, ok := <-sub.C(); ok {
+		t.Error("subscriber channel should be closed after Close")
+	}
+	// Its cancel must not panic (sub already removed from the map).
+	cancel()
+
+	// Subscribe after Close yields an already-closed subscription.
+	sub2, cancel2 := b.Subscribe(4)
+	if _, ok := <-sub2.C(); ok {
+		t.Error("post-Close Subscribe should return a closed channel")
+	}
+	cancel2()
+
+	// Publish after Close is a no-op; Close is idempotent.
+	b.Publish(makeEntry(1))
+	b.Close()
+}

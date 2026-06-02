@@ -60,6 +60,15 @@ type LogWorker struct {
 	// Lock before closing, so no in-flight send can overlap the close.
 	mu      sync.RWMutex
 	stopped atomic.Bool
+
+	// quit is closed and ctx is cancelled at the Shutdown drain deadline so
+	// workers stop ranging and any in-flight store.Log aborts (X-SHUT-001 /
+	// F-LW-002). Shutdown then wg.Wait()s, guaranteeing no worker can write
+	// to the store after Shutdown returns — so the caller can safely close
+	// the store afterward.
+	quit   chan struct{}
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // LogWorkerConfig tunes a LogWorker. Zero values fall back to the
@@ -87,12 +96,16 @@ func NewLogWorker(store *storage.SQLiteStore, logger *slog.Logger, cfg LogWorker
 	if logger == nil {
 		logger = slog.Default()
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	w := &LogWorker{
 		store:       store,
 		broadcaster: cfg.Broadcaster,
 		queue:       make(chan *storage.InteractionLog, cfg.QueueSize),
 		logger:      logger,
 		workers:     cfg.Workers,
+		quit:        make(chan struct{}),
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 	w.start()
 	return w
@@ -137,18 +150,24 @@ func (w *LogWorker) Submit(entry *storage.InteractionLog) bool {
 	}
 }
 
-// Shutdown stops accepting new entries and waits up to timeout for
-// the workers to drain any pending queue. Entries still in the queue
-// when timeout elapses are NOT persisted — callers that need strict
-// durability should keep the timeout generous or flush via Metrics
-// first.
+// Shutdown stops accepting new entries and drains the queue, blocking up to
+// timeout. Entries still queued when the timeout elapses are NOT persisted.
 //
-// Safe to call multiple times; subsequent calls are no-ops.
+// Unlike a plain close-and-wait, Shutdown ALWAYS returns only after every
+// worker goroutine has exited: at the deadline it cancels w.ctx (aborting
+// any in-flight store.Log) and closes w.quit (so workers stop ranging), then
+// joins the WaitGroup. This guarantees no worker can touch the store after
+// Shutdown returns, so the caller may safely close the store next
+// (X-SHUT-001 / F-LW-002).
+//
+// Safe to call multiple times; subsequent calls just re-join.
 func (w *LogWorker) Shutdown(timeout time.Duration) {
 	if w == nil {
 		return
 	}
+	first := false
 	w.stopOnce.Do(func() {
+		first = true
 		// Take the write lock so the close cannot race an in-flight
 		// Submit's send (F-LW-001).
 		w.mu.Lock()
@@ -156,21 +175,25 @@ func (w *LogWorker) Shutdown(timeout time.Duration) {
 		close(w.queue)
 		w.mu.Unlock()
 	})
+	if !first {
+		w.wg.Wait() // teardown already initiated by the first caller
+		return
+	}
 
-	done := make(chan struct{})
-	go func() {
-		w.wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		// Clean drain.
-	case <-time.After(timeout):
-		w.logger.Warn("log worker drain timed out",
+	// At the deadline, hard-stop the workers: abort in-flight writes and
+	// stop ranging. The timer fires at most once, so quit is closed at most
+	// once. We then always wait for the workers to actually exit.
+	hardStop := time.AfterFunc(timeout, func() {
+		w.logger.Warn("log worker drain timed out; aborting in-flight writes",
 			"timeout", timeout,
 			"queue_len", len(w.queue),
 			"dropped", w.dropped.Load())
-	}
+		w.cancel()
+		close(w.quit)
+	})
+	w.wg.Wait()
+	hardStop.Stop()
+	w.cancel() // release w.ctx on the clean path (idempotent if already cancelled)
 }
 
 // Metrics is a point-in-time snapshot of the worker's counters.
@@ -199,28 +222,45 @@ func (w *LogWorker) Metrics() Metrics {
 	}
 }
 
-// start spins up the worker goroutines. Each worker ranges over the
-// queue until it is closed, calling Log on every entry. A per-call
-// short context bounds any slow SQLite write.
+// start spins up the worker goroutines. Each worker drains the queue,
+// calling Log on every entry, until the queue is closed AND drained, or
+// until quit fires at the Shutdown deadline (X-SHUT-001). A per-call short
+// context — derived from w.ctx — bounds any slow SQLite write and is
+// cancelled when Shutdown aborts at the deadline.
 func (w *LogWorker) start() {
 	for i := 0; i < w.workers; i++ {
 		w.wg.Add(1)
 		go func() {
 			defer w.wg.Done()
-			for entry := range w.queue {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				if err := w.store.Log(ctx, entry); err != nil {
-					w.failed.Add(1)
-					w.logger.Warn("interaction log write failed", "error", err)
-				} else {
-					w.written.Add(1)
-					// Fan out to live subscribers only after the
-					// row is durable. Nil receiver is safe; the
-					// Publish method short-circuits when the
-					// broadcaster was not wired up.
-					w.broadcaster.Publish(entry)
+			for {
+				// Stop immediately if Shutdown signalled a hard stop, even
+				// if entries remain buffered (the deadline has passed).
+				select {
+				case <-w.quit:
+					return
+				default:
 				}
-				cancel()
+				select {
+				case <-w.quit:
+					return
+				case entry, ok := <-w.queue:
+					if !ok {
+						return // queue closed and fully drained
+					}
+					ctx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
+					if err := w.store.Log(ctx, entry); err != nil {
+						w.failed.Add(1)
+						w.logger.Warn("interaction log write failed", "error", err)
+					} else {
+						w.written.Add(1)
+						// Fan out to live subscribers only after the
+						// row is durable. Nil receiver is safe; the
+						// Publish method short-circuits when the
+						// broadcaster was not wired up.
+						w.broadcaster.Publish(entry)
+					}
+					cancel()
+				}
 			}
 		}()
 	}

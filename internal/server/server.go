@@ -467,6 +467,12 @@ func (s *Server) Shutdown() error {
 			"failed", m.Failed,
 		)
 	}
+	// Close the SSE broadcaster after the worker has stopped (no more
+	// Publish can arrive) so any remaining /logs/stream subscribers' handler
+	// goroutines exit instead of leaking past shutdown (F-SV-001).
+	if s.logBroadcaster != nil {
+		s.logBroadcaster.Close()
+	}
 	return err
 }
 

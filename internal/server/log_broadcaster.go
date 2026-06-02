@@ -24,6 +24,7 @@ import (
 type LogBroadcaster struct {
 	mu          sync.Mutex
 	subscribers map[*LogSubscription]struct{}
+	closed      bool
 }
 
 // LogSubscription is one live subscriber. The caller reads events
@@ -70,6 +71,13 @@ func (b *LogBroadcaster) Subscribe(buffer int) (*LogSubscription, func()) {
 		ch: make(chan *storage.InteractionLog, buffer),
 	}
 	b.mu.Lock()
+	if b.closed {
+		// Broadcaster is shutting down: hand back an already-closed
+		// subscription so the caller's read loop exits immediately.
+		b.mu.Unlock()
+		close(sub.ch)
+		return sub, func() {}
+	}
 	if b.subscribers == nil {
 		b.subscribers = make(map[*LogSubscription]struct{})
 	}
@@ -105,6 +113,27 @@ func (b *LogBroadcaster) Publish(entry *storage.InteractionLog) {
 		}
 	}
 	b.mu.Unlock()
+}
+
+// Close closes every active subscriber's channel and marks the broadcaster
+// shut down, so the SSE handler goroutines blocked on C() exit on server
+// teardown (F-SV-001). After Close, Subscribe hands back an already-closed
+// subscription and Publish is a no-op. A subscriber's own cancel after
+// Close is a no-op (the sub is already gone from the map). Idempotent.
+func (b *LogBroadcaster) Close() {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return
+	}
+	b.closed = true
+	for sub := range b.subscribers {
+		close(sub.ch)
+	}
+	b.subscribers = nil
 }
 
 // SubscriberCount returns the number of active subscribers. Used by
