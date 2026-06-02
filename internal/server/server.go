@@ -302,9 +302,11 @@ func (s *Server) handleProcessRequest(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.engine.ProcessRequestContext(r.Context(), &req)
 	if err != nil {
 		status := http.StatusInternalServerError
-		if err == engine.ErrAgentNotFound || isNotFound(err) {
+		// Use errors.Is throughout: the engine wraps ErrAgentNotFound with
+		// %w, so a `==` compare would miss it and fall through to 500 (F-SV-002).
+		if isNotFound(err) {
 			status = http.StatusNotFound
-		} else if err == engine.ErrEmptyMessage {
+		} else if errors.Is(err, engine.ErrEmptyMessage) {
 			status = http.StatusBadRequest
 		}
 		writeJSON(w, status, map[string]string{"error": err.Error()})
@@ -392,7 +394,7 @@ func (s *Server) Serve() error {
 		"port", addr.Port,
 		"agents", s.engine.Registry.Count(),
 	)
-	if err := s.httpServer.Serve(s.listener); err != nil && err != http.ErrServerClosed {
+	if err := s.httpServer.Serve(s.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("server error: %w", err)
 	}
 	return nil
@@ -475,8 +477,10 @@ func decodeJSON(r *http.Request, v any) error {
 }
 
 func isNotFound(err error) bool {
-	return errors.Is(err, engine.ErrAgentNotFound) ||
-		strings.Contains(err.Error(), engine.ErrAgentNotFound.Error())
+	// The engine wraps ErrAgentNotFound with %w, so errors.Is is sufficient
+	// and correct; the old strings.Contains fallback (F-SV-003) matched on
+	// the message text and could misclassify unrelated errors as 404.
+	return errors.Is(err, engine.ErrAgentNotFound)
 }
 
 // principalToActor extracts an audit.Actor from the authenticated
