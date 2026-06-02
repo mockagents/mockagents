@@ -42,7 +42,12 @@ func (r *PipelineRegistry) GetPipeline(name string) *types.PipelineDefinition {
 	return r.pipelines[name]
 }
 
-// List returns all pipelines sorted by name.
+// List returns all pipelines sorted by name. It allocates a fresh slice
+// and sorts on every call (F-PR-003) — deliberately not cached, because
+// the only callers are admin/management surfaces (the GUI pipeline catalog
+// and the management API), not the request hot path. If a per-request
+// caller ever needs this, cache a sorted snapshot and invalidate on
+// Register/Remove instead.
 func (r *PipelineRegistry) List() []*types.PipelineDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
