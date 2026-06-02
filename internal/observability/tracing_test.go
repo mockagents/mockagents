@@ -159,3 +159,23 @@ func spanNames(spans []sdktrace.ReadOnlySpan) []string {
 	}
 	return out
 }
+
+// TestStatusRecorder_UnwrapAndFlush guards the SSE plumbing (F-SV-004): the
+// span-recording wrapper must expose Unwrap (so http.ResponseController can
+// reach the net.Conn to reset the write deadline) and forward Flush (so SSE
+// chunks actually reach the client through this outermost middleware).
+func TestStatusRecorder_UnwrapAndFlush(t *testing.T) {
+	rec := httptest.NewRecorder()
+	sr := &statusRecorder{ResponseWriter: rec, status: http.StatusOK}
+
+	if got := sr.Unwrap(); got != rec {
+		t.Errorf("Unwrap() = %p, want the wrapped recorder %p", got, rec)
+	}
+	if _, ok := any(sr).(http.Flusher); !ok {
+		t.Fatal("statusRecorder must implement http.Flusher for SSE")
+	}
+	sr.Flush()
+	if !rec.Flushed {
+		t.Error("Flush() was not forwarded to the wrapped writer")
+	}
+}

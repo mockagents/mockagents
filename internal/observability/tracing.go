@@ -138,3 +138,17 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.status = code
 	s.ResponseWriter.WriteHeader(code)
 }
+
+// Flush forwards to the wrapped writer so SSE streaming keeps working through
+// this middleware.
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap lets http.ResponseController descend past this wrapper to reach the
+// net.Conn (used by the SSE handlers' SetWriteDeadline, F-SV-004).
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
+}

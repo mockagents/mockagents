@@ -474,6 +474,25 @@ func (h *LogHandlers) StreamLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	heartbeat := h.StreamHeartbeat
+	if heartbeat <= 0 {
+		heartbeat = 15 * time.Second
+	}
+
+	// SSE feeds are long-lived, so the server's global WriteTimeout would
+	// otherwise sever them after WriteTimeout elapses (F-SV-004). Reset the
+	// per-connection write deadline before every write to a window larger
+	// than the heartbeat interval: a healthy stream keeps writing (at least a
+	// heartbeat every `heartbeat`) and so stays open indefinitely, while a
+	// genuinely stuck write (client stopped reading) still fails after the
+	// window. SetWriteDeadline reaches the net.Conn through the middleware
+	// wrappers' Unwrap methods; if the chain doesn't support it the call is a
+	// harmless no-op and behavior reverts to the global timeout.
+	rc := http.NewResponseController(w)
+	writeWindow := heartbeat + 30*time.Second
+	bumpDeadline := func() { _ = rc.SetWriteDeadline(time.Now().Add(writeWindow)) }
+	bumpDeadline()
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -484,10 +503,6 @@ func (h *LogHandlers) StreamLogs(w http.ResponseWriter, r *http.Request) {
 	sub, cancel := h.Broadcaster.Subscribe(0)
 	defer cancel()
 
-	heartbeat := h.StreamHeartbeat
-	if heartbeat <= 0 {
-		heartbeat = 15 * time.Second
-	}
 	ticker := time.NewTicker(heartbeat)
 	defer ticker.Stop()
 
@@ -502,6 +517,9 @@ func (h *LogHandlers) StreamLogs(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	for {
+		// Refresh the write deadline each iteration so the next write (data,
+		// heartbeat, or dropped frame) gets a full window (F-SV-004).
+		bumpDeadline()
 		if current := sub.Dropped(); current > lastDropped {
 			newly := current - lastDropped
 			payload := fmt.Sprintf(`{"count":%d,"new":%d}`, current, newly)

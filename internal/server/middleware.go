@@ -174,6 +174,13 @@ func (w *statusWriter) Flush() {
 	}
 }
 
+// Unwrap lets http.ResponseController descend to the underlying writer so
+// SetWriteDeadline (used by the SSE handlers to defeat the global
+// WriteTimeout, F-SV-004) can reach the net.Conn.
+func (w *statusWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 func generateRequestID() string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {

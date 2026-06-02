@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -71,17 +72,20 @@ func TestNewServer_MountsStreamRoutes(t *testing.T) {
 func TestServerShutdown_UnblocksLiveFeed(t *testing.T) {
 	srv, base := newServerWithLogStore(t)
 
-	// Fire the SSE request in the background. We don't wait for response
-	// headers — it's enough that the handler reaches its streaming select,
-	// which it signals by registering a broadcaster subscription. The request
-	// goroutine unblocks on its own when Shutdown tears the connection down.
+	// Fire the SSE request in the background and KEEP it connected: drain the
+	// body (io.Copy) so the client keeps reading until the test cancels or the
+	// server severs the stream. Closing the body early would disconnect the
+	// client, making the handler unsubscribe before the poll below sees it.
 	reqCtx, cancelReq := context.WithCancel(context.Background())
 	defer cancelReq()
 	go func() {
 		req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, base+"/api/v1/logs/stream", nil)
-		if resp, err := http.DefaultClient.Do(req); err == nil {
-			_ = resp.Body.Close()
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return
 		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body) // hold the connection open
 	}()
 
 	// Wait until the stream handler has subscribed, i.e. it is parked in the
