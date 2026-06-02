@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/mockagents/mockagents/internal/audit"
@@ -13,6 +14,11 @@ import (
 	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/tenancy"
 )
+
+// maxListLimit caps the `limit` query param on every list endpoint
+// (logs/audit/costs) so a caller-controlled size can't drive an unbounded
+// scan/allocation (X-LIMIT-001).
+const maxListLimit = 10000
 
 // callerTenantID returns the tenant id of the authenticated principal
 // on the request, or the empty string in single-tenant mode.
@@ -171,4 +177,33 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 		// Already started writing; best effort log.
 		slog.Error("failed to write JSON response", "error", err)
 	}
+}
+
+// writeError writes the canonical management-API error envelope:
+// a flat {"error": message} body with the given status.
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
+}
+
+// writeServerError logs an internal error server-side and returns a generic
+// 500 to the client, so DB/driver internals never leak over the wire
+// (F-TN-006).
+func writeServerError(w http.ResponseWriter, err error) {
+	slog.Error("internal server error", "error", err)
+	writeError(w, http.StatusInternalServerError, "internal error")
+}
+
+// parseBoundedInt reads an integer query value, rejecting non-integers and
+// values below min with a 400, and clamping values above max down to max
+// (max <= 0 means no upper bound). The caller guards `value != ""`.
+func parseBoundedInt(w http.ResponseWriter, value, param string, min, max int) (int, bool) {
+	n, err := strconv.Atoi(value)
+	if err != nil || n < min {
+		writeError(w, http.StatusBadRequest, "invalid "+param+" parameter")
+		return 0, false
+	}
+	if max > 0 && n > max {
+		n = max
+	}
+	return n, true
 }

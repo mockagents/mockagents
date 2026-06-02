@@ -3,7 +3,6 @@ package server
 import (
 	"net/http"
 	"sort"
-	"strconv"
 
 	"github.com/mockagents/mockagents/internal/pricing"
 	"github.com/mockagents/mockagents/internal/storage"
@@ -69,24 +68,16 @@ func (h *CostsHandlers) ListCosts(w http.ResponseWriter, r *http.Request) {
 		filter.FilterTenantID = true
 	}
 	if ls := r.URL.Query().Get("limit"); ls != "" {
-		n, err := strconv.Atoi(ls)
-		if err != nil || n < 1 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{
-				"error": "invalid limit parameter",
-			})
+		n, ok := parseBoundedInt(w, ls, "limit", 1, maxListLimit)
+		if !ok {
 			return
-		}
-		if n > 10000 {
-			n = 10000
 		}
 		filter.Limit = n
 	}
 
 	rows, err := h.Store.Query(r.Context(), filter)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": "querying logs: " + err.Error(),
-		})
+		writeServerError(w, err)
 		return
 	}
 

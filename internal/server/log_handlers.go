@@ -74,22 +74,16 @@ func (h *LogHandlers) ListLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-		limit, err := strconv.Atoi(limitStr)
-		if err != nil || limit < 1 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{
-				"error": "invalid limit parameter",
-			})
+		limit, ok := parseBoundedInt(w, limitStr, "limit", 1, maxListLimit)
+		if !ok {
 			return
 		}
 		filter.Limit = limit
 	}
 
 	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
-		offset, err := strconv.Atoi(offsetStr)
-		if err != nil || offset < 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{
-				"error": "invalid offset parameter",
-			})
+		offset, ok := parseBoundedInt(w, offsetStr, "offset", 0, 0)
+		if !ok {
 			return
 		}
 		filter.Offset = offset

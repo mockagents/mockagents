@@ -2,7 +2,6 @@ package server
 
 import (
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/mockagents/mockagents/internal/audit"
@@ -26,6 +25,10 @@ type AuditHandlers struct {
 //	since   RFC3339 timestamp; returns events with timestamp >= since
 //	limit   max rows to return (default 100, max 1000)
 func (h *AuditHandlers) ListEvents(w http.ResponseWriter, r *http.Request) {
+	if h.Store == nil { // defensive, mirrors costs/pipelines (F-AU-001)
+		writeError(w, http.StatusServiceUnavailable, "audit logging is not enabled")
+		return
+	}
 	q := audit.Query{
 		Kind:  audit.EventKind(r.URL.Query().Get("kind")),
 		Actor: r.URL.Query().Get("actor"),
@@ -47,11 +50,8 @@ func (h *AuditHandlers) ListEvents(w http.ResponseWriter, r *http.Request) {
 		q.Since = t
 	}
 	if limit := r.URL.Query().Get("limit"); limit != "" {
-		n, err := strconv.Atoi(limit)
-		if err != nil || n < 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{
-				"error": "limit must be a non-negative integer",
-			})
+		n, ok := parseBoundedInt(w, limit, "limit", 0, maxListLimit)
+		if !ok {
 			return
 		}
 		q.Limit = n
@@ -59,9 +59,7 @@ func (h *AuditHandlers) ListEvents(w http.ResponseWriter, r *http.Request) {
 
 	events, err := h.Store.List(r.Context(), q)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": err.Error(),
-		})
+		writeServerError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, events)

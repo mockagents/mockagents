@@ -73,7 +73,7 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 func (h *TenancyHandlers) ListTenants(w http.ResponseWriter, r *http.Request) {
 	tenants, err := h.Store.ListTenants(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, tenants)
@@ -90,9 +90,15 @@ func (h *TenancyHandlers) CreateTenant(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, &req) {
 		return
 	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
 	tenant, err := h.Store.CreateTenant(r.Context(), req.Name)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		// Post-validation failure (duplicate name or DB error) is internal
+		// — don't echo the raw store error (F-TN-006).
+		writeServerError(w, err)
 		return
 	}
 	h.Recorder.RecordHTTP(r, audit.EventTenantCreated, tenant.ID,
@@ -108,7 +114,7 @@ func (h *TenancyHandlers) DeleteTenant(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "tenant not found"})
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, err)
 		return
 	}
 	h.Recorder.RecordHTTP(r, audit.EventTenantDeleted, id, "")
@@ -123,7 +129,7 @@ func (h *TenancyHandlers) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	keys, err := h.Store.ListAPIKeys(r.Context(), tenantID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, keys)
@@ -157,7 +163,7 @@ func (h *TenancyHandlers) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "tenant not found"})
 			return
 		}
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeServerError(w, err)
 		return
 	}
 	h.Recorder.RecordHTTP(r, audit.EventAPIKeyCreated, result.Key.ID,
@@ -198,7 +204,7 @@ func (h *TenancyHandlers) UpdateAPIKeyRole(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "api key not found"})
 			return
 		}
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeServerError(w, err)
 		return
 	}
 	h.Recorder.RecordHTTP(r, audit.EventAPIKeyRoleChanged, id,
@@ -228,7 +234,7 @@ func (h *TenancyHandlers) RotateAPIKey(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "api key not found"})
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, err)
 		return
 	}
 	h.Recorder.RecordHTTP(r, audit.EventAPIKeyRotated, result.Key.ID,
@@ -284,7 +290,7 @@ func (h *TenancyHandlers) BulkRotateTenantKeys(w http.ResponseWriter, r *http.Re
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "tenant not found"})
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, err)
 		return
 	}
 	// One audit entry per rotated key. Using the same event kind
@@ -337,7 +343,7 @@ func (h *TenancyHandlers) RotateMyAPIKey(w http.ResponseWriter, r *http.Request)
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "api key not found"})
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, err)
 		return
 	}
 	h.Recorder.RecordHTTP(r, audit.EventAPIKeyRotated, result.Key.ID,
@@ -385,7 +391,7 @@ func (h *TenancyHandlers) BurnMyAPIKey(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "api key not found"})
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, err)
 		return
 	}
 	h.Recorder.RecordHTTP(r, audit.EventAPIKeyRotated, result.Key.ID,
@@ -422,7 +428,7 @@ func (h *TenancyHandlers) DeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "api key not found"})
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, err)
 		return
 	}
 	h.Recorder.RecordHTTP(r, audit.EventAPIKeyDeleted, id, "")

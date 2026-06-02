@@ -522,3 +522,80 @@ func TestTenancyHandlers_OversizedBody(t *testing.T) {
 		t.Errorf("status = %d, want 413", resp.StatusCode)
 	}
 }
+
+func TestParseBoundedInt(t *testing.T) {
+	// X-LIMIT-001: clamps above max, rejects below min / non-integer.
+	cases := []struct {
+		value          string
+		min, max, want int
+		ok             bool
+	}{
+		{"5", 1, 100, 5, true},     // in range
+		{"999", 1, 100, 100, true}, // clamped to max
+		{"0", 1, 100, 0, false},    // below min -> 400
+		{"-3", 0, 100, 0, false},   // below min -> 400
+		{"abc", 1, 100, 0, false},  // non-integer -> 400
+		{"50", 0, 0, 50, true},     // max<=0 => no upper bound
+		{"99999999", 0, 0, 99999999, true},
+	}
+	for _, c := range cases {
+		rec := httptest.NewRecorder()
+		got, ok := parseBoundedInt(rec, c.value, "limit", c.min, c.max)
+		if ok != c.ok {
+			t.Errorf("parseBoundedInt(%q,min=%d,max=%d) ok=%v, want %v", c.value, c.min, c.max, ok, c.ok)
+		}
+		if ok && got != c.want {
+			t.Errorf("parseBoundedInt(%q) = %d, want %d", c.value, got, c.want)
+		}
+		if !ok && rec.Code != http.StatusBadRequest {
+			t.Errorf("parseBoundedInt(%q) wrote %d, want 400", c.value, rec.Code)
+		}
+	}
+}
+
+func TestCreateTenant_EmptyName_Returns400(t *testing.T) {
+	store := newRotateTestStore(t)
+	recorder := audit.NewRecorder(nil, func(*http.Request) audit.Actor { return audit.Actor{Name: "test"} })
+	h := &TenancyHandlers{Store: store, Recorder: recorder}
+	srv := httptest.NewServer(http.HandlerFunc(h.CreateTenant))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL, "application/json", strings.NewReader(`{"name":""}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestTenancyHandlers_StoreError_DoesNotLeak(t *testing.T) {
+	// F-TN-006: an internal store failure returns a generic 500, never the
+	// raw DB/driver error text. Force one by closing the store first.
+	store := newRotateTestStore(t)
+	_ = store.Close() // subsequent queries now fail at the DB layer
+	recorder := audit.NewRecorder(nil, func(*http.Request) audit.Actor { return audit.Actor{Name: "test"} })
+	h := &TenancyHandlers{Store: store, Recorder: recorder}
+	srv := httptest.NewServer(http.HandlerFunc(h.ListTenants))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, "internal error") {
+		t.Errorf("body = %q, want generic 'internal error'", s)
+	}
+	for _, leak := range []string{"sql", "database", "closed", "sqlite"} {
+		if strings.Contains(strings.ToLower(s), leak) {
+			t.Errorf("body leaks internal detail %q: %q", leak, s)
+		}
+	}
+}
