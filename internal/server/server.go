@@ -464,10 +464,12 @@ func (s *Server) Shutdown() error {
 	return err
 }
 
-// Addr returns the server's listen address. Useful after ListenAndServe
-// when port 0 is used for testing.
+// Addr returns the server's actual listen address. After Listen with port 0
+// this is the OS-assigned address (host:port), which is what tests need;
+// before Listen it falls back to the configured address. Delegates to
+// ListenAddr so the two never disagree (F-SV-006).
 func (s *Server) Addr() string {
-	return s.httpServer.Addr
+	return s.ListenAddr()
 }
 
 func decodeJSON(r *http.Request, v any) error {

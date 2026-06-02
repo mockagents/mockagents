@@ -419,13 +419,15 @@ func (h *TenancyHandlers) BurnMyAPIKey(w http.ResponseWriter, r *http.Request) {
 			"self":       true,
 			"burn":       true,
 		}))
-	// Zeroing the local reference is defense-in-depth — the
-	// plaintext is already out of scope as soon as we return, but
-	// explicit zero-then-nil makes the intent obvious for anyone
-	// reading the code later. The Go runtime may still keep a
-	// copy in the bcrypt scratch buffer, but that's the existing
-	// threat model (the regular RotateAPIKey path has the same
-	// concern).
+	// The actual security guarantee of "burn" is that we never write the new
+	// plaintext into the response body (unlike RotateAPIKey) — the caller's
+	// old credential is invalidated by the store rotation above and the new
+	// one is discarded server-side. The assignments below do NOT scrub the
+	// secret from memory: Go strings are immutable, so `result.Plaintext = ""`
+	// just rebinds the field and `result = nil` drops a pointer that was
+	// already about to go out of scope. They're left only to signal intent
+	// (and the bcrypt scratch copy remains, same threat model as
+	// RotateAPIKey). The 204 carries no body, which is the point.
 	result.Plaintext = ""
 	result = nil
 	w.WriteHeader(http.StatusNoContent)

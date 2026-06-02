@@ -27,7 +27,7 @@ type PipelineSummary struct {
 
 // ListPipelines handles GET /api/v1/pipelines.
 func (h *PipelineHandlers) ListPipelines(w http.ResponseWriter, r *http.Request) {
-	if h == nil || h.Registry == nil {
+	if h.Registry == nil {
 		writeJSON(w, http.StatusOK, []PipelineSummary{})
 		return
 	}
@@ -48,7 +48,7 @@ func (h *PipelineHandlers) GetPipeline(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing pipeline name"})
 		return
 	}
-	if h == nil || h.Registry == nil {
+	if h.Registry == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "pipeline registry not configured"})
 		return
 	}
