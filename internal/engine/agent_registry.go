@@ -30,6 +30,17 @@ func NewAgentRegistry() *AgentRegistry {
 // byModel index is kept in sync: if an existing definition with the
 // same name is being replaced, its previous model entry is cleared
 // first so stale model mappings never leak.
+//
+// Model collisions are last-writer-wins (F-AR-003): if two agents
+// with *different names* declare the same Spec.Model, both remain in
+// the agents map (and so both appear in List), but byModel[model]
+// points at whichever was registered last. So GetByModel returns the
+// most recent registrant while List still shows every agent — they
+// intentionally disagree. This is by design: name is the primary key,
+// model is a convenience index. Authors who need a stable model→agent
+// mapping must keep models unique across agent names. (The
+// tenant-aware GetByModelForTenant does not consult byModel and breaks
+// ties by name instead — see there.)
 func (r *AgentRegistry) Register(def *types.AgentDefinition) {
 	// Guard before locking (F-AR-004): a nil def would panic on the
 	// def.Metadata.Name deref below — under the write lock — taking down
@@ -174,21 +185,37 @@ func (r *AgentRegistry) GetForTenant(name, tenantID string) *types.AgentDefiniti
 // this model", which is fine for the non-tenant fast path
 // (`GetByModel`) but ambiguous once tenancy enters the picture. The
 // scan is O(n) but only runs in tenant-scoped lookups.
+//
+// Tie-break (F-AR-002): if several agents in the same visibility
+// class (owner or global) share a model, the lexicographically
+// smallest name wins. Without this the result depended on Go's
+// randomized map-iteration order — a different agent could answer
+// the same lookup across requests. The byModel fast path has no such
+// ambiguity because a model maps to exactly one slot there.
 func (r *AgentRegistry) GetByModelForTenant(model, tenantID string) *types.AgentDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	var fallbackGlobal *types.AgentDefinition
+	var ownerMatch, fallbackGlobal *types.AgentDefinition
 	for _, def := range r.agents {
 		if def.Spec.Model != model {
 			continue
 		}
-		if def.Metadata.TenantID == tenantID {
-			// Exact owner match wins immediately.
-			return def
+		owner := def.Metadata.TenantID
+		if owner == tenantID {
+			// Caller's own agent (for anonymous callers this is the
+			// global class, since tenantID == "").
+			if ownerMatch == nil || def.Metadata.Name < ownerMatch.Metadata.Name {
+				ownerMatch = def
+			}
+		} else if owner == "" {
+			// Global fallback for a tenant caller.
+			if fallbackGlobal == nil || def.Metadata.Name < fallbackGlobal.Metadata.Name {
+				fallbackGlobal = def
+			}
 		}
-		if def.Metadata.TenantID == "" && fallbackGlobal == nil {
-			fallbackGlobal = def
-		}
+	}
+	if ownerMatch != nil {
+		return ownerMatch
 	}
 	return fallbackGlobal
 }

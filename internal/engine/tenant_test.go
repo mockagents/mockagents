@@ -77,6 +77,42 @@ func TestAgentRegistry_GetByModelForTenant_PrefersOwner(t *testing.T) {
 	}
 }
 
+// TestAgentRegistry_GetByModelForTenant_DeterministicOwnerTieBreak covers
+// F-AR-002: when several same-tenant agents share a model, the lookup must
+// always return the lexicographically smallest name rather than whichever
+// the randomized map iteration happens to reach first. Looping exercises a
+// range of iteration orders — the pre-fix "return first match" would yield
+// a different name on some iterations.
+func TestAgentRegistry_GetByModelForTenant_DeterministicOwnerTieBreak(t *testing.T) {
+	r := NewAgentRegistry()
+	r.Register(makeTenantAgent("zeta", "shared", "ten_acme"))
+	r.Register(makeTenantAgent("alpha", "shared", "ten_acme"))
+	r.Register(makeTenantAgent("mid", "shared", "ten_acme"))
+
+	for i := 0; i < 50; i++ {
+		got := r.GetByModelForTenant("shared", "ten_acme")
+		if got == nil || got.Metadata.Name != "alpha" {
+			t.Fatalf("iter %d: owner tie-break not deterministic: got %v, want alpha", i, got)
+		}
+	}
+}
+
+// TestAgentRegistry_GetByModelForTenant_DeterministicGlobalTieBreak covers
+// the F-AR-002 fallback path: a tenant caller with no own agent for the
+// model must deterministically resolve to the smallest-named global.
+func TestAgentRegistry_GetByModelForTenant_DeterministicGlobalTieBreak(t *testing.T) {
+	r := NewAgentRegistry()
+	r.Register(makeTenantAgent("g-zeta", "shared", ""))
+	r.Register(makeTenantAgent("g-alpha", "shared", ""))
+
+	for i := 0; i < 50; i++ {
+		got := r.GetByModelForTenant("shared", "ten_acme")
+		if got == nil || got.Metadata.Name != "g-alpha" {
+			t.Fatalf("iter %d: global tie-break not deterministic: got %v, want g-alpha", i, got)
+		}
+	}
+}
+
 func TestAgentRegistry_ListForTenant_FiltersScoped(t *testing.T) {
 	r := NewAgentRegistry()
 	r.Register(makeTenantAgent("zglobal", "g", ""))
