@@ -207,3 +207,21 @@ func parseBoundedInt(w http.ResponseWriter, value, param string, min, max int) (
 	}
 	return n, true
 }
+
+// parseTimestampParam validates an optional RFC3339 timestamp query param,
+// returning the original string for store filters that take a string. An
+// empty value is valid (no filter); a malformed value writes a 400 and
+// returns ok=false. This gives the costs/logs list endpoints the same
+// input validation the audit endpoint already does (F-CO-004 / F-LH-011) —
+// without it, a bad `since`/`until` silently depends on store behavior.
+// RFC3339 is short, so a valid value is inherently length-bounded.
+func parseTimestampParam(w http.ResponseWriter, value, param string) (string, bool) {
+	if value == "" {
+		return "", true
+	}
+	if _, err := time.Parse(time.RFC3339, value); err != nil {
+		writeError(w, http.StatusBadRequest, param+" must be RFC3339: "+err.Error())
+		return "", false
+	}
+	return value, true
+}

@@ -64,11 +64,19 @@ func (h *LogHandlers) ListLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	since, ok := parseTimestampParam(w, r.URL.Query().Get("since"), "since")
+	if !ok {
+		return
+	}
+	until, ok := parseTimestampParam(w, r.URL.Query().Get("until"), "until")
+	if !ok {
+		return
+	}
 	filter := storage.InteractionFilter{
 		AgentName: r.URL.Query().Get("agent"),
 		SessionID: r.URL.Query().Get("session_id"),
-		Since:     r.URL.Query().Get("since"),
-		Until:     r.URL.Query().Get("until"),
+		Since:     since,
+		Until:     until,
 	}
 	if tenantID := callerTenantID(r); tenantID != "" {
 		filter.TenantID = tenantID

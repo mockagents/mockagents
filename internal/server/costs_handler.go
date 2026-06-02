@@ -64,10 +64,18 @@ func (h *CostsHandlers) ListCosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	since, ok := parseTimestampParam(w, r.URL.Query().Get("since"), "since")
+	if !ok {
+		return
+	}
+	until, ok := parseTimestampParam(w, r.URL.Query().Get("until"), "until")
+	if !ok {
+		return
+	}
 	filter := storage.InteractionFilter{
 		AgentName: r.URL.Query().Get("agent"),
-		Since:     r.URL.Query().Get("since"),
-		Until:     r.URL.Query().Get("until"),
+		Since:     since,
+		Until:     until,
 		Limit:     1000,
 	}
 	if tenantID := callerTenantID(r); tenantID != "" {
