@@ -130,23 +130,25 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 	if cfg.AuditStore != nil {
 		s.auditH = &AuditHandlers{Store: cfg.AuditStore}
 	}
-	s.registerRoutes(mux)
 
-	// Construct the async log worker once so the middleware and
-	// Shutdown share the same instance. A nil log store leaves the
-	// worker as nil and InteractionCapture short-circuits.
+	// Construct the async log worker + broadcaster BEFORE registerRoutes so
+	// the SSE feed wiring is in place when routes are mounted. registerRoutes
+	// reads s.logBroadcaster to mount GET /api/v1/logs/stream[/metrics] and to
+	// hand the broadcaster to LogHandlers; building these afterwards left both
+	// nil, so the live-feed routes were never mounted (F-SRV-ORDER-001). A nil
+	// log store leaves the worker nil and InteractionCapture short-circuits.
 	//
-	// The log broadcaster fans every successfully-written row out to
-	// SSE subscribers (GET /api/v1/logs/stream). It is always
-	// constructed when logging is enabled — slow subscribers drop
-	// events rather than block the writer, so the overhead on the
-	// hot path is a single mutex-held map iteration.
+	// The broadcaster fans every successfully-written row out to SSE
+	// subscribers; slow subscribers drop events rather than block the writer,
+	// so the hot-path overhead is a single mutex-held map iteration.
 	if cfg.LogStore != nil {
 		s.logBroadcaster = &LogBroadcaster{}
 		s.logWorker = NewLogWorker(cfg.LogStore, logger, LogWorkerConfig{
 			Broadcaster: s.logBroadcaster,
 		})
 	}
+
+	s.registerRoutes(mux)
 
 	// Build middleware chain: outermost first.
 	var handler http.Handler = mux
