@@ -86,6 +86,13 @@ func (s *Session) ApplyTurn(
 const initialMessageCap = 16
 
 // NewSession creates a new session with the given ID and agent name.
+//
+// A ttl <= 0 means the session never expires (F-SS-006): IsExpired treats a
+// non-positive TTL as eternal by design — see TestSession_NoTTL. This is NOT
+// clamped here on purpose; clamping would remove that capability. In normal
+// operation sessions are created via MemoryStore.GetOrCreate, which always
+// passes the store's already-clamped positive ttl, so an accidental eternal
+// session is only reachable by calling NewSession with ttl<=0 directly.
 func NewSession(id, agentName string, ttl time.Duration) *Session {
 	now := time.Now()
 	return &Session{
@@ -107,13 +114,14 @@ func (s *Session) AppendUserMessage(content string) {
 }
 
 func (s *Session) appendUserMessage(content string) {
+	now := time.Now() // single clock read for both fields (F-SS-003)
 	s.Messages = append(s.Messages, Message{
 		Role:      "user",
 		Content:   content,
-		Timestamp: time.Now(),
+		Timestamp: now,
 	})
 	s.TurnCount++
-	s.LastAccess = time.Now()
+	s.LastAccess = now
 }
 
 // AppendAssistantMessage adds an assistant response to the history.
@@ -124,13 +132,14 @@ func (s *Session) AppendAssistantMessage(content string, toolCalls []ToolCallMsg
 }
 
 func (s *Session) appendAssistantMessage(content string, toolCalls []ToolCallMsg) {
+	now := time.Now() // single clock read for both fields (F-SS-003)
 	s.Messages = append(s.Messages, Message{
 		Role:      "assistant",
 		Content:   content,
 		ToolCalls: toolCalls,
-		Timestamp: time.Now(),
+		Timestamp: now,
 	})
-	s.LastAccess = time.Now()
+	s.LastAccess = now
 }
 
 // IsExpired returns true if the session has exceeded its TTL.

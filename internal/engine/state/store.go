@@ -8,13 +8,20 @@ import (
 const DefaultSessionTTL = 30 * time.Minute
 
 // Store defines the interface for session state storage.
+//
+// Aliasing contract (F-ST-006): Get and GetOrCreate return the store's
+// internal *Session pointer, not a copy. Callers must mutate it only
+// through the session's own lock (ApplyTurn / WithLocked); there is no
+// separate "save" step — in-place changes are immediately visible to the
+// next reader of the same id.
 type Store interface {
 	// Get retrieves a session by ID. Returns nil if not found or expired.
+	// The returned pointer is shared (see the aliasing contract above).
 	Get(id string) *Session
-	// GetOrCreate retrieves an existing session or creates a new one.
+	// GetOrCreate retrieves an existing session or creates a new one. The
+	// returned pointer is shared and already stored — mutations persist
+	// without any follow-up call.
 	GetOrCreate(id, agentName string) *Session
-	// Save persists session state.
-	Save(session *Session)
 	// Delete removes a session.
 	Delete(id string)
 	// Count returns the number of active sessions.
@@ -80,14 +87,12 @@ func (s *MemoryStore) GetOrCreate(id, agentName string) *Session {
 		}
 	}
 	session := NewSession(id, agentName, s.ttl)
-	s.sessions[session.ID] = session
+	// Key on the lookup id, not session.ID (F-ST-007): they are equal today
+	// since NewSession copies id verbatim, but keying on id keeps the map
+	// consistent with how callers look sessions up even if NewSession ever
+	// normalizes the id.
+	s.sessions[id] = session
 	return session
-}
-
-func (s *MemoryStore) Save(session *Session) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sessions[session.ID] = session
 }
 
 func (s *MemoryStore) Delete(id string) {

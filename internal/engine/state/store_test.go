@@ -27,6 +27,20 @@ func TestMemoryStore_GetNotFound(t *testing.T) {
 	assert.Nil(t, store.Get("nonexistent"))
 }
 
+func TestMemoryStore_MutationsPersistWithoutSave(t *testing.T) {
+	// F-ST-004: GetOrCreate returns the store's own *Session pointer, so
+	// mutating it (as ApplyTurn does) is visible to the next lookup with no
+	// explicit save step. The redundant Store.Save was removed.
+	store := NewMemoryStore(time.Hour)
+	s := store.GetOrCreate("sess", "agent")
+	s.AppendUserMessage("hello")
+
+	again := store.GetOrCreate("sess", "agent")
+	assert.Same(t, s, again)
+	assert.Equal(t, 1, again.TurnCount)
+	assert.Len(t, again.Messages, 1)
+}
+
 func TestMemoryStore_Delete(t *testing.T) {
 	store := NewMemoryStore(5 * time.Minute)
 	store.GetOrCreate("sess-1", "agent-a")
