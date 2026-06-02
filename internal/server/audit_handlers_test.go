@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,4 +131,25 @@ func TestAuditHandlers_InputValidation(t *testing.T) {
 			t.Fatalf("status = %d, want 503", rec.Code)
 		}
 	})
+}
+
+// TestAuditHandlers_UnknownKindErrorListsAllKinds guards against doc/message
+// drift (F-AU-004): the unknown-kind 400 body must enumerate every audit
+// EventKind, so a newly-added kind can't silently go unlisted.
+func TestAuditHandlers_UnknownKindErrorListsAllKinds(t *testing.T) {
+	h := &AuditHandlers{Store: newAuditTestStore(t)}
+	rec := httptest.NewRecorder()
+	h.ListEvents(rec, httptest.NewRequest("GET", "/api/v1/audit?kind=bogus.kind", nil))
+
+	body := rec.Body.String()
+	for _, k := range []audit.EventKind{
+		audit.EventTenantCreated, audit.EventTenantDeleted,
+		audit.EventAPIKeyCreated, audit.EventAPIKeyDeleted,
+		audit.EventAPIKeyRoleChanged, audit.EventAPIKeyRotated,
+		audit.EventAgentReloaded, audit.EventAuthDenied,
+	} {
+		if !strings.Contains(body, string(k)) {
+			t.Errorf("unknown-kind error message omits %q: %s", k, body)
+		}
+	}
 }

@@ -422,11 +422,6 @@ func (w *captureWriter) Flush() {
 	}
 }
 
-func init() {
-	// Ensure json import is used (for writeJSON in handlers.go).
-	_ = json.Marshal
-}
-
 // StreamLogs implements GET /api/v1/logs/stream. It opens a long-lived
 // Server-Sent Events response, subscribes to the LogBroadcaster, and
 // writes each newly-persisted interaction log as one SSE frame:

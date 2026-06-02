@@ -81,6 +81,11 @@ func NewAgentDirWatcher(dir string, eng *engine.Engine, logger *slog.Logger) *Ag
 // fsnotify watcher is registered, so callers can race-free check for
 // startup errors. The watcher runs until Stop is called or the engine
 // shuts down.
+//
+// The watch is non-recursive: only files directly in Dir are observed.
+// Agent YAML placed in a subdirectory is ignored (fsnotify watches the
+// single directory, not its descendants), matching the flat examples/
+// layout (F-WT-008).
 func (w *AgentDirWatcher) Start() error {
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {

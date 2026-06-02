@@ -49,6 +49,13 @@ type CostsResponse struct {
 //	until  RFC3339 upper bound
 //	agent  restrict aggregation to a single agent
 //	limit  max rows to scan (default 1000, max 10000)
+//
+// NOTE: limit bounds the number of log rows *scanned*, not a page of output.
+// The totals and per-key groups are computed only over the most recent
+// `limit` matching rows — if more rows match the filter, the reported costs
+// are a partial sum, not the window's full total. Widen `limit` (up to the
+// max) or narrow the since/until window for an exact figure; the response
+// carries no truncation flag (F-CO-003).
 func (h *CostsHandlers) ListCosts(w http.ResponseWriter, r *http.Request) {
 	if h.Store == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
