@@ -25,7 +25,10 @@ type Store interface {
 
 	CreateAPIKey(ctx context.Context, tenantID, name string, role Role) (*NewAPIKeyResult, error)
 	ListAPIKeys(ctx context.Context, tenantID string) ([]*APIKey, error)
-	DeleteAPIKey(ctx context.Context, id string) error
+	// DeleteAPIKey removes a key, scoped to tenantID: a key id that
+	// belongs to a different tenant returns ErrNotFound, so the API
+	// layer cannot delete another tenant's credential (X-SEC-001).
+	DeleteAPIKey(ctx context.Context, tenantID, id string) error
 	// RotateAPIKey atomically regenerates the secret behind an
 	// existing key. The id, name, role, and tenant_id are preserved
 	// so every caller that still holds the key id (audit events,
@@ -35,7 +38,10 @@ type Store interface {
 	// logs can correlate a rotation with the specific secret that
 	// was burned. The auth cache is flushed on success so cached
 	// Principals cannot outlive the old hash.
-	RotateAPIKey(ctx context.Context, id string) (result *NewAPIKeyResult, oldPrefix string, err error)
+	// Scoped to tenantID (X-SEC-001): a key id outside that tenant
+	// returns ErrNotFound. Self-service callers pass their own
+	// Principal.TenantID + Principal.KeyID.
+	RotateAPIKey(ctx context.Context, tenantID, id string) (result *NewAPIKeyResult, oldPrefix string, err error)
 	// BulkRotateTenantKeys atomically regenerates every key in a
 	// tenant inside a single database transaction. Returns one
 	// NewAPIKeyResult per key plus a parallel slice of old prefixes
@@ -55,7 +61,9 @@ type Store interface {
 	// UpdateAPIKeyRole atomically promotes or demotes a key. Returns
 	// the previous role alongside the new one so callers (and the
 	// audit recorder) can log the transition without a second read.
-	UpdateAPIKeyRole(ctx context.Context, id string, role Role) (prev Role, new Role, err error)
+	// Scoped to tenantID (X-SEC-001): a key id in another tenant
+	// returns ErrNotFound rather than being mutated.
+	UpdateAPIKeyRole(ctx context.Context, tenantID, id string, role Role) (prev Role, new Role, err error)
 
 	// Resolve looks up an API key by its plaintext value, verifies the
 	// bcrypt hash, bumps last_used, and returns the derived Principal.
@@ -291,19 +299,21 @@ func (s *SQLiteStore) ListAPIKeys(ctx context.Context, tenantID string) ([]*APIK
 // error when the requested role is not one of viewer/editor/admin.
 // The previous role is returned on success so the caller can log a
 // transition (viewer -> admin, etc.) without a second query.
-func (s *SQLiteStore) UpdateAPIKeyRole(ctx context.Context, id string, role Role) (Role, Role, error) {
+func (s *SQLiteStore) UpdateAPIKeyRole(ctx context.Context, tenantID, id string, role Role) (Role, Role, error) {
 	if !role.IsValid() {
 		return "", "", fmt.Errorf("invalid role %q", role)
 	}
 	var prev string
-	err := s.db.QueryRowContext(ctx, `SELECT role FROM api_keys WHERE id = ?`, id).Scan(&prev)
+	// Scope the lookup to tenantID (X-SEC-001): a key in another tenant
+	// must look like it doesn't exist, not get mutated.
+	err := s.db.QueryRowContext(ctx, `SELECT role FROM api_keys WHERE id = ? AND tenant_id = ?`, id, tenantID).Scan(&prev)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", "", ErrNotFound
 		}
 		return "", "", err
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE api_keys SET role = ? WHERE id = ?`, string(role), id); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE api_keys SET role = ? WHERE id = ? AND tenant_id = ?`, string(role), id, tenantID); err != nil {
 		return "", "", err
 	}
 	// Flush the auth cache so a previously cached Principal for this
@@ -321,7 +331,7 @@ func (s *SQLiteStore) UpdateAPIKeyRole(ctx context.Context, id string, role Role
 // Implementation note: the operation is performed inside a SQLite
 // transaction so a crash or context cancellation cannot leave the
 // row with a broken hash/prefix pair.
-func (s *SQLiteStore) RotateAPIKey(ctx context.Context, id string) (*NewAPIKeyResult, string, error) {
+func (s *SQLiteStore) RotateAPIKey(ctx context.Context, callerTenantID, id string) (*NewAPIKeyResult, string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, "", err
@@ -330,6 +340,8 @@ func (s *SQLiteStore) RotateAPIKey(ctx context.Context, id string) (*NewAPIKeyRe
 
 	// Read existing row so we can preserve the immutable fields and
 	// surface the old prefix back to the caller for audit purposes.
+	// Scoped to callerTenantID (X-SEC-001): rotating a key in another
+	// tenant returns ErrNotFound (→ 404) rather than invalidating it.
 	var (
 		tenantID    string
 		name        string
@@ -340,7 +352,7 @@ func (s *SQLiteStore) RotateAPIKey(ctx context.Context, id string) (*NewAPIKeyRe
 	)
 	err = tx.QueryRowContext(ctx,
 		`SELECT tenant_id, name, prefix, role, created_at, last_used
-		 FROM api_keys WHERE id = ?`, id,
+		 FROM api_keys WHERE id = ? AND tenant_id = ?`, id, callerTenantID,
 	).Scan(&tenantID, &name, &oldPrefix, &role, &createdStr, &lastUsedStr)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -513,8 +525,10 @@ func (s *SQLiteStore) BulkRotateTenantKeys(ctx context.Context, tenantID string,
 
 // DeleteAPIKey permanently removes a key. The auth cache is flushed
 // on success so a cached Principal cannot outlive its backing row.
-func (s *SQLiteStore) DeleteAPIKey(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM api_keys WHERE id = ?`, id)
+func (s *SQLiteStore) DeleteAPIKey(ctx context.Context, tenantID, id string) error {
+	// Scoped to tenantID (X-SEC-001): deleting a key in another tenant
+	// affects 0 rows and returns ErrNotFound (→ 404).
+	res, err := s.db.ExecContext(ctx, `DELETE FROM api_keys WHERE id = ? AND tenant_id = ?`, id, tenantID)
 	if err != nil {
 		return err
 	}

@@ -24,7 +24,7 @@ func TestRotateAPIKey(t *testing.T) {
 		t.Fatalf("pre-rotation Resolve: %v", err)
 	}
 
-	rotated, reportedOldPrefix, err := store.RotateAPIKey(ctx, created.Key.ID)
+	rotated, reportedOldPrefix, err := store.RotateAPIKey(ctx, created.Key.TenantID, created.Key.ID)
 	if err != nil {
 		t.Fatalf("RotateAPIKey: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestRotateAPIKey(t *testing.T) {
 
 func TestRotateAPIKey_UnknownID(t *testing.T) {
 	store := newTestStore(t)
-	_, _, err := store.RotateAPIKey(context.Background(), "key_nope")
+	_, _, err := store.RotateAPIKey(context.Background(), "ten_any", "key_nope")
 	if err != ErrNotFound {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
@@ -87,7 +87,7 @@ func TestRotateAPIKey_FlushesAuthCache(t *testing.T) {
 	if _, err := store.Resolve(ctx, created.Plaintext); err != nil {
 		t.Fatalf("warm Resolve: %v", err)
 	}
-	if _, _, err := store.RotateAPIKey(ctx, created.Key.ID); err != nil {
+	if _, _, err := store.RotateAPIKey(ctx, created.Key.TenantID, created.Key.ID); err != nil {
 		t.Fatalf("RotateAPIKey: %v", err)
 	}
 	if _, err := store.Resolve(ctx, created.Plaintext); err != ErrInvalidKey {

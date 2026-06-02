@@ -175,7 +175,7 @@ func TestResolveCacheInvalidatedOnDelete(t *testing.T) {
 		t.Fatalf("cache len after warm-up = %d, want 1", store.cache.Len())
 	}
 
-	if err := store.DeleteAPIKey(ctx, result.Key.ID); err != nil {
+	if err := store.DeleteAPIKey(ctx, result.Key.TenantID, result.Key.ID); err != nil {
 		t.Fatalf("DeleteAPIKey: %v", err)
 	}
 	if store.cache.Len() != 0 {
@@ -206,7 +206,7 @@ func TestResolveCacheInvalidatedOnRoleChange(t *testing.T) {
 		t.Errorf("initial role = %q, want viewer", first.Role)
 	}
 
-	if _, _, err := store.UpdateAPIKeyRole(ctx, result.Key.ID, RoleAdmin); err != nil {
+	if _, _, err := store.UpdateAPIKeyRole(ctx, result.Key.TenantID, result.Key.ID, RoleAdmin); err != nil {
 		t.Fatalf("UpdateAPIKeyRole: %v", err)
 	}
 	if store.cache.Len() != 0 {

@@ -362,7 +362,7 @@ func TestUpdateAPIKeyRole_RoundTrip(t *testing.T) {
 		t.Fatalf("CreateAPIKey: %v", err)
 	}
 
-	prev, next, err := store.UpdateAPIKeyRole(ctx, result.Key.ID, RoleAdmin)
+	prev, next, err := store.UpdateAPIKeyRole(ctx, result.Key.TenantID, result.Key.ID, RoleAdmin)
 	if err != nil {
 		t.Fatalf("UpdateAPIKeyRole: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestUpdateAPIKeyRole_RoundTrip(t *testing.T) {
 		t.Errorf("principal.Role = %q after promotion, want admin", principal.Role)
 	}
 
-	if _, _, err := store.UpdateAPIKeyRole(ctx, "no-such-id", RoleEditor); err == nil {
+	if _, _, err := store.UpdateAPIKeyRole(ctx, "ten_any", "no-such-id", RoleEditor); err == nil {
 		t.Error("expected ErrNotFound for unknown id")
 	}
 }

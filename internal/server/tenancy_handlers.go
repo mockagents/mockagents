@@ -17,6 +17,36 @@ type TenancyHandlers struct {
 	Recorder *audit.Recorder // optional; nil = audit disabled for these routes
 }
 
+// principalOrUnauthorized returns the authenticated principal, or writes a
+// 401 and returns nil. RequireRole already guarantees a principal on these
+// routes, so a nil here is purely defensive.
+func principalOrUnauthorized(w http.ResponseWriter, r *http.Request) *tenancy.Principal {
+	p := tenancy.PrincipalFrom(r.Context())
+	if p == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+		return nil
+	}
+	return p
+}
+
+// ensureOwnTenant returns the path {id} tenant only when it matches the
+// caller's own tenant; otherwise it writes a 404 (deliberately hiding the
+// existence of other tenants) and returns ok=false. This is the
+// tenant-ownership gate for the {id}-addressed management routes — without
+// it, a tenant-A admin could operate on tenant-B by path id (X-SEC-001).
+func (h *TenancyHandlers) ensureOwnTenant(w http.ResponseWriter, r *http.Request) (string, bool) {
+	p := principalOrUnauthorized(w, r)
+	if p == nil {
+		return "", false
+	}
+	pathTenant := r.PathValue("id")
+	if pathTenant != p.TenantID {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "tenant not found"})
+		return "", false
+	}
+	return pathTenant, true
+}
+
 // ListTenants handles GET /api/v1/tenants — admin only.
 func (h *TenancyHandlers) ListTenants(w http.ResponseWriter, r *http.Request) {
 	tenants, err := h.Store.ListTenants(r.Context())
@@ -66,7 +96,10 @@ func (h *TenancyHandlers) DeleteTenant(w http.ResponseWriter, r *http.Request) {
 
 // ListAPIKeys handles GET /api/v1/tenants/{id}/keys — admin or editor.
 func (h *TenancyHandlers) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
-	tenantID := r.PathValue("id")
+	tenantID, ok := h.ensureOwnTenant(w, r)
+	if !ok {
+		return
+	}
 	keys, err := h.Store.ListAPIKeys(r.Context(), tenantID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -77,15 +110,18 @@ func (h *TenancyHandlers) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
 
 // CreateAPIKeyRequest is the JSON body accepted by POST /api/v1/tenants/{id}/keys.
 type CreateAPIKeyRequest struct {
-	Name string        `json:"name"`
-	Role tenancy.Role  `json:"role"`
+	Name string       `json:"name"`
+	Role tenancy.Role `json:"role"`
 }
 
 // CreateAPIKey handles POST /api/v1/tenants/{id}/keys — admin only.
 // Returns the plaintext key in the response body; subsequent list
 // requests only show metadata.
 func (h *TenancyHandlers) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
-	tenantID := r.PathValue("id")
+	tenantID, ok := h.ensureOwnTenant(w, r)
+	if !ok {
+		return
+	}
 	var req CreateAPIKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -123,6 +159,10 @@ type UpdateAPIKeyRoleRequest struct {
 // Promotes or demotes an existing key and records the transition to
 // the audit log so every privilege escalation leaves a trail.
 func (h *TenancyHandlers) UpdateAPIKeyRole(w http.ResponseWriter, r *http.Request) {
+	p := principalOrUnauthorized(w, r)
+	if p == nil {
+		return
+	}
 	id := r.PathValue("id")
 	var req UpdateAPIKeyRoleRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -133,7 +173,7 @@ func (h *TenancyHandlers) UpdateAPIKeyRole(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid role (must be viewer, editor, or admin)"})
 		return
 	}
-	prev, next, err := h.Store.UpdateAPIKeyRole(r.Context(), id, req.Role)
+	prev, next, err := h.Store.UpdateAPIKeyRole(r.Context(), p.TenantID, id, req.Role)
 	if err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "api key not found"})
@@ -158,8 +198,12 @@ func (h *TenancyHandlers) UpdateAPIKeyRole(w http.ResponseWriter, r *http.Reques
 // previous prefix is recorded in the audit trail so operators can
 // correlate a rotation with a specific compromised credential.
 func (h *TenancyHandlers) RotateAPIKey(w http.ResponseWriter, r *http.Request) {
+	p := principalOrUnauthorized(w, r)
+	if p == nil {
+		return
+	}
 	id := r.PathValue("id")
-	result, oldPrefix, err := h.Store.RotateAPIKey(r.Context(), id)
+	result, oldPrefix, err := h.Store.RotateAPIKey(r.Context(), p.TenantID, id)
 	if err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "api key not found"})
@@ -184,8 +228,8 @@ func (h *TenancyHandlers) RotateAPIKey(w http.ResponseWriter, r *http.Request) {
 // confirm how many keys were touched without counting the array
 // themselves.
 type BulkRotateResult struct {
-	Count   int                         `json:"count"`
-	Results []*tenancy.NewAPIKeyResult  `json:"results"`
+	Count   int                        `json:"count"`
+	Results []*tenancy.NewAPIKeyResult `json:"results"`
 }
 
 // BulkRotateTenantKeys handles POST /api/v1/tenants/{id}/keys/rotate
@@ -200,7 +244,10 @@ type BulkRotateResult struct {
 // (admin clicks "Rotate" on every key one by one) leaves a
 // window where half the keys are still the compromised values.
 func (h *TenancyHandlers) BulkRotateTenantKeys(w http.ResponseWriter, r *http.Request) {
-	tenantID := r.PathValue("id")
+	tenantID, ok := h.ensureOwnTenant(w, r)
+	if !ok {
+		return
+	}
 	// ?except=self lets the caller preserve their own key so they
 	// don't lock themselves out of the very admin console they're
 	// using to respond to the compromise. The handler reads the
@@ -262,7 +309,7 @@ func (h *TenancyHandlers) RotateMyAPIKey(w http.ResponseWriter, r *http.Request)
 		})
 		return
 	}
-	result, oldPrefix, err := h.Store.RotateAPIKey(r.Context(), principal.KeyID)
+	result, oldPrefix, err := h.Store.RotateAPIKey(r.Context(), principal.TenantID, principal.KeyID)
 	if err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
 			// The principal was authenticated but the underlying
@@ -313,7 +360,7 @@ func (h *TenancyHandlers) BurnMyAPIKey(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	result, oldPrefix, err := h.Store.RotateAPIKey(r.Context(), principal.KeyID)
+	result, oldPrefix, err := h.Store.RotateAPIKey(r.Context(), principal.TenantID, principal.KeyID)
 	if err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "api key not found"})
@@ -346,8 +393,12 @@ func (h *TenancyHandlers) BurnMyAPIKey(w http.ResponseWriter, r *http.Request) {
 
 // DeleteAPIKey handles DELETE /api/v1/keys/{id} — admin only.
 func (h *TenancyHandlers) DeleteAPIKey(w http.ResponseWriter, r *http.Request) {
+	p := principalOrUnauthorized(w, r)
+	if p == nil {
+		return
+	}
 	id := r.PathValue("id")
-	if err := h.Store.DeleteAPIKey(r.Context(), id); err != nil {
+	if err := h.Store.DeleteAPIKey(r.Context(), p.TenantID, id); err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "api key not found"})
 			return
