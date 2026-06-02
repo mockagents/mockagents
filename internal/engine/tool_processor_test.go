@@ -373,3 +373,15 @@ func TestGenerateToolCallID_Unique(t *testing.T) {
 		ids[id] = true
 	}
 }
+
+func TestFallbackToolCallID_Unique(t *testing.T) {
+	// F-TP-004: the crypto/rand failure fallback must still yield unique ids
+	// (the old constant "call_000000000000" collided on every call).
+	ids := map[string]bool{}
+	for i := 0; i < 1000; i++ {
+		id := fallbackToolCallID()
+		assert.Contains(t, id, "call_fallback_")
+		assert.False(t, ids[id], "duplicate fallback ID generated: %s", id)
+		ids[id] = true
+	}
+}

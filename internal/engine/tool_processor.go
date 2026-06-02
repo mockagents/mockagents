@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"sync"
+	"sync/atomic"
 
 	"github.com/mockagents/mockagents/internal/types"
 )
@@ -203,10 +204,23 @@ func indexTools(tools []types.ToolDefinition) map[string]*types.ToolDefinition {
 	return m
 }
 
+// toolCallIDFallbackCounter backs fallbackToolCallID. It is process-global so
+// ids stay unique across every ToolCallProcessor (they only need to be unique
+// within a response anyway).
+var toolCallIDFallbackCounter atomic.Uint64
+
+// fallbackToolCallID produces a unique id from a monotonic counter, used when
+// crypto/rand is unavailable (F-TP-004). It trades unpredictability for the
+// thing that actually matters here — no collisions — unlike the old constant
+// "call_000000000000" that every call would share.
+func fallbackToolCallID() string {
+	return fmt.Sprintf("call_fallback_%012x", toolCallIDFallbackCounter.Add(1))
+}
+
 func generateToolCallID() string {
 	b := make([]byte, 12)
 	if _, err := rand.Read(b); err != nil {
-		return "call_000000000000"
+		return fallbackToolCallID()
 	}
 	return fmt.Sprintf("call_%x", b)
 }
