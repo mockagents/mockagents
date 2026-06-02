@@ -233,7 +233,10 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 	}); err != nil {
 		return nil, err
 	}
-	e.States.Save(session)
+	// No explicit save (F-ST-004/X-06): `session` is the store's own pointer
+	// and ApplyTurn mutated it under the session lock, so the changes are
+	// already persisted. The previous States.Save here was redundant and
+	// could resurrect a session that Cleanup/Get concurrently evicted.
 
 	// 8. Inject latency now that the real work is done. Sleeping here keeps
 	// behavior visible to clients without blocking error injection above.
