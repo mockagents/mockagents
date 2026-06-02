@@ -90,6 +90,12 @@ type Query struct {
 	Actor string
 	Since time.Time
 	Limit int
+	// ActorTenant, when non-empty, restricts results to events whose actor
+	// belongs to that tenant. The multi-tenant audit read endpoint sets it
+	// to the caller's own tenant so a tenant admin cannot read another
+	// tenant's audit trail (X-SEC-002). Empty means no tenant filter
+	// (single-tenant / local-dev mode sees everything).
+	ActorTenant string
 }
 
 // ErrNotFound is returned by GetEvent when an id doesn't exist.

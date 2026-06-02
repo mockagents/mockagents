@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/mockagents/mockagents/internal/audit"
+	"github.com/mockagents/mockagents/internal/tenancy"
 )
 
 // AuditHandlers serves GET /api/v1/audit. The route is mounted
@@ -32,6 +33,15 @@ func (h *AuditHandlers) ListEvents(w http.ResponseWriter, r *http.Request) {
 	q := audit.Query{
 		Kind:  audit.EventKind(r.URL.Query().Get("kind")),
 		Actor: r.URL.Query().Get("actor"),
+	}
+	// Tenant isolation (X-SEC-002): in multi-tenant mode the route is
+	// admin-gated and every caller carries a principal, so scope the read
+	// to the caller's own tenant — a tenant admin must not see another
+	// tenant's audit trail. There is no super-admin tier, so this applies
+	// to every authenticated caller. In single-tenant mode there is no
+	// principal and the full local-dev view is returned unfiltered.
+	if p := tenancy.PrincipalFrom(r.Context()); p != nil && p.TenantID != "" {
+		q.ActorTenant = p.TenantID
 	}
 	if q.Kind != "" && !q.Kind.Valid() {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
