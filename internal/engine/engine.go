@@ -45,10 +45,12 @@ type Engine struct {
 
 // NewEngine creates a new Engine with all required components.
 func NewEngine(registry *AgentRegistry, store state.Store, logger *slog.Logger) *Engine {
+	matcher := NewScenarioMatcher()
+	matcher.log = logger // surface bad content_regex through the request logger (F-SM-001)
 	return &Engine{
 		Registry:      registry,
 		States:        store,
-		Matcher:       NewScenarioMatcher(),
+		Matcher:       matcher,
 		Generator:     NewResponseGenerator(),
 		ToolProcessor: NewToolCallProcessor(),
 		Chaos:         NewChaosInjector(),
