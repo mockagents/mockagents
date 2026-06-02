@@ -187,7 +187,7 @@ func validatePipelineSpec(ctx *validationContext, def *types.PipelineDefinition)
 			// almost always a typo — it looks like a filter but
 			// matches everything, equivalent to not setting it
 			// at all.
-			if edge.When != "" && strings.TrimSpace(edge.When) == "" {
+			if edge.WhenContains != "" && strings.TrimSpace(edge.WhenContains) == "" {
 				ctx.addError(field+".when_contains",
 					"when_contains is whitespace-only",
 					"Either remove when_contains entirely or set it to a meaningful substring.")
@@ -199,11 +199,11 @@ func validatePipelineSpec(ctx *validationContext, def *types.PipelineDefinition)
 			if edge.From == "" || edge.To == "" {
 				continue
 			}
-			key := edgeKey{from: edge.From, to: edge.To, when: edge.When}
+			key := edgeKey{from: edge.From, to: edge.To, when: edge.WhenContains}
 			if prev, dup := seenEdges[key]; dup {
 				msg := fmt.Sprintf("duplicate edge %s → %s (first seen at spec.edges[%d])", edge.From, edge.To, prev)
-				if edge.When != "" {
-					msg = fmt.Sprintf("duplicate edge %s → %s guarded by %q (first seen at spec.edges[%d])", edge.From, edge.To, edge.When, prev)
+				if edge.WhenContains != "" {
+					msg = fmt.Sprintf("duplicate edge %s → %s guarded by %q (first seen at spec.edges[%d])", edge.From, edge.To, edge.WhenContains, prev)
 				}
 				ctx.addError(field, msg,
 					"Remove the duplicate edge. Two identical guards are redundant; different guards should use distinct when_contains substrings.")
