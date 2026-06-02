@@ -11,8 +11,24 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
-	_ "modernc.org/sqlite"
+	sqlitedriver "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
+
+// isUniqueViolation reports whether err is a SQLite UNIQUE/PRIMARY KEY
+// constraint failure, so callers can return ErrConflict (→ 409) instead of a
+// generic internal error. It type-matches the modernc driver's error rather
+// than its message text so it is locale- and wrapping-robust.
+func isUniqueViolation(err error) bool {
+	var se *sqlitedriver.Error
+	if errors.As(err, &se) {
+		switch se.Code() {
+		case sqlite3.SQLITE_CONSTRAINT_UNIQUE, sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY:
+			return true
+		}
+	}
+	return false
+}
 
 // Store owns the persistence surface for tenants and API keys.
 // Implementation is SQLite-only for v0.1; the Store interface keeps a
@@ -149,6 +165,9 @@ func (s *SQLiteStore) CreateTenant(ctx context.Context, name string) (*Tenant, e
 		tenant.ID, tenant.Name, tenant.CreatedAt.Format(time.RFC3339),
 	)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, fmt.Errorf("%w: tenant name %q", ErrConflict, name)
+		}
 		return nil, fmt.Errorf("insert tenant: %w", err)
 	}
 	return tenant, nil

@@ -89,6 +89,12 @@ type Principal struct {
 // ErrNotFound is returned by Store methods when a lookup misses.
 var ErrNotFound = errors.New("tenancy: not found")
 
+// ErrConflict is returned when a create would violate a uniqueness
+// constraint (e.g. a duplicate tenant name). Handlers turn this into a 409
+// so a duplicate is not conflated with a bad request (400) or a DB failure
+// (500). See F-TN-008.
+var ErrConflict = errors.New("tenancy: already exists")
+
 // ErrInvalidKey is returned when an API key doesn't exist or the hash
 // doesn't match. Middleware turns this into a 401.
 var ErrInvalidKey = errors.New("tenancy: invalid api key")

@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/mockagents/mockagents/internal/audit"
@@ -96,8 +97,13 @@ func (h *TenancyHandlers) CreateTenant(w http.ResponseWriter, r *http.Request) {
 	}
 	tenant, err := h.Store.CreateTenant(r.Context(), req.Name)
 	if err != nil {
-		// Post-validation failure (duplicate name or DB error) is internal
-		// — don't echo the raw store error (F-TN-006).
+		// A duplicate name is a 409, not a 500 or 400 (F-TN-008). Any other
+		// post-validation failure is internal — don't echo the raw store
+		// error (F-TN-006).
+		if errors.Is(err, tenancy.ErrConflict) {
+			writeError(w, http.StatusConflict, "tenant name already exists")
+			return
+		}
 		writeServerError(w, err)
 		return
 	}
@@ -291,6 +297,15 @@ func (h *TenancyHandlers) BulkRotateTenantKeys(w http.ResponseWriter, r *http.Re
 			return
 		}
 		writeServerError(w, err)
+		return
+	}
+	// The store returns results and oldPrefixes as parallel slices indexed
+	// in lockstep below. Guard their lengths so a contract violation surfaces
+	// as a clean 500 instead of an index-out-of-range panic mid-loop — which
+	// would also leave a partial audit trail (F-TN-009).
+	if len(oldPrefixes) != len(results) {
+		writeServerError(w, fmt.Errorf("bulk rotate: store returned %d results but %d old prefixes",
+			len(results), len(oldPrefixes)))
 		return
 	}
 	// One audit entry per rotated key. Using the same event kind
