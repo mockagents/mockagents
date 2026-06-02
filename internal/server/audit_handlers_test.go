@@ -92,3 +92,42 @@ func TestAuditHandlers_SingleTenantUnfiltered(t *testing.T) {
 		t.Fatalf("single-tenant view returned %d events, want all 4", len(events))
 	}
 }
+
+// TestAuditHandlers_InputValidation covers F-AU-002: an unknown kind and a
+// malformed since are 400s, and a nil store is a 503.
+func TestAuditHandlers_InputValidation(t *testing.T) {
+	h := &AuditHandlers{Store: newAuditTestStore(t)}
+
+	t.Run("unknown kind 400", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		h.ListEvents(rec, httptest.NewRequest("GET", "/api/v1/audit?kind=bogus.kind", nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+
+	t.Run("bad since 400", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		h.ListEvents(rec, httptest.NewRequest("GET", "/api/v1/audit?since=not-a-timestamp", nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+
+	t.Run("limit out of range 400", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		h.ListEvents(rec, httptest.NewRequest("GET", "/api/v1/audit?limit=-1", nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+
+	t.Run("nil store 503", func(t *testing.T) {
+		nilH := &AuditHandlers{Store: nil}
+		rec := httptest.NewRecorder()
+		nilH.ListEvents(rec, httptest.NewRequest("GET", "/api/v1/audit", nil))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503", rec.Code)
+		}
+	})
+}

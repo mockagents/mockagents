@@ -59,6 +59,32 @@ func TestTenancyHandlers_CreateTenant_DuplicateReturns409(t *testing.T) {
 	}
 }
 
+// TestTenancyHandlers_CreateAPIKey_InvalidRole400 covers the F-TN-011
+// invalid-role gap: an unknown role is a 400, not a 500 or a silent default.
+func TestTenancyHandlers_CreateAPIKey_InvalidRole400(t *testing.T) {
+	store := newRotateTestStore(t)
+	tenant, err := store.CreateTenant(context.Background(), "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &TenancyHandlers{Store: store, Recorder: newTestRecorder()}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/tenants/{id}/keys", h.CreateAPIKey)
+	admin := &tenancy.Principal{TenantID: tenant.ID, KeyID: "k_admin", Role: tenancy.RoleAdmin}
+	srv := httptest.NewServer(servePrincipal(admin, mux))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/v1/tenants/"+tenant.ID+"/keys", "application/json",
+		strings.NewReader(`{"name":"ci","role":"superadmin"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid-role status = %d, want 400", resp.StatusCode)
+	}
+}
+
 // mismatchedBulkStore returns parallel slices of different lengths from
 // BulkRotateTenantKeys to exercise the F-TN-009 length guard. All other
 // Store methods are inherited from the embedded nil interface and must not
