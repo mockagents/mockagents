@@ -40,7 +40,11 @@ type Config struct {
 	WriteTimeout time.Duration
 	IdleTimeout  time.Duration
 	MaxBodyBytes int64
-	AgentsDir    string
+	// CORSAllowedOrigins restricts Access-Control-Allow-Origin. Empty (the
+	// default) or a list containing "*" keeps the permissive wildcard; an
+	// explicit list locks CORS down to those origins (F-MW-001).
+	CORSAllowedOrigins []string
+	AgentsDir          string
 	Version      string
 	LogStore     *storage.SQLiteStore // Optional interaction log store.
 	// TenancyStore enables multi-tenant mode when non-nil. Every
@@ -167,7 +171,7 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 		handler = tenancy.AuthMiddleware(cfg.TenancyStore, skipAuth)(handler)
 	}
 	handler = MaxBodySize(cfg.MaxBodyBytes)(handler)
-	handler = CORS(handler)
+	handler = CORS(cfg.CORSAllowedOrigins)(handler)
 	handler = StructuredLogger(logger)(handler)
 	handler = Recovery(logger)(handler)
 	handler = RequestID(handler)

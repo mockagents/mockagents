@@ -45,7 +45,7 @@ func TestRequestID_PreservesExisting(t *testing.T) {
 }
 
 func TestCORS_SetsHeaders(t *testing.T) {
-	handler := CORS(dummyHandler())
+	handler := CORS(nil)(dummyHandler())
 	req := httptest.NewRequest("GET", "/test", nil)
 	rec := httptest.NewRecorder()
 
@@ -57,12 +57,40 @@ func TestCORS_SetsHeaders(t *testing.T) {
 }
 
 func TestCORS_OptionsPreflightReturns204(t *testing.T) {
-	handler := CORS(dummyHandler())
+	handler := CORS(nil)(dummyHandler())
 	req := httptest.NewRequest("OPTIONS", "/test", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+// TestCORS_ConfigurableOrigins covers F-MW-001: with an explicit allowlist
+// only listed origins are echoed; a "*" entry (or nil) restores the wildcard.
+func TestCORS_ConfigurableOrigins(t *testing.T) {
+	serve := func(origins []string, reqOrigin string) *httptest.ResponseRecorder {
+		h := CORS(origins)(dummyHandler())
+		req := httptest.NewRequest("GET", "/test", nil)
+		if reqOrigin != "" {
+			req.Header.Set("Origin", reqOrigin)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Allowlisted origin is echoed (not "*") and carries Vary: Origin.
+	rec := serve([]string{"https://app.example.com"}, "https://app.example.com")
+	assert.Equal(t, "https://app.example.com", rec.Header().Get("Access-Control-Allow-Origin"))
+	assert.Contains(t, rec.Header().Get("Vary"), "Origin")
+
+	// A non-listed origin gets NO Allow-Origin header (browser blocks it).
+	rec = serve([]string{"https://app.example.com"}, "https://evil.example.com")
+	assert.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
+
+	// "*" in the list keeps the wildcard regardless of Origin.
+	rec = serve([]string{"*"}, "https://anything.example.com")
+	assert.Equal(t, "*", rec.Header().Get("Access-Control-Allow-Origin"))
 }
 
 func TestRecovery_CatchesPanic(t *testing.T) {

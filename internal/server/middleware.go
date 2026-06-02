@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
-	"strings"
 	"time"
 
 	"github.com/mockagents/mockagents/internal/engine"
@@ -58,20 +57,45 @@ func StructuredLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// CORS adds permissive CORS headers for local development.
-func CORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-Id")
-		w.Header().Set("Access-Control-Max-Age", "86400")
-
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
+// CORS adds CORS headers, with the allowed origins configurable (F-MW-001).
+//
+// An empty list — or one containing "*" — keeps the permissive
+// `Access-Control-Allow-Origin: *` wildcard that suits local development and
+// the existing default. With an explicit allowlist, only a request whose
+// Origin is listed gets an Allow-Origin echo (plus `Vary: Origin` so caches
+// don't cross-pollinate), letting a control-plane deployment lock the surface
+// down without code changes. Auth is Bearer-token, not cookie, so no
+// Access-Control-Allow-Credentials is emitted and origin-reflection is safe.
+func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
+	wildcard := len(allowedOrigins) == 0
+	allowed := make(map[string]struct{}, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		if o == "*" {
+			wildcard = true
 		}
-		next.ServeHTTP(w, r)
-	})
+		allowed[o] = struct{}{}
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if wildcard {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			} else if origin := r.Header.Get("Origin"); origin != "" {
+				if _, ok := allowed[origin]; ok {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Add("Vary", "Origin")
+				}
+			}
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-Id")
+			w.Header().Set("Access-Control-Max-Age", "86400")
+
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // Recovery catches panics and returns a 500 error instead of crashing.
@@ -110,11 +134,10 @@ func MaxBodySize(maxBytes int64) func(http.Handler) http.Handler {
 // and stores it in context.
 func ExtractAPIKey(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		if strings.HasPrefix(auth, "Bearer ") {
-			token := strings.TrimPrefix(auth, "Bearer ")
-			ctx := context.WithValue(r.Context(), APIKeyKey, token)
-			r = r.WithContext(ctx)
+		// Reuse the tenancy parser so the two extraction paths can't drift in
+		// their scheme handling (F-MW-002).
+		if token, ok := tenancy.ParseBearerToken(r.Header.Get("Authorization")); ok {
+			r = r.WithContext(context.WithValue(r.Context(), APIKeyKey, token))
 		}
 		next.ServeHTTP(w, r)
 	})
