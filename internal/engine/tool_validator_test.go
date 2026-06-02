@@ -294,3 +294,111 @@ func TestToolValidator_MultipleErrors(t *testing.T) {
 	errs := v.ValidateParameters(schema, args)
 	assert.GreaterOrEqual(t, len(errs), 2)
 }
+
+// --- F-TV-009: nested schemas, fall-through, malformed inputs ---
+
+func TestToolValidator_NestedObject(t *testing.T) {
+	// F-TV-001: a nested object property is validated against its own
+	// required + property schema, with path-qualified messages.
+	v := NewToolValidator()
+	schema := objectSchema(
+		map[string]any{
+			"address": map[string]any{
+				"type":     "object",
+				"required": []any{"zip"},
+				"properties": map[string]any{
+					"zip": map[string]any{"type": "string"},
+				},
+			},
+		},
+		[]any{"address"},
+	)
+
+	// Valid nested object.
+	assert.Empty(t, v.ValidateParameters(schema, map[string]any{
+		"address": map[string]any{"zip": "94016"},
+	}))
+
+	// Missing nested required field.
+	errs := v.ValidateParameters(schema, map[string]any{"address": map[string]any{}})
+	assert.Len(t, errs, 1)
+	assert.Contains(t, errs[0], `"address.zip"`)
+	assert.Contains(t, errs[0], "missing required")
+
+	// Wrong nested type.
+	errs = v.ValidateParameters(schema, map[string]any{
+		"address": map[string]any{"zip": 94016},
+	})
+	assert.Len(t, errs, 1)
+	assert.Contains(t, errs[0], `"address.zip"`)
+	assert.Contains(t, errs[0], "expected string")
+}
+
+func TestToolValidator_ArrayItems(t *testing.T) {
+	// F-TV-001: array elements are validated against the items subschema.
+	v := NewToolValidator()
+	schema := objectSchema(
+		map[string]any{
+			"tags": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "string"},
+			},
+		},
+		nil,
+	)
+
+	errs := v.ValidateParameters(schema, map[string]any{"tags": []any{"a", 2, "c"}})
+	assert.Len(t, errs, 1)
+	assert.Contains(t, errs[0], "tags[1]")
+	assert.Contains(t, errs[0], "expected string")
+
+	assert.Empty(t, v.ValidateParameters(schema, map[string]any{"tags": []any{"a", "b"}}))
+}
+
+func TestToolValidator_MalformedProperties_StillChecksAdditional(t *testing.T) {
+	// F-TV-002: a malformed `properties` value must not skip the
+	// additionalProperties:false check (it used to early-return).
+	v := NewToolValidator()
+	schema := types.JSONSchemaObject{
+		"type":                 "object",
+		"properties":           "not-a-map",
+		"additionalProperties": false,
+	}
+	errs := v.ValidateParameters(schema, map[string]any{"foo": 1})
+	assert.Len(t, errs, 1)
+	assert.Contains(t, errs[0], "unexpected parameter")
+	assert.Contains(t, errs[0], "foo")
+}
+
+func TestToolValidator_MalformedRequired_NoPanic(t *testing.T) {
+	v := NewToolValidator()
+	// `required` of the wrong type is ignored, not enforced or panicked on.
+	assert.NotPanics(t, func() {
+		errs := v.ValidateParameters(types.JSONSchemaObject{
+			"type":     "object",
+			"required": "name", // should be a list
+		}, map[string]any{})
+		assert.Empty(t, errs)
+	})
+
+	// A non-string entry inside `required` is skipped; valid ones still apply.
+	errs := v.ValidateParameters(types.JSONSchemaObject{
+		"type":       "object",
+		"required":   []any{"name", 42},
+		"properties": map[string]any{"name": map[string]any{"type": "string"}},
+	}, map[string]any{})
+	assert.Len(t, errs, 1)
+	assert.Contains(t, errs[0], "name")
+}
+
+func TestToolValidator_AdditionalPropertiesSchemaFormPermissive(t *testing.T) {
+	// F-TV-006: only the boolean `false` form is enforced; the schema-object
+	// form is treated as permissive, so extra properties are allowed.
+	v := NewToolValidator()
+	schema := objectSchema(
+		map[string]any{"name": map[string]any{"type": "string"}},
+		nil,
+	)
+	schema["additionalProperties"] = map[string]any{"type": "string"}
+	assert.Empty(t, v.ValidateParameters(schema, map[string]any{"name": "x", "extra": "ok"}))
+}
