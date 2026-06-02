@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -337,5 +338,58 @@ func TestPipelineGraphCycleWithFeederErrors(t *testing.T) {
 	_, err := exec.Run(def, "hello", "session-fc")
 	if !errors.Is(err, ErrPipelineCycle) {
 		t.Fatalf("expected ErrPipelineCycle, got err=%v", err)
+	}
+}
+
+// TestPipelineParallel_PartialResultsAndJoinedErrors covers F-PL-006: a
+// parallel run returns every node that succeeded alongside a combined error
+// of all the failures (not just the first one).
+func TestPipelineParallel_PartialResultsAndJoinedErrors(t *testing.T) {
+	eng := newPipelineTestEngine(t, "good")
+	exec := NewPipelineExecutor(eng)
+	def := &types.PipelineDefinition{
+		Metadata: types.Metadata{Name: "par"},
+		Spec: types.PipelineSpec{
+			Topology: types.TopologyParallel,
+			Agents: []types.PipelineAgent{
+				{ID: "ok", Ref: "good"},
+				{ID: "bad1", Ref: ""}, // missing ref -> error
+				{ID: "bad2", Ref: ""}, // missing ref -> error
+			},
+		},
+	}
+
+	res, err := exec.Run(def, "hi", "s")
+	if err == nil {
+		t.Fatal("expected an error from the failing nodes")
+	}
+	// Partial result: the successful node is still present despite the errors.
+	if res.ResponseByNodeID("ok") == nil {
+		t.Error("successful node 'ok' should be in the result alongside the error")
+	}
+	// Joined errors: BOTH failures are surfaced, not just the first.
+	if msg := err.Error(); !strings.Contains(msg, "bad1") || !strings.Contains(msg, "bad2") {
+		t.Errorf("joined error should mention both bad1 and bad2, got: %v", msg)
+	}
+}
+
+// TestPipelineRunContext_HonorsCancellation covers F-PL-009: a cancelled
+// context aborts the run via the per-node engine call (ProcessRequestContext).
+func TestPipelineRunContext_HonorsCancellation(t *testing.T) {
+	eng := newPipelineTestEngine(t, "a", "b")
+	exec := NewPipelineExecutor(eng)
+	def := &types.PipelineDefinition{
+		Metadata: types.Metadata{Name: "seq"},
+		Spec: types.PipelineSpec{
+			Topology: types.TopologySequential,
+			Agents:   []types.PipelineAgent{{ID: "1", Ref: "a"}, {ID: "2", Ref: "b"}},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancelled before the run starts
+
+	if _, err := exec.RunContext(ctx, def, "hi", "s"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }

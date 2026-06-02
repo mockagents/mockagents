@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -69,7 +70,17 @@ var ErrPipelineCycle = errors.New("pipeline graph has a cycle")
 // Run executes a pipeline definition with the given initial user message and
 // session id. Each agent invocation creates its own session scoped by the
 // pipeline node so state does not collide across nodes.
+//
+// Run uses a background context; use RunContext to honor request cancellation
+// (F-PL-009).
 func (p *PipelineExecutor) Run(def *types.PipelineDefinition, userMsg, sessionID string) (*PipelineResult, error) {
+	return p.RunContext(context.Background(), def, userMsg, sessionID)
+}
+
+// RunContext is the context-aware variant of Run: ctx is threaded down to
+// each node's engine call (ProcessRequestContext), so a cancelled ctx aborts
+// in-flight and not-yet-started node invocations.
+func (p *PipelineExecutor) RunContext(ctx context.Context, def *types.PipelineDefinition, userMsg, sessionID string) (*PipelineResult, error) {
 	if def == nil {
 		return nil, errors.New("nil pipeline definition")
 	}
@@ -86,11 +97,11 @@ func (p *PipelineExecutor) Run(def *types.PipelineDefinition, userMsg, sessionID
 	var err error
 	switch def.Spec.Topology {
 	case types.TopologySequential, "":
-		err = p.runSequential(def, userMsg, sessionID, res)
+		err = p.runSequential(ctx, def, userMsg, sessionID, res)
 	case types.TopologyParallel:
-		err = p.runParallel(def, userMsg, sessionID, res)
+		err = p.runParallel(ctx, def, userMsg, sessionID, res)
 	case types.TopologyGraph:
-		err = p.runGraph(def, userMsg, sessionID, res)
+		err = p.runGraph(ctx, def, userMsg, sessionID, res)
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrUnknownTopology, def.Spec.Topology)
 	}
@@ -99,10 +110,10 @@ func (p *PipelineExecutor) Run(def *types.PipelineDefinition, userMsg, sessionID
 	return res, err
 }
 
-func (p *PipelineExecutor) runSequential(def *types.PipelineDefinition, userMsg, sessionID string, res *PipelineResult) error {
+func (p *PipelineExecutor) runSequential(ctx context.Context, def *types.PipelineDefinition, userMsg, sessionID string, res *PipelineResult) error {
 	input := userMsg
 	for _, node := range def.Spec.Agents {
-		nr, err := p.invokeNode(def.Metadata.Name, node, input, sessionID)
+		nr, err := p.invokeNode(ctx, def.Metadata.Name, node, input, sessionID)
 		res.Nodes = append(res.Nodes, nr)
 		if err != nil {
 			return err
@@ -113,7 +124,13 @@ func (p *PipelineExecutor) runSequential(def *types.PipelineDefinition, userMsg,
 	return nil
 }
 
-func (p *PipelineExecutor) runParallel(def *types.PipelineDefinition, userMsg, sessionID string, res *PipelineResult) error {
+// runParallel runs every agent concurrently against the same input.
+//
+// Partial-result contract (F-PL-006): on error this still appends every node
+// that completed to res.Nodes — callers get the successful nodes alongside
+// the error. All node errors are combined with errors.Join (not just the
+// first), so errors.Is/As can inspect each one and the message lists them all.
+func (p *PipelineExecutor) runParallel(ctx context.Context, def *types.PipelineDefinition, userMsg, sessionID string, res *PipelineResult) error {
 	results := make([]*NodeResult, len(def.Spec.Agents))
 	errs := make([]error, len(def.Spec.Agents))
 
@@ -122,7 +139,7 @@ func (p *PipelineExecutor) runParallel(def *types.PipelineDefinition, userMsg, s
 		wg.Add(1)
 		go func(i int, node types.PipelineAgent) {
 			defer wg.Done()
-			nr, err := p.invokeNode(def.Metadata.Name, node, userMsg, sessionID)
+			nr, err := p.invokeNode(ctx, def.Metadata.Name, node, userMsg, sessionID)
 			results[i] = nr
 			errs[i] = err
 		}(i, node)
@@ -134,15 +151,10 @@ func (p *PipelineExecutor) runParallel(def *types.PipelineDefinition, userMsg, s
 			res.Nodes = append(res.Nodes, results[i])
 		}
 	}
-	for _, e := range errs {
-		if e != nil {
-			return e
-		}
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
-func (p *PipelineExecutor) runGraph(def *types.PipelineDefinition, userMsg, sessionID string, res *PipelineResult) error {
+func (p *PipelineExecutor) runGraph(ctx context.Context, def *types.PipelineDefinition, userMsg, sessionID string, res *PipelineResult) error {
 	nodesByID := make(map[string]types.PipelineAgent, len(def.Spec.Agents))
 	for _, n := range def.Spec.Agents {
 		nodesByID[n.ID] = n
@@ -195,7 +207,7 @@ func (p *PipelineExecutor) runGraph(def *types.PipelineDefinition, userMsg, sess
 		if !ok {
 			return fmt.Errorf("pipeline %q references unknown node id %q", def.Metadata.Name, id)
 		}
-		nr, err := p.invokeNode(def.Metadata.Name, node, input, sessionID)
+		nr, err := p.invokeNode(ctx, def.Metadata.Name, node, input, sessionID)
 		res.Nodes = append(res.Nodes, nr)
 		if err != nil {
 			return err
@@ -278,7 +290,7 @@ func cyclicNodes(agents []types.PipelineAgent, outgoing map[string][]types.Pipel
 	return cyclic
 }
 
-func (p *PipelineExecutor) invokeNode(pipelineName string, node types.PipelineAgent, input, sessionID string) (*NodeResult, error) {
+func (p *PipelineExecutor) invokeNode(ctx context.Context, pipelineName string, node types.PipelineAgent, input, sessionID string) (*NodeResult, error) {
 	if node.Ref == "" {
 		return &NodeResult{NodeID: node.ID}, fmt.Errorf("pipeline %q node %q missing agent ref", pipelineName, node.ID)
 	}
@@ -291,7 +303,7 @@ func (p *PipelineExecutor) invokeNode(pipelineName string, node types.PipelineAg
 		Messages:  []RequestMessage{{Role: "user", Content: input}},
 	}
 	start := time.Now()
-	resp, err := p.Engine.ProcessRequest(req)
+	resp, err := p.Engine.ProcessRequestContext(ctx, req)
 	latency := time.Since(start)
 	// Defensive (F-PL-001/002): callers read nr.Response.Content directly,
 	// so a nil Response with no error would nil-deref. ProcessRequest is
