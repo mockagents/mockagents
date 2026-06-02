@@ -16,8 +16,14 @@ func NewToolValidator() *ToolValidator {
 }
 
 // ValidateParameters checks that the given arguments conform to the tool's
-// parameter schema. Returns a slice of human-readable error strings.
-// An empty slice means validation passed.
+// parameter schema. Returns a slice of human-readable error strings;
+// an empty slice means validation passed.
+//
+// Object schemas are validated recursively (F-TV-001): nested object
+// properties and array `items` are checked against their own subschemas,
+// with error messages path-qualified (e.g. "address.zip", "tags[2]").
+// Known limit (F-TV-006): `additionalProperties` is enforced only in its
+// boolean `false` form; the schema-object form is treated as permissive.
 func (v *ToolValidator) ValidateParameters(
 	schema types.JSONSchemaObject,
 	args map[string]any,
@@ -37,10 +43,23 @@ func (v *ToolValidator) ValidateParameters(
 	return errs
 }
 
-// validateObject checks an object-type schema: required fields and property types.
+// validateObject checks an object-type schema: required fields, property
+// constraints, and additionalProperties. It delegates to validateObjectAt
+// with an empty path so top-level error messages stay unprefixed.
 func (v *ToolValidator) validateObject(
 	schema types.JSONSchemaObject,
 	args map[string]any,
+) []string {
+	return v.validateObjectAt(schema, args, "")
+}
+
+// validateObjectAt is the recursive worker. `path` prefixes the names in
+// error messages so nested fields read as "address.zip" / "tags[2]"; it is
+// "" at the top level.
+func (v *ToolValidator) validateObjectAt(
+	schema map[string]any,
+	args map[string]any,
+	path string,
 ) []string {
 	var errs []string
 
@@ -53,76 +72,115 @@ func (v *ToolValidator) validateObject(
 					continue
 				}
 				if _, exists := args[name]; !exists {
-					errs = append(errs, fmt.Sprintf("missing required parameter %q", name))
+					errs = append(errs, fmt.Sprintf("missing required parameter %q", path+name))
 				}
 			}
 		}
 	}
 
-	// Check property types.
+	// Check property constraints. A malformed `properties` value skips the
+	// per-property loop but must NOT skip the additionalProperties check
+	// below (F-TV-002) — so this is a guarded block, not an early return.
 	if properties, ok := schema["properties"]; ok {
-		propMap, ok := properties.(map[string]any)
-		if !ok {
-			return errs
-		}
-		for name, propSchema := range propMap {
-			val, exists := args[name]
-			if !exists {
-				continue // Not required, skip.
-			}
-			propDef, ok := propSchema.(map[string]any)
-			if !ok {
-				continue
-			}
-			propType, _ := propDef["type"].(string)
-			if propType != "" {
-				if typeErr := v.checkType(name, val, propType); typeErr != "" {
-					errs = append(errs, typeErr)
+		if propMap, ok := properties.(map[string]any); ok {
+			for name, propSchema := range propMap {
+				val, exists := args[name]
+				if !exists {
+					continue // absent optional property (required handled above)
 				}
-			}
-
-			// Check enum constraint.
-			if enumVals, ok := propDef["enum"]; ok {
-				if enumList, ok := enumVals.([]any); ok {
-					if !v.inEnum(val, enumList) {
-						errs = append(errs, fmt.Sprintf(
-							"parameter %q value %v not in allowed values %v", name, val, enumList))
-					}
+				propDef, ok := propSchema.(map[string]any)
+				if !ok {
+					continue
 				}
-			}
-
-			// Check string constraints.
-			if propType == "string" {
-				if str, ok := val.(string); ok {
-					if minLen, ok := propDef["minLength"]; ok {
-						if min, ok := toInt(minLen); ok && len(str) < min {
-							errs = append(errs, fmt.Sprintf(
-								"parameter %q length %d is less than minimum %d", name, len(str), min))
-						}
-					}
-					if maxLen, ok := propDef["maxLength"]; ok {
-						if max, ok := toInt(maxLen); ok && len(str) > max {
-							errs = append(errs, fmt.Sprintf(
-								"parameter %q length %d exceeds maximum %d", name, len(str), max))
-						}
-					}
-				}
+				errs = append(errs, v.validateValue(propDef, val, path+name)...)
 			}
 		}
 	}
 
-	// Reject additional properties if additionalProperties is false.
+	// Reject additional properties when additionalProperties is exactly
+	// false. The schema-object form is treated as permissive (F-TV-006).
 	if addlProps, ok := schema["additionalProperties"]; ok {
 		if addlBool, ok := addlProps.(bool); ok && !addlBool {
-			propMap := getPropertyNames(schema)
+			allowed := getPropertyNames(schema)
 			for name := range args {
-				if !propMap[name] {
-					errs = append(errs, fmt.Sprintf("unexpected parameter %q", name))
+				if !allowed[name] {
+					errs = append(errs, fmt.Sprintf("unexpected parameter %q", path+name))
 				}
 			}
 		}
 	}
 
+	return errs
+}
+
+// validateValue checks a single value against a property schema: its type,
+// enum, string-length constraints, and — for object/array types — its
+// nested subschema (F-TV-001).
+func (v *ToolValidator) validateValue(propDef map[string]any, val any, name string) []string {
+	var errs []string
+
+	propType, _ := propDef["type"].(string)
+	if propType != "" {
+		if typeErr := v.checkType(name, val, propType); typeErr != "" {
+			errs = append(errs, typeErr)
+		}
+	}
+
+	// Check enum constraint.
+	if enumVals, ok := propDef["enum"]; ok {
+		if enumList, ok := enumVals.([]any); ok {
+			if !v.inEnum(val, enumList) {
+				errs = append(errs, fmt.Sprintf(
+					"parameter %q value %v not in allowed values %v", name, val, enumList))
+			}
+		}
+	}
+
+	switch propType {
+	case "string":
+		if str, ok := val.(string); ok {
+			if minLen, ok := propDef["minLength"]; ok {
+				if min, ok := toInt(minLen); ok && len(str) < min {
+					errs = append(errs, fmt.Sprintf(
+						"parameter %q length %d is less than minimum %d", name, len(str), min))
+				}
+			}
+			if maxLen, ok := propDef["maxLength"]; ok {
+				if max, ok := toInt(maxLen); ok && len(str) > max {
+					errs = append(errs, fmt.Sprintf(
+						"parameter %q length %d exceeds maximum %d", name, len(str), max))
+				}
+			}
+		}
+	case "object":
+		// Recurse into the nested object schema (F-TV-001).
+		if nested, ok := val.(map[string]any); ok {
+			errs = append(errs, v.validateObjectAt(propDef, nested, name+".")...)
+		}
+	case "array":
+		errs = append(errs, v.validateArray(propDef, val, name)...)
+	}
+
+	return errs
+}
+
+// validateArray validates each element of an array against the schema's
+// `items` subschema (F-TV-001). With no `items` schema the elements are
+// unconstrained. A non-array value is left to the type check in
+// validateValue to report.
+func (v *ToolValidator) validateArray(propDef map[string]any, val any, name string) []string {
+	arr, ok := val.([]any)
+	if !ok {
+		return nil
+	}
+	itemsSchema, ok := propDef["items"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	var errs []string
+	for i, item := range arr {
+		errs = append(errs, v.validateValue(itemsSchema, item, fmt.Sprintf("%s[%d]", name, i))...)
+	}
 	return errs
 }
 
