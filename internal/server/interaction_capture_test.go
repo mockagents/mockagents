@@ -183,6 +183,72 @@ func TestInteractionCapture_BodyProbeFallback(t *testing.T) {
 	}
 }
 
+// TestInteractionCapture_SSENotBuffered proves that an SSE response is
+// flagged as streaming and its chunks are NOT buffered into the captured
+// body (F-LH-001 / X-SSE-001), even when the Content-Type carries a charset
+// parameter (F-LH-004). The chunks must still reach the client unchanged.
+func TestInteractionCapture_SSENotBuffered(t *testing.T) {
+	worker, store := newTestWorker(t)
+
+	const chunk = "data: {\"delta\":\"hello\"}\n\n"
+	handler := InteractionCapture(worker)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// charset param exercises the tolerant media-type match.
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		for i := 0; i < 3; i++ {
+			_, _ = w.Write([]byte(chunk))
+		}
+	}))
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// The stream must pass through to the client untouched.
+	if got := rec.Body.String(); got != strings.Repeat(chunk, 3) {
+		t.Fatalf("client did not receive the full stream: %q", got)
+	}
+
+	if !waitForLog(t, store, 1, time.Second) {
+		t.Fatal("log never appeared")
+	}
+	rows, err := store.Query(t.Context(), storage.InteractionFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if !rows[0].Streaming {
+		t.Error("SSE response was not flagged Streaming")
+	}
+	if rows[0].ResponseBody != "" {
+		t.Errorf("SSE body was buffered; want empty, got %q", rows[0].ResponseBody)
+	}
+}
+
+// TestIsEventStream pins the tolerant Content-Type matcher (F-LH-004).
+func TestIsEventStream(t *testing.T) {
+	cases := []struct {
+		ct   string
+		want bool
+	}{
+		{"text/event-stream", true},
+		{"text/event-stream; charset=utf-8", true},
+		{"text/event-stream;charset=utf-8", true},
+		{"Text/Event-Stream", true}, // media types are case-insensitive
+		{"application/json", false},
+		{"application/json; charset=utf-8", false},
+		{"", false},
+		{"text/event-stream extra garbage", true}, // prefix fallback path
+	}
+	for _, c := range cases {
+		if got := isEventStream(c.ct); got != c.want {
+			t.Errorf("isEventStream(%q) = %v, want %v", c.ct, got, c.want)
+		}
+	}
+}
+
 func newTestStore(t *testing.T) *storage.SQLiteStore {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "capture_test.db")

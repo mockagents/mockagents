@@ -3,8 +3,10 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -209,6 +211,8 @@ func acquireCaptureWriter(w http.ResponseWriter) *captureWriter {
 	cw.statusCode = http.StatusOK
 	cw.capture = true
 	cw.truncated = false
+	cw.streaming = false
+	cw.sniffed = false
 	cw.body = cw.body[:0]
 	return cw
 }
@@ -277,7 +281,10 @@ func InteractionCapture(worker *LogWorker) func(http.Handler) http.Handler {
 			// race the request-scoped captureWriter after the
 			// handler returns.
 			bodySnapshot := cw.snapshot()
-			streaming := cw.Header().Get("Content-Type") == "text/event-stream"
+			// cw.streaming was set by the writer the moment it sniffed an
+			// SSE Content-Type; for streams capture was disabled so the
+			// snapshot is empty by design (F-LH-001 / X-SSE-001).
+			streaming := cw.streaming
 			agentName := meta.AgentName
 			// If the engine never ran (validation error, chaos 429 before
 			// resolve, etc.) fall back to a body probe so by_agent
@@ -330,14 +337,27 @@ type captureWriter struct {
 	capture    bool
 	body       []byte
 	truncated  bool
+	// streaming is set once the final Content-Type is sniffed and turns
+	// out to be an SSE stream; capture is disabled in that case so the
+	// stream's chunks are never buffered/pinned (F-LH-001). sniffed guards
+	// the one-shot detection so it runs at most once per request.
+	streaming bool
+	sniffed   bool
 }
 
 func (w *captureWriter) WriteHeader(code int) {
 	w.statusCode = code
+	// The Content-Type is final by the time WriteHeader runs, so this is
+	// the right moment to decide whether to buffer the body.
+	w.detectStreaming()
 	w.ResponseWriter.WriteHeader(code)
 }
 
 func (w *captureWriter) Write(p []byte) (int, error) {
+	// A handler that writes without an explicit WriteHeader implies 200;
+	// sniff here too so SSE started that way is still recognized before
+	// the first chunk is buffered.
+	w.detectStreaming()
 	if w.capture && !w.truncated {
 		remaining := maxCaptureBodyBytes - len(w.body)
 		if remaining > 0 {
@@ -364,6 +384,36 @@ func (w *captureWriter) snapshot() []byte {
 	out := make([]byte, len(w.body))
 	copy(out, w.body)
 	return out
+}
+
+// detectStreaming inspects the final Content-Type exactly once. When the
+// response is an SSE stream it records that fact and disables body capture
+// so the stream's chunks are neither buffered nor pinned in memory
+// (F-LH-001 / X-SSE-001). Matching tolerates a charset (or any) parameter
+// via mime.ParseMediaType (F-LH-004).
+func (w *captureWriter) detectStreaming() {
+	if w.sniffed {
+		return
+	}
+	w.sniffed = true
+	if isEventStream(w.Header().Get("Content-Type")) {
+		w.streaming = true
+		w.capture = false
+	}
+}
+
+// isEventStream reports whether a Content-Type header value denotes an SSE
+// stream, ignoring any media-type parameters (e.g.
+// "text/event-stream; charset=utf-8"). Falls back to a prefix check when
+// the header is malformed enough that mime.ParseMediaType rejects it.
+func isEventStream(contentType string) bool {
+	if contentType == "" {
+		return false
+	}
+	if mediaType, _, err := mime.ParseMediaType(contentType); err == nil {
+		return mediaType == "text/event-stream"
+	}
+	return strings.HasPrefix(contentType, "text/event-stream")
 }
 
 func (w *captureWriter) Flush() {
