@@ -157,13 +157,23 @@ func WithPrincipalTenantScope(next http.Handler) http.Handler {
 }
 
 // statusWriter wraps http.ResponseWriter to capture the status code.
-// It also implements http.Flusher to support SSE streaming.
+// It implements http.Flusher (SSE) and Unwrap (so http.ResponseController
+// can reach the net.Conn for the other optional interfaces — Hijacker,
+// ReaderFrom, Pusher — and for SetWriteDeadline), F-MW-004.
 type statusWriter struct {
 	http.ResponseWriter
-	status int
+	status      int
+	wroteHeader bool
 }
 
 func (w *statusWriter) WriteHeader(code int) {
+	// Guard against a double WriteHeader: the first call wins and records the
+	// status; a second would otherwise trigger the stdlib "superfluous
+	// WriteHeader call" warning and clobber the captured status (F-MW-005).
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
 }

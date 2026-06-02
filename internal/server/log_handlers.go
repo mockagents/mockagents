@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"mime"
@@ -298,11 +299,7 @@ func InteractionCapture(worker *LogWorker) func(http.Handler) http.Handler {
 			// resolve, etc.) fall back to a body probe so by_agent
 			// grouping still captures something useful.
 			if agentName == "" && len(bodySnapshot) > 0 {
-				var probe struct {
-					Model string `json:"model"`
-				}
-				_ = json.Unmarshal(bodySnapshot, &probe)
-				agentName = probe.Model
+				agentName = probeModel(bodySnapshot)
 			}
 
 			entry := &storage.InteractionLog{
@@ -316,12 +313,83 @@ func InteractionCapture(worker *LogWorker) func(http.Handler) http.Handler {
 				ResponseBody:   string(bodySnapshot),
 				AgentName:      agentName,
 			}
+			// Protocol-adapter interactions have no application-level session,
+			// so SessionID carries the per-request id here; the /api/v1/logs
+			// `session_id` filter therefore doubles as a request-id filter for
+			// these rows (F-LH-007).
 			if reqID, ok := r.Context().Value(RequestIDKey).(string); ok {
 				entry.SessionID = reqID
 			}
-			worker.Submit(entry)
+			// Submit is non-blocking and drops on a full queue. The drop is
+			// already metered (worker.Metrics().Dropped); surface it at debug
+			// so an operator tailing logs can correlate a gap (F-LH-005).
+			if !worker.Submit(entry) {
+				worker.logger.Debug("interaction log dropped (queue full)",
+					"path", path, "status", entry.ResponseStatus)
+			}
 		})
 	}
+}
+
+// probeModel scans a response body for a top-level "model" string field and
+// returns as soon as it finds one, so the engine-didn't-resolve fallback
+// doesn't fully re-parse a body that can be up to maxCaptureBodyBytes just to
+// read one field (F-LH-008). Returns "" when the body isn't a JSON object or
+// has no top-level model. Nested "model" keys (inside choices/usage/etc.) are
+// ignored — only the top-level field is the request's model.
+func probeModel(body []byte) string {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('{') {
+		return "" // not a JSON object
+	}
+	// Read top-level key/value pairs. dec.Token() yields the key (a string)
+	// then the value; object/array values are skipped wholesale so nested
+	// "model" keys (e.g. inside choices/usage) are ignored.
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return ""
+		}
+		key, _ := keyTok.(string)
+		valTok, err := dec.Token()
+		if err != nil {
+			return ""
+		}
+		if d, ok := valTok.(json.Delim); ok && (d == '{' || d == '[') {
+			if err := skipJSONValue(dec); err != nil {
+				return ""
+			}
+			continue
+		}
+		if key == "model" {
+			if s, ok := valTok.(string); ok {
+				return s
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+// skipJSONValue consumes tokens until the composite value whose opening
+// delimiter was just read is fully closed.
+func skipJSONValue(dec *json.Decoder) error {
+	depth := 1
+	for depth > 0 {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if d, ok := tok.(json.Delim); ok {
+			if d == '{' || d == '[' {
+				depth++
+			} else {
+				depth--
+			}
+		}
+	}
+	return nil
 }
 
 // maxCaptureBodyBytes caps the response-body buffer used by the

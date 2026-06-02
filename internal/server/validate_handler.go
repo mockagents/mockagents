@@ -65,11 +65,21 @@ func (h *ValidateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// keeps the interface forgiving.
 	payload := body
 	if isJSONContent(r.Header.Get("Content-Type"), body) {
+		// A *string distinguishes "key present" from "key absent": a wrapper
+		// that explicitly sets an empty yaml is a client error (F-VL-003),
+		// whereas a JSON doc with no `yaml` key at all is a raw agent
+		// definition that should fall through to ValidateBytes as-is.
 		var wrapper struct {
-			YAML string `json:"yaml"`
+			YAML *string `json:"yaml"`
 		}
-		if err := json.Unmarshal(body, &wrapper); err == nil && wrapper.YAML != "" {
-			payload = []byte(wrapper.YAML)
+		if err := json.Unmarshal(body, &wrapper); err == nil && wrapper.YAML != nil {
+			if *wrapper.YAML == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error": `JSON wrapper "yaml" field is present but empty`,
+				})
+				return
+			}
+			payload = []byte(*wrapper.YAML)
 		}
 	}
 

@@ -124,6 +124,11 @@ func NewLogWorker(store *storage.SQLiteStore, logger *slog.Logger, cfg LogWorker
 // A nil worker is a no-op that returns true — this keeps middleware
 // code simple when logging is disabled.
 func (w *LogWorker) Submit(entry *storage.InteractionLog) bool {
+	// A nil worker or nil store means logging is disabled by configuration.
+	// We return true (not false) deliberately: the caller's contract is
+	// "false == this entry was dropped due to overflow", and a disabled
+	// logger is not an overflow — there is nothing to meter and the caller
+	// should not branch as if a write failed. Nothing is persisted (F-LW-003).
 	if w == nil || w.store == nil {
 		return true
 	}
