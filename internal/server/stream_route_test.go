@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"os"
@@ -16,8 +17,9 @@ import (
 
 // newServerWithLogStore builds and starts a single-tenant server whose
 // interaction-log store (and therefore the SSE broadcaster) is enabled, and
-// returns its base URL.
-func newServerWithLogStore(t *testing.T) string {
+// returns the server plus its base URL. Shutdown is idempotent, so the
+// registered cleanup is safe even when a test calls Shutdown itself.
+func newServerWithLogStore(t *testing.T) (*Server, string) {
 	t.Helper()
 	logStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "logs.db"))
 	require.NoError(t, err)
@@ -35,7 +37,7 @@ func newServerWithLogStore(t *testing.T) string {
 	require.NoError(t, srv.Listen(), "listen")
 	go func() { _ = srv.Serve() }()
 	t.Cleanup(func() { srv.Shutdown() })
-	return "http://" + srv.ListenAddr()
+	return srv, "http://" + srv.ListenAddr()
 }
 
 // TestNewServer_MountsStreamRoutes is the F-SRV-ORDER-001 regression guard.
@@ -51,7 +53,7 @@ func newServerWithLogStore(t *testing.T) string {
 // /logs/stream is mounted too) AND that the broadcaster was handed to
 // LogHandlers — a nil broadcaster would have yielded 503 "live feed disabled".
 func TestNewServer_MountsStreamRoutes(t *testing.T) {
-	base := newServerWithLogStore(t)
+	_, base := newServerWithLogStore(t)
 
 	resp, err := http.Get(base + "/api/v1/logs/stream/metrics")
 	require.NoError(t, err)
@@ -59,4 +61,44 @@ func TestNewServer_MountsStreamRoutes(t *testing.T) {
 
 	require.NotEqual(t, http.StatusNotFound, resp.StatusCode, "live-feed routes not mounted (F-SRV-ORDER-001)")
 	require.Equal(t, http.StatusOK, resp.StatusCode, "stream metrics route mounted but broadcaster not wired")
+}
+
+// TestServerShutdown_UnblocksLiveFeed is the F-SRV-SHUT-002 regression guard.
+// With an SSE client still connected to /logs/stream, Shutdown must return
+// promptly: closing the broadcaster first unblocks the streaming handler so
+// httpServer.Shutdown isn't pinned for the full ShutdownTimeout. The pre-fix
+// ordering (close broadcaster AFTER httpServer.Shutdown) blocked ~5s.
+func TestServerShutdown_UnblocksLiveFeed(t *testing.T) {
+	srv, base := newServerWithLogStore(t)
+
+	// Fire the SSE request in the background. We don't wait for response
+	// headers — it's enough that the handler reaches its streaming select,
+	// which it signals by registering a broadcaster subscription. The request
+	// goroutine unblocks on its own when Shutdown tears the connection down.
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	defer cancelReq()
+	go func() {
+		req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, base+"/api/v1/logs/stream", nil)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
+	// Wait until the stream handler has subscribed, i.e. it is parked in the
+	// select — so Shutdown faces a genuinely in-flight streaming connection.
+	require.Eventually(t, func() bool {
+		return srv.logBroadcaster.SubscriberCount() > 0
+	}, 2*time.Second, 10*time.Millisecond, "stream handler never subscribed")
+
+	done := make(chan struct{})
+	go func() { _ = srv.Shutdown(); close(done) }()
+
+	// Comfortably under ShutdownTimeout (5s): the fix returns near-instantly
+	// because closing the broadcaster unblocks the handler; the pre-fix
+	// ordering would hold httpServer.Shutdown for the full timeout.
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown blocked on a connected stream client (F-SRV-SHUT-002)")
+	}
 }

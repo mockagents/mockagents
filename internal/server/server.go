@@ -427,6 +427,19 @@ func (s *Server) Shutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), ShutdownTimeout)
 	defer cancel()
 	s.logger.Info("shutting down server", "timeout", ShutdownTimeout)
+
+	// Close the SSE broadcaster FIRST so any in-flight /logs/stream handlers
+	// unblock (their sub.C() closes) and return, instead of pinning
+	// httpServer.Shutdown for the full ShutdownTimeout while it waits on a
+	// still-streaming connection (F-SRV-SHUT-002). Closing here is safe: a
+	// late Publish from the log-worker drain below is a no-op on a closed
+	// broadcaster, and Subscribe-after-Close hands back an already-closed
+	// subscription, so a client that connects during the shutdown window gets
+	// an immediately-terminating stream rather than a hang (F-SV-001).
+	if s.logBroadcaster != nil {
+		s.logBroadcaster.Close()
+	}
+
 	err := s.httpServer.Shutdown(ctx)
 	// Drain the async log worker after the HTTP server has stopped
 	// accepting new requests. Order matters: Submit paths must be
@@ -441,12 +454,6 @@ func (s *Server) Shutdown() error {
 			"dropped", m.Dropped,
 			"failed", m.Failed,
 		)
-	}
-	// Close the SSE broadcaster after the worker has stopped (no more
-	// Publish can arrive) so any remaining /logs/stream subscribers' handler
-	// goroutines exit instead of leaking past shutdown (F-SV-001).
-	if s.logBroadcaster != nil {
-		s.logBroadcaster.Close()
 	}
 	return err
 }
