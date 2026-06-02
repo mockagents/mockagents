@@ -49,10 +49,24 @@ func (s *MemoryStore) Get(id string) *Session {
 		return nil
 	}
 	if session.IsExpired() {
-		s.Delete(id)
+		// Compare-and-delete (F-ST-003): evict only THIS expired pointer.
+		// Between the RUnlock above and here another goroutine may have
+		// replaced the id with a fresh session via GetOrCreate; an
+		// unconditional Delete(id) would drop that live session (TOCTOU).
+		s.deleteIfSame(id, session)
 		return nil
 	}
 	return session
+}
+
+// deleteIfSame removes id only if it still maps to the given session
+// pointer, so a concurrent replacement under the same id is preserved.
+func (s *MemoryStore) deleteIfSame(id string, session *Session) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cur, ok := s.sessions[id]; ok && cur == session {
+		delete(s.sessions, id)
+	}
 }
 
 func (s *MemoryStore) GetOrCreate(id, agentName string) *Session {
@@ -89,11 +103,38 @@ func (s *MemoryStore) Count() int {
 }
 
 func (s *MemoryStore) Cleanup() {
+	// Snapshot the sessions under a read lock so Get/GetOrCreate aren't
+	// blocked while we scan (F-ST-005). The previous version held the
+	// exclusive write lock across the whole map iteration *and* each
+	// per-session IsExpired() (which takes that session's own lock),
+	// stalling all callers for the duration of the scan.
+	s.mu.RLock()
+	snapshot := make([]*Session, 0, len(s.sessions))
+	for _, session := range s.sessions {
+		snapshot = append(snapshot, session)
+	}
+	s.mu.RUnlock()
+
+	expired := make([]*Session, 0)
+	for _, session := range snapshot {
+		if session.IsExpired() {
+			expired = append(expired, session)
+		}
+	}
+	if len(expired) == 0 {
+		return
+	}
+
+	// Delete only the still-expired, still-same pointers. A session may
+	// have been replaced (different pointer) or refreshed (same pointer,
+	// LastAccess bumped by a concurrent turn) since the snapshot — in
+	// either case it must survive. The store→session lock order here
+	// matches every other path, so re-checking IsExpired is deadlock-free.
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for id, session := range s.sessions {
-		if session.IsExpired() {
-			delete(s.sessions, id)
+	for _, session := range expired {
+		if cur, ok := s.sessions[session.ID]; ok && cur == session && session.IsExpired() {
+			delete(s.sessions, session.ID)
 		}
 	}
 }
