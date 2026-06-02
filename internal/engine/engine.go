@@ -245,15 +245,8 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 	return resp, nil
 }
 
-// resolveAgent finds the agent by name first, then by model field.
-// Kept for callers that still use the no-tenant-context fast path
-// (most legacy tests and the in-process Go SDK) — equivalent to
-// resolveAgentForTenant("").
-func (e *Engine) resolveAgent(req *InboundRequest) (*types.AgentDefinition, error) {
-	return e.resolveAgentForTenant(req, "")
-}
-
-// resolveAgentForTenant is the tenant-aware variant. Empty tenantID
+// resolveAgentForTenant finds the agent by name first, then by model
+// field. Empty tenantID
 // reproduces the v0.1 behavior (global agents only); a non-empty
 // tenantID returns global ∪ that tenant's own agents.
 func (e *Engine) resolveAgentForTenant(req *InboundRequest, tenantID string) (*types.AgentDefinition, error) {

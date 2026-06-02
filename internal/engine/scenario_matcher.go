@@ -108,7 +108,9 @@ func (m *ScenarioMatcher) evaluate(rule *types.MatchRule, userMessage, lowerMess
 		// actually declares at least one name — anonymous groups are
 		// common and do not need a map.
 		for i, name := range re.SubexpNames() {
-			if i > 0 && name != "" && i < len(match) {
+			// len(match) == len(SubexpNames()) on a successful match,
+			// so indexing match[i] needs no bounds guard.
+			if i > 0 && name != "" {
 				if captures == nil {
 					captures = make(map[string]string, 4)
 				}

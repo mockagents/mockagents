@@ -11,18 +11,17 @@ import (
 )
 
 var (
-	ErrToolNotFound       = errors.New("tool not found")
-	ErrNoToolResponse     = errors.New("no matching tool response and no default configured")
+	ErrToolNotFound        = errors.New("tool not found")
 	ErrParameterValidation = errors.New("tool parameter validation failed")
 )
 
 // ToolCallResult holds the resolved result for a single tool call.
 type ToolCallResult struct {
-	ID        string         `json:"id"`
-	ToolName  string         `json:"tool_name"`
-	Response  any            `json:"response,omitempty"`
-	Error     *types.ToolError `json:"error,omitempty"`
-	IsError   bool           `json:"is_error"`
+	ID       string           `json:"id"`
+	ToolName string           `json:"tool_name"`
+	Response any              `json:"response,omitempty"`
+	Error    *types.ToolError `json:"error,omitempty"`
+	IsError  bool             `json:"is_error"`
 }
 
 // ToolCallProcessor resolves tool calls against configured tool definitions.
@@ -147,8 +146,9 @@ func resolveToolResponse(
 			continue
 		}
 
-		if len(rule.Match) == 0 && !rule.IsDefault {
-			// No match criteria and not default — skip.
+		if len(rule.Match) == 0 {
+			// No match criteria (and not default — the default branch above
+			// already continued) — nothing to match against, so skip.
 			continue
 		}
 

@@ -3,7 +3,6 @@ package engine
 import (
 	"fmt"
 	"reflect"
-	"strings"
 
 	"github.com/mockagents/mockagents/internal/types"
 )
@@ -233,9 +232,4 @@ func toInt(val any) (int, bool) {
 		return int(v), true
 	}
 	return 0, false
-}
-
-// FormatValidationError creates a formatted error message for 422 responses.
-func FormatValidationError(toolName string, errs []string) string {
-	return fmt.Sprintf("tool %q parameter validation failed: %s", toolName, strings.Join(errs, "; "))
 }

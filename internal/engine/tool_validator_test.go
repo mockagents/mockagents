@@ -294,16 +294,3 @@ func TestToolValidator_MultipleErrors(t *testing.T) {
 	errs := v.ValidateParameters(schema, args)
 	assert.GreaterOrEqual(t, len(errs), 2)
 }
-
-func TestFormatValidationError_SingleError(t *testing.T) {
-	msg := FormatValidationError("my_tool", []string{"missing required parameter"})
-	assert.Contains(t, msg, "my_tool")
-	assert.Contains(t, msg, "missing required parameter")
-}
-
-func TestFormatValidationError_MultipleErrors(t *testing.T) {
-	msg := FormatValidationError("my_tool", []string{"error 1", "error 2"})
-	assert.Contains(t, msg, "my_tool")
-	assert.Contains(t, msg, "error 1")
-	assert.Contains(t, msg, "error 2")
-}
