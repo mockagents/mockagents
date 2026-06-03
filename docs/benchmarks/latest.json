@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "timestamp": "2026-04-14T22:06:20.1813803Z",
+  "timestamp": "2026-06-03T20:22:50.5480263Z",
   "go_version": "go1.26.1",
   "goos": "windows",
   "goarch": "amd64",
@@ -8,97 +8,119 @@
   "results": [
     {
       "name": "BenchmarkProcessRequest_StaticResponse",
-      "iterations": 2355136,
-      "ns_per_op": 500.8,
-      "bytes_per_op": 1419,
-      "allocs_per_op": 9,
-      "ops_per_second": 1996805.1118210861
+      "iterations": 2311844,
+      "ns_per_op": 528.2,
+      "bytes_per_op": 1469,
+      "allocs_per_op": 10,
+      "ops_per_second": 1893222.264293828
     },
     {
       "name": "BenchmarkProcessRequest_TemplateResponse",
-      "iterations": 843751,
-      "ns_per_op": 1309,
-      "bytes_per_op": 1804,
-      "allocs_per_op": 22,
-      "ops_per_second": 763941.9404125287
+      "iterations": 919920,
+      "ns_per_op": 1282,
+      "bytes_per_op": 1766,
+      "allocs_per_op": 23,
+      "ops_per_second": 780031.20124805
     },
     {
       "name": "BenchmarkProcessRequest_WithToolCalls",
-      "iterations": 632170,
-      "ns_per_op": 1815,
-      "bytes_per_op": 1949,
-      "allocs_per_op": 23,
-      "ops_per_second": 550964.1873278237
+      "iterations": 655225,
+      "ns_per_op": 2324,
+      "bytes_per_op": 1942,
+      "allocs_per_op": 22,
+      "ops_per_second": 430292.59896729776
+    },
+    {
+      "name": "BenchmarkProcessRequest_MultipleToolCalls",
+      "iterations": 170528,
+      "ns_per_op": 5909,
+      "bytes_per_op": 2751,
+      "allocs_per_op": 37,
+      "ops_per_second": 169233.3728211203
     },
     {
       "name": "BenchmarkProcessRequest_RegexMatch",
-      "iterations": 1490695,
-      "ns_per_op": 794,
-      "bytes_per_op": 1837,
+      "iterations": 1253116,
+      "ns_per_op": 954.4,
+      "bytes_per_op": 1792,
       "allocs_per_op": 14,
-      "ops_per_second": 1259445.8438287154
+      "ops_per_second": 1047778.7091366304
     },
     {
       "name": "BenchmarkProcessRequest_DefaultFallback",
-      "iterations": 2080149,
-      "ns_per_op": 569,
-      "bytes_per_op": 1327,
-      "allocs_per_op": 9,
-      "ops_per_second": 1757469.244288225
+      "iterations": 1748388,
+      "ns_per_op": 668.3,
+      "bytes_per_op": 1312,
+      "allocs_per_op": 10,
+      "ops_per_second": 1496333.9817447255
     },
     {
       "name": "BenchmarkScenarioMatcher_ContentContains",
-      "iterations": 49515980,
-      "ns_per_op": 28.81,
+      "iterations": 30968940,
+      "ns_per_op": 39.08,
       "bytes_per_op": 16,
       "allocs_per_op": 1,
-      "ops_per_second": 34710170.079833396
+      "ops_per_second": 25588536.335721597
     },
     {
       "name": "BenchmarkScenarioMatcher_Regex",
-      "iterations": 2564556,
-      "ns_per_op": 564,
-      "bytes_per_op": 439,
-      "allocs_per_op": 6,
-      "ops_per_second": 1773049.645390071
+      "iterations": 1900261,
+      "ns_per_op": 535.2,
+      "bytes_per_op": 415,
+      "allocs_per_op": 5,
+      "ops_per_second": 1868460.3886397607
     },
     {
       "name": "BenchmarkScenarioMatcher_Default",
-      "iterations": 11981751,
-      "ns_per_op": 102.8,
+      "iterations": 9674695,
+      "ns_per_op": 125.3,
       "bytes_per_op": 16,
       "allocs_per_op": 1,
-      "ops_per_second": 9727626.459143968
+      "ops_per_second": 7980845.969672785
+    },
+    {
+      "name": "BenchmarkScenarioMatcher_MixedCaseManyScenarios",
+      "iterations": 4085786,
+      "ns_per_op": 298.9,
+      "bytes_per_op": 80,
+      "allocs_per_op": 2,
+      "ops_per_second": 3345600.5352960858
     },
     {
       "name": "BenchmarkResponseGenerator_Static",
-      "iterations": 8478790,
-      "ns_per_op": 160.5,
+      "iterations": 10496890,
+      "ns_per_op": 116.5,
       "bytes_per_op": 144,
       "allocs_per_op": 1,
-      "ops_per_second": 6230529.595015576
+      "ops_per_second": 8583690.987124464
     },
     {
       "name": "BenchmarkResponseGenerator_Template",
-      "iterations": 1331271,
-      "ns_per_op": 924.3,
+      "iterations": 1000000,
+      "ns_per_op": 1046,
       "bytes_per_op": 625,
       "allocs_per_op": 14,
-      "ops_per_second": 1081899.8160770314
+      "ops_per_second": 956022.9445506692
     },
     {
       "name": "BenchmarkToolCallProcessor",
-      "iterations": 1000000,
-      "ns_per_op": 1195,
-      "bytes_per_op": 558,
-      "allocs_per_op": 12,
-      "ops_per_second": 836820.0836820083
+      "iterations": 902818,
+      "ns_per_op": 1264,
+      "bytes_per_op": 552,
+      "allocs_per_op": 10,
+      "ops_per_second": 791139.2405063291
     },
     {
       "name": "BenchmarkAgentRegistry_Get",
-      "iterations": 93082424,
-      "ns_per_op": 13.95,
-      "ops_per_second": 71684587.81362008
+      "iterations": 96986938,
+      "ns_per_op": 12.17,
+      "ops_per_second": 82169268.69350863
+    },
+    {
+      "name": "BenchmarkGetByModelForTenant_ManyAgents",
+      "iterations": 86400552,
+      "ns_per_op": 14.27,
+      "ops_per_second": 70077084.7932726
     }
   ]
 }

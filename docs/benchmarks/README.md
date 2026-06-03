@@ -26,27 +26,19 @@ output, and writes two artifacts into this directory:
 The GOMAXPROCS suffix is stripped from benchmark names before parsing
 so results from a laptop and a CI runner stay comparable.
 
-> **⚠️ The committed `latest.{json,md}` is STALE — refresh it off-governor.**
+> **Baseline freshness:** `latest.{json,md}` was last refreshed
+> **2026-06-03** off-governor (see the "Release 2026-06-03 refresh" note
+> below) and is current with the engine + security + perf work through
+> that date.
 >
-> The checked-in snapshot predates the `internal/engine` review slice
-> (F-SM-007/F-EN-006 et al.): it is missing two benchmarks that arc added
-> (`ProcessRequest_MultipleToolCalls`, `ScenarioMatcher_MixedCaseManyScenarios`)
-> and a handful of its `allocs/op`/`B/op` figures are out of date (some
-> improved, e.g. `ScenarioMatcher_Regex` 6→5 allocs; a couple drifted +1).
->
-> It was **not** refreshed on the primary dev machine on purpose: that box
-> runs a power governor (`LBGovernor`) that throttles *sustained* bench runs
-> ~2.5× uniformly across all benches, so a `make bench-report` there writes
-> **unreliable `ns/op`** and would corrupt the baseline. Refresh the committed
-> report only on **non-throttled hardware**, where `ns/op` is trustworthy.
-> For a quick sanity check anywhere, `make bench` prints results **without**
-> writing the files; `allocs/op` and `B/op` are machine-independent and safe
-> to compare even under the governor.
->
-> Note for reviewers: the 2026-06 multi-pass reviews of `internal/server`,
-> `internal/tenancy`, and `internal/audit` touched **no** `internal/engine`
-> or `internal/adapter` code, so they cannot affect these numbers — verified
-> via `make bench` (allocs/op + B/op unchanged from the current engine code).
+> **Refreshing on the primary dev machine:** that box ships only the
+> Windows **Balanced** power plan, which throttles `ns/op` ~1.4× uniformly
+> vs. a clean run — enough to corrupt a committed `ns/op` baseline. To
+> refresh there, temporarily activate a High-performance plan, run
+> `make bench-report`, then restore Balanced (the recipe is in the
+> 2026-06-03 note). `allocs/op` and `B/op` are machine-independent, so for
+> a quick sanity check anywhere `make bench` prints results **without**
+> writing the files and those two columns are always safe to compare.
 
 ## Scope
 
@@ -102,6 +94,40 @@ always where the real regression lives.
 Commit findings (top hotspots, fix notes) into this README under a
 new `## Release yyyy-mm-dd profile notes` section, so future releases
 have a reference point instead of re-discovering the same bottlenecks.
+
+## Release 2026-06-03 refresh
+
+First off-governor refresh since the v0.2/v0.3 engine, security, and
+performance work landed (the prior baseline was dated 2026-04-14). Same
+machine (Go 1.26.1, windows/amd64, Intel Core Ultra 9 285K), captured
+under a temporary High-performance power plan, then Balanced restored:
+
+```powershell
+# create + activate a High-performance plan (Win 11 hides it by default)
+$hp = (powercfg -duplicatescheme 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c) -replace '.*: ([0-9a-f-]{36}).*','$1'
+powercfg /setactive $hp
+make bench-report
+# restore Balanced and remove the temp plan — leaves the box as found
+powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e
+powercfg -delete $hp
+```
+
+What moved vs. the 2026-04-14 baseline (a 7-week cumulative diff, **not**
+a single change):
+
+- **`allocs/op` — the reliable signal — is flat within ±1 everywhere**,
+  with three benches improving (`WithToolCalls` 23→22, `ToolCallProcessor`
+  12→10, `ScenarioMatcher_Regex` 6→5). No machine-independent regression.
+- Two benches that the engine-review arc added now appear in the baseline:
+  `ProcessRequest_MultipleToolCalls` and
+  `ScenarioMatcher_MixedCaseManyScenarios`.
+- `GetByModelForTenant_ManyAgents` lands at **14.3 ns/op, 0 allocs/op**,
+  confirming the PERF-01 tenant-model index (was an O(n) scan).
+- `ns/op` swings (±5–30 %) are run-to-run + full-sweep thermal noise, not
+  code: a single-bench probe of `StaticResponse` off-governor measured
+  476.9 ns vs. the 528.2 ns full-sweep figure (the ~1.1× full-sweep
+  thermal effect). All ProcessRequest families stay inside the target
+  envelope below.
 
 ## Release 2026-04-14 micro-optimization slice
 

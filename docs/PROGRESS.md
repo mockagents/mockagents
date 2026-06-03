@@ -163,13 +163,14 @@ Test suite headcount at the checkpoint:
   `/login`, `/api/logs/stream` are the seven v0.3 additions.
 - Helm: lint clean, default render (6 resources), full v0.2
   toggle render (10 resources).
-- Benchmarks: the committed `docs/benchmarks/latest.{json,md}` is the
-  v0.2 micro-opt baseline (hot path 10–24 % faster than v0.1) but is
-  now **stale** — it predates the engine-review slice and the §2.54
-  perf work (PERF-01/08 touched `internal/engine`), and must be
-  refreshed on non-throttled hardware before its `ns/op` is used as a
-  release gate (see the ⚠️ note in `docs/benchmarks/README.md` and the
-  optimization backlog in `docs/PERFORMANCE.md`).
+- Benchmarks: `docs/benchmarks/latest.{json,md}` **refreshed 2026-06-03**
+  off-governor (temp High-performance plan, Balanced restored) — current
+  with the engine-review slice and the §2.54 perf work. `allocs/op` flat
+  within ±1 vs. the 2026-04-14 baseline (three benches improved), and the
+  PERF-01 `GetByModelForTenant_ManyAgents` index lands at 14.3 ns / 0
+  allocs. ns/op swings are full-sweep thermal noise (see the 2026-06-03
+  refresh note in `docs/benchmarks/README.md`; backlog in
+  `docs/PERFORMANCE.md`).
 
 ### Recommended next task
 
@@ -4238,8 +4239,13 @@ Measured results — and the honest ones, not the predicted ones:
   **3072 B/2 allocs → 1536 B/1 alloc** per loggable request.
 
 The remaining backlog (PERF-05/06/07/11 + P3) is small alloc-shaving on an
-already-healthy path; `docs/benchmarks/README.md` notes the committed baseline is
-stale and must be refreshed off-governor before using ns/op as a release gate.
+already-healthy path. The `docs/benchmarks/latest.{json,md}` baseline was
+**refreshed 2026-06-03** off-governor (temp High-performance plan, Balanced
+restored) — `allocs/op` flat within ±1 vs. the 2026-04-14 baseline (three
+benches improved); ns/op swings are full-sweep thermal noise. The PERF-01
+tenant-model index now shows in the report at 14.3 ns / 0 allocs
+(`GetByModelForTenant_ManyAgents`). See the 2026-06-03 refresh note in
+`docs/benchmarks/README.md`.
 
 ---
 
