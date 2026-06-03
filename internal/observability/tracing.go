@@ -111,7 +111,18 @@ func RecordError(span trace.Span, err error) {
 // HTTPMiddleware wraps an http.Handler with a server span. Minimal
 // implementation deliberately: we own the instrumentation surface and
 // don't need otelhttp's feature set for the MockAgents endpoints.
+//
+// When no real exporter is configured (the default — tracingEnabled is false),
+// it returns next unwrapped so there is ZERO per-request cost: otherwise every
+// request would allocate a statusRecorder, build span attributes, and copy the
+// request context just to feed a NoOp span (PERF-02). This mirrors the engine
+// layer, which already gates its spans on IsEnabled(). tracingEnabled is
+// read-only after NewTracerProvider returns, so deciding here at construction
+// time is safe as long as the tracer is set up before the server is built.
 func HTTPMiddleware(next http.Handler) http.Handler {
+	if !tracingEnabled {
+		return next
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, span := StartSpan(r.Context(), "http.request",
 			attribute.String("http.method", r.Method),

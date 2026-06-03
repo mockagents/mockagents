@@ -22,10 +22,28 @@ type MatchResult struct {
 // ScenarioMatcher evaluates scenarios against incoming messages.
 type ScenarioMatcher struct {
 	regexCache sync.Map // string -> *regexp.Regexp (typed-nil marks a known-bad pattern)
+	// lowerCache memoizes lower-cased content_contains literals: the literal is
+	// static config, so lowering it once instead of on every request removes a
+	// per-request string allocation from the hot match path (PERF-08).
+	lowerCache sync.Map // string -> string
 	// log surfaces compile failures (F-SM-001). Optional: NewScenarioMatcher
 	// leaves it nil and the matcher falls back to slog.Default(); the engine
 	// sets it to the request logger.
 	log *slog.Logger
+}
+
+// lowerContains returns the lower-cased form of a content_contains literal,
+// memoized in lowerCache so a static scenario literal is lowered exactly once
+// across the matcher's lifetime rather than per request (PERF-08). After the
+// first request that touches a literal, subsequent calls are an allocation-free
+// map read.
+func (m *ScenarioMatcher) lowerContains(s string) string {
+	if v, ok := m.lowerCache.Load(s); ok {
+		return v.(string)
+	}
+	lowered := strings.ToLower(s)
+	m.lowerCache.Store(s, lowered)
+	return lowered
 }
 
 // NewScenarioMatcher creates a new ScenarioMatcher.
@@ -103,7 +121,7 @@ var matchedSentinel = map[string]string{}
 // original case for regex matching and capture extraction.
 func (m *ScenarioMatcher) evaluate(rule *types.MatchRule, userMessage, lowerMessage string, turnNumber int) map[string]string {
 	if rule.ContentContains != "" {
-		if !strings.Contains(lowerMessage, strings.ToLower(rule.ContentContains)) {
+		if !strings.Contains(lowerMessage, m.lowerContains(rule.ContentContains)) {
 			return nil
 		}
 	}
