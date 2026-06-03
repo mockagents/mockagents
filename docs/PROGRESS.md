@@ -1,6 +1,6 @@
 # MockAgents — Implementation Progress
 
-**Last updated:** 2026-06-02 (multi-pass security review hardening — internal/server + internal/tenancy)
+**Last updated:** 2026-06-03 (performance handoff + P1 hot-path optimizations — §2.54)
 **Source of truth:** this file. Other `docs/` pages describe the *design
 intent* from the original product plan; when those pages and this file
 disagree, this file wins.
@@ -81,7 +81,12 @@ and a two-package multi-pass security review hardening pass —
 cross-tenant key IDOR + tenant-CRUD privilege fixes (platform
 role), live-feed routing/flush/shutdown/isolation repairs, route-
 authz unification, and a broad auth/validation hardening sweep,
-all neuter-verified (§2.53). All
+all neuter-verified (§2.53), and a performance handoff
+(`docs/PERFORMANCE.md`) plus the four P1 hot-path optimizations —
+an O(1) tenant model index, skipping the no-op tracing wrapper,
+coarsened auth `last_used` writes, a pooled response encoder, and
+two cheap wins (memoized match lowering, single-copy body capture),
+each measured and neuter-verified (§2.54). All
 four document kinds (Agent, Pipeline, TestSuite, MCPServer) flow
 through the same rule-based validator plumbing AND a second
 cross-document pass resolves every reference across a directory.
@@ -131,6 +136,7 @@ billing are the only known gaps left.
 | Selective bulk rotation (?except=self)                 | §2.51   |
 | Architecture review hardening                          | §2.52   |
 | Multi-pass security review hardening (server + tenancy) | §2.53   |
+| Performance handoff + P1 hot-path optimizations         | §2.54   |
 
 Test suite headcount at the checkpoint:
 - Go: full suite green, `go vet` clean. Total **~721 Go tests**
@@ -157,8 +163,13 @@ Test suite headcount at the checkpoint:
   `/login`, `/api/logs/stream` are the seven v0.3 additions.
 - Helm: lint clean, default render (6 resources), full v0.2
   toggle render (10 resources).
-- Benchmarks: `docs/benchmarks/latest.{json,md}` refreshed; hot
-  path 10–24 % faster than the v0.1 baseline.
+- Benchmarks: the committed `docs/benchmarks/latest.{json,md}` is the
+  v0.2 micro-opt baseline (hot path 10–24 % faster than v0.1) but is
+  now **stale** — it predates the engine-review slice and the §2.54
+  perf work (PERF-01/08 touched `internal/engine`), and must be
+  refreshed on non-throttled hardware before its `ns/op` is used as a
+  release gate (see the ⚠️ note in `docs/benchmarks/README.md` and the
+  optimization backlog in `docs/PERFORMANCE.md`).
 
 ### Recommended next task
 
@@ -4179,6 +4190,56 @@ What landed:
 
 The four action plans (`review/pkg-internal-{server,tenancy}/03-ACTION-PLAN.md`)
 are fully checked off; no open review items remain in either package.
+
+### 2.54 Performance handoff + P1 hot-path optimizations
+
+| Item                         | Location |
+| ---------------------------- | -------- |
+| Performance handoff guide     | `docs/PERFORMANCE.md` — perf model, prioritized backlog (PERF-01..21), "already optimized" list, scaling ceilings, methodology |
+| PERF-01 O(1) tenant model index | `internal/engine/agent_registry.go` — `byModelTenant` (model → owner → smallest-named agent) replaces the per-request O(n) `GetByModelForTenant` scan |
+| PERF-02 tracing wrapper skip  | `internal/observability/tracing.go` — `HTTPMiddleware` returns `next` unwrapped when no exporter is configured |
+| PERF-03 auth `last_used` coarsening | `internal/tenancy/store.go` — bump only when stale ≥ 1 min (`shouldBumpLastUsed`) + `synchronous(normal)` on the tenancy DSN |
+| PERF-04 pooled response encoder | `internal/adapter/encode.go`, `internal/server/handlers.go` — `respEncoder` (pooled buffer + encoder) for `writeJSON` |
+| PERF-08 memoized match lowering | `internal/engine/scenario_matcher.go` — `lowerCache` for static `content_contains` literals |
+| PERF-09 single-copy body capture | `internal/server/log_handlers.go` — `bodyString()` replaces the `snapshot()`+`string()` double copy |
+| Tests/benches                | `agent_registry`/`tenant`, `tracing`, `scenario_matcher`, `adapter/encode`, `tenancy` (last_used), `server` capture — each fix neuter-verified |
+| Verification                 | `go test ./... -count=1` green; `go vet ./...` clean |
+
+A grounded performance review (parallel per-subsystem surveys → adversarial
+verification of each headline finding) produced `docs/PERFORMANCE.md`, then the
+four P1 items plus two cheap wins landed. Each fix carries a regression guard
+and was neuter-verified (revert the fix → the guard fails → restore).
+
+Measured results — and the honest ones, not the predicted ones:
+
+- **PERF-01 (clear win):** `GetByModelForTenant` was an O(n) RLock scan of the
+  agents map on **every** model-based LLM request. A `byModelTenant` index makes
+  it two map reads while exactly preserving the tenant-visibility rule and the
+  F-AR-002 lexicographic tie-break (rebuilt per-model on Register/Remove).
+  **0 allocs, flat 29 ns/op at N=1000.**
+- **PERF-02 (clear win):** the OTel HTTP middleware allocated a wrapper + span
+  attributes + a context copy per request even under the NoOp tracer — and since
+  no exporter is wired in the binary, that was *every* request. Now skipped at
+  construction when tracing is disabled.
+- **PERF-03 (clear win):** the auth path issued a full-fsync `last_used` write on
+  every cache miss, serialized behind `MaxOpenConns=1`. Coarsened to ≤ once per
+  key per minute and switched the tenancy DB to `synchronous=NORMAL`.
+- **PERF-08 (clear win):** the matcher re-lower-cased the static `content_contains`
+  literal per request; memoized, so mixed-case literals stop allocating.
+- **PERF-04 (modest, measured honestly):** pooled the response JSON encoder —
+  ~28 % faster encode but **unchanged B/op**, because `encoding/json` already
+  pools its scratch and the per-call encoder stack-allocates. Kept as a safe CPU
+  win; the doc says so.
+- **PERF-09 (premise corrected):** the survey claimed the captured response body
+  was buffered "purely for cost extraction" — but it is persisted and shown in
+  the GUI log-detail view (`gui/app/logs/[id]/page.tsx`), so dropping it would be
+  a feature regression and was *not* done. The safe adjacent win — collapsing a
+  redundant double-copy of the body into one — landed instead:
+  **3072 B/2 allocs → 1536 B/1 alloc** per loggable request.
+
+The remaining backlog (PERF-05/06/07/11 + P3) is small alloc-shaving on an
+already-healthy path; `docs/benchmarks/README.md` notes the committed baseline is
+stale and must be refreshed off-governor before using ns/op as a release gate.
 
 ---
 
