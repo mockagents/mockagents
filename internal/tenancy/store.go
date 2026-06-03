@@ -155,12 +155,16 @@ func (s *SQLiteStore) CreateTenant(ctx context.Context, name string) (*Tenant, e
 	if name == "" {
 		return nil, errors.New("tenant name is required")
 	}
+	id, err := randID("ten")
+	if err != nil {
+		return nil, err
+	}
 	tenant := &Tenant{
-		ID:        randID("ten"),
+		ID:        id,
 		Name:      name,
 		CreatedAt: time.Now().UTC(),
 	}
-	_, err := s.db.ExecContext(ctx,
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO tenants (id, name, created_at) VALUES (?, ?, ?)`,
 		tenant.ID, tenant.Name, tenant.CreatedAt.Format(time.RFC3339),
 	)
@@ -265,8 +269,12 @@ func (s *SQLiteStore) CreateAPIKey(ctx context.Context, tenantID, name string, r
 	if err != nil {
 		return nil, fmt.Errorf("bcrypt hash: %w", err)
 	}
+	keyID, err := randID("key")
+	if err != nil {
+		return nil, err
+	}
 	key := APIKey{
-		ID:        randID("key"),
+		ID:        keyID,
 		TenantID:  tenantID,
 		Name:      name,
 		Prefix:    prefix,
@@ -575,7 +583,10 @@ func (s *SQLiteStore) DeleteAPIKey(ctx context.Context, tenantID, id string) err
 // the UPDATE — otherwise the UPDATE blocks waiting for the connection
 // the iterator is still holding.
 func (s *SQLiteStore) Resolve(ctx context.Context, plaintext string) (*Principal, error) {
-	if len(plaintext) < 13 { // "mak_" + at least 9 chars
+	// A well-formed key is mak_<8hex>_<secret>; reject anything that can't be
+	// one before touching the cache or DB (F-ST-003). len > apiKeyPrefixLen
+	// guarantees the index accesses below are in range.
+	if len(plaintext) <= apiKeyPrefixLen || plaintext[:4] != "mak_" || plaintext[apiKeyPrefixLen] != '_' {
 		return nil, ErrInvalidKey
 	}
 
@@ -588,7 +599,7 @@ func (s *SQLiteStore) Resolve(ctx context.Context, plaintext string) (*Principal
 		return cached, nil
 	}
 
-	prefix := plaintext[:12]
+	prefix := plaintext[:apiKeyPrefixLen]
 
 	type candidate struct {
 		id, tenantID, role, hash string
@@ -615,6 +626,18 @@ func (s *SQLiteStore) Resolve(ctx context.Context, plaintext string) (*Principal
 	}
 	rows.Close() // release the connection BEFORE running the UPDATE.
 
+	// Timing-oracle defense (X-TN-002): a prefix that matches no row would
+	// otherwise return without running bcrypt at all, while a prefix that
+	// matches a row runs a (slow) compare — letting an attacker distinguish
+	// "a key with this prefix exists" by latency. Run one dummy compare on a
+	// no-candidate miss so the prefix-miss path costs ~one bcrypt like the
+	// wrong-secret path. (Prefixes are 32 random bits, so collisions are
+	// astronomically rare and len(candidates) is 0 or 1 in practice.)
+	if len(candidates) == 0 {
+		_ = bcrypt.CompareHashAndPassword(timingDummyHash, []byte(plaintext))
+		return nil, ErrInvalidKey
+	}
+
 	for _, c := range candidates {
 		if bcrypt.CompareHashAndPassword([]byte(c.hash), []byte(plaintext)) == nil {
 			// Best-effort timestamp bump; ignore errors — auth should
@@ -633,11 +656,26 @@ func (s *SQLiteStore) Resolve(ctx context.Context, plaintext string) (*Principal
 
 // --- helpers ---
 
+// apiKeyPrefixLen is the length of an API key's public prefix, `mak_<8hex>`
+// (4 + 8 = 12). It doubles as the lookup index and is shared by generateAPIKey
+// (which builds it) and Resolve (which slices it off) so the two cannot drift
+// (F-ST-015).
+const apiKeyPrefixLen = 12
+
+// timingDummyHash is a fixed bcrypt hash used to equalize Resolve's latency on
+// a prefix miss (X-TN-002). It is computed once at init; GenerateFromPassword
+// only errors on an out-of-range cost, which DefaultCost is not.
+var timingDummyHash, _ = bcrypt.GenerateFromPassword([]byte("mockagents-timing-equalizer"), bcrypt.DefaultCost)
+
 // randID produces a short, url-safe identifier with a human-readable prefix.
-func randID(prefix string) string {
+// It returns the crypto/rand error rather than swallowing it (F-ST-001): a
+// failed read would otherwise mint a predictable all-zero id.
+func randID(prefix string) (string, error) {
 	var b [8]byte
-	_, _ = rand.Read(b[:])
-	return prefix + "_" + hex.EncodeToString(b[:])
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generate id: %w", err)
+	}
+	return prefix + "_" + hex.EncodeToString(b[:]), nil
 }
 
 // generateAPIKey returns a plaintext key and its public prefix. The

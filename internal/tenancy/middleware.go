@@ -88,7 +88,9 @@ func ParseBearerToken(authHeader string) (string, bool) {
 		return "", false
 	}
 	token := strings.TrimSpace(rest)
-	if token == "" {
+	// A real credential has no internal whitespace; reject `Bearer ab cd`
+	// rather than forwarding a multi-token string to the store (F-MW-001).
+	if token == "" || strings.ContainsAny(token, " \t\r\n") {
 		return "", false
 	}
 	return token, true

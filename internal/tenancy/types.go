@@ -13,6 +13,8 @@ package tenancy
 
 import (
 	"errors"
+	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -90,6 +92,25 @@ type APIKey struct {
 type NewAPIKeyResult struct {
 	Key       APIKey `json:"key"`
 	Plaintext string `json:"plaintext"`
+}
+
+// LogValue implements slog.LogValuer so a NewAPIKeyResult logged via slog
+// redacts the plaintext secret (F-TY-003). JSON marshaling is unaffected, so
+// the one-time API response still carries the real key.
+func (r NewAPIKeyResult) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("key_id", r.Key.ID),
+		slog.String("tenant_id", r.Key.TenantID),
+		slog.String("prefix", r.Key.Prefix),
+		slog.String("plaintext", "REDACTED"),
+	)
+}
+
+// String redacts the plaintext for fmt's %v/%s/%q verbs so an accidental log
+// of the result cannot spill the secret. Use the JSON encoding (which keeps
+// the plaintext) for the intended one-time response.
+func (r NewAPIKeyResult) String() string {
+	return fmt.Sprintf("NewAPIKeyResult{key_id:%s prefix:%s plaintext:REDACTED}", r.Key.ID, r.Key.Prefix)
 }
 
 // Principal is the authenticated caller derived from a valid API key.

@@ -22,6 +22,8 @@ func TestParseBearerToken(t *testing.T) {
 		{"Bearer ", "", false},              // scheme + space, no token
 		{"Bearertoken", "", false},          // scheme not whitespace-delimited
 		{"Basic abc123", "", false},         // wrong scheme
+		{"Bearer ab cd", "", false},         // internal whitespace rejected (F-MW-001)
+		{"Bearer ab\tcd", "", false},        // internal tab rejected
 	}
 	for _, c := range cases {
 		gotToken, gotOK := ParseBearerToken(c.header)
