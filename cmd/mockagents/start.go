@@ -287,12 +287,15 @@ func bootstrapTenancy(ctx context.Context, store *tenancy.SQLiteStore, logger *s
 		return err
 	}
 	for _, k := range existing {
-		if k.Role == tenancy.RoleAdmin {
-			logger.Info("tenancy: admin key already exists", "key_id", k.ID, "prefix", k.Prefix)
+		if k.Role == tenancy.RolePlatform {
+			logger.Info("tenancy: platform key already exists", "key_id", k.ID, "prefix", k.Prefix)
 			return nil
 		}
 	}
-	result, err := store.CreateAPIKey(ctx, tenant.ID, "bootstrap-admin", tenancy.RoleAdmin)
+	// The bootstrap key is the platform operator: it can manage the tenant
+	// collection. The management API cannot mint this role (X-TN-001), so the
+	// bootstrap path is the only source of a platform credential.
+	result, err := store.CreateAPIKey(ctx, tenant.ID, "bootstrap-admin", tenancy.RolePlatform)
 	if err != nil {
 		return err
 	}

@@ -56,6 +56,24 @@ func TestMountManaged_AppliesFloorInMultiTenant(t *testing.T) {
 	}
 }
 
+// TestMountManaged_PlatformFloorRejectsAdmin is the X-TN-001 guard: the
+// tenant-collection routes require the platform role, so a per-tenant admin is
+// rejected while a platform principal passes.
+func TestMountManaged_PlatformFloorRejectsAdmin(t *testing.T) {
+	admin := &tenancy.Principal{TenantID: "t1", KeyID: "k", Role: tenancy.RoleAdmin}
+	platform := &tenancy.Principal{TenantID: "t1", KeyID: "k", Role: tenancy.RolePlatform}
+
+	if code := mountAndServe(t, true, "DELETE /api/v1/tenants/{id}", "DELETE", "/api/v1/tenants/t2", admin); code == http.StatusOK {
+		t.Error("a per-tenant admin reached the platform-floor tenant-delete route")
+	}
+	if code := mountAndServe(t, true, "DELETE /api/v1/tenants/{id}", "DELETE", "/api/v1/tenants/t2", platform); code != http.StatusOK {
+		t.Errorf("platform principal blocked from a platform-floor route: status %d", code)
+	}
+	if code := mountAndServe(t, true, "GET /api/v1/tenants", "GET", "/api/v1/tenants", admin); code == http.StatusOK {
+		t.Error("a per-tenant admin reached the platform-floor tenant-list route")
+	}
+}
+
 // TestMountManaged_OpenInSingleTenant confirms single-tenant (local-dev) mode
 // applies no floor — even an admin-floor route is reachable anonymously.
 func TestMountManaged_OpenInSingleTenant(t *testing.T) {
@@ -89,6 +107,10 @@ func TestManagementRouteFloors_FlaggedRoutes(t *testing.T) {
 		"GET /api/v1/audit":                 tenancy.RoleAdmin,
 		"POST /api/v1/config/validate":      tenancy.RoleEditor,
 		"DELETE /api/v1/keys/{id}":          tenancy.RoleAdmin,
+		// X-TN-001: tenant-collection routes are platform-only.
+		"GET /api/v1/tenants":         tenancy.RolePlatform,
+		"POST /api/v1/tenants":        tenancy.RolePlatform,
+		"DELETE /api/v1/tenants/{id}": tenancy.RolePlatform,
 	}
 	for pat, w := range want {
 		if got, ok := managementRouteFloors[pat]; !ok {
@@ -103,10 +125,11 @@ func TestManagementRouteFloors_FlaggedRoutes(t *testing.T) {
 // real role, so a typo'd value can't silently mean "open".
 func TestManagementRouteFloors_AllValid(t *testing.T) {
 	valid := map[tenancy.Role]bool{
-		roleOpen:           true,
-		tenancy.RoleViewer: true,
-		tenancy.RoleEditor: true,
-		tenancy.RoleAdmin:  true,
+		roleOpen:             true,
+		tenancy.RoleViewer:   true,
+		tenancy.RoleEditor:   true,
+		tenancy.RoleAdmin:    true,
+		tenancy.RolePlatform: true,
 	}
 	for pat, floor := range managementRouteFloors {
 		if !valid[floor] {

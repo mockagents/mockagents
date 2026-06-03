@@ -85,6 +85,34 @@ func TestTenancyHandlers_CreateAPIKey_InvalidRole400(t *testing.T) {
 	}
 }
 
+// TestTenancyHandlers_CreateAPIKey_PlatformRoleRejected is the X-TN-001
+// escalation guard: the management API must refuse to mint a platform-role key,
+// even for a platform caller — platform credentials are bootstrap-only.
+func TestTenancyHandlers_CreateAPIKey_PlatformRoleRejected(t *testing.T) {
+	store := newRotateTestStore(t)
+	tenant, err := store.CreateTenant(context.Background(), "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &TenancyHandlers{Store: store, Recorder: newTestRecorder()}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/tenants/{id}/keys", h.CreateAPIKey)
+	// Even a platform principal cannot create a platform key via the API.
+	caller := &tenancy.Principal{TenantID: tenant.ID, KeyID: "k", Role: tenancy.RolePlatform}
+	srv := httptest.NewServer(servePrincipal(caller, mux))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/v1/tenants/"+tenant.ID+"/keys", "application/json",
+		strings.NewReader(`{"name":"x","role":"platform"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("platform-role create status = %d, want 400", resp.StatusCode)
+	}
+}
+
 // mismatchedBulkStore returns parallel slices of different lengths from
 // BulkRotateTenantKeys to exercise the F-TN-009 length guard. All other
 // Store methods are inherited from the embedded nil interface and must not

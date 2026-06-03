@@ -24,6 +24,13 @@ const (
 	RoleViewer Role = "viewer"
 	RoleEditor Role = "editor"
 	RoleAdmin  Role = "admin"
+	// RolePlatform is the cross-tenant operator role: it sits above admin
+	// and is the only role permitted to manage the tenant collection
+	// (list/create/delete tenants). A per-tenant admin is confined to its
+	// own tenant's keys. Platform keys are minted ONLY by the bootstrap
+	// path (cmd/mockagents) — the management API refuses to assign this role
+	// (see IsAssignableViaAPI) so a tenant admin cannot self-escalate.
+	RolePlatform Role = "platform"
 )
 
 // rank returns the ordering of a role for comparison. Higher is more
@@ -36,6 +43,8 @@ func (r Role) rank() int {
 		return 2
 	case RoleAdmin:
 		return 3
+	case RolePlatform:
+		return 4
 	}
 	return -1
 }
@@ -47,6 +56,12 @@ func (r Role) AtLeast(required Role) bool {
 
 // IsValid reports whether r is one of the known roles.
 func (r Role) IsValid() bool { return r.rank() > 0 }
+
+// IsAssignableViaAPI reports whether r may be assigned to a key through the
+// management API. It is every valid role EXCEPT RolePlatform: the platform
+// role is bootstrap-only so a tenant admin cannot create or promote a key to
+// cross-tenant privilege (X-TN-001).
+func (r Role) IsAssignableViaAPI() bool { return r.IsValid() && r != RolePlatform }
 
 // Tenant is the top-level isolation boundary. A tenant owns API keys and
 // (in future slices) agents, pipelines, and interaction logs.

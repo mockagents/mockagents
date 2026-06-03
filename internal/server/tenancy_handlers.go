@@ -159,7 +159,9 @@ func (h *TenancyHandlers) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, &req) {
 		return
 	}
-	if !req.Role.IsValid() {
+	if !req.Role.IsAssignableViaAPI() {
+		// Rejects unknown roles AND the platform role: platform is
+		// bootstrap-only so a tenant admin cannot self-escalate (X-TN-001).
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid role (must be viewer, editor, or admin)"})
 		return
 	}
@@ -200,7 +202,9 @@ func (h *TenancyHandlers) UpdateAPIKeyRole(w http.ResponseWriter, r *http.Reques
 	if !decodeJSONBody(w, r, &req) {
 		return
 	}
-	if !req.Role.IsValid() {
+	if !req.Role.IsAssignableViaAPI() {
+		// Rejects unknown roles AND the platform role: platform is
+		// bootstrap-only so a tenant admin cannot self-escalate (X-TN-001).
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid role (must be viewer, editor, or admin)"})
 		return
 	}

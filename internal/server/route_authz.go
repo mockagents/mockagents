@@ -31,10 +31,14 @@ var managementRouteFloors = map[string]tenancy.Role{
 	"GET /api/v1/agents/{name}":         roleOpen,
 	"POST /api/v1/agents/{name}/reload": tenancy.RoleEditor, // F-HD-001: write → editor
 
-	// Tenant + API-key CRUD. Only mounted in multi-tenant mode.
-	"GET /api/v1/tenants":                   tenancy.RoleAdmin,
-	"POST /api/v1/tenants":                  tenancy.RoleAdmin,
-	"DELETE /api/v1/tenants/{id}":           tenancy.RoleAdmin,
+	// Tenant collection management is a cross-tenant operation, so it
+	// requires the platform role — a per-tenant admin must not list, create,
+	// or delete other tenants (X-TN-001). The per-key routes below stay at
+	// admin/editor and are additionally scoped to the caller's own tenant by
+	// ensureOwnTenant.
+	"GET /api/v1/tenants":         tenancy.RolePlatform,
+	"POST /api/v1/tenants":        tenancy.RolePlatform,
+	"DELETE /api/v1/tenants/{id}": tenancy.RolePlatform,
 	"GET /api/v1/tenants/{id}/keys":         tenancy.RoleEditor,
 	"POST /api/v1/tenants/{id}/keys":        tenancy.RoleAdmin,
 	"POST /api/v1/tenants/{id}/keys/rotate": tenancy.RoleAdmin,
