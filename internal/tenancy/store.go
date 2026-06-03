@@ -123,7 +123,12 @@ type SQLiteStore struct {
 
 // NewSQLiteStore opens or creates the tenancy database at the given path.
 func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
-	dsn := dbPath + "?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)"
+	// synchronous(normal) under WAL trades a full fsync per commit for the
+	// WAL's checkpoint durability — appropriate for API-key metadata, which is
+	// not a hard system-of-record, and the win that makes the per-auth
+	// last_used bump (and key creates/rotations) cheap on the single
+	// connection (PERF-03). Matches the log/audit stores.
+	dsn := dbPath + "?_pragma=journal_mode(wal)&_pragma=synchronous(normal)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open tenancy db %s: %w", dbPath, err)
@@ -631,18 +636,19 @@ func (s *SQLiteStore) Resolve(ctx context.Context, plaintext string) (*Principal
 
 	type candidate struct {
 		id, tenantID, role, hash string
+		lastUsed                 sql.NullString
 	}
 	var candidates []candidate
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, tenant_id, role, hash FROM api_keys WHERE prefix = ?`, prefix,
+		`SELECT id, tenant_id, role, hash, last_used FROM api_keys WHERE prefix = ?`, prefix,
 	)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var c candidate
-		if err := rows.Scan(&c.id, &c.tenantID, &c.role, &c.hash); err != nil {
+		if err := rows.Scan(&c.id, &c.tenantID, &c.role, &c.hash, &c.lastUsed); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -666,20 +672,49 @@ func (s *SQLiteStore) Resolve(ctx context.Context, plaintext string) (*Principal
 		return nil, ErrInvalidKey
 	}
 
+	now := time.Now().UTC()
 	for _, c := range candidates {
 		if bcrypt.CompareHashAndPassword([]byte(c.hash), []byte(plaintext)) == nil {
-			// Best-effort timestamp bump; ignore errors — auth should
-			// not fail because we couldn't write last_used.
-			_, _ = s.db.ExecContext(ctx,
-				`UPDATE api_keys SET last_used = ? WHERE id = ?`,
-				time.Now().UTC().Format(time.RFC3339), c.id,
-			)
+			// Coarsen the last_used write (PERF-03): only bump when it is stale
+			// by more than lastUsedResolution. Under the auth cache, a miss
+			// happens at most ~once per TTL per key, but cache evictions and
+			// invalidations (any key mutation flushes the whole cache) can
+			// produce bursts of misses for a hot key — and with the cache
+			// disabled every request is a miss. Coarsening keeps a hot key from
+			// fsync-ing a redundant timestamp on every one of those. The write
+			// stays best-effort; auth never fails because it couldn't write.
+			if shouldBumpLastUsed(c.lastUsed, now) {
+				_, _ = s.db.ExecContext(ctx,
+					`UPDATE api_keys SET last_used = ? WHERE id = ?`,
+					now.Format(time.RFC3339), c.id,
+				)
+			}
 			principal := &Principal{TenantID: c.tenantID, KeyID: c.id, Role: Role(c.role)}
 			s.cache.Set(plaintext, principal)
 			return principal, nil
 		}
 	}
 	return nil, ErrInvalidKey
+}
+
+// lastUsedResolution is how stale last_used may be before Resolve refreshes it.
+// last_used exists to spot orphaned keys in the admin console, so minute-level
+// accuracy is ample, and it bounds the redundant write rate to once per key per
+// minute regardless of request volume (PERF-03).
+const lastUsedResolution = time.Minute
+
+// shouldBumpLastUsed reports whether a resolved key's last_used column is stale
+// enough to be worth rewriting. An unset or unparseable value is always
+// refreshed; otherwise it is rewritten only once per lastUsedResolution window.
+func shouldBumpLastUsed(lastUsed sql.NullString, now time.Time) bool {
+	if !lastUsed.Valid || lastUsed.String == "" {
+		return true
+	}
+	prev, err := time.Parse(time.RFC3339, lastUsed.String)
+	if err != nil {
+		return true // corrupt/legacy value — refresh it
+	}
+	return now.Sub(prev) >= lastUsedResolution
 }
 
 // --- helpers ---
