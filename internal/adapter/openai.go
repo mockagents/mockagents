@@ -1,10 +1,11 @@
 package adapter
 
 import (
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -267,7 +268,7 @@ func formatOpenAIResponse(resp *engine.Response, promptTokens, completionTokens 
 	}
 
 	return &ChatCompletionResponse{
-		ID:      fmt.Sprintf("chatcmpl-%s", generateID()),
+		ID:      "chatcmpl-" + generateID(),
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		Model:   resp.Model,
@@ -302,13 +303,16 @@ func extractSessionID(r *http.Request) string {
 	if id := r.Header.Get("X-Session-Id"); id != "" {
 		return id
 	}
-	return fmt.Sprintf("sess-%s", generateID())
+	return "sess-" + generateID()
 }
 
+// generateID returns a unique, non-cryptographic id for responses, sessions,
+// tool calls, and messages. These label interactions; they are not security
+// tokens, so uniqueness (not unpredictability) is the requirement. math/rand/v2
+// avoids the crypto/rand syscall and the fmt.Sprintf hex format the old path
+// paid on every id (PERF-07).
 func generateID() string {
-	b := make([]byte, 12)
-	_, _ = rand.Read(b)
-	return fmt.Sprintf("%x", b)
+	return strconv.FormatUint(rand.Uint64(), 16)
 }
 
 func writeError(w http.ResponseWriter, status int, errType, message string) {

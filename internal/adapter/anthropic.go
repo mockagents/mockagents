@@ -229,7 +229,7 @@ func formatAnthropicResponse(resp *engine.Response, inputTokens, outputTokens in
 	if len(resp.ToolCalls) > 0 {
 		stopReason = "tool_use"
 		for i, tc := range resp.ToolCalls {
-			toolID := fmt.Sprintf("toolu_%s", generateID())
+			toolID := "toolu_" + generateID()
 			if i < len(resp.ToolResults) {
 				toolID = resp.ToolResults[i].ID
 			}
@@ -243,7 +243,7 @@ func formatAnthropicResponse(resp *engine.Response, inputTokens, outputTokens in
 	}
 
 	return &AnthropicResponse{
-		ID:         fmt.Sprintf("msg_%s", generateID()),
+		ID:         "msg_" + generateID(),
 		Type:       "message",
 		Role:       "assistant",
 		Content:    content,
