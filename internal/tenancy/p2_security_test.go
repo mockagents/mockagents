@@ -89,6 +89,21 @@ func TestNewAPIKeyResult_RedactsPlaintext(t *testing.T) {
 	}
 }
 
+// TestAPIKey_JSONHasNoSecret covers F-TY-002: APIKey is metadata only — its
+// JSON must never carry a hash/secret/plaintext field.
+func TestAPIKey_JSONHasNoSecret(t *testing.T) {
+	b, err := json.Marshal(APIKey{ID: "key_1", TenantID: "t", Name: "n", Prefix: "mak_abcd1234", Role: RoleViewer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lower := strings.ToLower(string(b))
+	for _, forbidden := range []string{"hash", "secret", "plaintext"} {
+		if strings.Contains(lower, forbidden) {
+			t.Errorf("APIKey JSON contains a forbidden field %q: %s", forbidden, b)
+		}
+	}
+}
+
 // TestResolve_RejectsMalformedShape covers F-ST-003: a key that can't be a
 // well-formed mak_<8hex>_<secret> is rejected before any DB work, and a
 // valid-shaped but non-existent key still returns ErrInvalidKey (exercising

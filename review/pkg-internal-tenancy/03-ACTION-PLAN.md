@@ -31,11 +31,13 @@ Source findings in `01-PER-FILE.md` (F-*) and `02-INTEGRATION.md` (X-TN-*).
 
 ## P2 — missing tests for security-critical paths (S2)
 
-- [ ] **Store-level cross-tenant IDOR tests** — `F-ST-010` · effort:M — assert `RotateAPIKey`/`DeleteAPIKey`/`UpdateAPIKeyRole` return ErrNotFound for a key in another tenant. **Done when:** each has a wrong-tenant test.
-- [ ] **BulkRotate rollback test** — `F-ST-009` · effort:M — fault-inject a mid-loop failure and assert the tx rolls back and **zero** rows changed. **Done when:** the all-or-nothing guarantee is pinned.
-- [ ] **RBAC ordering + IsValid tests** — `F-TY-005` + `F-MW-006` · effort:S — table test `rank`/`AtLeast`/`IsValid` incl. the `"".AtLeast(viewer)==false` and unknown-required cases the gate relies on. **Done when:** the ordering invariants are locked against a refactor.
-- [ ] **Middleware fail-closed test** — `F-MW-008` + `F-MW-009` · effort:S — a fake Store returning a raw error yields 500 with `next` not reached; a valid key on a skip route populates the principal. **Done when:** both contracts are tested.
-- [ ] **APIKey-has-no-secret marshal test** — `F-TY-002` · effort:S — assert `json.Marshal(APIKey{})` contains no `hash`/`secret`/`plaintext` key, with a doc line stating "metadata only". **Done when:** the property is enforced by a test.
+- [x] **Store-level cross-tenant IDOR tests** — `F-ST-010` · effort:M — assert `RotateAPIKey`/`DeleteAPIKey`/`UpdateAPIKeyRole` return ErrNotFound for a key in another tenant. **Done when:** each has a wrong-tenant test.
+- [x] **BulkRotate rollback test** — `F-ST-009` · effort:M — fault-inject a mid-loop failure and assert the tx rolls back and **zero** rows changed. **Done when:** the all-or-nothing guarantee is pinned.
+- [x] **RBAC ordering + IsValid tests** — `F-TY-005` + `F-MW-006` · effort:S — table test `rank`/`AtLeast`/`IsValid` incl. the `"".AtLeast(viewer)==false` and unknown-required cases the gate relies on. **Done when:** the ordering invariants are locked against a refactor.
+- [x] **Middleware fail-closed test** — `F-MW-008` + `F-MW-009` · effort:S — a fake Store returning a raw error yields 500 with `next` not reached; a valid key on a skip route populates the principal. **Done when:** both contracts are tested.
+- [x] **APIKey-has-no-secret marshal test** — `F-TY-002` · effort:S — assert `json.Marshal(APIKey{})` contains no `hash`/`secret`/`plaintext` key, with a doc line stating "metadata only". **Done when:** the property is enforced by a test.
+
+> **P2 test batch DONE 2026-06-02 (branch `fix/tenancy-p2-tests`).** New `security_paths_test.go`: `TestStore_CrossTenantKeyOps_ReturnNotFound` (rotate/delete/update of another tenant's key → ErrNotFound + key untouched; **neuter-verified** — dropping `AND tenant_id=?` makes the cross-tenant rotate succeed), `TestBulkRotate_RollsBackOnFailure` (a 40ms ctx vs 8 bcrypts forces a failure → zero keys rotated; the rollback is `defer tx.Rollback()` + no `Commit` on error — the test pins the all-or-nothing *outcome*, not a partial-then-rollback which can't be deterministically forced without a fault-injecting DB), `TestAuthMiddleware_FailsClosedOnStoreError` (fake `errorStore` → 500, `next` not reached; **neuter-verified** — calling `next` on the error branch makes it 200), `TestAuthMiddleware_SkipRoutePrincipal` (F-MW-009). `TestAPIKey_JSONHasNoSecret` (F-TY-002) in `p2_security_test.go`. RBAC ordering (F-TY-005/F-MW-006) was already covered by `TestRoleOrderingAndValidity` from the platform-role work. Full `go test ./...` + `go vet` green.
 
 ## P3 — clarity, docs, minor robustness (S3)
 
