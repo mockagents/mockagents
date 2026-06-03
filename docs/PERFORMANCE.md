@@ -90,7 +90,7 @@ break the fix, confirm the new bench/test regresses, restore).
 
 | ID | Eff | Site | Evidence → Change |
 |----|-----|------|-------------------|
-| **PERF-05** | M | `server/middleware.go` `statusWriter`, `log_handlers.go` `captureWriter` | Three ResponseWriter wrappers per LLM request; `statusWriter` is heap-allocated fresh every request (`&statusWriter{...}`) while `captureWriter` is pooled. **Change:** pool `statusWriter` (it carries no buffer), or collapse status capture into the already-pooled `captureWriter` (it already records `statusCode`) and drop the separate `StructuredLogger` wrapper. |
+| ~~**PERF-05**~~ ✅ | M | `server/middleware.go` `statusWriter`, `log_handlers.go` `captureWriter` | Three ResponseWriter wrappers per LLM request; `statusWriter` is heap-allocated fresh every request (`&statusWriter{...}`) while `captureWriter` is pooled. **Done 2026-06-03:** pooled `statusWriter` via `statusWriterPool` + `acquire/releaseStatusWriter` (Option A). Collapsing into `captureWriter` was rejected — it's mounted only for the 3 loggable LLM paths, but `StructuredLogger` wraps every request. 0 allocs/op acquire/release (`BenchmarkStatusWriterAcquireRelease`); reset neuter-verified (`TestStatusWriter_PoolReset`). |
 | **PERF-06** | M | `server/middleware.go` (`RequestID`, `ExtractAPIKey`, `WithPrincipalTenantScope`) + `log_handlers.go` (`WithRequestMeta`) | Up to **4 `context.WithValue`/`r.WithContext`** per request, each a context node + shallow request copy. **Change:** merge `RequestID` + `ExtractAPIKey` + tenant-scope into one middleware that derives a single context. Cuts 2–3 allocs/request. |
 | **PERF-07** | S | `server/middleware.go` `generateRequestID`, `adapter/openai.go` `generateID`/`extractSessionID` | Cosmetic correlation/response IDs use `crypto/rand` (a syscall-backed CSPRNG) + `fmt.Sprintf` — 2–3 rand draws + Sprintf allocs/request for IDs that need *uniqueness, not unpredictability* (same rationale as the existing `fallbackToolCallID`). **Change:** `math/rand/v2.Uint64()` + hex encode, no `fmt.Sprintf`. |
 | **PERF-08** ✅ | S | `engine/scenario_matcher.go:106` | `strings.Contains(lowerMessage, strings.ToLower(rule.ContentContains))` re-lowercases the **static** scenario literal on every request, every scenario. **Change:** pre-lower `ContentContains` once at config load (store a lowered copy on the rule). The per-request match becomes a pure `strings.Contains`, zero allocs. **✅ DONE 2026-06-03:** memoized via a `lowerCache sync.Map` on the matcher (`lowerContains`), matching the existing `regexCache` pattern — no type/load-path change. The lowered literal is computed once; repeat matches are an allocation-free map read (eliminates the per-request alloc for mixed-case literals like `"Hello"`/`"Error"`). Guard `TestScenarioMatcher_LowerContainsMemoized` (`AllocsPerRun == 0`, neuter-verified). |
@@ -218,7 +218,16 @@ pprof workflow live in `docs/benchmarks/README.md`. Key rules:
 5. ~~**PERF-09**~~ **✅ done** (the survey's "drop the body" premise was wrong —
    the body is displayed in the GUI log detail — but the safe adjacent win,
    eliminating the redundant double-copy, halved the per-request body alloc).
-   Next up: **PERF-05/06/07/11**, then P3 as opportunistic alloc-shaving, each
+6. ~~**PERF-05**~~ **✅ done 2026-06-03** (pooled `statusWriter` — Option A. The
+   alternative of collapsing status capture into the already-pooled
+   `captureWriter` was rejected: `captureWriter` is mounted only for the 3
+   loggable LLM paths while `StructuredLogger` wraps *every* request, so merging
+   would drop status logging on all other routes. `acquire/release` mirror the
+   `captureWriter` pool — release nils the embedded `ResponseWriter` so a pooled
+   entry can't pin a finished request. Eliminates one `&statusWriter{}` heap
+   alloc/request; `BenchmarkStatusWriterAcquireRelease` reports 0 allocs/op;
+   reset is neuter-verified by `TestStatusWriter_PoolReset`.)
+   Next up: **PERF-06/07/11**, then P3 as opportunistic alloc-shaving, each
    behind a bench.
 
 Re-baseline (`make bench-report` off-governor) after each P1 item so the next

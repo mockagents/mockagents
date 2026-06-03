@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/mockagents/mockagents/internal/engine"
@@ -40,7 +41,8 @@ func StructuredLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+			sw := acquireStatusWriter(w)
+			defer releaseStatusWriter(sw)
 
 			next.ServeHTTP(sw, r)
 
@@ -164,6 +166,30 @@ type statusWriter struct {
 	http.ResponseWriter
 	status      int
 	wroteHeader bool
+}
+
+// statusWriterPool recycles statusWriter instances across requests.
+// StructuredLogger wraps every request, so the old `&statusWriter{...}`
+// allocated one wrapper struct on the hot path per request (PERF-05).
+// Unlike captureWriter, statusWriter carries no buffer, so pooling it is
+// a pure struct-reuse win with no slice-retention concerns. acquire/release
+// mirror the captureWriter pool: release nils the embedded ResponseWriter
+// so a pooled entry can never pin a finished request's connection state.
+var statusWriterPool = sync.Pool{
+	New: func() any { return &statusWriter{} },
+}
+
+func acquireStatusWriter(w http.ResponseWriter) *statusWriter {
+	sw := statusWriterPool.Get().(*statusWriter)
+	sw.ResponseWriter = w
+	sw.status = http.StatusOK
+	sw.wroteHeader = false
+	return sw
+}
+
+func releaseStatusWriter(sw *statusWriter) {
+	sw.ResponseWriter = nil
+	statusWriterPool.Put(sw)
 }
 
 func (w *statusWriter) WriteHeader(code int) {

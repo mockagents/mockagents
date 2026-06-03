@@ -70,6 +70,49 @@ func TestStatusWriter_DoubleWriteHeader(t *testing.T) {
 	}
 }
 
+// TestStatusWriter_PoolReset covers PERF-05: statusWriter is now pooled, so
+// acquire must fully reset the struct — a writer reused from the pool must not
+// carry the previous request's status, wroteHeader flag, or ResponseWriter.
+func TestStatusWriter_PoolReset(t *testing.T) {
+	// First use: capture a non-default status so the struct is "dirty".
+	rec1 := httptest.NewRecorder()
+	sw := acquireStatusWriter(rec1)
+	sw.WriteHeader(http.StatusInternalServerError)
+	if sw.status != http.StatusInternalServerError || !sw.wroteHeader {
+		t.Fatalf("first use: status=%d wroteHeader=%v", sw.status, sw.wroteHeader)
+	}
+	releaseStatusWriter(sw)
+	if sw.ResponseWriter != nil {
+		t.Error("release must nil the embedded ResponseWriter so the pool can't pin a finished request")
+	}
+
+	// Second acquire (likely the same struct from the pool) must come back clean.
+	rec2 := httptest.NewRecorder()
+	reused := acquireStatusWriter(rec2)
+	if reused.status != http.StatusOK {
+		t.Errorf("reused status = %d, want 200 (stale state leaked through the pool)", reused.status)
+	}
+	if reused.wroteHeader {
+		t.Error("reused wroteHeader = true, want false (stale state leaked through the pool)")
+	}
+	if reused.ResponseWriter != rec2 {
+		t.Error("reused writer did not bind the new ResponseWriter")
+	}
+	releaseStatusWriter(reused)
+}
+
+// BenchmarkStatusWriterAcquireRelease documents the PERF-05 win: an
+// acquire+release round-trip allocates nothing once the pool is warm,
+// replacing the per-request `&statusWriter{}` heap allocation.
+func BenchmarkStatusWriterAcquireRelease(b *testing.B) {
+	rec := httptest.NewRecorder()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		sw := acquireStatusWriter(rec)
+		releaseStatusWriter(sw)
+	}
+}
+
 // TestValidateHandler_EmptyYAMLWrapper covers F-VL-003: a JSON wrapper with an
 // explicit empty "yaml" is a 400, while a JSON doc with no "yaml" key falls
 // through to validation (not a 400 from the wrapper check).
