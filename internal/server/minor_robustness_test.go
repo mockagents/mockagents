@@ -30,6 +30,31 @@ func TestProbeModel(t *testing.T) {
 	}
 }
 
+// TestCaptureWriter_BodyStringIndependent covers PERF-09: bodyString makes ONE
+// independent copy of the captured body (replacing the old snapshot()+string()
+// double copy). The copy must not alias the pooled buffer — otherwise a
+// subsequent pooled reuse would corrupt an already-logged response.
+func TestCaptureWriter_BodyStringIndependent(t *testing.T) {
+	cw := &captureWriter{capture: true}
+	cw.body = []byte("hello world response body")
+
+	got := cw.bodyString()
+	if got != "hello world response body" {
+		t.Fatalf("bodyString = %q", got)
+	}
+	// Independence: mutating the pooled buffer (as a pooled reuse would) must
+	// not change the already-returned copy.
+	cw.body[0], cw.body[1] = 'X', 'Y'
+	if got != "hello world response body" {
+		t.Error("bodyString returned a string aliasing the pooled buffer")
+	}
+	// Empty when capture is off (e.g. SSE).
+	off := &captureWriter{capture: false, body: []byte("ignored")}
+	if s := off.bodyString(); s != "" {
+		t.Errorf("bodyString with capture off = %q, want empty", s)
+	}
+}
+
 // TestStatusWriter_DoubleWriteHeader covers F-MW-005: the first WriteHeader
 // wins and a second is ignored (no clobbered status, no stdlib warning).
 func TestStatusWriter_DoubleWriteHeader(t *testing.T) {

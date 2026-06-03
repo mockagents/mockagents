@@ -286,20 +286,21 @@ func InteractionCapture(worker *LogWorker) func(http.Handler) http.Handler {
 
 			next.ServeHTTP(cw, r)
 
-			// Snapshot into a local slice so the worker pool cannot
-			// race the request-scoped captureWriter after the
-			// handler returns.
-			bodySnapshot := cw.snapshot()
+			// One independent copy of the body for the async worker; the
+			// captureWriter is released and reused right after this block, so
+			// the worker must not alias its pooled buffer.
+			respBody := cw.bodyString()
 			// cw.streaming was set by the writer the moment it sniffed an
-			// SSE Content-Type; for streams capture was disabled so the
-			// snapshot is empty by design (F-LH-001 / X-SSE-001).
+			// SSE Content-Type; for streams capture was disabled so respBody
+			// is empty by design (F-LH-001 / X-SSE-001).
 			streaming := cw.streaming
 			agentName := meta.AgentName
 			// If the engine never ran (validation error, chaos 429 before
-			// resolve, etc.) fall back to a body probe so by_agent
-			// grouping still captures something useful.
-			if agentName == "" && len(bodySnapshot) > 0 {
-				agentName = probeModel(bodySnapshot)
+			// resolve, etc.) fall back to a body probe so by_agent grouping
+			// still captures something useful. Probe cw.body directly — it is
+			// still live (release is deferred) — to avoid re-materializing it.
+			if agentName == "" && respBody != "" {
+				agentName = probeModel(cw.body)
 			}
 
 			entry := &storage.InteractionLog{
@@ -310,7 +311,7 @@ func InteractionCapture(worker *LogWorker) func(http.Handler) http.Handler {
 				ResponseStatus: cw.statusCode,
 				LatencyMs:      time.Since(start).Milliseconds(),
 				Streaming:      streaming,
-				ResponseBody:   string(bodySnapshot),
+				ResponseBody:   respBody,
 				AgentName:      agentName,
 			}
 			// Protocol-adapter interactions have no application-level session,
@@ -453,13 +454,17 @@ func (w *captureWriter) Write(p []byte) (int, error) {
 // snapshot returns a defensive copy of the captured body for the
 // async logger goroutine. Empty when capture is off or the response
 // produced nothing.
-func (w *captureWriter) snapshot() []byte {
+// bodyString returns an independent, immutable copy of the captured body for
+// the async log worker. `string(w.body)` copies the pooled bytes exactly once
+// into a string the worker owns, so the captureWriter can be released and
+// reused immediately afterward. This replaces the old snapshot()+string()
+// double copy (PERF-09): one response-size allocation per loggable request
+// instead of two. Empty when capture is off (e.g. SSE) or nothing was written.
+func (w *captureWriter) bodyString() string {
 	if !w.capture || len(w.body) == 0 {
-		return nil
+		return ""
 	}
-	out := make([]byte, len(w.body))
-	copy(out, w.body)
-	return out
+	return string(w.body)
 }
 
 // detectStreaming inspects the final Content-Type exactly once. When the
