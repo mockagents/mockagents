@@ -16,8 +16,8 @@ import (
 //
 // Once a key has been verified once, subsequent requests with the
 // same plaintext inside the TTL skip bcrypt entirely and return the
-// previously-resolved Principal. The cache key is
-// sha256(plaintext)[:32] so the raw plaintext never sits in memory;
+// previously-resolved Principal. The cache key is the full SHA-256
+// digest of the plaintext, so the raw plaintext never sits in memory;
 // this also makes the cache safe to log about without leaking
 // credentials.
 //
@@ -59,7 +59,10 @@ func newAuthCache(ttl time.Duration, maxSize int) *authCache {
 // possibility of plaintext appearing in a heap dump or a log line.
 func (c *authCache) hashKey(plaintext string) string {
 	sum := sha256.Sum256([]byte(plaintext))
-	return hex.EncodeToString(sum[:16]) // 32 hex chars, collision-safe for <2^64 entries
+	// Use the full 256-bit digest (the cache is not memory-bound): collision
+	// is a 2^128 birthday bound, so cross-key auth confusion is infeasible
+	// (F-AC-001/002 — the previous 128-bit truncation didn't match this doc).
+	return hex.EncodeToString(sum[:])
 }
 
 // Get returns the cached Principal for a plaintext key when there is
@@ -84,27 +87,41 @@ func (c *authCache) Get(plaintext string) *Principal {
 	return &p
 }
 
-// Set records a successful resolution so subsequent requests with
-// the same plaintext skip bcrypt. When the cache is at capacity a
-// random entry is evicted — Go's map range ordering is randomized,
-// which gives us O(1) probabilistic eviction without the overhead of
-// a linked list. The hot keys will re-populate on their next Get.
+// Set records a successful resolution so subsequent requests with the same
+// plaintext skip bcrypt. Eviction (only when inserting a NEW key at capacity)
+// prefers an already-expired entry over a random live one, so a hot key isn't
+// evicted while dead entries linger (F-AC-003); overwriting an existing key
+// never evicts (F-AC-004).
 func (c *authCache) Set(plaintext string, principal *Principal) {
-	if c == nil || principal == nil {
+	if c == nil || principal == nil || plaintext == "" {
 		return
 	}
 	k := c.hashKey(plaintext)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.entries) >= c.maxSize {
-		for evict := range c.entries {
-			delete(c.entries, evict)
-			break
-		}
+	if _, exists := c.entries[k]; !exists && len(c.entries) >= c.maxSize {
+		c.evictOneLocked()
 	}
 	c.entries[k] = authCacheEntry{
 		principal: *principal,
 		expiry:    time.Now().Add(c.ttl),
+	}
+}
+
+// evictOneLocked removes a single entry, preferring an expired one. The caller
+// must hold c.mu. Falls back to a (randomized) map-order entry when none are
+// expired.
+func (c *authCache) evictOneLocked() {
+	now := time.Now()
+	for key, e := range c.entries {
+		if now.After(e.expiry) {
+			delete(c.entries, key)
+			return
+		}
+	}
+	for key := range c.entries { // none expired — drop a random one
+		delete(c.entries, key)
+		return
 	}
 }
 
