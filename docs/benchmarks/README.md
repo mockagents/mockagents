@@ -3,6 +3,11 @@
 This directory is the published home for the MockAgents hot-path
 benchmark numbers referenced by **US-12.2** in `product-backlog.md`.
 
+> **Optimizing?** See **`docs/PERFORMANCE.md`** — the performance handoff
+> guide: the prioritized optimization backlog (grounded in `file:line`), the
+> "already optimized — don't redo" list, and the scaling ceilings. This README
+> is *how to measure*; that doc is *what to change*.
+
 ## How to refresh
 
 ```bash
