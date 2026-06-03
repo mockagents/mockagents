@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -110,6 +111,68 @@ func TestAgentRegistry_GetByModelForTenant_DeterministicGlobalTieBreak(t *testin
 		if got == nil || got.Metadata.Name != "g-alpha" {
 			t.Fatalf("iter %d: global tie-break not deterministic: got %v, want g-alpha", i, got)
 		}
+	}
+}
+
+// TestAgentRegistry_GetByModelForTenant_IndexMaintained covers the PERF-01
+// byModelTenant index staying correct as agents are removed and re-registered
+// under a different model.
+func TestAgentRegistry_GetByModelForTenant_IndexMaintained(t *testing.T) {
+	r := NewAgentRegistry()
+	r.Register(makeTenantAgent("alpha", "m", ""))
+	r.Register(makeTenantAgent("bravo", "m", ""))
+	if got := r.GetByModelForTenant("m", ""); got == nil || got.Metadata.Name != "alpha" {
+		t.Fatalf("smallest-name winner: got %v, want alpha", got)
+	}
+
+	// Remove the winner → the next-smallest must answer.
+	if err := r.Remove("alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.GetByModelForTenant("m", ""); got == nil || got.Metadata.Name != "bravo" {
+		t.Errorf("after removing alpha: got %v, want bravo", got)
+	}
+
+	// Re-register bravo under a different model → old bucket empties, new fills.
+	r.Register(makeTenantAgent("bravo", "m2", ""))
+	if got := r.GetByModelForTenant("m", ""); got != nil {
+		t.Errorf("model m should be empty after bravo moved, got %v", got)
+	}
+	if got := r.GetByModelForTenant("m2", ""); got == nil || got.Metadata.Name != "bravo" {
+		t.Errorf("model m2: got %v, want bravo", got)
+	}
+}
+
+// TestAgentRegistry_GetByModelForTenant_NoAllocs is the PERF-01 guard: the hot
+// path is an allocation-free index read.
+func TestAgentRegistry_GetByModelForTenant_NoAllocs(t *testing.T) {
+	r := NewAgentRegistry()
+	r.Register(makeTenantAgent("a", "m", ""))
+	r.Register(makeTenantAgent("b", "m", "ten_x"))
+	allocs := testing.AllocsPerRun(100, func() {
+		_ = r.GetByModelForTenant("m", "ten_x")
+		_ = r.GetByModelForTenant("m", "")
+	})
+	if allocs != 0 {
+		t.Errorf("GetByModelForTenant allocated %.1f/op, want 0 (PERF-01)", allocs)
+	}
+}
+
+// BenchmarkGetByModelForTenant_ManyAgents proves the lookup stays flat (O(1))
+// as the registry grows — the whole point of PERF-01.
+func BenchmarkGetByModelForTenant_ManyAgents(b *testing.B) {
+	r := NewAgentRegistry()
+	for i := 0; i < 1000; i++ {
+		owner := ""
+		if i%2 == 0 {
+			owner = "ten_x"
+		}
+		r.Register(makeTenantAgent(fmt.Sprintf("agent-%04d", i), "shared", owner))
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = r.GetByModelForTenant("shared", "ten_x")
 	}
 }
 

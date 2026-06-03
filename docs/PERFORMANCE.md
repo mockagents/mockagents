@@ -24,12 +24,13 @@ The biggest wins are *per-request work that shouldn't run at all*:
 
 | # | Opportunity | Why it matters | Effort |
 |---|-------------|----------------|--------|
-| **PERF-01** | Registry does an **O(n) scan on every model request** (`GetByModelForTenant`), bypassing its own index | On *every* `/v1/chat/completions` & `/v1/messages` | M |
+| ~~**PERF-01**~~ ✅ | Registry does an **O(n) scan on every model request** (`GetByModelForTenant`), bypassing its own index — *done 2026-06-03 (0 allocs, flat at N=1000)* | On *every* `/v1/chat/completions` & `/v1/messages` | M |
 | ~~**PERF-02**~~ ✅ | OTel HTTP middleware **allocates per request even when tracing is disabled** (the default) — *done 2026-06-03* | On *every* HTTP request | S |
 | ~~**PERF-03**~~ ✅ | Auth `Resolve` writes `last_used` (an **fsync, serialized behind one connection**) on every cache miss — *done 2026-06-03* | Every first/re-warm auth | S |
-| **PERF-04** | Response JSON encoding is **not pooled** (the request *decode* side is) | Every response | M |
+| ~~**PERF-04**~~ ✅ | Response JSON encoding is **not pooled** (the request *decode* side is) — *done 2026-06-03 (modest: ~28% faster encode, allocs unchanged)* | Every response | M |
 
-Do these four first. Everything below P1 is incremental alloc-shaving on an
+**All four P1 items are done (2026-06-03)** — PERF-01/02/03 are clear wins,
+PERF-04 a modest one. Everything below P1 is incremental alloc-shaving on an
 already-healthy path — measure before investing.
 
 ---
@@ -80,10 +81,10 @@ break the fix, confirm the new bench/test regresses, restore).
 
 | ID | Eff | Site | Evidence → Change |
 |----|-----|------|-------------------|
-| **PERF-01** | M | `engine/agent_registry.go` `GetByModelForTenant` | Adapters send a *model*, not an agent name, so this runs on every LLM request and does a full `for _, def := range r.agents` RLock scan — the O(1) `byModel` index is never reached from the hot path. **Caveat (verified):** you can't just reuse `byModel`; this method has tenant-visibility (owner vs global) **and** a deterministic lexicographic tie-break (F-AR-002). **Change:** add a `byModelTenant` index — `map[modelKey] → {ownerSorted, globalSorted}` (or a small sorted slice per model) maintained in `Register`/`Remove`, so resolve is a map lookup + visibility pick, preserving the tie-break. **Guard:** a new `BenchmarkResolveByModel_ManyAgents` (N=1000 agents) must stay flat as N grows; keep the existing determinism tests. |
+| **PERF-01** ✅ | M | `engine/agent_registry.go` `GetByModelForTenant` | Adapters send a *model*, not an agent name, so this runs on every LLM request and does a full `for _, def := range r.agents` RLock scan — the O(1) `byModel` index is never reached from the hot path. **Caveat (verified):** you can't just reuse `byModel`; this method has tenant-visibility (owner vs global) **and** a deterministic lexicographic tie-break (F-AR-002). **Change:** add a `byModelTenant` index — `map[modelKey] → {ownerSorted, globalSorted}` (or a small sorted slice per model) maintained in `Register`/`Remove`, so resolve is a map lookup + visibility pick, preserving the tie-break. **Guard:** a new `BenchmarkResolveByModel_ManyAgents` (N=1000 agents) must stay flat as N grows; keep the existing determinism tests. **✅ DONE 2026-06-03:** added `byModelTenant map[model]map[owner]*agent` holding the lexicographically-smallest agent per (model, owner); the lookup is two map reads (`owners[tenantID] ?? owners[""]`), exactly preserving the visibility + tie-break. Maintained by rebuilding only the affected model bucket on Register/Remove (rare). Measured: **0 allocs, flat 29 ns/op at N=1000** (was an O(n) scan). Guards `BenchmarkGetByModelForTenant_ManyAgents`, `…_NoAllocs`, `…_IndexMaintained` (Remove/model-change; neuter-verified) + the existing determinism tests. |
 | **PERF-02** ✅ | S | `observability/tracing.go:114-128`, wired at `server/server.go` (`observability.HTTPMiddleware(handler)`) | `HTTPMiddleware` allocates a `statusRecorder`, builds 2 `attribute.String` + a variadic slice for `StartSpan`, copies the request (`r.WithContext`), and calls `SetAttributes` — **on every request, even under the default NoOp tracer**. The engine path already gates this via `observability.IsEnabled()` (`engine.go:82`); the HTTP wrapper doesn't. **Change:** in `server.New`, only add the wrapper when `observability.IsEnabled()` (or early-return inside it). Removes one ResponseWriter wrapper + ~3 allocs + a context copy per request when tracing is off (the default). **Guard:** an HTTP-level bench asserting 0 tracing allocs when disabled. **✅ DONE 2026-06-03:** `HTTPMiddleware` returns `next` unwrapped when `tracingEnabled` is false — and since `NewTracerProvider` is never wired in the binary, that's *every* request today. Guard `TestHTTPMiddleware_SkippedWhenDisabled` (identity check, neuter-verified); the span tests now flip the flag via `newTestTracerProvider`. |
 | **PERF-03** ✅ | S | `tenancy/store.go` `Resolve` (`last_used` UPDATE) + DSN at `store.go:126` | On every authenticated **cache miss** that resolves, `Resolve` issues `UPDATE api_keys SET last_used = ?` — a separate write, and the tenancy DSN omits `synchronous(normal)` so it's a **full fsync**, serialized behind `MaxOpenConns=1`. **Change (two parts):** (a) coarsen the write — skip it if `last_used` is within the cache TTL (extend the existing on-hit suppression to misses, or batch via a background flusher); (b) add `_pragma=synchronous(normal)` to the tenancy DSN to match the log/audit stores (API-key metadata isn't a FULL-durability system of record). **Guard:** a test asserting a second auth within the window issues no `last_used` write. **✅ DONE 2026-06-03:** (a) `Resolve` now reads `last_used` in the existing prefix SELECT and bumps it only when stale by ≥ `lastUsedResolution` (1 min) via `shouldBumpLastUsed` — no new state/locks, and it also covers the cache-disabled mode (every request a miss) and eviction/invalidation bursts; (b) added `_pragma=synchronous(normal)` to the tenancy DSN (verified it reads back NORMAL). Guards `TestShouldBumpLastUsed` (table) + `TestResolve_CoarsensLastUsedWrite` (integration, cache-disabled; neuter-verified). |
-| **PERF-04** | M | `server/handlers.go` `writeJSON`, `adapter/openai.go:314` / `anthropic.go:160` | Both `writeJSON`s do `json.NewEncoder(w).Encode(v)` — a fresh encoder + scratch per response, reflect-encoding interleaved with socket writes, **no pooling** — while the inbound path *is* pooled (`adapter/decode.go`, cited at −39 % B/op in CLAUDE.md). **Change:** marshal into a pooled `*bytes.Buffer` (optionally a pooled `*json.Encoder`), set `Content-Length`, single `w.Write`. Mirror `decodeBufPool` exactly, including its oversize-buffer guard. **Guard:** `BenchmarkWriteJSON` shows reduced B/op; the existing conformance tests cover correctness. |
+| **PERF-04** ✅ | M | `server/handlers.go` `writeJSON`, `adapter/openai.go:314` / `anthropic.go:160` | Both `writeJSON`s do `json.NewEncoder(w).Encode(v)` — a fresh encoder + scratch per response, reflect-encoding interleaved with socket writes, **no pooling** — while the inbound path *is* pooled (`adapter/decode.go`, cited at −39 % B/op in CLAUDE.md). **Change:** marshal into a pooled `*bytes.Buffer` (optionally a pooled `*json.Encoder`), set `Content-Length`, single `w.Write`. Mirror `decodeBufPool` exactly, including its oversize-buffer guard. **Guard:** `BenchmarkWriteJSON` shows reduced B/op; the existing conformance tests cover correctness. **✅ DONE 2026-06-03 — smaller win than predicted (honest result):** pooled a `respEncoder` (buffer + bound `json.Encoder`) in both packages; byte-for-byte identical output (newline preserved; conformance + `TestWriteJSON_MatchesEncoderOutput` green). **Measured ~28 % faster encode (234→169 ns/op) but UNCHANGED B/op (64) / allocs (2)** — the predicted alloc win doesn't materialize because `encoding/json` already pools its internal encode scratch and the per-call encoder is stack-allocated by escape analysis. Kept because it's a real, zero-risk CPU win; the "−39 % B/op" framing applied to the *decode* side, not this one. |
 
 ### P2 — Medium (hot-path allocations & contention)
 
@@ -209,12 +210,13 @@ pprof workflow live in `docs/benchmarks/README.md`. Key rules:
    no behavior change; both neuter-verified).
 2. ~~**PERF-03** (S, stop the auth path self-inflicting `last_used` fsyncs)~~ —
    **✅ done 2026-06-03** (coarsened bump + `synchronous(normal)`; neuter-verified).
-3. **PERF-01** (M, model-keyed tenant index) — the headline engine win; needs the
-   determinism-preserving index, so it's the one to design carefully.
-4. **PERF-04 / PERF-09** (response JSON pool; drop capture body buffering) —
-   they pair: PERF-09 removes the reason the body is buffered, PERF-04 makes the
-   write cheap.
-5. The rest of P2, then P3 as opportunistic alloc-shaving, each behind a bench.
+3. ~~**PERF-01** (M, model-keyed tenant index)~~ — **✅ done 2026-06-03**
+   (byModelTenant index; 0 allocs, flat at N=1000; neuter-verified).
+4. ~~**PERF-04**~~ — **✅ done** (pooled response encoder; modest ~28% encode
+   speedup, allocs unchanged). **PERF-09** (drop capture body buffering) is
+   still open and pairs with it to make the *logged* response path cheaper.
+5. The rest of P2 (next up: **PERF-09**, then **PERF-05/06/07/11**), then P3 as
+   opportunistic alloc-shaving, each behind a bench.
 
 Re-baseline (`make bench-report` off-governor) after each P1 item so the next
 diff is honest.

@@ -16,13 +16,47 @@ type AgentRegistry struct {
 	mu      sync.RWMutex
 	agents  map[string]*types.AgentDefinition
 	byModel map[string]*types.AgentDefinition
+	// byModelTenant is the tenant-aware model index that backs the hot path
+	// GetByModelForTenant (PERF-01): model -> owner-tenant -> the
+	// lexicographically-smallest-named agent in that (model, owner) class. It
+	// preserves both the tenant-visibility rule and the deterministic tie-break
+	// (F-AR-002) while turning the per-request lookup from an O(n) agents scan
+	// into two map reads. Maintained by rebuilding only the affected model
+	// bucket on Register/Remove (rare).
+	byModelTenant map[string]map[string]*types.AgentDefinition
 }
 
 // NewAgentRegistry creates an empty agent registry.
 func NewAgentRegistry() *AgentRegistry {
 	return &AgentRegistry{
-		agents:  make(map[string]*types.AgentDefinition),
-		byModel: make(map[string]*types.AgentDefinition),
+		agents:        make(map[string]*types.AgentDefinition),
+		byModel:       make(map[string]*types.AgentDefinition),
+		byModelTenant: make(map[string]map[string]*types.AgentDefinition),
+	}
+}
+
+// rebuildModelBucket recomputes byModelTenant[model] from the agents that
+// declare it: per owner tenant, the lexicographically smallest name wins
+// (F-AR-002). The caller must hold the write lock. Cost is O(agents-with-model),
+// paid only on Register/Remove; the hot-path lookup is then O(1).
+func (r *AgentRegistry) rebuildModelBucket(model string) {
+	if model == "" {
+		return
+	}
+	owners := make(map[string]*types.AgentDefinition)
+	for _, def := range r.agents {
+		if def.Spec.Model != model {
+			continue
+		}
+		owner := def.Metadata.TenantID
+		if cur, ok := owners[owner]; !ok || def.Metadata.Name < cur.Metadata.Name {
+			owners[owner] = def
+		}
+	}
+	if len(owners) == 0 {
+		delete(r.byModelTenant, model)
+	} else {
+		r.byModelTenant[model] = owners
 	}
 }
 
@@ -51,16 +85,26 @@ func (r *AgentRegistry) Register(def *types.AgentDefinition) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if prev, ok := r.agents[def.Metadata.Name]; ok && prev.Spec.Model != "" {
-		// Only clear the index entry if it still points at `prev`
-		// (another agent may have since claimed the same model).
-		if indexed, ok := r.byModel[prev.Spec.Model]; ok && indexed == prev {
-			delete(r.byModel, prev.Spec.Model)
+	var oldModel string
+	if prev, ok := r.agents[def.Metadata.Name]; ok {
+		oldModel = prev.Spec.Model
+		if prev.Spec.Model != "" {
+			// Only clear the index entry if it still points at `prev`
+			// (another agent may have since claimed the same model).
+			if indexed, ok := r.byModel[prev.Spec.Model]; ok && indexed == prev {
+				delete(r.byModel, prev.Spec.Model)
+			}
 		}
 	}
 	r.agents[def.Metadata.Name] = def
 	if def.Spec.Model != "" {
 		r.byModel[def.Spec.Model] = def
+	}
+	// Keep the tenant-aware index in sync (PERF-01): rebuild the bucket for the
+	// new model, and the old model too if this agent moved between models.
+	r.rebuildModelBucket(def.Spec.Model)
+	if oldModel != "" && oldModel != def.Spec.Model {
+		r.rebuildModelBucket(oldModel)
 	}
 }
 
@@ -120,6 +164,9 @@ func (r *AgentRegistry) Remove(name string) error {
 		}
 	}
 	delete(r.agents, name)
+	// Rebuild the tenant-aware bucket after the delete so the removed agent is
+	// no longer considered (PERF-01).
+	r.rebuildModelBucket(def.Spec.Model)
 	return nil
 }
 
@@ -179,45 +226,31 @@ func (r *AgentRegistry) GetForTenant(name, tenantID string) *types.AgentDefiniti
 // tenant-scoped one wins for tenant callers; the global one wins
 // for anonymous callers.
 //
-// This deliberately bypasses the byModel index because a
-// tenant-scoped Register can overwrite the index slot belonging to
-// a global agent — the index reflects "most recently registered for
-// this model", which is fine for the non-tenant fast path
-// (`GetByModel`) but ambiguous once tenancy enters the picture. The
-// scan is O(n) but only runs in tenant-scoped lookups.
+// This is the adapter hot path (every model-based request), so it reads the
+// byModelTenant index in O(1) rather than scanning the agents map (PERF-01).
+// The index can't reuse the plain byModel slot — a tenant-scoped Register can
+// overwrite the slot a global agent holds, and byModel is "most recently
+// registered" rather than tenant-aware — so byModelTenant keeps a separate
+// per-(model, owner) winner.
 //
-// Tie-break (F-AR-002): if several agents in the same visibility
-// class (owner or global) share a model, the lexicographically
-// smallest name wins. Without this the result depended on Go's
-// randomized map-iteration order — a different agent could answer
-// the same lookup across requests. The byModel fast path has no such
-// ambiguity because a model maps to exactly one slot there.
+// Tie-break (F-AR-002): if several agents in the same visibility class (owner
+// or global) share a model, the lexicographically smallest name wins, so the
+// answer is stable across requests rather than depending on map-iteration
+// order. The index preserves this: each bucket stores the smallest-named agent
+// for its (model, owner) class.
 func (r *AgentRegistry) GetByModelForTenant(model, tenantID string) *types.AgentDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	var ownerMatch, fallbackGlobal *types.AgentDefinition
-	for _, def := range r.agents {
-		if def.Spec.Model != model {
-			continue
-		}
-		owner := def.Metadata.TenantID
-		if owner == tenantID {
-			// Caller's own agent (for anonymous callers this is the
-			// global class, since tenantID == "").
-			if ownerMatch == nil || def.Metadata.Name < ownerMatch.Metadata.Name {
-				ownerMatch = def
-			}
-		} else if owner == "" {
-			// Global fallback for a tenant caller.
-			if fallbackGlobal == nil || def.Metadata.Name < fallbackGlobal.Metadata.Name {
-				fallbackGlobal = def
-			}
-		}
+	owners := r.byModelTenant[model]
+	if owners == nil {
+		return nil
 	}
-	if ownerMatch != nil {
+	// Caller's own tenant wins (for anonymous callers tenantID == "" is the
+	// global class); otherwise fall back to the global agent.
+	if ownerMatch := owners[tenantID]; ownerMatch != nil {
 		return ownerMatch
 	}
-	return fallbackGlobal
+	return owners[""]
 }
 
 // ListForTenant returns all agents visible to the given tenant

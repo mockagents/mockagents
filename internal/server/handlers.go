@@ -1,12 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/mockagents/mockagents/internal/audit"
@@ -170,13 +172,43 @@ func (h *Handlers) ReloadAgent(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// respEncoder bundles a pooled bytes.Buffer with a json.Encoder bound to it so
+// writeJSON reuses both across responses instead of allocating a fresh encoder
+// per response and reflect-encoding directly into the socket (PERF-04).
+// json.Encoder.Encode appends a trailing newline, so the wire bytes are
+// unchanged from the previous json.NewEncoder(w).Encode(v).
+type respEncoder struct {
+	buf *bytes.Buffer
+	enc *json.Encoder
+}
+
+var respEncPool = sync.Pool{
+	New: func() any {
+		b := new(bytes.Buffer)
+		return &respEncoder{buf: b, enc: json.NewEncoder(b)}
+	},
+}
+
+// maxPooledRespBufBytes caps the buffer size retained in the pool so a single
+// large response can't turn it into a permanent memory high-water mark.
+const maxPooledRespBufBytes = 1 << 20
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	re := respEncPool.Get().(*respEncoder)
+	re.buf.Reset()
+	defer func() {
+		if re.buf.Cap() <= maxPooledRespBufBytes {
+			respEncPool.Put(re)
+		}
+	}()
+	if err := re.enc.Encode(v); err != nil {
+		// Encoding into the buffer failed before we wrote anything — best-effort
+		// log; we still send the status below so the client isn't left hanging.
+		slog.Error("failed to encode JSON response", "error", err)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		// Already started writing; best effort log.
-		slog.Error("failed to write JSON response", "error", err)
-	}
+	_, _ = w.Write(re.buf.Bytes())
 }
 
 // writeError writes the canonical management-API error envelope:

@@ -311,12 +311,6 @@ func generateID() string {
 	return fmt.Sprintf("%x", b)
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
 func writeError(w http.ResponseWriter, status int, errType, message string) {
 	writeJSON(w, status, map[string]any{
 		"error": map[string]string{
