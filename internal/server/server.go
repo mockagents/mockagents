@@ -45,8 +45,8 @@ type Config struct {
 	// explicit list locks CORS down to those origins (F-MW-001).
 	CORSAllowedOrigins []string
 	AgentsDir          string
-	Version      string
-	LogStore     *storage.SQLiteStore // Optional interaction log store.
+	Version            string
+	LogStore           *storage.SQLiteStore // Optional interaction log store.
 	// TenancyStore enables multi-tenant mode when non-nil. Every
 	// /api/v1/* request then requires a valid API key and the routes
 	// /api/v1/tenants and /api/v1/keys are mounted for admin CRUD.
@@ -156,7 +156,6 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 
 	// Build middleware chain: outermost first.
 	var handler http.Handler = mux
-	handler = ExtractAPIKey(handler)
 	if s.logWorker != nil {
 		handler = InteractionCapture(s.logWorker)(handler)
 	}
@@ -174,7 +173,10 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 	handler = CORS(cfg.CORSAllowedOrigins)(handler)
 	handler = StructuredLogger(logger)(handler)
 	handler = Recovery(logger)(handler)
-	handler = RequestID(handler)
+	// RequestContext merges the former RequestID + ExtractAPIKey middlewares
+	// (PERF-06): it stamps X-Request-Id and extracts the bearer API key in one
+	// pass, so it must stay above StructuredLogger/Recovery (which log the id).
+	handler = RequestContext(handler)
 	handler = observability.HTTPMiddleware(handler)
 
 	s.httpServer = &http.Server{
@@ -280,7 +282,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// well-formed response.
 	if s.config.Pipelines != nil {
 		pipelineH := &PipelineHandlers{Registry: s.config.Pipelines}
-		s.mountManaged(mux, "GET /api/v1/pipelines", http.HandlerFunc(pipelineH.ListPipelines))        // F-PL-001
+		s.mountManaged(mux, "GET /api/v1/pipelines", http.HandlerFunc(pipelineH.ListPipelines))      // F-PL-001
 		s.mountManaged(mux, "GET /api/v1/pipelines/{name}", http.HandlerFunc(pipelineH.GetPipeline)) // F-PL-001
 	}
 
