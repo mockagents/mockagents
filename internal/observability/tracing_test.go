@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"testing"
 
 	"go.opentelemetry.io/otel"
@@ -13,6 +14,20 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
+
+// TestHTTPMiddleware_SkippedWhenDisabled is the PERF-02 guard: with no real
+// exporter configured (the default), HTTPMiddleware must return the handler
+// UNWRAPPED so there is zero per-request tracing overhead.
+func TestHTTPMiddleware_SkippedWhenDisabled(t *testing.T) {
+	if tracingEnabled {
+		t.Skip("tracing is globally enabled in this run")
+	}
+	h := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	got := HTTPMiddleware(h)
+	if reflect.ValueOf(got).Pointer() != reflect.ValueOf(h).Pointer() {
+		t.Error("HTTPMiddleware must return next unwrapped when tracing is disabled (PERF-02)")
+	}
+}
 
 // newTestTracerProvider installs an in-memory span recorder as the
 // global tracer provider and returns it so individual tests can assert
@@ -23,7 +38,15 @@ func newTestTracerProvider(t *testing.T) *tracetest.SpanRecorder {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	prev := otel.GetTracerProvider()
 	otel.SetTracerProvider(tp)
-	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+	// A real provider is installed for this test, so flip the package flag the
+	// same way NewTracerProvider would — otherwise HTTPMiddleware (correctly)
+	// skips wrapping and no spans are emitted (PERF-02).
+	prevEnabled := tracingEnabled
+	tracingEnabled = true
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prev)
+		tracingEnabled = prevEnabled
+	})
 	return rec
 }
 

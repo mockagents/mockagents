@@ -169,3 +169,19 @@ func TestScenarioMatcher_BadRegexIsLogged(t *testing.T) {
 	assert.Nil(t, m.MatchWithCaptures(scenarios, "anything", 1))
 	assert.Equal(t, sizeAfterFirst, buf.Len(), "bad pattern should log once, not per request")
 }
+
+// TestScenarioMatcher_LowerContainsMemoized is the PERF-08 guard: a static
+// content_contains literal is lower-cased once, so repeat matches don't
+// re-allocate a lowered copy per request.
+func TestScenarioMatcher_LowerContainsMemoized(t *testing.T) {
+	m := NewScenarioMatcher()
+	if got := m.lowerContains("Hello World"); got != "hello world" {
+		t.Fatalf("lowerContains = %q, want %q", got, "hello world")
+	}
+	// After the first call has cached the literal, subsequent lookups are an
+	// allocation-free map read (no per-request strings.ToLower).
+	allocs := testing.AllocsPerRun(100, func() { _ = m.lowerContains("Hello World") })
+	if allocs != 0 {
+		t.Errorf("lowerContains allocated %.1f/op after warmup, want 0 (PERF-08)", allocs)
+	}
+}
