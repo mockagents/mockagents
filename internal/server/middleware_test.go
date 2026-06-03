@@ -175,6 +175,14 @@ func BenchmarkRequestContext(b *testing.B) {
 	}
 }
 
+// BenchmarkGenerateRequestID tracks the PERF-07 id-generation cost.
+func BenchmarkGenerateRequestID(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = generateRequestID()
+	}
+}
+
 func TestStructuredLogger_LogsRequest(t *testing.T) {
 	handler := StructuredLogger(testLogger())(dummyHandler())
 	req := httptest.NewRequest("GET", "/test-path", nil)

@@ -2,11 +2,12 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"runtime/debug"
+	"strconv"
 	"sync"
 	"time"
 
@@ -248,10 +249,11 @@ func (w *statusWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
+// generateRequestID returns a unique, non-cryptographic correlation id. It uses
+// math/rand/v2 (auto-seeded, lock-free, goroutine-safe) rather than crypto/rand:
+// a request id needs uniqueness, not unpredictability (same rationale as the
+// engine's fallbackToolCallID), so the old crypto/rand syscall + fmt.Sprintf
+// were pure hot-path overhead (PERF-07).
 func generateRequestID() string {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("req-%d", time.Now().UnixNano())
-	}
-	return fmt.Sprintf("req-%x", b)
+	return "req-" + strconv.FormatUint(rand.Uint64(), 16)
 }
