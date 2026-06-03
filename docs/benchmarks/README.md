@@ -21,6 +21,28 @@ output, and writes two artifacts into this directory:
 The GOMAXPROCS suffix is stripped from benchmark names before parsing
 so results from a laptop and a CI runner stay comparable.
 
+> **⚠️ The committed `latest.{json,md}` is STALE — refresh it off-governor.**
+>
+> The checked-in snapshot predates the `internal/engine` review slice
+> (F-SM-007/F-EN-006 et al.): it is missing two benchmarks that arc added
+> (`ProcessRequest_MultipleToolCalls`, `ScenarioMatcher_MixedCaseManyScenarios`)
+> and a handful of its `allocs/op`/`B/op` figures are out of date (some
+> improved, e.g. `ScenarioMatcher_Regex` 6→5 allocs; a couple drifted +1).
+>
+> It was **not** refreshed on the primary dev machine on purpose: that box
+> runs a power governor (`LBGovernor`) that throttles *sustained* bench runs
+> ~2.5× uniformly across all benches, so a `make bench-report` there writes
+> **unreliable `ns/op`** and would corrupt the baseline. Refresh the committed
+> report only on **non-throttled hardware**, where `ns/op` is trustworthy.
+> For a quick sanity check anywhere, `make bench` prints results **without**
+> writing the files; `allocs/op` and `B/op` are machine-independent and safe
+> to compare even under the governor.
+>
+> Note for reviewers: the 2026-06 multi-pass reviews of `internal/server`,
+> `internal/tenancy`, and `internal/audit` touched **no** `internal/engine`
+> or `internal/adapter` code, so they cannot affect these numbers — verified
+> via `make bench` (allocs/op + B/op unchanged from the current engine code).
+
 ## Scope
 
 The benchmarked hot paths are the four surfaces a production request
