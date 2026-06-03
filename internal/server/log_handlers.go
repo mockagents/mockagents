@@ -318,7 +318,7 @@ func InteractionCapture(worker *LogWorker) func(http.Handler) http.Handler {
 			// so SessionID carries the per-request id here; the /api/v1/logs
 			// `session_id` filter therefore doubles as a request-id filter for
 			// these rows (F-LH-007).
-			if reqID, ok := r.Context().Value(RequestIDKey).(string); ok {
+			if reqID := requestIDFromContext(r.Context()); reqID != "" {
 				entry.SessionID = reqID
 			}
 			// Submit is non-blocking and drops on a full queue. The drop is

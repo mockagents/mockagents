@@ -16,22 +16,66 @@ import (
 
 type contextKey string
 
-const (
-	// RequestIDKey is the context key for the request ID.
-	RequestIDKey contextKey = "request_id"
-	// APIKeyKey is the context key for the extracted API key.
-	APIKeyKey contextKey = "api_key"
-)
+// reqScopeKey is the single context entry under which RequestContext stores the
+// per-request id and (optional) bearer API key. Bundling both behind one
+// *requestScope means one context node + one shallow Request copy per request
+// instead of one of each per value (PERF-06).
+const reqScopeKey contextKey = "req_scope"
 
-// RequestID injects a unique X-Request-Id header into every request/response.
-func RequestID(next http.Handler) http.Handler {
+// requestScope carries the per-request values the middleware chain derives once
+// at the top of the chain. A pointer is stored in context so downstream reads
+// never re-copy it, and so the struct boxes into the interface without the
+// extra allocation a string value would incur.
+type requestScope struct {
+	requestID string
+	apiKey    string
+}
+
+func requestScopeFrom(ctx context.Context) *requestScope {
+	sc, _ := ctx.Value(reqScopeKey).(*requestScope)
+	return sc
+}
+
+// requestIDFromContext returns the id stamped by RequestContext, or "" when no
+// RequestContext middleware ran (e.g. a bare handler under test).
+func requestIDFromContext(ctx context.Context) string {
+	if sc := requestScopeFrom(ctx); sc != nil {
+		return sc.requestID
+	}
+	return ""
+}
+
+// apiKeyFromContext returns the bearer token RequestContext parsed from the
+// Authorization header, or "" when absent.
+func apiKeyFromContext(ctx context.Context) string {
+	if sc := requestScopeFrom(ctx); sc != nil {
+		return sc.apiKey
+	}
+	return ""
+}
+
+// RequestContext derives the per-request id and the optional bearer API key in
+// a single pass and stores both under one context entry (reqScopeKey). It
+// replaces the former separate RequestID + ExtractAPIKey middlewares: the
+// request is shallow-copied once instead of twice and a single context node is
+// allocated regardless of whether an Authorization header is present (PERF-06).
+//
+// It runs at the top of the chain so the generated id lands on the response
+// (X-Request-Id) and is visible to StructuredLogger/Recovery, which log it.
+func RequestContext(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-Id")
 		if id == "" {
 			id = generateRequestID()
 		}
 		w.Header().Set("X-Request-Id", id)
-		ctx := context.WithValue(r.Context(), RequestIDKey, id)
+		sc := &requestScope{requestID: id}
+		// Reuse the tenancy parser so the two bearer-extraction paths can't drift
+		// in their scheme handling (F-MW-002).
+		if token, ok := tenancy.ParseBearerToken(r.Header.Get("Authorization")); ok {
+			sc.apiKey = token
+		}
+		ctx := context.WithValue(r.Context(), reqScopeKey, sc)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -46,7 +90,7 @@ func StructuredLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 
 			next.ServeHTTP(sw, r)
 
-			reqID, _ := r.Context().Value(RequestIDKey).(string)
+			reqID := requestIDFromContext(r.Context())
 			logger.Info("request",
 				"method", r.Method,
 				"path", r.URL.Path,
@@ -106,7 +150,7 @@ func Recovery(logger *slog.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if rec := recover(); rec != nil {
-					reqID, _ := r.Context().Value(RequestIDKey).(string)
+					reqID := requestIDFromContext(r.Context())
 					logger.Error("panic recovered",
 						"error", fmt.Sprintf("%v", rec),
 						"request_id", reqID,
@@ -130,19 +174,6 @@ func MaxBodySize(maxBytes int64) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-// ExtractAPIKey extracts the Bearer token from the Authorization header
-// and stores it in context.
-func ExtractAPIKey(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Reuse the tenancy parser so the two extraction paths can't drift in
-		// their scheme handling (F-MW-002).
-		if token, ok := tenancy.ParseBearerToken(r.Header.Get("Authorization")); ok {
-			r = r.WithContext(context.WithValue(r.Context(), APIKeyKey, token))
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // WithPrincipalTenantScope copies the authenticated principal's
