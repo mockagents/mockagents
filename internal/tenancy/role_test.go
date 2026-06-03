@@ -32,9 +32,19 @@ func TestRoleOrderingAndValidity(t *testing.T) {
 		}
 	}
 
-	for _, r := range []Role{RoleViewer, RoleEditor, RoleAdmin, RolePlatform} {
+	// AllRoles is the canonical set: every entry must be valid and the set
+	// must be exactly the four known roles in ascending order.
+	want := []Role{RoleViewer, RoleEditor, RoleAdmin, RolePlatform}
+	got := AllRoles()
+	if len(got) != len(want) {
+		t.Fatalf("AllRoles() = %v, want %v", got, want)
+	}
+	for i, r := range got {
+		if r != want[i] {
+			t.Errorf("AllRoles()[%d] = %q, want %q", i, r, want[i])
+		}
 		if !r.IsValid() {
-			t.Errorf("%q should be valid", r)
+			t.Errorf("%q from AllRoles() should be valid", r)
 		}
 	}
 	if Role("bogus").IsValid() {

@@ -113,6 +113,11 @@ func AuthMiddleware(store Store, skip func(*http.Request) bool) func(http.Handle
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if skip != nil && skip(r) {
+				// Best-effort: a valid key still attaches the principal so a
+				// skip route can self-check it, but any Resolve error (invalid
+				// key OR a store outage) is swallowed and the request proceeds
+				// anonymously — skip routes (health probes, the LLM endpoints)
+				// must never fail closed (F-MW-003).
 				if key := ExtractAPIKey(r); key != "" {
 					if principal, err := store.Resolve(r.Context(), key); err == nil {
 						r = r.WithContext(WithPrincipal(r.Context(), principal))
@@ -129,7 +134,11 @@ func AuthMiddleware(store Store, skip func(*http.Request) bool) func(http.Handle
 			}
 			principal, err := store.Resolve(r.Context(), key)
 			if err != nil {
-				if errors.Is(err, ErrInvalidKey) {
+				// A missing/wrong key is a 401; anything else (a store outage)
+				// is a 500 — fail closed. ErrNotFound is matched too for label
+				// accuracy even though Resolve currently only returns
+				// ErrInvalidKey (F-MW-002).
+				if errors.Is(err, ErrInvalidKey) || errors.Is(err, ErrNotFound) {
 					fireDenial(r, http.StatusUnauthorized, "invalid api key")
 					writeAuthError(w, http.StatusUnauthorized, "invalid api key")
 					return
@@ -147,6 +156,11 @@ func AuthMiddleware(store Store, skip func(*http.Request) bool) func(http.Handle
 // RequireRole wraps a handler so that only principals at or above the
 // given role can execute it. 401 if the request is unauthenticated,
 // 403 if the role is insufficient.
+//
+// It checks privilege LEVEL only — it does NOT verify that the caller owns the
+// resource the request targets. Tenant-ownership scoping (e.g. that a path's
+// {id} belongs to the caller's tenant) is the handler's responsibility
+// (F-MW-007).
 func RequireRole(required Role, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := PrincipalFrom(r.Context())

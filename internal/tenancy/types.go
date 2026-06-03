@@ -65,6 +65,11 @@ func (r Role) IsValid() bool { return r.rank() > 0 }
 // cross-tenant privilege (X-TN-001).
 func (r Role) IsAssignableViaAPI() bool { return r.IsValid() && r != RolePlatform }
 
+// AllRoles returns the canonical role set in ascending privilege order. It is
+// the single source of truth for "what are the valid roles" so callers don't
+// re-derive the set ad hoc (F-TY-007).
+func AllRoles() []Role { return []Role{RoleViewer, RoleEditor, RoleAdmin, RolePlatform} }
+
 // Tenant is the top-level isolation boundary. A tenant owns API keys and
 // (in future slices) agents, pipelines, and interaction logs.
 type Tenant struct {
@@ -83,7 +88,11 @@ type APIKey struct {
 	Prefix    string    `json:"prefix"`
 	Role      Role      `json:"role"`
 	CreatedAt time.Time `json:"created_at"`
-	LastUsed  time.Time `json:"last_used,omitempty"`
+	// LastUsed is a pointer so a never-used key omits the field entirely;
+	// `omitempty` is a no-op for a time.Time value (a struct is never the
+	// JSON empty value), which would otherwise emit "0001-01-01T00:00:00Z"
+	// (F-TY-001).
+	LastUsed *time.Time `json:"last_used,omitempty"`
 }
 
 // NewAPIKeyResult is what POST /api/v1/keys returns on success. The
@@ -115,11 +124,13 @@ func (r NewAPIKeyResult) String() string {
 
 // Principal is the authenticated caller derived from a valid API key.
 // Attached to the request context by the auth middleware so downstream
-// handlers can make RBAC decisions without re-hitting the store.
+// handlers can make RBAC decisions without re-hitting the store. It is
+// context-only and never serialized; the `json:"-"` tags make that explicit
+// so an accidental marshal can't expose the field names (F-TY-006).
 type Principal struct {
-	TenantID string
-	KeyID    string
-	Role     Role
+	TenantID string `json:"-"`
+	KeyID    string `json:"-"`
+	Role     Role   `json:"-"`
 }
 
 // ErrNotFound is returned by Store methods when a lookup misses.

@@ -15,6 +15,13 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
+// bcryptCost is the cost factor for every API-key hash in this package, named
+// so the choice is reviewable in one place rather than repeated as a magic
+// value (F-ST-002). DefaultCost (10) is appropriate: the key secret is 192
+// bits of entropy, so bcrypt cost is not the weak link, and the auth hot path
+// is latency-sensitive.
+const bcryptCost = bcrypt.DefaultCost
+
 // isUniqueViolation reports whether err is a SQLite UNIQUE/PRIMARY KEY
 // constraint failure, so callers can return ErrConflict (→ 409) instead of a
 // generic internal error. It type-matches the modernc driver's error rather
@@ -58,21 +65,16 @@ type Store interface {
 	// returns ErrNotFound. Self-service callers pass their own
 	// Principal.TenantID + Principal.KeyID.
 	RotateAPIKey(ctx context.Context, tenantID, id string) (result *NewAPIKeyResult, oldPrefix string, err error)
-	// BulkRotateTenantKeys atomically regenerates every key in a
-	// tenant inside a single database transaction. Returns one
-	// NewAPIKeyResult per key plus a parallel slice of old prefixes
-	// so audit logs can correlate each rotation with the specific
-	// secret that was burned. A tenant with zero keys is a no-op
-	// that returns empty slices (no error). On any per-key failure
-	// the transaction is rolled back and NONE of the keys are
-	// rotated — this is the whole point of a bulk operation: it
-	// runs all-or-nothing so operators responding to a suspected
-	// compromise don't end up with a mix of rotated and
-	// unrotated credentials.
-	// BulkRotateTenantKeys atomically regenerates every key in a
-	// tenant inside a single database transaction. Optional
-	// excludeKeyIDs lets the caller preserve specific keys (e.g.
-	// the caller's own credential when invoked with ?except=self).
+	// BulkRotateTenantKeys atomically regenerates every key in a tenant
+	// inside a single database transaction. Returns one NewAPIKeyResult per
+	// key plus a parallel slice of old prefixes so audit logs can correlate
+	// each rotation with the specific secret that was burned. A tenant with
+	// zero keys is a no-op that returns empty slices (no error). On any
+	// per-key failure the transaction is rolled back and NONE of the keys are
+	// rotated — the whole point of a bulk operation: all-or-nothing, so an
+	// operator responding to a suspected compromise never ends up with a mix
+	// of rotated and unrotated credentials. Optional excludeKeyIDs preserve
+	// specific keys (e.g. the caller's own credential via ?except=self).
 	BulkRotateTenantKeys(ctx context.Context, tenantID string, excludeKeyIDs ...string) (results []*NewAPIKeyResult, oldPrefixes []string, err error)
 	// UpdateAPIKeyRole atomically promotes or demotes a key. Returns
 	// the previous role alongside the new one so callers (and the
@@ -126,6 +128,12 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open tenancy db %s: %w", dbPath, err)
 	}
+	// Single connection: serializes all access (so SELECT-then-UPDATE pairs
+	// like UpdateAPIKeyRole are effectively atomic) AND guarantees the
+	// foreign_keys(on) DSN pragma is active on the one connection that ever
+	// runs DeleteTenant's ON DELETE CASCADE. Raising this without setting the
+	// pragma via a connector would silently drop FK enforcement on some
+	// connections under modernc/sqlite (F-ST-004).
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(sqliteSchema); err != nil {
 		db.Close()
@@ -190,12 +198,20 @@ func (s *SQLiteStore) GetTenant(ctx context.Context, id string) (*Tenant, error)
 		}
 		return nil, err
 	}
+	// Timestamp columns are always written by this package in RFC3339, so a
+	// parse failure means DB corruption. We tolerate it as the zero time
+	// rather than failing the read: these are display-only fields (created_at,
+	// last_used), and surfacing them as the zero time is more useful than
+	// erroring out the whole lookup. Same policy at the other parse sites
+	// (F-ST-005).
 	t.CreatedAt, _ = time.Parse(time.RFC3339, created)
 	return &t, nil
 }
 
-// GetTenantByName is a convenience for bootstrap where we only know the
-// human-readable name.
+// GetTenantByName is a concrete-only bootstrap helper (cmd/mockagents calls it
+// on *SQLiteStore, not through the Store interface) for the path where we only
+// know the human-readable name. It is deliberately NOT on the Store interface
+// (X-TN-003/F-ST-008); a future Postgres impl need not provide it.
 func (s *SQLiteStore) GetTenantByName(ctx context.Context, name string) (*Tenant, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, name, created_at FROM tenants WHERE name = ?`, name,
@@ -258,6 +274,10 @@ func (s *SQLiteStore) CreateAPIKey(ctx context.Context, tenantID, name string, r
 	if !role.IsValid() {
 		return nil, fmt.Errorf("invalid role %q", role)
 	}
+	// Pre-check the tenant for a clean ErrNotFound. This duplicates the
+	// api_keys → tenants FK (which would also reject an unknown tenant), but
+	// only when foreign_keys(on) is active — see the MaxOpenConns note in
+	// NewSQLiteStore (F-ST-012).
 	if _, err := s.GetTenant(ctx, tenantID); err != nil {
 		return nil, fmt.Errorf("tenant %s: %w", tenantID, err)
 	}
@@ -265,7 +285,7 @@ func (s *SQLiteStore) CreateAPIKey(ctx context.Context, tenantID, name string, r
 	if err != nil {
 		return nil, err
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(plaintext), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(plaintext), bcryptCost)
 	if err != nil {
 		return nil, fmt.Errorf("bcrypt hash: %w", err)
 	}
@@ -314,7 +334,9 @@ func (s *SQLiteStore) ListAPIKeys(ctx context.Context, tenantID string) ([]*APIK
 		k.Role = Role(role)
 		k.CreatedAt, _ = time.Parse(time.RFC3339, created)
 		if lastUsed != "" {
-			k.LastUsed, _ = time.Parse(time.RFC3339, lastUsed)
+			if t, err := time.Parse(time.RFC3339, lastUsed); err == nil {
+				k.LastUsed = &t
+			}
 		}
 		out = append(out, &k)
 	}
@@ -331,6 +353,9 @@ func (s *SQLiteStore) UpdateAPIKeyRole(ctx context.Context, tenantID, id string,
 		return "", "", fmt.Errorf("invalid role %q", role)
 	}
 	var prev string
+	// The SELECT-then-UPDATE below is a non-atomic read/modify on its own, but
+	// MaxOpenConns(1) serializes all store access, so no other statement can
+	// interleave between them and `prev` is accurate (F-ST-014).
 	// Scope the lookup to tenantID (X-SEC-001): a key in another tenant
 	// must look like it doesn't exist, not get mutated.
 	err := s.db.QueryRowContext(ctx, `SELECT role FROM api_keys WHERE id = ? AND tenant_id = ?`, id, tenantID).Scan(&prev)
@@ -392,7 +417,7 @@ func (s *SQLiteStore) RotateAPIKey(ctx context.Context, callerTenantID, id strin
 	if err != nil {
 		return nil, "", err
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(plaintext), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(plaintext), bcryptCost)
 	if err != nil {
 		return nil, "", fmt.Errorf("bcrypt hash: %w", err)
 	}
@@ -437,9 +462,12 @@ func (s *SQLiteStore) RotateAPIKey(ctx context.Context, callerTenantID, id strin
 // ORDER BY created_at ASC so two calls on the same tenant produce
 // the same ordering, which helps audit-log correlation.
 func (s *SQLiteStore) BulkRotateTenantKeys(ctx context.Context, tenantID string, excludeKeyIDs ...string) ([]*NewAPIKeyResult, []string, error) {
-	// Fast-path existence check on the tenant itself so callers
-	// get a clean ErrNotFound instead of an empty-result on a
-	// typo.
+	// Fast-path existence check on the tenant itself so callers get a clean
+	// ErrNotFound instead of an empty-result on a typo. This runs before the
+	// transaction; in the (tiny, single-conn-serialized) window where the
+	// tenant is deleted between here and the SELECT, the in-tx query simply
+	// finds zero keys and returns an empty success — harmless, since the
+	// tenant and its keys are already gone (F-ST-013).
 	if _, err := s.GetTenant(ctx, tenantID); err != nil {
 		return nil, nil, err
 	}
@@ -514,7 +542,7 @@ func (s *SQLiteStore) BulkRotateTenantKeys(ctx context.Context, tenantID string,
 		if genErr != nil {
 			return nil, nil, genErr
 		}
-		hash, hashErr := bcrypt.GenerateFromPassword([]byte(plaintext), bcrypt.DefaultCost)
+		hash, hashErr := bcrypt.GenerateFromPassword([]byte(plaintext), bcryptCost)
 		if hashErr != nil {
 			return nil, nil, fmt.Errorf("bcrypt hash: %w", hashErr)
 		}
@@ -665,7 +693,7 @@ const apiKeyPrefixLen = 12
 // timingDummyHash is a fixed bcrypt hash used to equalize Resolve's latency on
 // a prefix miss (X-TN-002). It is computed once at init; GenerateFromPassword
 // only errors on an out-of-range cost, which DefaultCost is not.
-var timingDummyHash, _ = bcrypt.GenerateFromPassword([]byte("mockagents-timing-equalizer"), bcrypt.DefaultCost)
+var timingDummyHash, _ = bcrypt.GenerateFromPassword([]byte("mockagents-timing-equalizer"), bcryptCost)
 
 // randID produces a short, url-safe identifier with a human-readable prefix.
 // It returns the crypto/rand error rather than swallowing it (F-ST-001): a

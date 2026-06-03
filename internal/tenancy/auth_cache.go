@@ -25,8 +25,17 @@ import (
 // calls Invalidate() to drop all entries. Mutations are rare compared
 // to reads, so this is both correct and cheap. If cache size becomes
 // a concern we can swap in a per-id reverse index later.
+//
+// The TTL is also the worst-case stale-auth bound: if the store ever failed
+// to Invalidate() on a mutation, a rotated/revoked key could still resolve
+// from cache until its entry expires. Every store mutator does flush, so this
+// is a backstop, not a live window (F-AC-005).
+//
+// mu is an RWMutex so the hot path — a cache hit — reads under a shared lock;
+// only inserts, eviction, expired-entry cleanup, and Invalidate take the
+// exclusive lock (F-AC-006).
 type authCache struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	entries map[string]authCacheEntry
 	ttl     time.Duration
 	maxSize int
@@ -69,21 +78,27 @@ func (c *authCache) hashKey(plaintext string) string {
 // a non-expired entry. The returned pointer is a fresh allocation so
 // callers can mutate it without affecting the cache.
 func (c *authCache) Get(plaintext string) *Principal {
-	if c == nil {
+	if c == nil || plaintext == "" {
 		return nil
 	}
 	k := c.hashKey(plaintext)
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
 	e, ok := c.entries[k]
+	c.mu.RUnlock()
 	if !ok {
 		return nil
 	}
 	if time.Now().After(e.expiry) {
-		delete(c.entries, k)
+		// Expired: drop it under the exclusive lock, re-checking so a
+		// concurrent refresh isn't clobbered.
+		c.mu.Lock()
+		if cur, ok := c.entries[k]; ok && time.Now().After(cur.expiry) {
+			delete(c.entries, k)
+		}
+		c.mu.Unlock()
 		return nil
 	}
-	p := e.principal
+	p := e.principal // local copy; safe after RUnlock
 	return &p
 }
 
@@ -146,7 +161,7 @@ func (c *authCache) Len() int {
 	if c == nil {
 		return 0
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return len(c.entries)
 }

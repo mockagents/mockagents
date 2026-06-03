@@ -102,6 +102,16 @@ func TestAPIKey_JSONHasNoSecret(t *testing.T) {
 			t.Errorf("APIKey JSON contains a forbidden field %q: %s", forbidden, b)
 		}
 	}
+	// F-TY-001: a never-used key (nil LastUsed) omits last_used entirely
+	// rather than emitting a zero timestamp.
+	if strings.Contains(lower, "last_used") {
+		t.Errorf("never-used APIKey JSON should omit last_used: %s", b)
+	}
+	used := time.Now().UTC()
+	b2, _ := json.Marshal(APIKey{ID: "key_1", LastUsed: &used})
+	if !strings.Contains(string(b2), "last_used") {
+		t.Errorf("used APIKey JSON should include last_used: %s", b2)
+	}
 }
 
 // TestResolve_RejectsMalformedShape covers F-ST-003: a key that can't be a
