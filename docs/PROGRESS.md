@@ -1,6 +1,6 @@
 # MockAgents — Implementation Progress
 
-**Last updated:** 2026-05-30 (Architecture review hardening)
+**Last updated:** 2026-06-02 (multi-pass security review hardening — internal/server + internal/tenancy)
 **Source of truth:** this file. Other `docs/` pages describe the *design
 intent* from the original product plan; when those pages and this file
 disagree, this file wins.
@@ -76,7 +76,12 @@ browser (§2.50), selective bulk rotation —
 tenant without locking themselves out (§2.51),
 architecture review hardening — localhost bind by
 default, principal-derived tenant scope, tenant-scoped
-observability, and same-session atomic turn mutation (§2.52). All
+observability, and same-session atomic turn mutation (§2.52),
+and a two-package multi-pass security review hardening pass —
+cross-tenant key IDOR + tenant-CRUD privilege fixes (platform
+role), live-feed routing/flush/shutdown/isolation repairs, route-
+authz unification, and a broad auth/validation hardening sweep,
+all neuter-verified (§2.53). All
 four document kinds (Agent, Pipeline, TestSuite, MCPServer) flow
 through the same rule-based validator plumbing AND a second
 cross-document pass resolves every reference across a directory.
@@ -125,14 +130,17 @@ billing are the only known gaps left.
 | Burn-session emergency rotation + /me/burn             | §2.50   |
 | Selective bulk rotation (?except=self)                 | §2.51   |
 | Architecture review hardening                          | §2.52   |
+| Multi-pass security review hardening (server + tenancy) | §2.53   |
 
 Test suite headcount at the checkpoint:
-- Go: **21 packages**, full suite green, `go vet` clean. Total
-  **646 Go tests**. Notable packages:
+- Go: full suite green, `go vet` clean. Total **~721 Go tests**
+  (646 at the §2.52 checkpoint + ~75 from the §2.53 security review,
+  almost all in `internal/server` and `internal/tenancy`). Notable
+  packages:
   - `internal/engine`: 144
   - `internal/config`: 127 (ValidateBytes +7, pipeline validator +9, graph checks +7, TestSuite +9, MCPServer +13, edge polish +5, cross-doc +9)
-  - `internal/server`: 88 (live feed +7, editor +4, pipeline +5, rotate +2, drop-count +1, self-rotation +2, stream metrics +5, bulk rotation +3, burn +2)
-  - `internal/tenancy`: 32 (rotation +3, bulk rotation +5)
+  - `internal/server`: **144** (was 88; +56 from §2.53 security review — RBAC/route-authz, SSE routing/shutdown/isolation, audit/costs handler coverage, secret-not-logged, IDOR/limits/error-envelope)
+  - `internal/tenancy`: **46** (was 27; +19 from §2.53 — cross-tenant IDOR, bulk-rotate rollback, fail-closed auth, platform role, cache/redaction/timing hardening)
   - `sdk/go/mockagents`: 44 (streaming +12, in-process +5, MCP +11)
   - `internal/mcp`: 38 (bidirectional +9 in §2.33)
   - `internal/streaming`: 34
@@ -4119,6 +4127,58 @@ What landed:
 - Same-session engine turns now run inside `Session.ApplyTurn`, so
   concurrent requests for one session cannot interleave the user append,
   turn-number match, template variable read, and assistant append.
+
+### 2.53 Multi-pass security review hardening  *(internal/server + internal/tenancy)*
+
+| Item                         | Location |
+| ---------------------------- | -------- |
+| Review reports               | `review/pkg-internal-server/`, `review/pkg-internal-tenancy/` (00-SUMMARY / 01-PER-FILE / 02-INTEGRATION / 03-ACTION-PLAN each) |
+| Cross-tenant key IDOR (P0)    | `internal/tenancy/store.go` — `DeleteAPIKey`/`RotateAPIKey`/`UpdateAPIKeyRole` take `tenantID` + `AND tenant_id = ?`; handlers pass `principal.TenantID` + `ensureOwnTenant` |
+| Platform/super-admin role     | `internal/tenancy/types.go` `RolePlatform`, `IsAssignableViaAPI`; `internal/server/route_authz.go`; `cmd/mockagents/start.go` bootstrap |
+| Route-authz unification       | `internal/server/route_authz.go` — single `managementRouteFloors` table + `mountManaged` chokepoint (panics on an un-floored route) |
+| Live-feed routing + flush     | `internal/server/server.go` (broadcaster built before `registerRoutes`), `internal/server/middleware.go` + `internal/observability/tracing.go` (`Unwrap`/`Flush`) |
+| SSE lifecycle + isolation     | `internal/server/log_handlers.go` (write-deadline reset, per-tenant `SubscribeTenant`), `internal/server/log_broadcaster.go`, `internal/server/server.go` Shutdown order |
+| Auth hardening                | `internal/tenancy/{middleware,auth_cache,store}.go` — fail-closed verified, full-digest cache key, timing-oracle dummy bcrypt, bearer parsing, plaintext redaction |
+| Tests                         | `internal/server/*_test.go` (88→**144**), `internal/tenancy/*_test.go` (27→**46**) |
+| Verification                 | `go test ./... -count=1` green; `go vet ./...` clean; benches unaffected (engine/adapter untouched — see `docs/benchmarks/README.md`) |
+
+Two full multi-pass reviews (Pass 0 scope → per-file → cross-file →
+synthesize → 4 reports) with adversarial verification of every S0/S1 and
+a neuter-verify discipline (temporarily break the fix, confirm the new
+test fails, restore) on every security fix.
+
+What landed:
+
+- **Tenant isolation.** Fixed a P0 cross-tenant API-key IDOR (a tenant
+  admin could rotate/delete/promote another tenant's key) and the
+  residual tenant-CRUD privilege gap (X-TN-001): tenant list/create/delete
+  now require a dedicated `platform` role minted only by the bootstrap, so
+  a per-tenant admin cannot enumerate or destroy other tenants nor
+  self-escalate.
+- **Live feed, twice over.** `GET /api/v1/logs/stream[/metrics]` were
+  silently never mounted (the broadcaster was built *after* `registerRoutes`)
+  and SSE flush was a no-op through the full middleware chain (a wrapper
+  didn't forward `Flush`); both fixed. Streams now reset the per-connection
+  write deadline so the global `WriteTimeout` can't sever them, are
+  per-tenant scoped so a noisy tenant can't starve another's buffer, and no
+  longer hang graceful shutdown.
+- **Authorization, unified.** Every `/api/v1` management route's role floor
+  lives in one table behind a single `mountManaged` chokepoint that panics
+  on an un-floored route, so an ungated route can't slip in again.
+- **Auth boundary, verified.** Auth fails closed on a store error, the auth
+  cache flushes on every key mutation (no stale-auth), error messages carry
+  no key-existence oracle, and `config.ValidateBytes` is not exposed to a
+  YAML billion-laughs DoS (yaml.v3 bounds alias expansion — proven by test).
+- **Hardening + hygiene.** Body-size caps + `413`, shared bounded `limit`
+  + RFC3339 `since`/`until` validation, a uniform error envelope (no raw
+  store errors leaked), `409` on duplicate tenant via an `ErrConflict`
+  sentinel, `errors.Is` for all wrapped sentinels, atomic `DenialHook`,
+  configurable CORS origins, robust bearer parsing, secret redaction on
+  `NewAPIKeyResult`, an `RWMutex` cache hot path, and a sweep of dead code
+  + doc drift. Every fix is regression-tested.
+
+The four action plans (`review/pkg-internal-{server,tenancy}/03-ACTION-PLAN.md`)
+are fully checked off; no open review items remain in either package.
 
 ---
 
