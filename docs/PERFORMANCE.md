@@ -96,7 +96,7 @@ break the fix, confirm the new bench/test regresses, restore).
 | **PERF-08** ✅ | S | `engine/scenario_matcher.go:106` | `strings.Contains(lowerMessage, strings.ToLower(rule.ContentContains))` re-lowercases the **static** scenario literal on every request, every scenario. **Change:** pre-lower `ContentContains` once at config load (store a lowered copy on the rule). The per-request match becomes a pure `strings.Contains`, zero allocs. **✅ DONE 2026-06-03:** memoized via a `lowerCache sync.Map` on the matcher (`lowerContains`), matching the existing `regexCache` pattern — no type/load-path change. The lowered literal is computed once; repeat matches are an allocation-free map read (eliminates the per-request alloc for mixed-case literals like `"Hello"`/`"Error"`). Guard `TestScenarioMatcher_LowerContainsMemoized` (`AllocsPerRun == 0`, neuter-verified). |
 | **PERF-09** ✅ | S | `server/log_handlers.go` `InteractionCapture` | ~~Buffers up to 1 MiB of the response body … only so `pricing.ExtractUsage` can re-parse the usage block.~~ **⚠️ The survey premise was WRONG (verified):** the response body is **persisted and returned by the log API** (`storage/models.go` `response_body`) and **displayed in the GUI log-detail view** (`gui/app/logs/[id]/page.tsx:98`). It is a real feature, not cost-extraction scratch — dropping the buffering would empty the log-detail panel. **The buffering itself is already pooled** (`captureWriter` `sync.Pool` reuses the backing array), so it isn't even a hot-path alloc. **✅ DONE 2026-06-03 — implemented the *safe* adjacent win:** the body was copied **twice** per request — `snapshot()` (a `[]byte` copy) then `string(snapshot)` — when only one independent copy is needed. Replaced with `bodyString()` = a single `string(cw.body)`, and the agent-name probe now reads the still-live `cw.body` directly. Measured on a ~1.5 KB response: **3072 B/2 allocs → 1536 B/1 alloc (~53 % faster on the copy)**, scaling with response size, on every loggable request. Guard `TestCaptureWriter_BodyStringIndependent` (independence across pool reuse) + existing capture/pool tests. |
 | **PERF-10** | M | `tenancy/store.go` `BulkRotateTenantKeys` | `bcrypt.GenerateFromPassword` runs **inside the open transaction**, once per key — a 20-key tenant holds the write tx (and the single tenancy connection) locked for >1 s of bcrypt, blocking all auth. **Change:** generate all plaintext+hash pairs *before* `BeginTx`, then open the tx and issue only the UPDATEs. (Admin-rare, but a real auth-stall during incident response.) |
-| **PERF-11** | S | `server/log_handlers.go` `StreamLogs` | Per delivered row: `json.Marshal` (alloc) + `fmt.Fprintf("event: log\ndata: %s\n\n", ...)` (reflect + alloc), and `SetWriteDeadline` (a syscall) **every loop iteration** including pure heartbeats. **Change:** reuse a per-connection `bytes.Buffer`, write the SSE framing as literals (`io.WriteString`), bump the deadline only before an actual write. |
+| ~~**PERF-11**~~ ✅ | S | `server/log_handlers.go` `StreamLogs` | Per delivered row: `json.Marshal` (alloc) + `fmt.Fprintf("event: log\ndata: %s\n\n", ...)` (reflect + alloc), and `SetWriteDeadline` (a syscall) **every loop iteration** including pure heartbeats. **Done 2026-06-03:** per-connection reused `bytes.Buffer` + `json.Encoder` (`appendLogFrame` encodes straight into the buffer), heartbeat emitted from a package-level byte slice, dropped-frame built with `strconv` not `fmt`. `BenchmarkLogFrame_*`: **3→1 allocs/op, 1179→256 B/op, −43 % ns/op** per row; zero-alloc heartbeats. Wire bytes are byte-for-byte identical (guarded by `TestAppendLogFrame_WireFormat`, neuter-verified, plus the existing SSE e2e tests). **Correction to the survey:** the deadline bump was relocated to immediately-before-each-write (tidier; drops the one wasted bump on the ctx-cancel teardown) but is **not** a per-row syscall win — heartbeats still bump before writing, so the bump count is essentially unchanged. The real win is the allocation drop. |
 
 ### P3 — Low / opportunistic (alloc-shaving + robustness)
 
@@ -238,8 +238,15 @@ pprof workflow live in `docs/benchmarks/README.md`. Key rules:
    `generateRequestID` 173→54.7 ns (3→2 allocs), `generateID` 166.7→29.7 ns
    (3→1 alloc). Uniqueness-not-unpredictability is the documented contract;
    no security tokens touched.)
-   Next up: **PERF-11**, then P3 as opportunistic alloc-shaving, each behind a
-   bench.
+9. ~~**PERF-11**~~ **✅ done 2026-06-03** (SSE log streaming: reuse a
+   per-connection `bytes.Buffer`+`json.Encoder` and literal framing instead of
+   `json.Marshal`+`fmt.Fprintf` per row — 3→1 allocs/op, 1179→256 B/op, −43 %
+   ns/op; zero-alloc heartbeats. Wire format byte-identical, guarded + neuter-
+   verified. The doc's "deadline syscall per iteration" premise was optimistic:
+   the bump moved to right-before-each-write for clarity, not a syscall win.)
+   That closes the P1/P2 backlog (PERF-01..09, 11). Remaining: **P3** as
+   opportunistic alloc-shaving, each behind a bench. (**PERF-10** is an
+   admin-rare auth-stall fix in `tenancy`, not a request hot-path item.)
 
 Re-baseline (`make bench-report` off-governor) after each P1 item so the next
 diff is honest.

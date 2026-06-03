@@ -539,6 +539,25 @@ func (h *LogHandlers) StreamMetrics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, snap)
 }
 
+// heartbeatFrame is the SSE keepalive comment, kept as a package-level byte
+// slice so emitting it never allocates a fresh []byte per tick (PERF-11).
+var heartbeatFrame = []byte(":heartbeat\n\n")
+
+// appendLogFrame frames one annotated row as an `event: log` SSE frame into the
+// reused buffer, encoding the JSON straight into frame via the reused encoder
+// (PERF-11). enc.Encode appends "<json>\n"; the trailing WriteString completes
+// the "\n\n" frame terminator. On a JSON error frame is left partially written
+// but is never flushed by the caller, so the stream stays well-formed.
+func appendLogFrame(frame *bytes.Buffer, enc *json.Encoder, row LogWithCost) error {
+	frame.Reset()
+	frame.WriteString("event: log\ndata: ")
+	if err := enc.Encode(row); err != nil {
+		return err
+	}
+	frame.WriteString("\n")
+	return nil
+}
+
 func (h *LogHandlers) StreamLogs(w http.ResponseWriter, r *http.Request) {
 	if h.Broadcaster == nil {
 		http.Error(w, "live feed disabled", http.StatusServiceUnavailable)
@@ -595,15 +614,29 @@ func (h *LogHandlers) StreamLogs(w http.ResponseWriter, r *http.Request) {
 	// heartbeat, or just a context cancellation.
 	var lastDropped uint64
 
+	// Per-connection scratch reused for every frame so a busy stream doesn't
+	// allocate a fresh JSON buffer and reflect-format an SSE envelope per row
+	// (PERF-11). enc writes straight into frame and appends its own trailing
+	// newline, which becomes the first of the SSE frame's "\n\n" terminator.
+	var frame bytes.Buffer
+	enc := json.NewEncoder(&frame)
+
 	ctx := r.Context()
 	for {
-		// Refresh the write deadline each iteration so the next write (data,
-		// heartbeat, or dropped frame) gets a full window (F-SV-004).
-		bumpDeadline()
 		if current := sub.Dropped(); current > lastDropped {
 			newly := current - lastDropped
-			payload := fmt.Sprintf(`{"count":%d,"new":%d}`, current, newly)
-			if _, err := fmt.Fprintf(w, "event: dropped\ndata: %s\n\n", payload); err != nil {
+			frame.Reset()
+			frame.WriteString("event: dropped\ndata: {\"count\":")
+			frame.WriteString(strconv.FormatUint(current, 10))
+			frame.WriteString(`,"new":`)
+			frame.WriteString(strconv.FormatUint(newly, 10))
+			frame.WriteString("}\n\n")
+			// Bump the write deadline only just before the write (F-SV-004), not
+			// once per loop iteration — a syscall on every heartbeat/idle wakeup
+			// was wasted (PERF-11). The heartbeat path refreshes it at least
+			// every `heartbeat`, so any write lands inside a valid window.
+			bumpDeadline()
+			if _, err := w.Write(frame.Bytes()); err != nil {
 				return
 			}
 			lastDropped = current
@@ -614,7 +647,8 @@ func (h *LogHandlers) StreamLogs(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if _, err := fmt.Fprint(w, ":heartbeat\n\n"); err != nil {
+			bumpDeadline()
+			if _, err := w.Write(heartbeatFrame); err != nil {
 				return
 			}
 			flusher.Flush()
@@ -626,14 +660,14 @@ func (h *LogHandlers) StreamLogs(w http.ResponseWriter, r *http.Request) {
 			if tenantID := callerTenantID(r); tenantID != "" && row.TenantID != tenantID {
 				continue
 			}
-			buf, err := json.Marshal(row)
-			if err != nil {
-				// Malformed rows are skipped rather than dropping
-				// the whole stream. Extremely unlikely — the
-				// InteractionLog shape is always JSON-safe.
+			if err := appendLogFrame(&frame, enc, row); err != nil {
+				// Malformed rows are skipped rather than dropping the whole
+				// stream. Extremely unlikely — InteractionLog is always
+				// JSON-safe. frame is discarded (never written to w).
 				continue
 			}
-			if _, err := fmt.Fprintf(w, "event: log\ndata: %s\n\n", buf); err != nil {
+			bumpDeadline()
+			if _, err := w.Write(frame.Bytes()); err != nil {
 				return
 			}
 			flusher.Flush()
