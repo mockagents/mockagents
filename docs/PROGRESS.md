@@ -1,6 +1,6 @@
 # MockAgents — Implementation Progress
 
-**Last updated:** 2026-06-03 (performance handoff + P1 hot-path optimizations — §2.54)
+**Last updated:** 2026-06-04 (GUI console redesign — "MockAgents Console" design system — §2.55)
 **Source of truth:** this file. Other `docs/` pages describe the *design
 intent* from the original product plan; when those pages and this file
 disagree, this file wins.
@@ -86,7 +86,12 @@ all neuter-verified (§2.53), and a performance handoff
 an O(1) tenant model index, skipping the no-op tracing wrapper,
 coarsened auth `last_used` writes, a pooled response encoder, and
 two cheap wins (memoized match lowering, single-copy body capture),
-each measured and neuter-verified (§2.54). All
+each measured and neuter-verified (§2.54), and the full GUI console
+redesign to the "MockAgents Console" design system — a `--sr-*` token +
+legacy-var alias foundation, a new sidebar shell with light/dark toggle,
+and every existing surface (catalog, agent detail, logs, costs, audit,
+pipelines, editor, tenants/keys, account) rebuilt to the design, with the
+§2.53 GUI security posture preserved (§2.55). All
 four document kinds (Agent, Pipeline, TestSuite, MCPServer) flow
 through the same rule-based validator plumbing AND a second
 cross-document pass resolves every reference across a directory.
@@ -4246,6 +4251,40 @@ benches improved); ns/op swings are full-sweep thermal noise. The PERF-01
 tenant-model index now shows in the report at 14.3 ns / 0 allocs
 (`GetByModelForTenant_ManyAgents`). See the 2026-06-03 refresh note in
 `docs/benchmarks/README.md`.
+
+---
+
+### 2.55 GUI console redesign — "MockAgents Console" design system
+
+| Item                         | Location |
+| ---------------------------- | -------- |
+| Design tokens + theme        | `gui/app/globals.css` — SentinelRAG `--sr-*` tokens + dark mirror + a legacy-var alias layer (`--surface`/`--border`… → `--sr-*`) so pre-redesign page CSS auto-adopts the palette and light/dark theme |
+| App shell                    | `gui/app/Shell.tsx` (client: grouped nav via `usePathname`, breadcrumbs, theme toggle) + `gui/app/layout.tsx` (server: reads a `mockagents-theme` cookie for SSR `data-theme` — no flash, no inline script) |
+| Icon set                     | `gui/lib/icons.tsx` — lucide paths as JSX (not `dangerouslySetInnerHTML`, preserving the no-raw-HTML posture); `gui/app/Stat.tsx` shared tile |
+| Agents catalog + detail      | `gui/app/page.tsx` + `AgentCatalog.tsx`; `agents/[name]/page.tsx` + `AgentTabs.tsx` (tabbed, with a real Reload server action) |
+| Logs                         | `gui/app/logs/LogsConsole.tsx` — design table + sticky inspector + live SSE (replaced `LogsTable`/`AutoRefreshLogs`) |
+| Costs / Audit / Pipelines    | `costs/page.tsx`, `audit/page.tsx`, `pipelines/` list + detail (DAGViewer kept) rebuilt to the design card/`.tbl`/`Stat` vocabulary |
+| Editor                       | `editor/YamlEditor.tsx` — two-column card grid: `agent.yaml` code card (line gutter reddens flagged lines) + result card (eyebrow, success/error banners, per-error cards); server-action validation preserved |
+| Tenants / keys / Account     | `admin/tenants/page.tsx` (row-list card), `admin/tenants/[id]/page.tsx` (card-head controls over a `.tbl`), `account/page.tsx` (identity + actions cards) — all keep the existing server-action + flash-store secret handling (GUI-02) |
+| Verification                 | `npm run typecheck` + `npm run build` green under `tsc --strict`; every surface runtime-verified 200 against the real Go backend (single- and multi-tenant) |
+
+The Next.js console was restyled end-to-end to the "MockAgents Console" design
+handoff. The chosen scope was **foundation + restyle of the existing surfaces**
+plus a light/dark toggle; net-new mock-only surfaces (Playground, Chaos panel,
+Contracts diff, Record/replay, MCP inspector, Settings) were **deferred**.
+
+The foundation is a token + alias layer in `globals.css`: every legacy class
+(`data-table`, `inline-form`, `plaintext-box`, `section-title`, `editor-*`, …)
+is bridged to the `--sr-*` palette, so surfaces adopted the new look and the
+theme toggle before being individually rebuilt — and an old-class regression
+audit confirmed nothing broke during the staged rollout. Each surface landed as
+its own `--no-ff` merge to `main` (commits 692115b foundation → 22739ea final
+surfaces, PR #11). The GUI security posture from §2.53 is intact: icons render
+as JSX (no raw HTML), one-time key plaintext flows through the server-side flash
+store, and auth stays cookie-`Bearer` on every upstream fetch.
+
+The remaining GUI gap is unchanged: the drag-to-rewire **workflow editor** for
+`kind: Pipeline` (§6) and the deferred net-new mock-only surfaces above.
 
 ---
 
