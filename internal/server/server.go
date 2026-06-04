@@ -527,14 +527,15 @@ func principalToActor(r *http.Request) audit.Actor {
 // open by design because clients send their own provider API keys
 // that MockAgents deliberately ignores.
 func skipAuth(r *http.Request) bool {
-	path := r.URL.Path
-	if path == "/api/v1/health" {
-		return true
-	}
-	if strings.HasPrefix(path, "/v1/chat/completions") ||
-		strings.HasPrefix(path, "/v1/messages") ||
-		strings.HasPrefix(path, "/v1/models") ||
-		strings.HasPrefix(path, "/v1/engines/") {
+	// Exact-match the exempt routes (SEC-03): a prefix match would auto-exempt
+	// any future route mounted under these prefixes (e.g. /v1/models-internal).
+	// These are exactly the open LLM/engine routes registered in registerRoutes.
+	switch r.URL.Path {
+	case "/api/v1/health",
+		"/v1/chat/completions",
+		"/v1/messages",
+		"/v1/models",
+		"/v1/engines/process":
 		return true
 	}
 	return false

@@ -22,6 +22,12 @@ import (
 // scan/allocation (X-LIMIT-001).
 const maxListLimit = 10000
 
+// maxListOffset caps the `offset` query param so a caller can't pass a huge
+// value (e.g. ?offset=999999999) that forces SQLite to scan-and-discard an
+// unbounded prefix of the table (SEC-04). Generous enough for real deep
+// pagination; values above it are clamped, matching the limit clamp.
+const maxListOffset = 1_000_000
+
 // callerTenantID returns the tenant id of the authenticated principal
 // on the request, or the empty string in single-tenant mode.
 // Centralized here so every control-plane handler scopes the same

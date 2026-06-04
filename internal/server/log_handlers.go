@@ -93,7 +93,7 @@ func (h *LogHandlers) ListLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
-		offset, ok := parseBoundedInt(w, offsetStr, "offset", 0, 0)
+		offset, ok := parseBoundedInt(w, offsetStr, "offset", 0, maxListOffset)
 		if !ok {
 			return
 		}
@@ -102,9 +102,9 @@ func (h *LogHandlers) ListLogs(w http.ResponseWriter, r *http.Request) {
 
 	logs, err := h.Store.Query(r.Context(), filter)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": fmt.Sprintf("querying logs: %s", err),
-		})
+		// Generic 500 to the client; the wrapped detail is logged server-side so
+		// SQLite/driver internals don't leak over the wire (SEC-02 / F-TN-006).
+		writeServerError(w, fmt.Errorf("querying logs: %w", err))
 		return
 	}
 
@@ -141,9 +141,7 @@ func (h *LogHandlers) GetLog(w http.ResponseWriter, r *http.Request) {
 
 	log, err := h.Store.GetByID(r.Context(), id)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": fmt.Sprintf("fetching log: %s", err),
-		})
+		writeServerError(w, fmt.Errorf("fetching log %d: %w", id, err))
 		return
 	}
 	if log == nil {
@@ -180,9 +178,7 @@ func (h *LogHandlers) DeleteLogs(w http.ResponseWriter, r *http.Request) {
 		count, err = h.Store.DeleteAll(r.Context())
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": fmt.Sprintf("deleting logs: %s", err),
-		})
+		writeServerError(w, fmt.Errorf("deleting logs: %w", err))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
