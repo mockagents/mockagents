@@ -327,6 +327,28 @@ func boolToInt(b bool) int {
 	return 0
 }
 
+// PruneToMaxRows enforces a retention bound on the interaction-log table by
+// deleting the oldest rows beyond the newest `max` (SEC-05). max <= 0 is a no-op
+// (unlimited retention). Returns the number of rows deleted.
+//
+// The subquery finds the id of the (max+1)-th newest row; every row at or below
+// it is older than the retained window and is removed. When the table holds <=
+// max rows the OFFSET lands past the end, the subquery is NULL, and `id <= NULL`
+// matches nothing — so nothing is deleted.
+func (s *SQLiteStore) PruneToMaxRows(ctx context.Context, max int) (int64, error) {
+	if max <= 0 {
+		return 0, nil
+	}
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM interaction_logs WHERE id <= (
+			SELECT id FROM interaction_logs ORDER BY id DESC LIMIT 1 OFFSET ?
+		)`, max)
+	if err != nil {
+		return 0, fmt.Errorf("pruning interaction logs: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 // TruncateBody returns a truncated version of a body string for summaries.
 func TruncateBody(body string, maxLen int) string {
 	if len(body) <= maxLen {

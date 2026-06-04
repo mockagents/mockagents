@@ -238,6 +238,48 @@ func releaseCaptureWriter(cw *captureWriter) {
 	captureWriterPool.Put(cw)
 }
 
+// LogBodyMode controls how much of a captured response body the interaction-log
+// store persists, so privacy-sensitive deployments can redact or drop bodies
+// that may carry sensitive content (SEC-05). Configured via MOCKAGENTS_LOG_BODIES.
+type LogBodyMode string
+
+const (
+	// LogBodyFull persists the response body verbatim (default; v0.1 behavior).
+	LogBodyFull LogBodyMode = "full"
+	// LogBodySanitized redacts obvious secret tokens (sk-/key-/Bearer) before
+	// persisting, leaving the usage block intact so cost annotation still works.
+	LogBodySanitized LogBodyMode = "sanitized"
+	// LogBodyNone drops the response body entirely. Body-derived cost/token
+	// annotation is unavailable for rows captured in this mode.
+	LogBodyNone LogBodyMode = "none"
+)
+
+// NormalizeLogBodyMode maps a (possibly empty or unknown) mode string to a valid
+// LogBodyMode, defaulting to LogBodyFull so an unset/garbage value preserves the
+// historical behavior rather than silently dropping data.
+func NormalizeLogBodyMode(s string) LogBodyMode {
+	switch LogBodyMode(s) {
+	case LogBodySanitized:
+		return LogBodySanitized
+	case LogBodyNone:
+		return LogBodyNone
+	default:
+		return LogBodyFull
+	}
+}
+
+// applyLogBodyMode transforms the captured body into the form to persist.
+func applyLogBodyMode(mode LogBodyMode, body string) string {
+	switch mode {
+	case LogBodyNone:
+		return ""
+	case LogBodySanitized:
+		return storage.SanitizeBody(body)
+	default:
+		return body
+	}
+}
+
 // InteractionCapture is middleware that captures request/response data for logging.
 //
 // The writer buffers up to maxCaptureBodyBytes of the response body
@@ -254,7 +296,7 @@ func releaseCaptureWriter(cw *captureWriter) {
 //
 // The captureWriter itself is pooled via captureWriterPool so each
 // request reuses both the struct and the body slice's backing array.
-func InteractionCapture(worker *LogWorker) func(http.Handler) http.Handler {
+func InteractionCapture(worker *LogWorker, bodyMode LogBodyMode) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if worker == nil || worker.store == nil {
@@ -299,6 +341,11 @@ func InteractionCapture(worker *LogWorker) func(http.Handler) http.Handler {
 				agentName = probeModel(cw.body)
 			}
 
+			// Apply the configured privacy mode to the body we persist (SEC-05).
+			// The model probe above already ran against the raw body, so by_agent
+			// grouping is unaffected even when the stored body is dropped.
+			storedBody := applyLogBodyMode(bodyMode, respBody)
+
 			entry := &storage.InteractionLog{
 				Timestamp:      start.UTC().Format(time.RFC3339),
 				TenantID:       engine.TenantIDFromContext(r.Context()),
@@ -307,7 +354,7 @@ func InteractionCapture(worker *LogWorker) func(http.Handler) http.Handler {
 				ResponseStatus: cw.statusCode,
 				LatencyMs:      time.Since(start).Milliseconds(),
 				Streaming:      streaming,
-				ResponseBody:   respBody,
+				ResponseBody:   storedBody,
 				AgentName:      agentName,
 			}
 			// Protocol-adapter interactions have no application-level session,

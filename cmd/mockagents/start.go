@@ -142,6 +142,25 @@ func runStart(cmd *cobra.Command, args []string) error {
 	cfg.LogStore = logStore
 	cfg.Pipelines = pipelineReg
 
+	// Interaction-log privacy + retention controls (SEC-05):
+	//   MOCKAGENTS_LOG_BODIES   = full | sanitized | none  (default full)
+	//   MOCKAGENTS_LOG_MAX_ROWS = <n>                       (default 0 = unlimited)
+	cfg.LogBodyMode = server.NormalizeLogBodyMode(os.Getenv("MOCKAGENTS_LOG_BODIES"))
+	if v := strings.TrimSpace(os.Getenv("MOCKAGENTS_LOG_MAX_ROWS")); v != "" {
+		var n int
+		if c, err := fmt.Sscanf(v, "%d", &n); c == 1 && err == nil && n > 0 {
+			cfg.LogMaxRows = n
+		} else {
+			logger.Warn("ignoring invalid MOCKAGENTS_LOG_MAX_ROWS", "value", v)
+		}
+	}
+	if cfg.LogBodyMode != server.LogBodyFull {
+		logger.Info("interaction-log body capture mode", "mode", string(cfg.LogBodyMode))
+	}
+	if cfg.LogMaxRows > 0 {
+		logger.Info("interaction-log retention enabled", "max_rows", cfg.LogMaxRows)
+	}
+
 	// Audit log: always enabled. Costs a few KB of SQLite and a
 	// handful of writes per control-plane mutation; the value is
 	// high and the overhead is invisible.
