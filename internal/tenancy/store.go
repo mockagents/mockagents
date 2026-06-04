@@ -468,20 +468,14 @@ func (s *SQLiteStore) RotateAPIKey(ctx context.Context, callerTenantID, id strin
 // the same ordering, which helps audit-log correlation.
 func (s *SQLiteStore) BulkRotateTenantKeys(ctx context.Context, tenantID string, excludeKeyIDs ...string) ([]*NewAPIKeyResult, []string, error) {
 	// Fast-path existence check on the tenant itself so callers get a clean
-	// ErrNotFound instead of an empty-result on a typo. This runs before the
-	// transaction; in the (tiny, single-conn-serialized) window where the
-	// tenant is deleted between here and the SELECT, the in-tx query simply
-	// finds zero keys and returns an empty success — harmless, since the
-	// tenant and its keys are already gone (F-ST-013).
+	// ErrNotFound instead of an empty-result on a typo. In the (tiny,
+	// single-conn-serialized) window where the tenant is deleted between here
+	// and the SELECT below, that read simply finds zero keys and returns an
+	// empty success — harmless, since the tenant and its keys are already gone
+	// (F-ST-013).
 	if _, err := s.GetTenant(ctx, tenantID); err != nil {
 		return nil, nil, err
 	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer tx.Rollback() //nolint:errcheck // best-effort on error path
 
 	// Build the exclude set for the WHERE clause. When non-empty
 	// we add a NOT IN filter so the excluded keys survive the
@@ -508,7 +502,14 @@ func (s *SQLiteStore) BulkRotateTenantKeys(ctx context.Context, tenantID string,
 		query += " AND id NOT IN (" + placeholders + ")"
 	}
 	query += " ORDER BY created_at ASC"
-	rows, err := tx.QueryContext(ctx, query, args...)
+
+	// Read the key set OUTSIDE any transaction. This is a plain read, and the
+	// per-key bcrypt below must NOT run while the write tx is open (PERF-10):
+	// bcrypt.GenerateFromPassword is ~50–100 ms/key, and with the single
+	// tenancy connection (MaxOpenConns=1) a 20-key tenant would otherwise pin
+	// the connection for >1 s inside the tx, stalling every concurrent auth
+	// Resolve. We hash first, then hold the tx only for the cheap UPDATEs.
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -530,18 +531,20 @@ func (s *SQLiteStore) BulkRotateTenantKeys(ctx context.Context, tenantID string,
 	}
 	rows.Close()
 
-	// Empty tenant: valid, returns empty slices. We still commit
-	// the (empty) transaction for symmetry.
+	// Empty tenant (or everything excluded): nothing to rotate, no tx needed.
 	if len(existingKeys) == 0 {
-		if err := tx.Commit(); err != nil {
-			return nil, nil, err
-		}
 		return nil, nil, nil
 	}
 
-	results := make([]*NewAPIKeyResult, 0, len(existingKeys))
-	oldPrefixes := make([]string, 0, len(existingKeys))
-
+	// Pre-compute the new plaintext + bcrypt hash for every key BEFORE opening
+	// the transaction, so the tx that follows issues only fast UPDATEs.
+	type rotation struct {
+		e         existing
+		newPrefix string
+		plaintext string
+		hash      []byte
+	}
+	rotations := make([]rotation, 0, len(existingKeys))
 	for _, e := range existingKeys {
 		plaintext, newPrefix, genErr := generateAPIKey()
 		if genErr != nil {
@@ -551,26 +554,48 @@ func (s *SQLiteStore) BulkRotateTenantKeys(ctx context.Context, tenantID string,
 		if hashErr != nil {
 			return nil, nil, fmt.Errorf("bcrypt hash: %w", hashErr)
 		}
-		if _, execErr := tx.ExecContext(ctx,
+		rotations = append(rotations, rotation{e: e, newPrefix: newPrefix, plaintext: plaintext, hash: hash})
+	}
+
+	// Now open the write transaction and apply only the UPDATEs — N cheap row
+	// writes, not N bcrypt hashes.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck // best-effort on error path
+
+	results := make([]*NewAPIKeyResult, 0, len(rotations))
+	oldPrefixes := make([]string, 0, len(rotations))
+	for _, rot := range rotations {
+		res, execErr := tx.ExecContext(ctx,
 			`UPDATE api_keys SET prefix = ?, hash = ?, last_used = NULL WHERE id = ?`,
-			newPrefix, string(hash), e.id,
-		); execErr != nil {
+			rot.newPrefix, string(rot.hash), rot.e.id,
+		)
+		if execErr != nil {
 			return nil, nil, execErr
 		}
+		// A key deleted between the SELECT and here updates zero rows. Skip it so
+		// we never hand back a plaintext for a key that no longer exists. The
+		// read happened outside the tx, so this narrow race is possible even
+		// though the single connection serializes individual statements.
+		if n, _ := res.RowsAffected(); n == 0 {
+			continue
+		}
 
-		created, _ := time.Parse(time.RFC3339, e.createdStr)
+		created, _ := time.Parse(time.RFC3339, rot.e.createdStr)
 		results = append(results, &NewAPIKeyResult{
 			Key: APIKey{
-				ID:        e.id,
+				ID:        rot.e.id,
 				TenantID:  tenantID,
-				Name:      e.name,
-				Prefix:    newPrefix,
-				Role:      Role(e.role),
+				Name:      rot.e.name,
+				Prefix:    rot.newPrefix,
+				Role:      Role(rot.e.role),
 				CreatedAt: created,
 			},
-			Plaintext: plaintext,
+			Plaintext: rot.plaintext,
 		})
-		oldPrefixes = append(oldPrefixes, e.prefix)
+		oldPrefixes = append(oldPrefixes, rot.e.prefix)
 	}
 
 	if err := tx.Commit(); err != nil {
