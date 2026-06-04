@@ -168,3 +168,73 @@ mockagents logs --agent customer-support --limit 20
 # JSON output
 mockagents logs --output json --since 1h
 ```
+
+---
+
+## `mockagents test`
+
+Run `kind: TestSuite` files against agents or pipelines.
+
+```bash
+mockagents test [path...] [--format text|json|junit]
+```
+
+Assertions include `tool_call`, `response_contains`, `scenario_matched`, and
+`latency_ms_lt`. `--format junit` writes a Jenkins-compatible report for CI.
+
+```bash
+mockagents test tests/ --format junit > report.xml
+```
+
+---
+
+## `mockagents record` / `mockagents replay`
+
+Capture real upstream traffic once, then serve it offline.
+
+```bash
+# Proxy a real upstream and capture to a JSON-lines cassette
+mockagents record --upstream https://api.openai.com \
+  --cassette fixtures/gpt4o.jsonl --api-key "$OPENAI_API_KEY"
+
+# Replay the cassette over the mock endpoints (no upstream, no keys)
+mockagents replay --cassette fixtures/gpt4o.jsonl
+```
+
+Provider keys stay on your machine — they are never written to the cassette.
+SSE streams are captured and replayed.
+
+---
+
+## `mockagents mcp`
+
+Serve a `kind: MCPServer` definition over HTTP or stdio.
+
+```bash
+mockagents mcp --transport http --port 8081 --agents-dir examples
+mockagents mcp --transport stdio --agents-dir examples --server weather-mcp
+```
+
+---
+
+## `mockagents contract`
+
+Extract an agent's consumer-visible contract or diff two contracts in CI.
+
+```bash
+mockagents contract extract agents/support.yaml -o contracts/support.json
+mockagents contract diff contracts/support.json agents/support.yaml
+```
+
+`diff` exits non-zero on breaking changes (removed tool/scenario, tightened
+`required`, changed schema, disabled streaming).
+
+---
+
+## Multi-tenant mode
+
+Set `MOCKAGENTS_MULTI_TENANT=1` before `mockagents start` to enable API-key auth
++ tenants + RBAC on the `/api/v1/*` management routes. On first boot a `default`
+tenant and a bootstrap `platform`/admin key are created and the plaintext is
+printed once to stderr. See the [Management API](management-api.md) guide for the
+control-plane routes and role floors.

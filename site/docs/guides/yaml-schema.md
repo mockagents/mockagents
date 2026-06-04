@@ -2,6 +2,19 @@
 
 Agent definitions are YAML files that configure mock agent behavior.
 
+> This page documents `kind: Agent`. MockAgents loads four document kinds from
+> `--agents-dir`, each with its own schema under
+> [`schema/`](https://github.com/mockagents/mockagents/tree/main/schema):
+>
+> | `kind` | Purpose |
+> |--------|---------|
+> | `Agent` | A single mock LLM agent (this page) |
+> | `Pipeline` | Multi-agent topology — `sequential`, `parallel`, or `graph` with conditional edges |
+> | `TestSuite` | Declarative test cases (`tool_call`, `response_contains`, `scenario_matched`, `latency_ms_lt`) run by `mockagents test` |
+> | `MCPServer` | A mock Model Context Protocol server (tools, resources, prompts) served by `mockagents mcp` |
+>
+> All four validate under `mockagents validate` and `POST /api/v1/config/validate`.
+
 ## Top-Level Structure
 
 ```yaml

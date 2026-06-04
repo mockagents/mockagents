@@ -29,13 +29,20 @@ docker pull mockagents/mockagents:latest
 docker run -p 8080:8080 -v ./agents:/agents:ro mockagents/mockagents
 ```
 
-## Python SDK
+## SDKs
+
+MockAgents ships three SDKs with matching surfaces (client, scenarios,
+assertions, streaming helpers):
 
 ```bash
-pip install mockagents
+pip install mockagents                                          # Python
+npm install mockagents                                          # TypeScript
+go get github.com/mockagents/mockagents/sdk/go/mockagents       # Go
 ```
 
-The Python SDK manages the server binary automatically when used with `MockAgentServer`.
+The Python SDK manages the server binary automatically when used with
+`MockAgentServer`; the Go SDK additionally offers `NewInProcessClient` to run an
+engine inline (no subprocess).
 
 ## Verify Installation
 

@@ -11,7 +11,14 @@ MockAgents is an open-source platform that lets you spin up realistic mock agent
 - **Deterministic tests** — Same input always produces the same output
 - **Tool call simulation** — Match-based tool responses with error injection
 - **SSE streaming** — Realistic streaming with configurable chunk size and delay
-- **Python SDK** — Fluent assertions and pytest integration
+- **Multi-agent pipelines** — Sequential, parallel, and graph topologies (`kind: Pipeline`)
+- **Chaos engineering** — Inject latency, errors, and rate limits per agent
+- **Record & replay** — Capture real upstream traffic once, replay offline forever
+- **Contract testing** — Diff breaking changes in CI
+- **Mock MCP server** — JSON-RPC 2.0 over HTTP, stdio, and an SSE duplex channel
+- **Three SDKs** — Python, TypeScript, and Go, all with streaming helpers and parity
+- **Multi-tenant control plane** — Tenants, RBAC API keys, audit log, and cost estimates
+- **Web console** — Next.js console: catalog, live log feed, cost dashboard, YAML editor, admin
 
 ## Quick Example
 
