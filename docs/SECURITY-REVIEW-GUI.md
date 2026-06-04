@@ -43,7 +43,14 @@ a read-only confused-deputy on the log proxies).
 
 ## 2. Action plan
 
-- [ ] **GUI-01 (High)** — Set `secure: true` on the `mockagents_api_key` (and
+> **Status 2026-06-04:** GUI-01 … GUI-09 **all implemented** (commit on
+> `main`). Verified: `npm run typecheck` (tsc) + `npm run build` green; the five
+> security headers confirmed emitting at runtime via a `next start` probe of
+> `/login`. **GUI-10** (env-URL validation, Info) left as optional hygiene.
+> Follow-ups noted: a strict nonce-based CSP (needs `middleware.ts`) and an
+> in-browser CSP smoke before production.
+
+- [x] **GUI-01 (High) — done.** Set `secure: true` on the `mockagents_api_key` (and
   `mockagents_role`) cookie. The cookie carries the **raw, bearer-equivalent
   admin API key**, not a session id; without `Secure` the browser will send it
   over plaintext HTTP (SSL-strip / mixed-content / internal-http exposure). Gate
@@ -52,7 +59,7 @@ a read-only confused-deputy on the log proxies).
   **Done when:** the auth + role cookies carry `Secure` in production builds; dev
   on `http://localhost` still logs in.
 
-- [ ] **GUI-02 (Medium)** — Stop passing one-time plaintext secrets through
+- [x] **GUI-02 (Medium) — done** (server-side single-read flash store `lib/flash.ts` + token cookie; no secret in any URL, incl. bulk rotation). Stop passing one-time plaintext secrets through
   redirect query strings (`gui/app/account/page.tsx:31`,
   `gui/app/admin/tenants/[id]/page.tsx` mint/bulk/rotate). URLs with the secret
   land in browser history, the `Referer` header, and proxy access logs — the
@@ -62,7 +69,7 @@ a read-only confused-deputy on the log proxies).
   keyed by an opaque id. **Never** serialize bulk-rotation plaintext into a query
   param. **Done when:** no freshly-minted/rotated plaintext appears in any URL.
 
-- [ ] **GUI-03 (Medium)** — Add a same-origin check to the credentialed proxy
+- [x] **GUI-03 (Medium) — done** (`lib/guard.ts` `crossSiteForbidden` rejects `Sec-Fetch-Site: cross-site` on both `/api/logs` routes). Add a same-origin check to the credentialed proxy
   routes (`gui/app/api/logs/route.ts`, `gui/app/api/logs/stream/route.ts`). They
   re-attach the operator's cookie-derived key to the upstream on **any** request
   carrying the cookie, including cross-site GETs (`<img>`, `EventSource`,
@@ -71,27 +78,27 @@ a read-only confused-deputy on the log proxies).
   require `getAuthStatus()` non-null). **Done when:** a cross-site GET to either
   proxy route is refused before the upstream call.
 
-- [ ] **GUI-04 + GUI-05 + GUI-06** — Add an `async headers()` block to
+- [x] **GUI-04 + GUI-05 + GUI-06 — done** (`next.config.ts` `headers()` emits CSP + `X-Frame-Options: DENY` + `nosniff` + `Referrer-Policy: no-referrer` + `Permissions-Policy` on all routes; dev adds `'unsafe-eval'` for HMR; confirmed at runtime). Add an `async headers()` block to
   `gui/next.config.ts` returning, for `/:path*`:
   - **CSP** (GUI-04, Medium): `default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'` (tighten `script-src` to a nonce later via middleware).
   - **Clickjacking** (GUI-05, Medium): `X-Frame-Options: DENY` (+ the `frame-ancestors 'none'` above).
   - **Hardening** (GUI-06, Low): `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` (important — secrets can transit the URL until GUI-02 lands), `Permissions-Policy: camera=(), microphone=(), geolocation=()`.
   **Done when:** all routes carry the headers and `npm run build` + a page smoke pass.
 
-- [ ] **GUI-07 (Low)** — Don't relay the upstream error status/body verbatim to
+- [x] **GUI-07 (Low) — done** (both proxy routes now log upstream detail server-side and return a generic message + 502). Don't relay the upstream error status/body verbatim to
   the browser (`gui/app/api/logs/route.ts:27-30`,
   `gui/app/api/logs/stream/route.ts:40-45`, `gui/lib/api.ts:127-130`). Return a
   generic message + 502; log the raw upstream detail server-side only (mirrors
   the back-end SEC-02 / F-TN-006 fix). **Done when:** proxy failures show a
   generic client message, full detail only in server logs.
 
-- [ ] **GUI-08 (Low)** — Tighten the post-login open-redirect guard
+- [x] **GUI-08 (Low) — done** (`login/page.tsx` now rejects a leading `//`). Tighten the post-login open-redirect guard
   (`gui/app/login/page.tsx:20`): `next.startsWith("/")` currently lets a
   **protocol-relative** `//evil.com` through. Use
   `next.startsWith("/") && !next.startsWith("//")`. **Done when:** `?next=//evil.com`
   redirects to `/`, not off-origin.
 
-- [ ] **GUI-09 (Low)** — Change the auth/role cookie to `sameSite: "strict"`. It's
+- [x] **GUI-09 (Low) — done** (auth + role cookies now `SameSite=Strict` via `sessionCookieOptions`). Change the auth/role cookie to `sameSite: "strict"`. It's
   a long-lived raw admin credential and the GUI has no cross-site inbound deep-link
   that needs the cookie on first navigation (`/login` sets it fresh). Pairs with
   GUI-01 in `gui/lib/auth.ts`. **Done when:** the cookie is `SameSite=Strict`.

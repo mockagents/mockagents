@@ -2,10 +2,10 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { burnSession, getAuthStatus, logout, rotateSelf } from "@/lib/auth";
+import { setFlash, takeFlash } from "@/lib/flash";
 
 type PageProps = {
   searchParams: Promise<{
-    plaintext?: string;
     error?: string;
     burn?: string;
   }>;
@@ -17,10 +17,24 @@ type PageProps = {
 // after the swap), and lets you sign out. Admins manage *other*
 // tenants' keys over on /admin/tenants.
 export default async function AccountPage({ searchParams }: PageProps) {
-  const { plaintext, error, burn } = await searchParams;
+  const { error, burn } = await searchParams;
   const auth = await getAuthStatus();
   if (!auth) redirect("/login?next=/account");
   const burnConfirming = burn === "confirm";
+
+  // One-time rotated-key plaintext is delivered via a server-side flash store
+  // (single-read) rather than the URL, so the secret never lands in history /
+  // Referer / proxy logs (GUI-02).
+  const flashRaw = await takeFlash();
+  let plaintext: string | undefined;
+  if (flashRaw) {
+    try {
+      const data = JSON.parse(flashRaw) as { plaintext?: string };
+      if (typeof data.plaintext === "string") plaintext = data.plaintext;
+    } catch {
+      /* ignore malformed flash */
+    }
+  }
 
   async function rotateAction() {
     "use server";
@@ -28,7 +42,8 @@ export default async function AccountPage({ searchParams }: PageProps) {
     if (!result.ok) {
       redirect(`/account?error=${encodeURIComponent(result.error)}`);
     }
-    redirect(`/account?plaintext=${encodeURIComponent(result.plaintext)}`);
+    await setFlash(JSON.stringify({ plaintext: result.plaintext }));
+    redirect("/account");
   }
 
   async function burnAction() {

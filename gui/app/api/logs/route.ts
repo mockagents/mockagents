@@ -9,10 +9,16 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { listLogs } from "@/lib/api";
+import { crossSiteForbidden } from "@/lib/guard";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
+  // This route attaches the operator's cookie-derived key upstream; refuse
+  // cross-site callers so it can't be used as a confused deputy (GUI-03).
+  const blocked = crossSiteForbidden(req);
+  if (blocked) return blocked;
+
   const params = req.nextUrl.searchParams;
   const limit = params.get("limit");
   const agent = params.get("agent");
@@ -25,7 +31,9 @@ export async function GET(req: NextRequest) {
     });
     return NextResponse.json(logs);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "unknown error";
-    return NextResponse.json({ error: message }, { status: 502 });
+    // Log the upstream detail server-side; return a generic message so backend
+    // internals don't leak to the browser (GUI-07).
+    console.error("logs proxy: upstream request failed:", err);
+    return NextResponse.json({ error: "upstream request failed" }, { status: 502 });
   }
 }

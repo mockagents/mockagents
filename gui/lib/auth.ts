@@ -31,6 +31,28 @@ export interface AuthStatus {
 
 const ROLE_COOKIE = "mockagents_role";
 
+// 30-day session — GUI is a dev/ops tool and operators usually want a
+// long-lived login.
+const SESSION_MAX_AGE = 60 * 60 * 24 * 30;
+
+// sessionCookieOptions are the flags for the two session cookies. The cookie
+// value is the raw, bearer-equivalent admin key, so:
+//   - Secure (in production) keeps it off plaintext-HTTP requests (GUI-01).
+//     Left off in dev so http://localhost login still works.
+//   - SameSite=Strict: it's a long-lived raw credential, not a session id, and
+//     the GUI has no cross-site inbound flow that needs it on first navigation
+//     (the /login page sets it fresh) (GUI-09).
+//   - HttpOnly keeps it out of reach of any client JS.
+function sessionCookieOptions() {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict" as const,
+    path: "/",
+    maxAge: SESSION_MAX_AGE,
+  };
+}
+
 /** Read the current session's display metadata. Returns null when the
  * operator is not signed in. Safe to call from any server component. */
 export async function getAuthStatus(): Promise<AuthStatus | null> {
@@ -69,22 +91,8 @@ export async function login(formData: FormData): Promise<{ ok: boolean; error?: 
   }
 
   const store = await cookies();
-  // 30-day session — GUI is a dev/ops tool and operators usually want
-  // a long-lived login. HttpOnly prevents XSS from exfiltrating the
-  // token even if a future slice adds user-content rendering.
-  const thirtyDays = 60 * 60 * 24 * 30;
-  store.set(AUTH_COOKIE, raw, {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: thirtyDays,
-  });
-  store.set(ROLE_COOKIE, "admin", {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: thirtyDays,
-  });
+  store.set(AUTH_COOKIE, raw, sessionCookieOptions());
+  store.set(ROLE_COOKIE, "admin", sessionCookieOptions());
   return { ok: true };
 }
 
@@ -101,17 +109,11 @@ export async function rotateSelf(): Promise<
   try {
     const result = await rotateMyAPIKey();
     const store = await cookies();
-    const thirtyDays = 60 * 60 * 24 * 30;
     // Overwrite the auth cookie with the fresh plaintext. The old
     // secret is already invalid on the server side, so subsequent
     // requests MUST use the new value or they will 401. Keep the
     // role cookie as-is — rotation preserves role.
-    store.set(AUTH_COOKIE, result.plaintext, {
-      httpOnly: true,
-      sameSite: "lax",
-      path: "/",
-      maxAge: thirtyDays,
-    });
+    store.set(AUTH_COOKIE, result.plaintext, sessionCookieOptions());
     return { ok: true, plaintext: result.plaintext, prefix: result.key.prefix };
   } catch (err) {
     if (err instanceof APIError) {

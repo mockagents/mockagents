@@ -12,10 +12,16 @@
 import { NextRequest } from "next/server";
 
 import { getAuthKey, getBaseUrl } from "@/lib/api";
+import { crossSiteForbidden } from "@/lib/guard";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
+  // This route attaches the operator's cookie-derived key upstream; refuse
+  // cross-site callers so it can't be used as a confused deputy (GUI-03).
+  const blocked = crossSiteForbidden(req);
+  if (blocked) return blocked;
+
   const upstream = `${getBaseUrl()}/api/v1/logs/stream`;
   const key = await getAuthKey();
   const headers: Record<string, string> = { Accept: "text/event-stream" };
@@ -33,15 +39,15 @@ export async function GET(req: NextRequest) {
       cache: "no-store",
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "upstream unreachable";
-    return new Response(`upstream fetch failed: ${message}`, { status: 502 });
+    // Log detail server-side, return a generic message to the browser (GUI-07).
+    console.error("logs/stream proxy: upstream unreachable:", err);
+    return new Response("upstream request failed", { status: 502 });
   }
 
   if (!upstreamResp.ok || !upstreamResp.body) {
-    const body = await upstreamResp.text().catch(() => "");
-    return new Response(body || `upstream returned ${upstreamResp.status}`, {
-      status: upstreamResp.status,
-    });
+    const detail = await upstreamResp.text().catch(() => "");
+    console.error(`logs/stream proxy: upstream ${upstreamResp.status}: ${detail.slice(0, 500)}`);
+    return new Response("upstream request failed", { status: 502 });
   }
 
   return new Response(upstreamResp.body, {
