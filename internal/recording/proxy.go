@@ -2,9 +2,11 @@ package recording
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 )
@@ -50,6 +52,12 @@ func NewProxy(upstream string, cassette *Cassette) (*Proxy, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Only http(s) upstreams with a host (SEC-06): reject file://, gopher://,
+	// and schemeless/hostless values so a recording can never be pointed at a
+	// non-network target or a bare path.
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, fmt.Errorf("recording: upstream must be an http(s) URL with a host, got %q", upstream)
+	}
 	return &Proxy{
 		Upstream: u,
 		Cassette: cassette,
@@ -67,7 +75,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	target := *p.Upstream
-	target.Path = singleJoin(p.Upstream.Path, r.URL.Path)
+	// path.Clean strips any "../" traversal segments from the incoming path
+	// before it is appended to the operator's upstream base (SEC-06). The host
+	// and scheme are always the operator's; this just keeps a request from
+	// smuggling traversal sequences into the forwarded upstream path.
+	target.Path = singleJoin(p.Upstream.Path, path.Clean(r.URL.Path))
 	target.RawQuery = r.URL.RawQuery
 
 	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), bytes.NewReader(body))

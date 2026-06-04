@@ -2,9 +2,26 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 )
+
+// maxMCPBodyBytes caps a single JSON-RPC request body on the HTTP transport so a
+// hostile client can't drive an unbounded io.ReadAll allocation. The standalone
+// `mockagents mcp --transport http` server applies no MaxBodySize middleware, so
+// the cap lives in the handler itself and protects every mount point (SEC-01).
+const maxMCPBodyBytes = 1 << 20 // 1 MiB
+
+// readCapStatus maps a body-read error to an HTTP status: 413 when the
+// MaxBytesReader cap was exceeded, 400 otherwise.
+func readCapStatus(err error) int {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		return http.StatusRequestEntityTooLarge
+	}
+	return http.StatusBadRequest
+}
 
 // HTTPHandler wraps a Server in an http.Handler that accepts a single
 // JSON-RPC request per POST and writes the JSON-RPC response. Notifications
@@ -34,9 +51,10 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxMCPBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "reading request: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "reading request: "+err.Error(), readCapStatus(err))
 		return
 	}
 	defer r.Body.Close()
@@ -124,9 +142,10 @@ func (h *NotifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxMCPBodyBytes)
 	var body Notification
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid notification: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "invalid notification: "+err.Error(), readCapStatus(err))
 		return
 	}
 	if body.Method == "" {

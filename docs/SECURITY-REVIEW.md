@@ -35,7 +35,12 @@ HTTP server). The rest are defense-in-depth / consistency / privacy items.
 
 ## 2. Action plan (execute in this order)
 
-- [ ] **SEC-01 (Medium)** — Bound the request body on the standalone MCP HTTP
+> **Status 2026-06-04:** SEC-01, SEC-02, SEC-03, SEC-04, SEC-06 **implemented**
+> (each with a test; SEC-01 and SEC-02 neuter-verified). **SEC-05** deferred
+> (privacy *feature* — config flag + retention design, not a quick fix).
+> **SEC-07 declined** — see the note under its checkbox.
+
+- [x] **SEC-01 (Medium) — implemented.** Bound the request body on the standalone MCP HTTP
   transport. Wrap the body in `http.MaxBytesReader` before `io.ReadAll` /
   `json.NewDecoder` in `internal/mcp/http.go` (both `HTTPHandler.ServeHTTP` and
   `NotifyHandler.ServeHTTP`), and/or wrap the mux in `cmd/mockagents/mcp.go`
@@ -44,7 +49,7 @@ HTTP server). The rest are defense-in-depth / consistency / privacy items.
   with 413 instead of allocating unbounded; a regression test posts an
   oversized body and asserts the cap.
 
-- [ ] **SEC-02 (Low)** — Route the three interaction-log handler 500s through
+- [x] **SEC-02 (Low) — implemented.** Route the three interaction-log handler 500s through
   `writeServerError` so SQLite/driver internals stop leaking to clients
   (`internal/server/log_handlers.go:106, 145, 184`). Every sibling handler
   already does this (F-TN-006); these three are the inconsistency.
@@ -52,21 +57,21 @@ HTTP server). The rest are defense-in-depth / consistency / privacy items.
   `{"error":"internal error"}` envelope on a store error and log the detail
   server-side; the 400/404/503 branches are unchanged.
 
-- [ ] **SEC-03 (Low)** — Tighten `skipAuth` to exact-match the LLM/management
+- [x] **SEC-03 (Low) — implemented.** Tighten `skipAuth` to exact-match the LLM/management
   endpoints instead of `strings.HasPrefix` (`internal/server/server.go:534-538`).
   Keep the `/v1/engines/` prefix only if sub-paths are genuinely intended.
   **Done when:** auth-exemption is decided by exact path equality for
   `/v1/chat/completions`, `/v1/models`, `/v1/messages`; a test asserts a
   sibling path like `/v1/models-internal` is NOT auto-exempted.
 
-- [ ] **SEC-04 (Low)** — Add an upper clamp to the `offset` query param so a
+- [x] **SEC-04 (Low) — implemented.** Add an upper clamp to the `offset` query param so a
   huge `?offset=999999999` can't force a deep table scan
   (`internal/server/handlers.go` `parseBoundedInt(..., "offset", 0, 0)` →
   give it a sane max, e.g. `maxListLimit`).
   **Done when:** `offset` is clamped like `limit`; a test asserts an
   out-of-range offset is capped, not passed through.
 
-- [ ] **SEC-05 (Low, privacy)** — Give operators control over response-body
+- [ ] **SEC-05 (Low, privacy) — DEFERRED** (feature, not a quick fix). Give operators control over response-body
   capture. Wire the **already-existing but dead** `SanitizeBody`/`TruncateBody`
   (`internal/storage/sqlite.go`) into `InteractionCapture`, gated behind a flag
   (e.g. `MOCKAGENTS_LOG_BODIES`, default on for back-compat), and/or add a
@@ -75,7 +80,7 @@ HTTP server). The rest are defense-in-depth / consistency / privacy items.
   persistence (or auto-prune), and the dead `SanitizeBody` is either wired in
   or removed.
 
-- [ ] **SEC-06 (Low)** — Harden the record-mode proxy: validate `--upstream`
+- [x] **SEC-06 (Low) — implemented.** Harden the record-mode proxy: validate `--upstream`
   scheme is `http`/`https` in `recording.NewProxy`, and normalize/clean the
   forwarded `r.URL.Path` to stop `..`-style path escapes from reaching
   unintended upstream routes (`internal/recording/proxy.go:69-83`,
@@ -84,13 +89,18 @@ HTTP server). The rest are defense-in-depth / consistency / privacy items.
   **Done when:** `NewProxy` rejects a non-http(s) upstream and the joined path
   cannot traverse above the upstream base.
 
-- [ ] **SEC-07 (Low, optional)** — Run the timing-defense dummy bcrypt on the
-  malformed-key-format reject branch too, so all `Resolve` reject paths cost
-  ~one bcrypt (`internal/tenancy/store.go:647-648`). Leaks nothing secret today
-  (only the public `mak_<8hex>_` envelope shape is distinguishable), so this is
-  pure defense-in-depth.
-  **Done when:** a malformed-format key and a well-formed-wrong key take
-  comparable time in `Resolve`.
+- [ ] **SEC-07 (Low, optional) — DECLINED 2026-06-04 (net-negative).** Run the
+  timing-defense dummy bcrypt on the malformed-key-format reject branch too
+  (`internal/tenancy/store.go:647-648`).
+  **Why declined:** the format check rejects strings that don't match the
+  **publicly documented** `mak_<8hex>_<secret>` envelope. An attacker
+  constructs their own guess, so they already know whether it's malformed —
+  the timing distinguishes only public format-shape, i.e. **nothing secret**
+  (the real existence oracle, X-TN-002, is already closed). Adding a dummy
+  bcrypt would make every malformed/garbage request pay ~36 ms of CPU (a mild
+  DoS amplification) to defend a zero-value oracle. Net-negative; not
+  implemented. (Re-open only if strict uniform-reject-timing is a hard
+  requirement, paired with auth rate-limiting.)
 
 ### Optional hardening (Info — do only if cheap)
 - [ ] Cap the MCP outbound residual slice in `enqueue` (drop-oldest) so an
