@@ -163,6 +163,12 @@ export async function getAgent(name: string): Promise<Record<string, unknown>> {
   return fetchJSON<Record<string, unknown>>(`/api/v1/agents/${encodeURIComponent(name)}`);
 }
 
+/** Re-read an agent's YAML from disk and replace it in the registry. Requires
+ * the editor role in multi-tenant mode; open in single-tenant mode. */
+export async function reloadAgent(name: string): Promise<void> {
+  await fetchJSON<void>(`/api/v1/agents/${encodeURIComponent(name)}/reload`, { method: "POST" });
+}
+
 export interface ListLogsOptions {
   limit?: number;
   agent?: string;
