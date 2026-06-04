@@ -14,14 +14,12 @@ import {
   updateAPIKeyRole,
 } from "@/lib/api";
 import { getAuthStatus } from "@/lib/auth";
+import { setFlash, takeFlash } from "@/lib/flash";
 
 type PageProps = {
   params: Promise<{ id: string }>;
   searchParams: Promise<{
     error?: string;
-    plaintext?: string;
-    name?: string;
-    bulk?: string;
   }>;
 };
 
@@ -42,14 +40,30 @@ const ROLES: Role[] = ["viewer", "editor", "admin"];
 
 export default async function TenantKeysPage({ params, searchParams }: PageProps) {
   const { id } = await params;
-  const { error, plaintext, name, bulk } = await searchParams;
+  const { error } = await searchParams;
+
+  // One-time key plaintext (single mint/rotate, or a whole bulk-rotation batch)
+  // is delivered via the server-side flash store (single-read), never the URL,
+  // so the secrets never land in history / Referer / proxy logs (GUI-02).
+  let plaintext: string | undefined;
+  let plaintextName: string | undefined;
   let bulkRotation: BulkRotationEntry[] | null = null;
-  if (bulk) {
+  const flashRaw = await takeFlash();
+  if (flashRaw) {
     try {
-      const parsed = JSON.parse(bulk);
-      if (Array.isArray(parsed)) bulkRotation = parsed as BulkRotationEntry[];
+      const data = JSON.parse(flashRaw) as {
+        plaintext?: string;
+        name?: string;
+        bulk?: BulkRotationEntry[];
+      };
+      if (Array.isArray(data.bulk)) {
+        bulkRotation = data.bulk;
+      } else if (typeof data.plaintext === "string") {
+        plaintext = data.plaintext;
+        plaintextName = typeof data.name === "string" ? data.name : undefined;
+      }
     } catch {
-      /* fall through to null — banner just won't render */
+      /* ignore malformed flash */
     }
   }
   const auth = await getAuthStatus();
@@ -102,11 +116,8 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
     try {
       const result = await createAPIKey(id, keyName, role);
       revalidatePath(`/admin/tenants/${id}`);
-      const qs = new URLSearchParams({
-        plaintext: result.plaintext,
-        name: keyName,
-      });
-      redirect(`/admin/tenants/${encodeURIComponent(id)}?${qs.toString()}`);
+      await setFlash(JSON.stringify({ plaintext: result.plaintext, name: keyName }));
+      redirect(`/admin/tenants/${encodeURIComponent(id)}`);
     } catch (err) {
       if (err instanceof APIError) {
         redirect(`/admin/tenants/${encodeURIComponent(id)}?error=${encodeURIComponent(err.message)}`);
@@ -141,14 +152,11 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
         prefix: r.key.prefix,
         plaintext: r.plaintext,
       }));
-      // Stash the whole batch in the query string so the once-only
-      // reveal banner renders every fresh plaintext inline. The
-      // URL is never committed anywhere (server action → redirect
-      // → page render → gone), so the plaintext-in-URL window is
-      // the same "show once then forget" pattern as the single-
-      // key rotate flow.
-      const qs = new URLSearchParams({ bulk: JSON.stringify(entries) });
-      redirect(`/admin/tenants/${encodeURIComponent(id)}?${qs.toString()}`);
+      // Stash the whole batch in the single-read server-side flash store so the
+      // once-only reveal banner renders every fresh plaintext inline — without
+      // ever putting the secrets in the URL (GUI-02).
+      await setFlash(JSON.stringify({ bulk: entries }));
+      redirect(`/admin/tenants/${encodeURIComponent(id)}`);
     } catch (err) {
       if (err instanceof APIError) {
         redirect(`/admin/tenants/${encodeURIComponent(id)}?error=${encodeURIComponent(err.message)}`);
@@ -165,11 +173,8 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
     try {
       const result = await rotateAPIKey(keyId);
       revalidatePath(`/admin/tenants/${id}`);
-      const qs = new URLSearchParams({
-        plaintext: result.plaintext,
-        name: keyName || result.key.name,
-      });
-      redirect(`/admin/tenants/${encodeURIComponent(id)}?${qs.toString()}`);
+      await setFlash(JSON.stringify({ plaintext: result.plaintext, name: keyName || result.key.name }));
+      redirect(`/admin/tenants/${encodeURIComponent(id)}`);
     } catch (err) {
       if (err instanceof APIError) {
         redirect(`/admin/tenants/${encodeURIComponent(id)}?error=${encodeURIComponent(err.message)}`);
@@ -213,7 +218,7 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
           <div className="plaintext-box">
             <code>{plaintext}</code>
           </div>
-          <span className="muted">Key name: {name}</span>
+          <span className="muted">Key name: {plaintextName}</span>
         </div>
       )}
       {bulkRotation && bulkRotation.length > 0 && (

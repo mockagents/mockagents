@@ -17,7 +17,11 @@ export default async function LoginPage({ searchParams }: PageProps) {
       if (next) params.set("next", next);
       redirect(`/login?${params.toString()}`);
     }
-    redirect(next && next.startsWith("/") ? next : "/");
+    // Only allow a local path as the redirect target. `startsWith("/")` alone
+    // would accept a protocol-relative `//evil.com` (an off-origin absolute
+    // URL), so reject a leading `//` too (GUI-08).
+    const dest = next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
+    redirect(dest);
   }
 
   return (
