@@ -10,6 +10,7 @@ import {
   Tenant,
 } from "@/lib/api";
 import { getAuthStatus } from "@/lib/auth";
+import { Icon } from "@/lib/icons";
 
 type PageProps = {
   searchParams: Promise<{ error?: string; created?: string }>;
@@ -83,65 +84,91 @@ export default async function TenantsAdminPage({ searchParams }: PageProps) {
   }
 
   return (
-    <div>
-      <div className="breadcrumb">
-        <Link href="/">Agents</Link> · Admin
+    <div className="view-enter">
+      <div className="head-row page-head">
+        <div className="grow">
+          <h1 className="page-title">Tenants &amp; API keys</h1>
+          <p className="page-lede">
+            Multi-tenant control plane. One row per tenant in{" "}
+            <code>.mockagents-tenancy.db</code>; deleting a tenant cascades to
+            its API keys — there is no soft-delete.
+          </p>
+        </div>
+        <form action={createAction} className="row gap-2">
+          <input
+            name="name"
+            className="input"
+            style={{ width: 200, height: "var(--sr-control-h-sm)" }}
+            placeholder="new tenant name"
+            required
+          />
+          <button type="submit" className="btn btn-default btn-sm">
+            <Icon name="plus" size={15} />
+            New tenant
+          </button>
+        </form>
       </div>
-      <h1 className="page-title">Tenants</h1>
-      <p className="page-lede">
-        One row per tenant in <code>.mockagents-tenancy.db</code>. Deleting a
-        tenant cascades to its API keys — there is no soft-delete.
-      </p>
 
       {error && <div className="banner banner-error">{error}</div>}
       {created && (
         <div className="banner banner-ok">
-          Tenant <code>{created}</code> created. Open it to mint its first API key.
+          <div className="row gap-2">
+            <Icon name="check-circle" size={16} />
+            <div>
+              Tenant <code>{created}</code> created. Open it to mint its first
+              API key.
+            </div>
+          </div>
         </div>
       )}
 
-      <form action={createAction} className="inline-form">
-        <input name="name" placeholder="new tenant name" required />
-        <button type="submit" className="btn btn-primary">
-          Create tenant
-        </button>
-      </form>
-
-      {tenants.length === 0 ? (
-        <p className="muted">No tenants yet.</p>
-      ) : (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Name</th>
-              <th>Created</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {tenants.map((t) => (
-              <tr key={t.id}>
-                <td>
-                  <Link href={`/admin/tenants/${encodeURIComponent(t.id)}`}>
-                    <code>{t.id}</code>
-                  </Link>
-                </td>
-                <td>{t.name}</td>
-                <td className="muted">{t.created_at}</td>
-                <td>
-                  <form action={deleteAction} className="inline">
-                    <input type="hidden" name="id" value={t.id} />
-                    <button type="submit" className="btn btn-danger">
-                      Delete
-                    </button>
-                  </form>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <div className="card" style={{ overflow: "hidden" }}>
+        <div className="card-head">
+          <h3>Tenants</h3>
+          <div className="grow" />
+          <span className="tag">{tenants.length}</span>
+        </div>
+        {tenants.length === 0 ? (
+          <div className="empty">No tenants yet.</div>
+        ) : (
+          tenants.map((t) => (
+            <div
+              key={t.id}
+              className="row gap-3"
+              style={{
+                padding: "12px 16px",
+                borderBottom: "1px solid var(--sr-border)",
+              }}
+            >
+              <div className="agent-icon" style={{ width: 32, height: 32, flex: "0 0 32px" }}>
+                <Icon name="users" size={15} />
+              </div>
+              <Link
+                href={`/admin/tenants/${encodeURIComponent(t.id)}`}
+                className="grow col"
+                style={{ gap: 0, textDecoration: "none", color: "inherit" }}
+              >
+                <span style={{ fontWeight: 500, fontSize: 13 }}>{t.name}</span>
+                <span className="muted mono" style={{ fontSize: 11 }}>
+                  {t.id}
+                </span>
+              </Link>
+              <span className="muted txt-xs nowrap">{t.created_at}</span>
+              <form action={deleteAction} className="inline">
+                <input type="hidden" name="id" value={t.id} />
+                <button
+                  type="submit"
+                  className="btn btn-ghost btn-icon btn-xs"
+                  title="Delete tenant (cascades to its keys)"
+                  style={{ color: "var(--sr-danger-fg)" }}
+                >
+                  <Icon name="trash" size={14} />
+                </button>
+              </form>
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 }

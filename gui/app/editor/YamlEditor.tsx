@@ -1,19 +1,20 @@
 "use client";
 
-// YamlEditor is the client island for /editor. It renders a big
-// textarea, a Validate button that POSTs to the server-action
-// `validateAction`, and an errors panel below. Server-side
-// validation keeps the schema rules and the CLI in lockstep — no
-// JSON-schema-in-the-browser, no ajv dep, no divergence.
+// YamlEditor is the client island for /editor. It renders the design's
+// two-column validator: a code card (line gutter + plain textarea) on the
+// left and a result card on the right. The Validate button POSTs to the
+// server-action `validateAction`, so the schema rules and the CLI stay in
+// lockstep — no JSON-schema-in-the-browser, no ajv dep, no divergence.
 //
-// The textarea is intentionally plain. A full Monaco drop-in would
-// add ~3 MB of bundle for features (autocomplete, folding) that
-// most operators will never use from the GUI. Line numbers and
-// error markers are rendered as a sibling column so the user still
-// gets inline feedback without the editor widget.
+// The textarea is intentionally plain. A full Monaco drop-in would add
+// ~3 MB of bundle for features (autocomplete, folding) most operators will
+// never use from the GUI. Line numbers render as a sibling gutter column —
+// rows flagged by an error turn red — so the user still gets inline feedback
+// without the editor widget.
 
 import { useMemo, useState, useTransition } from "react";
 
+import { Icon } from "@/lib/icons";
 import type { ValidateResult, ValidationError } from "@/lib/api";
 
 const SAMPLE_AGENT = `apiVersion: mockagents/v1
@@ -32,6 +33,23 @@ spec:
           content: "Hello from MockAgents"
 `;
 
+// A deliberately invalid document so operators can see the validator
+// surface real errors without hand-crafting one — mirrors the design's
+// "Load broken" affordance.
+const BROKEN_AGENT = `apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: invoice-agent
+spec:
+  protocol: openai-chats
+  model: gpt-4o
+  behavior:
+    scenarios:
+      - name: default
+        responding:
+          content: "How can I help with your invoice?"
+`;
+
 interface YamlEditorProps {
   validateAction: (yaml: string) => Promise<ValidateResult>;
 }
@@ -41,7 +59,12 @@ export function YamlEditor({ validateAction }: YamlEditorProps) {
   const [result, setResult] = useState<ValidateResult | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  const lineCount = useMemo(() => yaml.split("\n").length, [yaml]);
+  const lines = useMemo(() => yaml.split("\n"), [yaml]);
+  // Lines the server flagged — rendered red in the gutter for at-a-glance triage.
+  const errLines = useMemo(
+    () => new Set((result?.errors ?? []).map((e) => e.line).filter(Boolean)),
+    [result],
+  );
 
   function onValidate() {
     startTransition(async () => {
@@ -50,84 +73,178 @@ export function YamlEditor({ validateAction }: YamlEditorProps) {
     });
   }
 
+  function load(sample: string) {
+    setYaml(sample);
+    setResult(null);
+  }
+
   return (
-    <div className="editor-layout">
-      <div className="editor-toolbar">
-        <button
-          type="button"
-          className="btn btn-primary"
-          onClick={onValidate}
-          disabled={isPending}
-        >
-          {isPending ? "Validating…" : "Validate"}
-        </button>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => setYaml(SAMPLE_AGENT)}
-          disabled={isPending}
-        >
-          Reset to sample
-        </button>
-        <span className="muted editor-meta">
-          {lineCount} lines · {yaml.length} chars
-          {result && <> · kind: <code>{result.kind || "?"}</code></>}
-        </span>
+    <div className="view-enter">
+      <div className="head-row page-head">
+        <div className="grow">
+          <h1 className="page-title">Config editor</h1>
+          <p className="page-lede">
+            Validation playground. Posts to{" "}
+            <code>POST /api/v1/config/validate</code> — the same validator{" "}
+            <code>mockagents validate</code> runs. It does not persist: edit the
+            file on disk and rely on hot reload (or restart) to apply changes.
+          </p>
+        </div>
+        <div className="row gap-2">
+          <button
+            type="button"
+            className="btn btn-outline btn-sm"
+            onClick={() => load(BROKEN_AGENT)}
+            disabled={isPending}
+          >
+            Load broken
+          </button>
+          <button
+            type="button"
+            className="btn btn-outline btn-sm"
+            onClick={() => load(SAMPLE_AGENT)}
+            disabled={isPending}
+          >
+            Load valid
+          </button>
+          <button
+            type="button"
+            className="btn btn-default btn-sm"
+            onClick={onValidate}
+            disabled={isPending}
+          >
+            <Icon name="check-circle" size={15} />
+            {isPending ? "Validating…" : "Validate"}
+          </button>
+        </div>
       </div>
 
-      <div className="editor-grid">
-        <pre className="editor-gutter" aria-hidden="true">
-          {Array.from({ length: lineCount }, (_, i) => i + 1).join("\n")}
-        </pre>
-        <textarea
-          className="editor-textarea"
-          spellCheck={false}
-          autoCorrect="off"
-          autoCapitalize="off"
-          value={yaml}
-          onChange={(e) => setYaml(e.target.value)}
-          aria-label="Agent YAML"
-        />
-      </div>
+      <div
+        className="grid"
+        style={{ gridTemplateColumns: "1.3fr 1fr", alignItems: "start" }}
+      >
+        <div className="card" style={{ overflow: "hidden" }}>
+          <div className="card-head">
+            <Icon name="file-code" size={15} />
+            <div className="grow">
+              <h3 className="mono">agent.yaml</h3>
+            </div>
+            <span className="tag">{lines.length} lines</span>
+          </div>
+          <div className="editor-grid">
+            <pre className="editor-gutter" aria-hidden="true">
+              {lines.map((_, i) => (
+                <span
+                  key={i}
+                  style={
+                    errLines.has(i + 1)
+                      ? { color: "var(--sr-danger-fg)", display: "block" }
+                      : { display: "block" }
+                  }
+                >
+                  {i + 1}
+                </span>
+              ))}
+            </pre>
+            <textarea
+              className="editor-textarea"
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="off"
+              value={yaml}
+              onChange={(e) => {
+                setYaml(e.target.value);
+                setResult(null);
+              }}
+              aria-label="Agent YAML"
+            />
+          </div>
+        </div>
 
-      {result && <ResultPanel result={result} />}
+        <div className="card card-pad">
+          <div className="eyebrow mb-3">validation result</div>
+          <ResultPanel result={result} pending={isPending} />
+        </div>
+      </div>
     </div>
   );
 }
 
-function ResultPanel({ result }: { result: ValidateResult }) {
-  if (result.ok) {
+function ResultPanel({
+  result,
+  pending,
+}: {
+  result: ValidateResult | null;
+  pending: boolean;
+}) {
+  if (!result) {
     return (
-      <div className="banner banner-ok">
-        <strong>Valid.</strong> Kind: <code>{result.kind}</code>. The document
-        passed every schema and cross-reference check.
+      <div className="empty">
+        {pending
+          ? "Running the server-side schema check…"
+          : "Click Validate to run the server-side schema check."}
       </div>
     );
   }
+
+  if (result.ok) {
+    return (
+      <div className="banner banner-ok">
+        <div className="row gap-2">
+          <Icon name="check-circle" size={16} />
+          <div>
+            <strong>Valid.</strong> Parsed as{" "}
+            <code className="mono">kind: {result.kind || "?"}</code> with no
+            schema errors.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="banner banner-error editor-errors">
-      <strong>{result.errors.length} error{result.errors.length === 1 ? "" : "s"}.</strong>
-      <ul>
-        {result.errors.map((err, i) => (
-          <li key={i}>
-            <ErrorRow err={err} />
-          </li>
-        ))}
-      </ul>
+    <div className="col gap-3">
+      <div className="banner banner-error">
+        <div className="row gap-2">
+          <Icon name="x-circle" size={16} />
+          <div>
+            <strong>
+              {result.errors.length} error
+              {result.errors.length === 1 ? "" : "s"}.
+            </strong>{" "}
+            Fix and re-validate.
+          </div>
+        </div>
+      </div>
+      {result.errors.map((err, i) => (
+        <ErrorCard key={i} err={err} />
+      ))}
     </div>
   );
 }
 
-function ErrorRow({ err }: { err: ValidationError }) {
+function ErrorCard({ err }: { err: ValidationError }) {
   return (
-    <div>
-      <div>
-        {err.line ? <code>line {err.line}</code> : null}
-        {err.line && err.field ? " · " : null}
-        {err.field && <code>{err.field}</code>}
-        <span> — {err.message}</span>
+    <div
+      className="card-light"
+      style={{
+        border: "1px solid var(--sr-border)",
+        borderRadius: 8,
+        padding: 12,
+      }}
+    >
+      <div className="row gap-2 mb-2">
+        {err.line ? (
+          <span className="badge badge-destructive mono">line {err.line}</span>
+        ) : null}
+        {err.field && <span className="mono txt-xs muted">{err.field}</span>}
       </div>
-      {err.suggestion && <div className="muted">Suggestion: {err.suggestion}</div>}
+      <div className="txt-sm">{err.message}</div>
+      {err.suggestion && (
+        <div className="code-light mt-2" style={{ padding: "6px 10px" }}>
+          {err.suggestion}
+        </div>
+      )}
     </div>
   );
 }
