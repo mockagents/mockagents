@@ -2,8 +2,63 @@ package tenancy
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 )
+
+// TestBulkRotate_AuthNotBlockedDuringHashing is the PERF-10 guard: the expensive
+// bcrypt hashing now runs OUTSIDE the write transaction, so a concurrent
+// auth-path read can use the single tenancy connection (MaxOpenConns=1) while
+// the rotation is still hashing, instead of stalling for the whole bcrypt run.
+// If bcrypt is moved back inside the tx, the concurrent read blocks until commit
+// (~N*bcrypt) and this fails.
+//
+// The assertion is RELATIVE (read must be a small fraction of the total rotation
+// time) so it self-scales with machine speed and stays non-flaky: bcrypt is
+// deliberately ~50–100 ms/key regardless of CPU, while a free-connection read is
+// sub-millisecond.
+func TestBulkRotate_AuthNotBlockedDuringHashing(t *testing.T) {
+	s := newTestStore(t)
+	bg := context.Background()
+	ten, err := s.CreateTenant(bg, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const n = 10
+	for i := range n {
+		if _, err := s.CreateAPIKey(bg, ten.ID, fmt.Sprintf("k%d", i), RoleViewer); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rotateStart := time.Now()
+	rotateErr := make(chan error, 1)
+	go func() {
+		_, _, err := s.BulkRotateTenantKeys(bg, ten.ID)
+		rotateErr <- err
+	}()
+
+	// Let the rotation get past its initial SELECT and into the bcrypt loop,
+	// where the connection is free under the fix.
+	time.Sleep(20 * time.Millisecond)
+
+	readStart := time.Now()
+	if _, err := s.GetTenant(bg, ten.ID); err != nil {
+		t.Fatalf("concurrent GetTenant: %v", err)
+	}
+	readDur := time.Since(readStart)
+
+	if err := <-rotateErr; err != nil {
+		t.Fatalf("rotation: %v", err)
+	}
+	rotateDur := time.Since(rotateStart)
+
+	if readDur > rotateDur/4 {
+		t.Fatalf("concurrent read took %v during a %v rotation — the connection "+
+			"appears held across the bcrypt hashing (PERF-10 regressed)", readDur, rotateDur)
+	}
+}
 
 func TestBulkRotateTenantKeys_RotatesEverything(t *testing.T) {
 	store := newTestStore(t)
