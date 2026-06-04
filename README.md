@@ -218,26 +218,31 @@ Store this in your password manager. Use it via:
 ```
 
 The key is bcrypt-hashed immediately; there is no recovery path if you
-lose it. Three roles, ordered by privilege: `viewer` < `editor` <
-`admin`. Roles gate the control-plane routes:
+lose it. Four roles, ordered by privilege: `viewer` < `editor` <
+`admin` < `platform`. **`platform`** is the cross-tenant operator role
+and the only one allowed to manage the tenant *collection*; it is minted
+**only** by the CLI bootstrap, and the management API refuses to assign
+it — so a per-tenant `admin` cannot self-escalate. Roles gate the
+control-plane routes:
 
 | Route                                     | Min role |
 | ----------------------------------------- | -------- |
 | `GET  /api/v1/health`                     | open     |
 | `GET  /api/v1/agents`, `/api/v1/logs`     | viewer   |
 | `POST /api/v1/agents/{name}/reload`       | viewer   |
+| `POST /api/v1/keys/me/rotate`             | viewer   |
+| `POST /api/v1/keys/me/burn`               | viewer   |
 | `GET  /api/v1/tenants/{id}/keys`          | editor   |
-| `GET  /api/v1/tenants`                    | admin    |
-| `POST /api/v1/tenants`, `DELETE ...`      | admin    |
+| `POST /api/v1/config/validate`            | editor   |
 | `POST /api/v1/tenants/{id}/keys`          | admin    |
 | `POST /api/v1/tenants/{id}/keys/rotate`   | admin    |
 | `PATCH /api/v1/keys/{id}`                 | admin    |
 | `POST /api/v1/keys/{id}/rotate`           | admin    |
-| `POST /api/v1/keys/me/rotate`             | viewer   |
-| `POST /api/v1/keys/me/burn`               | viewer   |
-| `GET  /api/v1/logs/stream/metrics`        | admin    |
 | `DELETE /api/v1/keys/{id}`                | admin    |
-| `POST /api/v1/config/validate`            | editor   |
+| `GET  /api/v1/audit`                      | admin    |
+| `GET  /api/v1/logs/stream/metrics`        | admin    |
+| `GET  /api/v1/tenants`                    | platform |
+| `POST /api/v1/tenants`, `DELETE ...`      | platform |
 
 **The LLM endpoints (`/v1/chat/completions`, `/v1/messages`,
 `/v1/models`, `/v1/engines/*`) deliberately remain unauthenticated** —
@@ -297,7 +302,10 @@ the two ways to provide agent definitions (inline vs. existing ConfigMap).
 ## Web Console (GUI v0.3)
 
 A Next.js 15 web console lives under `gui/` with 15 routes covering
-read, authoring, and admin surfaces:
+read, authoring, and admin surfaces. Every surface is built on the
+**"MockAgents Console" design system** — a shared design-token palette
+with a light/dark theme toggle (server-rendered, no flash) and a grouped
+sidebar shell with breadcrumbs:
 
 - **Read**: agent catalog, agent detail, pipelines list, pipeline
   DAG viewer (static SVG), interaction logs with per-row detail,

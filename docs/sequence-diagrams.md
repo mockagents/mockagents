@@ -1,6 +1,11 @@
 # MockAgents — Sequence Diagrams
 
-This document contains Mermaid sequence diagrams for all major flows in the MockAgents platform (Go core engine, CLI-only MVP).
+This document contains Mermaid sequence diagrams for the major flows in the
+MockAgents platform — a Go core engine with OpenAI/Anthropic adapters, a mock
+MCP server, a multi-tenant control plane, and three language SDKs. Flows 1–11
+cover the foundation (CLI, LLM request/response, tools, SDK lifecycle,
+management API); flows 12–15 cover the control-plane and real-time surfaces
+added in v0.2/v0.3.
 
 ---
 
@@ -509,4 +514,127 @@ sequenceDiagram
         Handler-->>Server: HTTP 200 + JSON body
         Server-->>Client: {"logs": [...], "total": N, "limit": 50, "offset": 0}
     end
+```
+
+---
+
+## 12. Multi-tenant Auth + RBAC (management route)
+
+How an authenticated management request resolves its principal, derives a tenant
+scope, and passes the role floor — with a bcrypt-skipping auth cache and an
+audit `auth.denied` event on rejection.
+
+```mermaid
+sequenceDiagram
+    participant Client as API Client
+    participant MW as Auth Middleware
+    participant Cache as Auth Cache (TTL)
+    participant Store as Tenancy Store (SQLite)
+    participant Authz as Route Authz (role floors)
+    participant Audit as Audit Recorder
+
+    Client->>MW: Request + Authorization: Bearer mak_...
+    MW->>Cache: Lookup hashed key
+    alt Cache hit
+        Cache-->>MW: Principal (tenant, key id, role)
+    else Cache miss
+        MW->>Store: Resolve key (bcrypt compare)
+        Store-->>MW: Principal or not-found
+        MW->>Cache: Store principal (TTL)
+    end
+    alt Auth fails (bad/unknown key, store error → fail closed)
+        MW->>Audit: Record auth.denied (tenant, ip)
+        MW-->>Client: 401 Unauthorized
+    else Authenticated
+        MW->>Authz: Check role >= route floor
+        alt Role too low
+            Authz->>Audit: Record auth.denied
+            Authz-->>Client: 403 Forbidden
+        else Authorized
+            Authz->>Authz: Attach tenant scope to context
+            Authz-->>Client: Proceed to handler (tenant-scoped)
+        end
+    end
+```
+
+---
+
+## 13. MCP Bidirectional — Server-initiated Sampling
+
+A server-initiated `sampling/createMessage` request flows to a subscribed client
+over SSE; the client POSTs its reply, which is routed back to the in-process
+caller via `DeliverResponse`.
+
+```mermaid
+sequenceDiagram
+    participant Trigger as Admin / Test (POST /mcp/sample)
+    participant Server as MCP Server
+    participant Events as SSE /mcp/events
+    participant Client as MCP Client
+    participant Resp as POST /mcp/response
+
+    Client->>Events: GET /mcp/events (subscribe)
+    Events-->>Client: open SSE stream
+    Trigger->>Server: POST /mcp/sample {messages}
+    Server->>Server: Server.SendRequest (assign id, park caller)
+    Server->>Events: enqueue sampling/createMessage (id)
+    Events-->>Client: event: request (JSON-RPC)
+    Client->>Client: produce sampled message
+    Client->>Resp: POST /mcp/response {id, result}
+    Resp->>Server: DeliverResponse(id, result)
+    Server-->>Trigger: 200 + sampled result
+```
+
+---
+
+## 14. Real-time Log Feed (SSE)
+
+The GUI live feed subscribes to the broadcaster; each new interaction written by
+the async log worker is fanned out to all subscribers sub-second.
+
+```mermaid
+sequenceDiagram
+    participant GUI as Web Console (/logs?live=1)
+    participant Proxy as GUI SSE proxy (same-origin)
+    participant Stream as GET /api/v1/logs/stream
+    participant BC as Log Broadcaster
+    participant Worker as Async Log Worker
+    participant DB as Interactions DB
+
+    GUI->>Proxy: open EventSource
+    Proxy->>Stream: GET (Bearer from HttpOnly cookie)
+    Stream->>BC: SubscribeTenant(scope)
+    BC-->>Stream: subscription (bounded buffer)
+    Note over Worker,DB: a client LLM request completes
+    Worker->>DB: INSERT interaction (LastInsertId)
+    Worker->>BC: publish row (tenant-scoped)
+    BC-->>Stream: row (or event: dropped on overflow)
+    Stream-->>Proxy: SSE frame
+    Proxy-->>GUI: append row / sticky drop badge
+```
+
+---
+
+## 15. API-Key Rotation (in place)
+
+`POST /api/v1/keys/{id}/rotate` regenerates a secret transactionally, preserving
+id/name/role/tenant, flushing the auth cache, and emitting an audit event with
+both prefixes.
+
+```mermaid
+sequenceDiagram
+    participant Admin as Admin (Bearer)
+    participant Handler as Rotate Handler
+    participant Store as Tenancy Store
+    participant Cache as Auth Cache
+    participant Audit as Audit Recorder
+
+    Admin->>Handler: POST /api/v1/keys/{id}/rotate
+    Handler->>Handler: ensureOwnTenant(principal, key)
+    Handler->>Store: RotateAPIKey(tenantID, keyID) [tx]
+    Store->>Store: generate secret, bcrypt, UPDATE hash
+    Store-->>Handler: {key meta, new plaintext, old/new prefix}
+    Handler->>Cache: Flush(keyID)
+    Handler->>Audit: Record api_key.rotated (old+new prefix)
+    Handler-->>Admin: 200 + plaintext (shown once)
 ```

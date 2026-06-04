@@ -1,11 +1,17 @@
 # MockAgents -- High-Level Design Document
 
-> **Implementation status (2026-04-13):** this HLD captures the
+> **Implementation status (updated 2026-06-04):** this HLD captures the
 > original design intent. Code reality has moved ahead across every
 > phase — see [PROGRESS.md](./PROGRESS.md) for the live map of slices,
-> file paths, and test coverage. Sections below that describe
-> components not yet shipped are flagged implicitly by their absence
-> in PROGRESS.md §2.
+> file paths, and test coverage, and
+> [architecture-diagrams.md](./architecture-diagrams.md) /
+> [sequence-diagrams.md](./sequence-diagrams.md) for the current
+> diagrams. Two notable divergences from the prose and diagrams below:
+> the HTTP layer is the standard-library **`net/http` ServeMux**, not
+> Chi; and scope now spans Phases 1–4 (multi-tenant control plane, MCP,
+> three SDKs, web console) rather than the single-agent CLI MVP.
+> Sections that describe components not yet shipped are flagged
+> implicitly by their absence in PROGRESS.md §2.
 
 | Field        | Value                                                      |
 |--------------|------------------------------------------------------------|

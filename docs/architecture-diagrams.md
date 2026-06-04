@@ -1,196 +1,303 @@
 # MockAgents Architecture Diagrams
 
-This document contains Mermaid-based architecture diagrams for MockAgents, a platform for mocking AI agent integrations. MockAgents uses a Go core engine, monorepo layout, SQLite storage, and ships as a CLI-only MVP.
+Mermaid architecture diagrams for MockAgents — a Go-based mock server that is a
+drop-in replacement for the OpenAI and Anthropic APIs, with a mock MCP server, a
+multi-tenant control plane, three language SDKs, and a Next.js web console.
+
+The system ships as a **single static Go binary** (pure-Go SQLite, no cgo) plus
+an optional Next.js console. The diagrams below reflect the current
+implementation; the package layout maps 1:1 to `internal/*`. See
+[`architecture.md`](architecture.md) for prose and
+[`sequence-diagrams.md`](sequence-diagrams.md) for per-flow sequences.
 
 ---
 
 ## 1. System Context Diagram (C4 Level 1)
 
-Shows MockAgents in the context of its external actors and systems.
+MockAgents in the context of its external actors and systems.
 
 ```mermaid
 flowchart TB
-    developer["Developer\n(Uses CLI + SDK)"]
-    cicd["CI/CD Pipeline\n(Runs Tests)"]
-    clientapp["Client Application\n(Sends LLM API Requests)"]
+    developer["Developer<br/>(CLI + SDKs)"]
+    cicd["CI/CD Pipeline<br/>(test / contract diff)"]
+    clientapp["Client Application<br/>(OpenAI / Anthropic SDK)"]
+    mcpclient["MCP Client<br/>(tools / sampling / roots)"]
+    operator["Platform / Tenant Operator<br/>(web console)"]
 
-    mockagents(["MockAgents System\n(Go Binary)"])
+    mockagents(["MockAgents<br/>(Go binary + Next.js console)"])
 
-    reallm["Real LLM APIs\n(OpenAI, Anthropic, etc.)\n-- Future Record Mode --"]
+    reallm["Real LLM APIs<br/>(OpenAI, Anthropic)"]
+    otel["Observability Backend<br/>(OTLP/HTTP collector)"]
 
-    developer -->|"configure agents\nrun mock server"| mockagents
-    cicd -->|"start server\nassert responses"| mockagents
-    clientapp -->|"HTTP requests\n(OpenAI/Anthropic format)"| mockagents
-    mockagents -.->|"forward requests\n(future record mode)"| reallm
+    developer -->|"define agents, run server"| mockagents
+    cicd -->|"start server, assert, diff contracts"| mockagents
+    clientapp -->|"HTTP (OpenAI/Anthropic wire format)"| mockagents
+    mcpclient -->|"JSON-RPC 2.0 (HTTP / stdio / SSE)"| mockagents
+    operator -->|"manage tenants, keys, view logs/costs"| mockagents
+    mockagents -.->|"record mode: proxy + capture"| reallm
+    mockagents -.->|"export spans (opt-in)"| otel
 
     style mockagents fill:#1168bd,stroke:#0b4884,color:#fff
     style developer fill:#08427b,stroke:#052e56,color:#fff
     style cicd fill:#08427b,stroke:#052e56,color:#fff
     style clientapp fill:#08427b,stroke:#052e56,color:#fff
+    style mcpclient fill:#08427b,stroke:#052e56,color:#fff
+    style operator fill:#08427b,stroke:#052e56,color:#fff
     style reallm fill:#999,stroke:#666,color:#fff
+    style otel fill:#999,stroke:#666,color:#fff
 ```
 
 ---
 
 ## 2. Container Diagram (C4 Level 2)
 
-Shows the high-level containers that make up MockAgents and how they communicate.
+The deployable units and how they communicate. The Go binary serves both the
+LLM-compatible endpoints and the management API; the console is a separate
+Next.js process that talks to the binary over HTTP.
 
 ```mermaid
 flowchart TB
-    subgraph MockAgents System
-        gobinary["MockAgents Go Binary\n(HTTP Server + Mock Engine + CLI)\nListens on :8080"]
-        sqlite[("SQLite Database\n(interactions.db)\nStores logs & session state")]
-        filesystem["File System\n(Agent YAML Configs)\n./agents/*.yaml"]
+    subgraph system["MockAgents System"]
+        gobinary["Go Binary<br/>net/http server + mock engine<br/>+ MCP server · :8080"]
+        gui["Web Console<br/>Next.js 15 (SSR) · :3001"]
+        interactions[("interactions<br/>.mockagents.db")]
+        tenancydb[("tenancy<br/>.mockagents-tenancy.db")]
+        auditdb[("audit log<br/>.mockagents-audit.db")]
+        filesystem["Agent YAML configs<br/>./agents/*.yaml"]
     end
 
-    pythonsdk["Python SDK\n(pip install mockagents)\nSeparate package"]
+    pysdk["Python SDK"]
+    tssdk["TypeScript SDK"]
+    gosdk["Go SDK<br/>(+ in-process mode)"]
 
     clientapp["Client Application"]
-    developer["Developer"]
+    mcpclient["MCP Client"]
+    operator["Operator (browser)"]
 
-    developer -->|"CLI commands\n(stdin/stdout)"| gobinary
-    pythonsdk -->|"HTTP :8080\nREST API"| gobinary
-    clientapp -->|"HTTP :8080\nOpenAI/Anthropic\ncompat endpoints"| gobinary
-    gobinary -->|"SQL queries"| sqlite
-    gobinary -->|"Read YAML files"| filesystem
-    developer -->|"import mockagents"| pythonsdk
+    clientapp -->|"OpenAI/Anthropic compat<br/>HTTP :8080"| gobinary
+    mcpclient -->|"MCP JSON-RPC<br/>/mcp, /mcp/events, /mcp/response"| gobinary
+    pysdk -->|"HTTP :8080"| gobinary
+    tssdk -->|"HTTP :8080"| gobinary
+    gosdk -->|"HTTP :8080 / in-process httptest"| gobinary
+    operator -->|"HTTPS :3001"| gui
+    gui -->|"management API<br/>Bearer (HttpOnly cookie)"| gobinary
+
+    gobinary -->|"SQL"| interactions
+    gobinary -->|"SQL (bcrypt keys, RBAC)"| tenancydb
+    gobinary -->|"append-only SQL"| auditdb
+    gobinary -->|"load + hot reload (fsnotify)"| filesystem
 
     style gobinary fill:#1168bd,stroke:#0b4884,color:#fff
-    style sqlite fill:#2d882d,stroke:#1a5c1a,color:#fff
-    style filesystem fill:#d4a017,stroke:#a67c00,color:#fff
-    style pythonsdk fill:#7b3f00,stroke:#5a2d00,color:#fff
+    style gui fill:#7b3f00,stroke:#5a2d00,color:#fff
+    style interactions fill:#2d882d,stroke:#1a5c1a,color:#fff
+    style tenancydb fill:#2d882d,stroke:#1a5c1a,color:#fff
+    style auditdb fill:#2d882d,stroke:#1a5c1a,color:#fff
+    style filesystem fill:#d4a017,stroke:#a67c00,color:#000
+    style pysdk fill:#08427b,stroke:#052e56,color:#fff
+    style tssdk fill:#08427b,stroke:#052e56,color:#fff
+    style gosdk fill:#08427b,stroke:#052e56,color:#fff
     style clientapp fill:#08427b,stroke:#052e56,color:#fff
-    style developer fill:#08427b,stroke:#052e56,color:#fff
+    style mcpclient fill:#08427b,stroke:#052e56,color:#fff
+    style operator fill:#08427b,stroke:#052e56,color:#fff
 ```
 
 ---
 
 ## 3. Component Diagram (C4 Level 3)
 
-Shows the internal Go packages and how data flows between them.
+Internal Go packages (`internal/*`) and the request data flow. Request path:
+**HTTP → middleware → adapter → engine → response generator → adapter → HTTP
+(optionally SSE)**.
 
 ```mermaid
 flowchart TB
     subgraph server["internal/server"]
-        httpserver["HTTP Server\n(Chi Router)"]
+        mux["net/http ServeMux"]
+        mw["Middleware<br/>(auth, CORS, logging)"]
+        authz["Route authz<br/>(role floors)"]
+        loghandlers["Log / cost / audit /<br/>pipeline / validate handlers"]
+        logworker["Async log worker pool"]
+        broadcaster["Log broadcaster<br/>(SSE fan-out)"]
     end
 
     subgraph adapter["internal/adapter"]
-        registry["Protocol Adapter\nRegistry"]
-        openai["OpenAI\nAdapter"]
-        anthropic["Anthropic\nAdapter"]
+        openai["OpenAI translate in/out"]
+        anthropic["Anthropic translate in/out"]
+        decode["Pooled decode / encode"]
     end
 
     subgraph engine["internal/engine"]
-        core["Mock Engine\nCore"]
-        agentregistry["Agent Registry\n/ Loader"]
-        scenariomatcher["Scenario\nMatcher"]
-        responsegen["Response Generator\n(Static, Template)"]
-        toolcall["Tool Call\nProcessor"]
-        statestore["State Store\n(In-Memory)"]
+        core["Engine<br/>ProcessRequestContext"]
+        registry["Agent registry<br/>(byModel + tenant index)"]
+        matcher["Scenario matcher"]
+        respgen["Response generator<br/>(templates)"]
+        tools["Tool processor + validator"]
+        chaos["Chaos (latency/error/rate)"]
+        state["Session state store"]
     end
 
-    subgraph storage["internal/storage"]
-        logger["Interaction\nLogger"]
-        sqlitestorage["SQLite\nStorage"]
+    subgraph mcp["internal/mcp"]
+        mcpdispatch["JSON-RPC dispatch"]
+        mcpduplex["Bidirectional SSE<br/>(sampling, roots)"]
     end
 
-    subgraph config["internal/config"]
-        configloader["Config Loader\n/ Validator"]
-    end
+    tenancy["internal/tenancy<br/>store + RBAC + auth cache"]
+    audit["internal/audit<br/>append-only recorder"]
+    pricing["internal/pricing<br/>cost table"]
+    recording["internal/recording<br/>record / replay"]
+    streaming["internal/streaming<br/>SSE chunker"]
+    config["internal/config<br/>loader + validators"]
+    storage["internal/storage<br/>SQLite logs"]
+    observability["internal/observability<br/>OTel tracer"]
 
-    httpserver -->|"raw HTTP request"| registry
-    registry -->|"route to adapter"| openai
-    registry -->|"route to adapter"| anthropic
-    openai -->|"parsed internal request"| core
-    anthropic -->|"parsed internal request"| core
-    core -->|"lookup agent"| agentregistry
-    core -->|"get/create session"| statestore
-    core -->|"find matching scenario"| scenariomatcher
-    scenariomatcher -->|"matched scenario"| responsegen
-    responsegen -->|"check for tool calls"| toolcall
-    toolcall -->|"resolved response"| core
-    core -->|"log interaction"| logger
-    logger -->|"write to DB"| sqlitestorage
-    agentregistry -->|"load YAML"| configloader
-    openai -->|"format protocol response"| httpserver
-    anthropic -->|"format protocol response"| httpserver
+    mux --> mw --> authz
+    authz -->|"LLM routes"| openai
+    authz -->|"LLM routes"| anthropic
+    authz -->|"mgmt routes"| loghandlers
+    authz -->|"/mcp*"| mcpdispatch
+    openai --> decode
+    anthropic --> decode
+    openai -->|"internal request"| core
+    anthropic -->|"internal request"| core
+    core --> registry
+    core --> state
+    core --> chaos
+    core --> matcher --> respgen --> tools --> core
+    mw -. resolve principal .-> tenancy
+    authz -. role check .-> tenancy
+    core -. spans (opt-in) .-> observability
+    core -->|"log"| logworker --> storage
+    logworker --> broadcaster
+    loghandlers --> storage
+    loghandlers --> pricing
+    loghandlers -. emit .-> audit
+    tenancy -. denial hook .-> audit
+    registry --> config
+    mcpdispatch --> config
+    mcpdispatch --> mcpduplex
+    openai -->|"format response"| mux
+    anthropic -->|"format response / SSE"| streaming --> mux
+    broadcaster -->|"event stream"| mux
+    recording -. proxy/replay .-> mux
 
-    style httpserver fill:#1168bd,stroke:#0b4884,color:#fff
+    style mux fill:#1168bd,stroke:#0b4884,color:#fff
     style core fill:#d9534f,stroke:#c12e2a,color:#fff
-    style sqlitestorage fill:#2d882d,stroke:#1a5c1a,color:#fff
+    style storage fill:#2d882d,stroke:#1a5c1a,color:#fff
+    style tenancy fill:#7b3f00,stroke:#5a2d00,color:#fff
+    style audit fill:#7b3f00,stroke:#5a2d00,color:#fff
 ```
 
 ---
 
 ## 4. Request Processing Pipeline
 
-Step-by-step flow of how an incoming HTTP request is processed and a response is returned.
+How an incoming LLM-compatible request is processed end-to-end, including the
+multi-tenant and live-feed paths.
 
 ```mermaid
 flowchart TD
-    A["HTTP Request"] --> B["Chi Router"]
-    B --> C["Protocol Adapter\n(OpenAI / Anthropic)"]
-    C --> D["Parse to Internal Request"]
-    D --> E["Load Agent Definition"]
-    E --> F["Get or Create\nSession State"]
-    F --> G["Match Scenario"]
-    G --> H["Generate Response\n(Static / Template)"]
-    H --> I{"Has Tool Calls?"}
-    I -->|Yes| J["Resolve Tool Calls"]
-    J --> K["Format Protocol Response"]
-    I -->|No| K
-    K --> L{"Streaming?"}
-    L -->|Yes| M["SSE Stream\n(Server-Sent Events)"]
-    L -->|No| N["JSON Response"]
-    M --> O["Log Interaction"]
-    N --> O
-    O --> P["Return to Client"]
+    A["HTTP Request"] --> B["net/http ServeMux"]
+    B --> C["Middleware<br/>(CORS, logging,<br/>opportunistic auth)"]
+    C --> D{"Multi-tenant<br/>mode?"}
+    D -->|Yes| E["Resolve API-key principal<br/>→ tenant scope (auth cache)"]
+    D -->|No| F["Anonymous scope"]
+    E --> G["Protocol Adapter<br/>(OpenAI / Anthropic)"]
+    F --> G
+    G --> H["Parse to internal request"]
+    H --> I["Resolve agent<br/>(byModel + tenant visibility)"]
+    I --> J["Get / create session<br/>(per-session ApplyTurn lock)"]
+    J --> K{"Chaos?<br/>latency / error / rate"}
+    K -->|Inject| L["Sleep / 429 / 5xx"]
+    K -->|Pass| M["Match scenario"]
+    M --> N["Generate response<br/>(template expansion)"]
+    N --> O{"Tool calls?"}
+    O -->|Yes| P["Resolve + validate tool calls"]
+    P --> Q["Format protocol response"]
+    O -->|No| Q
+    Q --> R{"Streaming?"}
+    R -->|Yes| S["SSE chunker"]
+    R -->|No| T["JSON response"]
+    S --> U["Async log worker → SQLite"]
+    T --> U
+    L --> U
+    U --> V["Broadcaster → SSE live feed<br/>(GUI /logs?live=1)"]
+    U --> W["Return to client"]
 
     style A fill:#08427b,stroke:#052e56,color:#fff
-    style P fill:#2d882d,stroke:#1a5c1a,color:#fff
-    style I fill:#d4a017,stroke:#a67c00,color:#000
-    style L fill:#d4a017,stroke:#a67c00,color:#000
+    style W fill:#2d882d,stroke:#1a5c1a,color:#fff
+    style D fill:#d4a017,stroke:#a67c00,color:#000
+    style K fill:#d4a017,stroke:#a67c00,color:#000
+    style O fill:#d4a017,stroke:#a67c00,color:#000
+    style R fill:#d4a017,stroke:#a67c00,color:#000
 ```
 
 ---
 
 ## 5. Package / Module Diagram
 
-Shows the Go module structure and dependency relationships between packages.
+Go package structure and dependency direction. Two conventions are enforced:
+**`tenancy` may import `engine`, never the reverse** (the engine uses
+`engine.WithTenantID` / `TenantIDFromContext`), and **`audit` does not import
+`tenancy`** (the server injects a principal-extraction function).
 
 ```mermaid
 flowchart TD
-    cmd["cmd/mockagents/\n(CLI Entry Point)"]
-    server["internal/server/\n(HTTP Server)"]
-    adapter["internal/adapter/\n(Protocol Adapters)"]
-    engine["internal/engine/\n(Core Engine)"]
-    config["internal/config/\n(Config Loading)"]
-    storage["internal/storage/\n(SQLite)"]
-    types["internal/types/\n(Shared Types)"]
-    pythonsdk["sdk/python/\n(Python SDK)"]
+    cmd["cmd/mockagents/<br/>(Cobra CLI)"]
+    server["internal/server/"]
+    adapter["internal/adapter/"]
+    engine["internal/engine/"]
+    mcp["internal/mcp/"]
+    tenancy["internal/tenancy/"]
+    audit["internal/audit/"]
+    pricing["internal/pricing/"]
+    recording["internal/recording/"]
+    streaming["internal/streaming/"]
+    config["internal/config/"]
+    storage["internal/storage/"]
+    observability["internal/observability/"]
+    runner["internal/runner/"]
+    contract["internal/contract/"]
+    types["internal/types/"]
+
+    sdks["sdk/{python,typescript,go}"]
+    gui["gui/ (Next.js)"]
 
     cmd --> server
     cmd --> config
     cmd --> engine
+    cmd --> mcp
+    cmd --> recording
+    cmd --> runner
+    cmd --> contract
     server --> adapter
     server --> engine
-    server --> types
-    adapter --> types
+    server --> tenancy
+    server --> audit
+    server --> pricing
+    server --> storage
+    server --> streaming
+    server --> observability
     adapter --> engine
+    adapter --> types
     engine --> config
     engine --> storage
+    engine --> observability
     engine --> types
+    tenancy --> engine
     config --> types
     storage --> types
+    mcp --> config
 
-    pythonsdk -.->|"HTTP :8080"| server
+    sdks -.->|"HTTP :8080"| server
+    gui -.->|"mgmt API :8080"| server
 
     style cmd fill:#1168bd,stroke:#0b4884,color:#fff
     style engine fill:#d9534f,stroke:#c12e2a,color:#fff
     style types fill:#999,stroke:#666,color:#fff
-    style pythonsdk fill:#7b3f00,stroke:#5a2d00,color:#fff
+    style tenancy fill:#7b3f00,stroke:#5a2d00,color:#fff
+    style audit fill:#7b3f00,stroke:#5a2d00,color:#fff
+    style sdks fill:#08427b,stroke:#052e56,color:#fff
+    style gui fill:#08427b,stroke:#052e56,color:#fff
 ```
 
 ---
@@ -199,96 +306,146 @@ flowchart TD
 
 ### 6a. Local Development
 
-How a developer runs MockAgents on their own machine during development or manual testing.
-
 ```mermaid
 flowchart LR
     subgraph dev["Developer Machine"]
-        cli["mockagents serve\n(Go Binary)"]
-        sqlite[("SQLite File\n./data/interactions.db")]
-        yamls["Agent YAML Dir\n./agents/*.yaml"]
-        app["Client App / Tests\n(localhost:8080)"]
+        cli["mockagents start --watch<br/>(:8080, binds 127.0.0.1)"]
+        gui["npm run dev<br/>(:3001)"]
+        dbs[("SQLite files<br/>interactions / tenancy / audit")]
+        yamls["./agents/*.yaml"]
+        app["Client App / Tests"]
     end
 
     app -->|"HTTP :8080"| cli
-    cli -->|"read"| yamls
-    cli -->|"read/write"| sqlite
+    gui -->|"mgmt API :8080"| cli
+    cli -->|"read + fsnotify reload"| yamls
+    cli -->|"read/write"| dbs
 
     style cli fill:#1168bd,stroke:#0b4884,color:#fff
-    style sqlite fill:#2d882d,stroke:#1a5c1a,color:#fff
+    style gui fill:#7b3f00,stroke:#5a2d00,color:#fff
+    style dbs fill:#2d882d,stroke:#1a5c1a,color:#fff
     style yamls fill:#d4a017,stroke:#a67c00,color:#000
 ```
 
 ### 6b. CI/CD Pipeline
 
-How MockAgents runs inside a continuous integration environment.
-
 ```mermaid
 flowchart LR
-    subgraph runner["GitHub Actions Runner"]
-        subgraph container["Docker Container"]
-            cli["mockagents serve\n(Go Binary)"]
-            sqlite[("Ephemeral SQLite\n/tmp/interactions.db")]
-        end
-        yamls["Mounted Agent Configs\n(from repo ./agents/)"]
-        tests["Test Suite\n(pytest / go test)"]
+    subgraph runner["CI Runner (GitHub Actions / GitLab CI)"]
+        cli["mockagents start<br/>(Docker container)"]
+        sqlite[("Ephemeral SQLite")]
+        yamls["Mounted agent configs"]
+        tests["TestSuite / SDK tests<br/>(mockagents test → JUnit XML)"]
+        contractdiff["contract diff<br/>(fail on breaking change)"]
     end
 
     tests -->|"HTTP :8080"| cli
+    contractdiff -->|"compare to checked-in JSON"| cli
     cli -->|"read"| yamls
     cli -->|"read/write"| sqlite
+    tests -->|"junit report"| report["MR / PR test UI"]
 
-    style container fill:#1a1a2e,stroke:#16213e,color:#fff
     style cli fill:#1168bd,stroke:#0b4884,color:#fff
     style sqlite fill:#2d882d,stroke:#1a5c1a,color:#fff
     style yamls fill:#d4a017,stroke:#a67c00,color:#000
     style tests fill:#08427b,stroke:#052e56,color:#fff
+    style contractdiff fill:#08427b,stroke:#052e56,color:#fff
+```
+
+### 6c. Kubernetes (Helm chart)
+
+```mermaid
+flowchart TB
+    subgraph k8s["Kubernetes Cluster"]
+        subgraph deploy["Deployment (non-root, read-only rootfs)"]
+            pod1["Pod: mockagents<br/>--host 0.0.0.0"]
+            pod2["Pod: mockagents"]
+        end
+        svc["Service (ClusterIP)"]
+        ingress["Ingress (optional)"]
+        cm["ConfigMap<br/>(agent YAML)"]
+        hpa["HPA (opt-in)"]
+        pdb["PodDisruptionBudget (opt-in)"]
+        netpol["NetworkPolicy (opt-in)"]
+        sm["ServiceMonitor (opt-in)"]
+    end
+    client["Clients / SDKs"]
+
+    client --> ingress --> svc --> pod1
+    svc --> pod2
+    cm -.->|"mount /agents"| pod1
+    cm -.->|"mount /agents"| pod2
+    hpa -.->|"scale"| deploy
+    pdb -.->|"guard"| deploy
+    sm -.->|"scrape"| deploy
+
+    style pod1 fill:#1168bd,stroke:#0b4884,color:#fff
+    style pod2 fill:#1168bd,stroke:#0b4884,color:#fff
+    style cm fill:#d4a017,stroke:#a67c00,color:#000
+    style svc fill:#2d882d,stroke:#1a5c1a,color:#fff
 ```
 
 ---
 
 ## 7. Data Flow Diagram
 
-Shows how the four primary categories of data -- agent definitions, requests, responses, and logs -- move through the system.
+How the primary data categories — agent definitions, requests, responses,
+interaction logs, tenancy/auth, audit events, costs, and the live feed — move
+through the system.
 
 ```mermaid
 flowchart LR
-    yamlfiles["Agent YAML\nConfig Files"]
-    client["Client\nApplication"]
-    mockengine["Mock\nEngine"]
-    statestore["In-Memory\nState Store"]
-    sqlitedb[("SQLite\nDatabase")]
-    developer["Developer\n(CLI)"]
+    yamlfiles["Agent YAML"]
+    client["Client App"]
+    operator["Operator (console)"]
+    engine["Mock Engine"]
+    tenancy["Tenancy<br/>(auth + RBAC)"]
+    state["Session State"]
+    interactions[("Interactions DB")]
+    auditdb[("Audit DB")]
+    pricing["Pricing table"]
+    feed["SSE Live Feed"]
 
-    yamlfiles -->|"1. Load agent\ndefinitions at startup"| mockengine
-    client -->|"2. Send LLM API\nrequest (HTTP)"| mockengine
-    mockengine -->|"3. Read/update\nsession state"| statestore
-    mockengine -->|"4. Return mock\nresponse (HTTP)"| client
-    mockengine -->|"5. Write interaction\nlog (request + response)"| sqlitedb
-    developer -->|"6. Query logs\nvia CLI"| sqlitedb
+    yamlfiles -->|"1. load + hot reload"| engine
+    operator -->|"2. Bearer key"| tenancy
+    tenancy -->|"3. tenant scope"| engine
+    client -->|"4. LLM request"| engine
+    engine -->|"5. read/update"| state
+    engine -->|"6. mock response"| client
+    engine -->|"7. write log (+ tenant_id)"| interactions
+    interactions -->|"8. stream new rows"| feed
+    feed -->|"9. live tail"| operator
+    interactions -->|"10. aggregate"| pricing
+    pricing -->|"11. cost_usd"| operator
+    tenancy -. mutations + auth.denied .-> auditdb
+    auditdb -->|"12. query"| operator
 
-    style mockengine fill:#d9534f,stroke:#c12e2a,color:#fff
-    style sqlitedb fill:#2d882d,stroke:#1a5c1a,color:#fff
+    style engine fill:#d9534f,stroke:#c12e2a,color:#fff
+    style interactions fill:#2d882d,stroke:#1a5c1a,color:#fff
+    style auditdb fill:#2d882d,stroke:#1a5c1a,color:#fff
+    style tenancy fill:#7b3f00,stroke:#5a2d00,color:#fff
     style yamlfiles fill:#d4a017,stroke:#a67c00,color:#000
-    style statestore fill:#5bc0de,stroke:#31b0d5,color:#000
+    style state fill:#5bc0de,stroke:#31b0d5,color:#000
 ```
 
 ---
 
-## 8. State Diagram -- Conversation Session Lifecycle
+## 8. State Diagram — Conversation Session Lifecycle
 
-Shows the states a conversation session goes through from creation to expiration.
+Sessions are keyed by id, pre-size their history slice, and serialize same-id
+turns under a per-session `ApplyTurn` critical section so concurrent requests
+cannot interleave append / match / generate / append.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Created : First request for session ID
-    Created --> Active : Request processed
-    Active --> Active : Subsequent requests
-    Active --> Idle : No requests for idle_timeout
+    [*] --> Created : First request for session id
+    Created --> Active : ApplyTurn (locked) completes
+    Active --> Active : Subsequent turns (serialized)
+    Active --> Idle : No requests for idle window
     Idle --> Active : New request received
-    Idle --> Expired : idle_timeout exceeded
-    Active --> Destroyed : Explicit reset via API/CLI
-    Idle --> Destroyed : Explicit reset via API/CLI
+    Idle --> Expired : idle window exceeded
+    Active --> Destroyed : Explicit reset
+    Idle --> Destroyed : Explicit reset
     Expired --> [*]
     Destroyed --> [*]
 ```
@@ -297,49 +454,54 @@ stateDiagram-v2
 
 ## 9. Evolution Roadmap Diagram
 
-Shows how the MockAgents architecture is planned to evolve across phases.
+What has landed (Phases 1–4, internal milestones v0.1 → v0.3) and what remains.
 
 ```mermaid
 flowchart LR
-    subgraph mvp["MVP (Phase 1)"]
+    subgraph p1["Phase 1 — Foundation (done)"]
         direction TB
-        m1["Go Monolith"]
-        m2["CLI Interface"]
-        m3["SQLite Storage"]
-        m4["OpenAI + Anthropic\nAdapters"]
-        m5["Static + Template\nResponses"]
+        a1["Go core + net/http"]
+        a2["OpenAI + Anthropic adapters"]
+        a3["Static + template responses"]
+        a4["SQLite logs · CLI"]
     end
 
-    subgraph phase2["Phase 2"]
+    subgraph p2["Phase 2 — Testing & Multi-Agent (done)"]
         direction TB
-        p2a["Built-in Test Runner"]
-        p2b["Multi-Agent\nOrchestration"]
-        p2c["Python SDK"]
-        p2d["Scenario Sequencing"]
+        b1["TestSuite runner + JUnit"]
+        b2["Pipelines (seq/par/graph)"]
+        b3["Record & replay"]
+        b4["Python/TS/Go SDKs"]
     end
 
-    subgraph phase3["Phase 3"]
+    subgraph p3["Phase 3 — Resilience & MCP (done)"]
         direction TB
-        p3a["Chaos Engine\n(Latency, Errors)"]
-        p3b["MCP Protocol\nSupport"]
-        p3c["Internal\nMessage Bus"]
-        p3d["Record & Replay\nMode"]
+        c1["Chaos engine"]
+        c2["MCP v0.1–v0.3<br/>(HTTP/stdio/SSE duplex)"]
+        c3["Streaming cassettes"]
     end
 
-    subgraph phase4["Phase 4"]
+    subgraph p4["Phase 4 — Enterprise & Scale (v0.3)"]
         direction TB
-        p4a["PostgreSQL\nOption"]
-        p4b["Kubernetes\nDeployment"]
-        p4c["Web GUI\nDashboard"]
-        p4d["Cloud-Hosted\nService"]
+        d1["Contracts + OTel"]
+        d2["Multi-tenant RBAC<br/>(+ platform role)"]
+        d3["Costs · audit · Helm"]
+        d4["Web console + live feed"]
     end
 
-    mvp -->|"+ testing\n+ multi-agent"| phase2
-    phase2 -->|"+ chaos\n+ MCP"| phase3
-    phase3 -->|"+ scale\n+ GUI"| phase4
+    subgraph next["Deferred / Next"]
+        direction TB
+        e1["Postgres tenancy store"]
+        e2["SSO / OAuth · billing"]
+        e3["Per-tenant name isolation"]
+        e4["Pipeline workflow editor<br/>(drag-to-rewire)"]
+    end
 
-    style mvp fill:#2d882d,stroke:#1a5c1a,color:#fff
-    style phase2 fill:#1168bd,stroke:#0b4884,color:#fff
-    style phase3 fill:#d4a017,stroke:#a67c00,color:#000
-    style phase4 fill:#d9534f,stroke:#c12e2a,color:#fff
+    p1 --> p2 --> p3 --> p4 --> next
+
+    style p1 fill:#2d882d,stroke:#1a5c1a,color:#fff
+    style p2 fill:#2d882d,stroke:#1a5c1a,color:#fff
+    style p3 fill:#2d882d,stroke:#1a5c1a,color:#fff
+    style p4 fill:#1168bd,stroke:#0b4884,color:#fff
+    style next fill:#d9534f,stroke:#c12e2a,color:#fff
 ```
