@@ -6,6 +6,17 @@
 **Author:** MockAgents Core Team
 **Scope:** MVP (Phase 1) - Core Mock Engine, OpenAI/Anthropic Adapters, Tool-Call Simulation, Streaming, CLI, Python SDK
 
+> **Implementation status (updated 2026-06-04):** this LLD captures the
+> original Phase-1 design. The shipped system has grown well beyond it —
+> multi-agent pipelines, chaos, record/replay, a mock MCP server, a
+> multi-tenant control plane (RBAC + audit + costs), TypeScript and Go
+> SDKs, and a Next.js web console. The HTTP layer uses the standard
+> library **`net/http` ServeMux** (the `chi.Router` / `chi.URLParam`
+> snippets below are illustrative of the original design, not the code).
+> Treat [PROGRESS.md](./PROGRESS.md) as the source of truth and
+> [architecture-diagrams.md](./architecture-diagrams.md) for current
+> diagrams.
+
 ---
 
 ## Table of Contents
