@@ -142,10 +142,14 @@ Every slice below shipped with tests and, where applicable, a live smoke-test ru
 | **v0.3** Bulk tenant-key rotation | tenancy + server + GUI | `internal/tenancy/store.go` `BulkRotateTenantKeys`, `internal/server/tenancy_handlers.go` `BulkRotateTenantKeys`, `gui/app/admin/tenants/[id]/page.tsx` Rotate-all button + reveal banner | 6 new |
 | **v0.3** Burn-session emergency rotation | tenancy + GUI | `internal/server/tenancy_handlers.go` `BurnMyAPIKey`, `gui/lib/auth.ts` `burnSession`, `gui/app/account/page.tsx` two-click burn flow, `gui/app/login/page.tsx` burned=1 notice | 2 new |
 | **v0.3** Selective bulk rotation (?except=self) | tenancy + server + GUI | `Store.BulkRotateTenantKeys` variadic `...excludeKeyIDs`, handler `?except=self` query param, GUI passes `exceptSelf: true` | 2 new |
+| **v0.3** Architecture review hardening (AHR-01..03 + 04a) | hardening | `internal/server/server.go` localhost default bind, principal-derived tenant in `internal/{tenancy,server}/middleware.go` + adapters, tenant-scoped `internal/storage/` + `log_handlers`/`costs_handler`, `internal/engine/state/session.go` `ApplyTurn` | server/storage/engine/tenancy tests |
+| **v0.3** Multi-pass security review hardening | security | `internal/tenancy/store.go` tenant-scoped key ops + `RolePlatform`, `internal/server/route_authz.go` `mountManaged` chokepoint, live-feed mount/flush/per-tenant isolation fixes, auth fail-closed + cache-flush | server 88→144, tenancy 27→46 |
+| **v0.3** Performance handoff + P1 hot-path optimizations | perf | `docs/PERFORMANCE.md`, `internal/engine/agent_registry.go` `byModelTenant`, `internal/observability/tracing.go` wrapper skip, `internal/tenancy/store.go` `last_used` coarsening, `internal/adapter/encode.go` pooled encoder | regression guard per fix (engine/tenancy/adapter/server) |
+| **v0.3** GUI console redesign — "MockAgents Console" design system | GUI | `gui/app/globals.css` `--sr-*` tokens + legacy-var alias layer, `gui/app/Shell.tsx` + `layout.tsx` shell/theme, `gui/lib/icons.tsx`, every surface (catalog/detail/logs/costs/audit/pipelines/editor/tenants/account) rebuilt | `tsc --strict` build + live 200 verify |
 
 ### Release readiness
 
-Phase 1 MVP alpha has no remaining P1 blockers: both carry-overs (US-2.3 hot reload, US-12.2 performance benchmarks) are closed. Every Phase 2/3/4 v0.1 slice is independently shippable. Phase 4 v0.2 work is in flight — see PROGRESS.md §1A "Resume Notes" for the active checkpoint and `docs/sprint-backlogs.md` "Active Sprint" for the recommended next slice.
+Phase 1 MVP alpha has no remaining P1 blockers: both carry-overs (US-2.3 hot reload, US-12.2 performance benchmarks) are closed. Every Phase 2/3/4 v0.1 slice is independently shippable. Phase 4 v0.2 and v0.3 slices have landed (through §2.55) — see PROGRESS.md §1A "Resume Notes" for the active checkpoint and `docs/sprint-backlogs.md` "Active Sprint" for the recommended next slice.
 
 ### Architecture Review Hardening Backlog (2026-05-30)
 
@@ -198,8 +202,10 @@ Cross-suite test counts at the latest commit:
 | TypeScript SDK (`vitest`) | 38 | Was 25 at v0.1 freeze (+13 streaming tests in §2.28)         |
 | Helm chart             |     — | `helm lint` clean; default 6 resources + 4 opt-in v0.2       |
 
-The current PROGRESS.md slice ledger ends at §2.30. Open items in
-PROGRESS.md §6 (the "Known Gaps" table) drive the next slice; the
+This snapshot is historical (2026-04-14). The PROGRESS.md slice ledger
+now runs through **§2.55** (GUI console redesign, 2026-06-04) — the
+"Phase 2-4 slices landed" table above is reconciled to match. Open items
+in PROGRESS.md §6 (the "Known Gaps" table) drive the next slice; the
 recommended order is documented in PROGRESS.md §1A.
 
 ---
