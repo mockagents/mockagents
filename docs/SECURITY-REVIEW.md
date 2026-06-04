@@ -256,8 +256,11 @@ These were checked and are correct. Re-touching them is a regression:
   **0 reachable vulnerabilities.** Remaining import/module-level findings are
   unreachable (govulncheck confirms the symbols aren't called) and clear with
   routine dependency bumps. Re-run periodically — new stdlib CVEs land often.
-- The Next.js GUI (`gui/`) — client-side XSS, cookie flags, CSP were out of
-  this Go-focused scope; worth a separate front-end pass (note: the auth cookie
-  is documented HttpOnly).
+- ~~The Next.js GUI (`gui/`)~~ **— done 2026-06-04, see `docs/SECURITY-REVIEW-GUI.md`.**
+  No live XSS (no `dangerouslySetInnerHTML`, all data auto-escaped), key stays
+  server-only, all mutations are CSRF-protected Server Actions, no
+  request-controlled SSRF. Findings are hardening: **1 High** (auth cookie missing
+  `Secure`), **4 Medium** (one-time secrets in redirect URLs; credentialed
+  log-proxy confused-deputy; no CSP; no clickjacking header), **4 Low/Info**.
 - Runtime/infra (Helm/network policies, TLS termination, secrets at rest).
 - Fuzzing of the adapter/JSON-RPC parsers.
