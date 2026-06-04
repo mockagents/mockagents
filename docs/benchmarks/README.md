@@ -27,9 +27,12 @@ The GOMAXPROCS suffix is stripped from benchmark names before parsing
 so results from a laptop and a CI runner stay comparable.
 
 > **Baseline freshness:** `latest.{json,md}` was last refreshed
-> **2026-06-03** off-governor (see the "Release 2026-06-03 refresh" note
-> below) and is current with the engine + security + perf work through
-> that date.
+> **2026-06-04** off-governor (same recipe as the "Release 2026-06-03
+> refresh" note below) to capture the P3 engine wins — PERF-14 (tool-call
+> inline: `ToolCallProcessor` 10→6 allocs, `WithToolCalls` 22→18) and
+> PERF-17 (UUID hex: `TemplateResponse` 23→17, `ResponseGenerator_Template`
+> 14→8) — plus the two new `GenerateUUID_New/Old` benches. It is current
+> with all engine + security + perf work through that date.
 >
 > **Refreshing on the primary dev machine:** that box ships only the
 > Windows **Balanced** power plan, which throttles `ns/op` ~1.4× uniformly
