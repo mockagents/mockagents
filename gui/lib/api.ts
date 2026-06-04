@@ -40,7 +40,8 @@ export interface InteractionLog {
   response: unknown;
   latency_ms: number;
   scenario_name?: string;
-  status_code?: number;
+  response_status?: number;
+  streaming?: boolean;
   // Cost annotation fields populated by /api/v1/logs when a pricing
   // table is configured (see internal/server/log_handlers.go LogWithCost).
   prompt_tokens?: number;

@@ -60,7 +60,7 @@ export default async function LogDetailPage({
             </div>
             <div>
               <dt>Status</dt>
-              <dd>{log.status_code ?? "—"}</dd>
+              <dd>{log.response_status ?? "—"}</dd>
             </div>
             <div>
               <dt>Latency</dt>
