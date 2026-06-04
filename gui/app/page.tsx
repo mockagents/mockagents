@@ -1,6 +1,8 @@
 import Link from "next/link";
 
-import { AgentSummary, APIError, getBaseUrl, listAgents } from "@/lib/api";
+import { AgentSummary, APIError, getBaseUrl, getHealth, listAgents } from "@/lib/api";
+import { Icon, type IconName } from "@/lib/icons";
+import { AgentCatalog } from "./AgentCatalog";
 
 export default async function HomePage() {
   let agents: AgentSummary[] = [];
@@ -10,66 +12,86 @@ export default async function HomePage() {
   } catch (err) {
     error = err instanceof APIError ? err.message : "unknown error";
   }
+  const health = await getHealth();
+  const host = getBaseUrl().replace(/^https?:\/\//, "");
+
+  const totalScenarios = agents.reduce((s, a) => s + a.scenario_count, 0);
+  const totalTools = agents.reduce((s, a) => s + a.tool_count, 0);
 
   return (
     <div>
-      <h1 className="page-title">Agent catalog</h1>
-      <p className="page-lede">
-        Every agent loaded by the running MockAgents server at{" "}
-        <code>{getBaseUrl()}</code>.
-      </p>
+      <div className="page-head">
+        <div className="head-row">
+          <div className="grow">
+            <h1 className="page-title">Agent catalog</h1>
+            <p className="page-lede">
+              Every agent loaded by the running MockAgents server at <code>{host}</code>. Click an
+              agent to inspect its scenarios, tools, and chaos config.
+            </p>
+          </div>
+          <div className="row gap-2">
+            <Link href="/editor" className="btn btn-default btn-sm">
+              <Icon name="plus" size={15} /> New agent
+            </Link>
+          </div>
+        </div>
+      </div>
 
       {error && (
         <div className="banner banner-error">
           <strong>MockAgents server unreachable.</strong> {error}
-          <div className="hint">
-            Start it with <code>mockagents start --agents-dir ./agents</code>
-            {" or set "}
+          <span className="hint">
+            Start it with <code>mockagents start --agents-dir ./agents</code>, or set{" "}
             <code>MOCKAGENTS_API_URL</code> when launching the GUI.
+          </span>
+        </div>
+      )}
+
+      {!error && (
+        <>
+          <div className="grid grid-4 mb-6">
+            <Stat icon="bot" label="Agents loaded" value={String(agents.length)} sub="from the agents directory" />
+            <Stat icon="list-tree" label="Scenarios" value={String(totalScenarios)} sub="total match rules" />
+            <Stat icon="wrench" label="Tools" value={String(totalTools)} sub="simulated tool calls" />
+            <Stat
+              icon="circle-dot"
+              label="Server"
+              value={health ? "online" : "offline"}
+              sub={health?.version ? `v${health.version}` : host}
+            />
           </div>
-        </div>
-      )}
 
-      {!error && agents.length === 0 && (
-        <div className="empty">
-          No agents loaded. Add a YAML file to the agents directory and reload.
-        </div>
-      )}
-
-      <div className="card-grid">
-        {agents.map((agent) => (
-          <Link key={agent.name} href={`/agents/${agent.name}`} className="card">
-            <div className="card-head">
-              <h2>{agent.name}</h2>
-              <span className="badge">{agent.protocol}</span>
+          {agents.length === 0 ? (
+            <div className="empty">
+              No agents loaded. Add a YAML file to the agents directory and reload.
             </div>
-            {agent.description && <p className="card-desc">{agent.description}</p>}
-            <dl className="stats">
-              <div>
-                <dt>Model</dt>
-                <dd>{agent.model || "—"}</dd>
-              </div>
-              <div>
-                <dt>Scenarios</dt>
-                <dd>{agent.scenario_count}</dd>
-              </div>
-              <div>
-                <dt>Tools</dt>
-                <dd>{agent.tool_count}</dd>
-              </div>
-            </dl>
-            {agent.tags && agent.tags.length > 0 && (
-              <div className="tags">
-                {agent.tags.map((tag) => (
-                  <span key={tag} className="tag">
-                    {tag}
-                  </span>
-                ))}
-              </div>
-            )}
-          </Link>
-        ))}
+          ) : (
+            <AgentCatalog agents={agents} />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function Stat({
+  icon,
+  label,
+  value,
+  sub,
+}: {
+  icon: IconName;
+  label: string;
+  value: string;
+  sub?: string;
+}) {
+  return (
+    <div className="stat">
+      <div className="k">
+        <Icon name={icon} size={14} /> {label}
       </div>
+      <div className="v">{value}</div>
+      {sub && <div className="s">{sub}</div>}
     </div>
   );
 }
