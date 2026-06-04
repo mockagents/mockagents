@@ -1,14 +1,30 @@
 openapi: 3.1.0
 info:
   title: MockAgents API
-  version: 0.1.0-alpha
+  version: 0.3.0-dev
   description: >
     MockAgents is a platform for mocking AI agent integrations. It exposes a
-    Management API for configuring agents, viewing interaction logs, and
-    performing health checks, as well as Protocol Endpoints that mimic real
-    LLM provider APIs (OpenAI Chat Completions and Anthropic Messages).
+    Management API (agents, interaction logs, costs, audit, pipelines, config
+    validation, and a multi-tenant control plane of tenants + RBAC API keys),
+    and Protocol Endpoints that mimic real LLM provider APIs (OpenAI Chat
+    Completions and Anthropic Messages).
+
+
+    The Model Context Protocol mock (`/mcp`, `/mcp/events`, `/mcp/response`) is
+    JSON-RPC 2.0 rather than REST and is documented in the project README and
+    `docs/sequence-diagrams.md`, not in this OpenAPI document.
+
+
+    **Authentication.** When the server runs with `MOCKAGENTS_MULTI_TENANT=1`,
+    every `/api/v1/*` management route requires an API key
+    (`Authorization: Bearer <key>` or `X-Api-Key: <key>`) whose role meets the
+    route's floor (`viewer < editor < admin < platform`). In single-tenant mode
+    the management API is open. The protocol endpoints (`/v1/*`) are always
+    unauthenticated — clients send their own provider key, which MockAgents
+    ignores.
   license:
-    name: MIT
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
 
 servers:
   - url: http://localhost:8080
@@ -20,9 +36,21 @@ tags:
   - name: Agents
     description: Manage mock agent definitions
   - name: Logs
-    description: Interaction logs
-  - name: Sessions
-    description: Conversation sessions
+    description: Interaction logs (query, detail, stream, metrics)
+  - name: Costs
+    description: Estimated spend aggregated from interaction logs
+  - name: Audit
+    description: Append-only control-plane audit log
+  - name: Pipelines
+    description: Multi-agent pipeline topologies
+  - name: Config
+    description: Server-side YAML validation
+  - name: Tenants
+    description: Multi-tenant control plane (multi-tenant mode)
+  - name: Keys
+    description: API-key lifecycle — mint, rotate, role change, delete
+  - name: Models
+    description: OpenAI-compatible model listing
   - name: OpenAI
     description: OpenAI-compatible protocol endpoint
   - name: Anthropic
@@ -91,15 +119,22 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-  /api/v1/agents/reload:
+  /api/v1/agents/{name}/reload:
     post:
-      operationId: reloadAgents
-      summary: Reload agent definitions from disk
+      operationId: reloadAgent
+      summary: Reload an agent definition from disk
       description: >
-        Re-reads all agent definition files from disk and reloads them into the
-        server. Returns the count of successfully reloaded agents and any errors
-        encountered.
+        Re-reads the named agent's definition file from disk and reloads it into
+        the server. Emits an `agent.reloaded` audit event. Requires the `viewer`
+        role in multi-tenant mode.
       tags: [Agents]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Agent name.
+          schema:
+            type: string
       responses:
         "200":
           description: Reload completed.
@@ -107,6 +142,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReloadResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -200,48 +241,363 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-  /api/v1/sessions:
+  /api/v1/costs:
     get:
-      operationId: listSessions
-      summary: List active sessions
-      description: Returns all currently active conversation sessions.
-      tags: [Sessions]
+      operationId: getCosts
+      summary: Estimated spend
+      description: >
+        Aggregates interaction-log usage against the configured price table and
+        returns totals plus by-model and by-agent breakdowns. Tenant-scoped in
+        multi-tenant mode.
+      tags: [Costs]
+      parameters:
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+        - { name: until, in: query, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, default: 1000 } }
       responses:
         "200":
-          description: List of active sessions.
+          description: Cost report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CostReport"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalServerError" }
+
+  /api/v1/audit:
+    get:
+      operationId: getAudit
+      summary: Query the audit log
+      description: >
+        Returns append-only control-plane events. Requires `admin` in
+        multi-tenant mode.
+      tags: [Audit]
+      parameters:
+        - name: kind
+          in: query
+          description: Event kind filter.
+          schema:
+            type: string
+            enum: [tenant.created, tenant.deleted, api_key.created, api_key.deleted, api_key.role_changed, api_key.rotated, agent.reloaded, auth.denied]
+        - { name: actor, in: query, schema: { type: string } }
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
+      responses:
+        "200":
+          description: Audit events.
           content:
             application/json:
               schema:
                 type: array
-                items:
-                  $ref: "#/components/schemas/Session"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
+                items: { $ref: "#/components/schemas/AuditEvent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
-  /api/v1/sessions/{id}:
-    delete:
-      operationId: deleteSession
-      summary: Delete a session
-      description: Removes an active session and its associated state.
-      tags: [Sessions]
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Session ID.
-          schema:
-            type: string
+  /api/v1/pipelines:
+    get:
+      operationId: listPipelines
+      summary: List pipelines
+      description: "Returns all loaded `kind: Pipeline` documents."
+      tags: [Pipelines]
       responses:
-        "204":
-          description: Session deleted successfully.
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
+        "200":
+          description: Pipelines.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Pipeline" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/pipelines/{name}:
+    get:
+      operationId: getPipeline
+      summary: Get a pipeline (with DAG)
+      tags: [Pipelines]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Pipeline detail including nodes and edges.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pipeline" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/config/validate:
+    post:
+      operationId: validateConfig
+      summary: Validate a YAML document
+      description: >
+        Runs the same validator as `mockagents validate` against an in-memory
+        document (Agent / Pipeline / TestSuite / MCPServer). Requires `editor`
+        in multi-tenant mode.
+      tags: [Config]
+      requestBody:
+        required: true
+        content:
+          application/yaml:
+            schema: { type: string }
+          text/plain:
+            schema: { type: string }
+      responses:
+        "200":
+          description: Validation result (ok or structured errors).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ValidateResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/logs/stream/metrics:
+    get:
+      operationId: getStreamMetrics
+      summary: Live-feed subscriber metrics
+      description: >
+        Admin-gated snapshot of every connected SSE subscriber's drop count and
+        buffer utilization.
+      tags: [Logs]
+      responses:
+        "200":
+          description: Broadcaster snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscribers: { type: integer }
+                  total_dropped: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # -- Multi-tenant control plane -------------------------------------------
+  /api/v1/tenants:
+    get:
+      operationId: listTenants
+      summary: List tenants
+      description: Requires the `platform` role.
+      tags: [Tenants]
+      responses:
+        "200":
+          description: Tenants.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Tenant" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      operationId: createTenant
+      summary: Create a tenant
+      description: Requires the `platform` role.
+      tags: [Tenants]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        "201":
+          description: Tenant created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tenant" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/tenants/{id}:
+    delete:
+      operationId: deleteTenant
+      summary: Delete a tenant (cascades to its keys)
+      description: Requires the `platform` role.
+      tags: [Tenants]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Deleted. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/tenants/{id}/keys:
+    get:
+      operationId: listAPIKeys
+      summary: List a tenant's API keys
+      description: Requires `editor`. Per-tenant admins see only their own tenant.
+      tags: [Keys]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Keys (no plaintext).
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/APIKey" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      operationId: createAPIKey
+      summary: Mint an API key
+      description: Requires `admin`. Plaintext is returned exactly once.
+      tags: [Keys]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, role]
+              properties:
+                name: { type: string }
+                role: { type: string, enum: [viewer, editor, admin] }
+      responses:
+        "201":
+          description: Key minted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NewKeyResult" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/tenants/{id}/keys/rotate:
+    post:
+      operationId: bulkRotateTenantKeys
+      summary: Rotate every key in a tenant
+      description: >
+        All-or-nothing transactional rotation. `?except=self` spares the
+        caller's own key. Requires `admin`.
+      tags: [Keys]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: except, in: query, schema: { type: string, enum: [self] } }
+      responses:
+        "200":
+          description: Rotation results — each with a once-only plaintext.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: "#/components/schemas/NewKeyResult" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/keys/{id}:
+    patch:
+      operationId: updateAPIKeyRole
+      summary: Change an API key's role
+      description: Requires `admin`. Emits `api_key.role_changed`.
+      tags: [Keys]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [viewer, editor, admin] }
+      responses:
+        "200":
+          description: Updated key.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/APIKey" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    delete:
+      operationId: deleteAPIKey
+      summary: Delete an API key
+      description: Requires `admin`. Emits `api_key.deleted`.
+      tags: [Keys]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Deleted. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/keys/{id}/rotate:
+    post:
+      operationId: rotateAPIKey
+      summary: Rotate an API key's secret in place
+      description: >
+        Preserves id/name/role/tenant; only the secret changes. Flushes the
+        auth cache and emits `api_key.rotated` with old + new prefixes. Requires
+        `admin`.
+      tags: [Keys]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Rotated — plaintext shown once.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NewKeyResult" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/keys/me/rotate:
+    post:
+      operationId: rotateMyAPIKey
+      summary: Rotate the calling key in place
+      description: Self-service rotation. Any authenticated role (`viewer`).
+      tags: [Keys]
+      responses:
+        "200":
+          description: Rotated — plaintext shown once.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NewKeyResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/keys/me/burn:
+    post:
+      operationId: burnMyAPIKey
+      summary: Rotate the calling key WITHOUT returning the new plaintext
+      description: >
+        Emergency response to a compromised session — the new secret is never
+        returned, so the caller is locked out and must recover out-of-band.
+      tags: [Keys]
+      responses:
+        "204": { description: Burned. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
 
   # ---------------------------------------------------------------------------
   # Protocol Endpoints
   # ---------------------------------------------------------------------------
+  /v1/models:
+    get:
+      operationId: listModels
+      summary: List models (OpenAI-compatible)
+      description: >
+        Lists the models exposed by loaded agents. Anonymous callers see
+        global-only models; authenticated callers also see their tenant's.
+      tags: [Models]
+      responses:
+        "200":
+          description: Model list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object: { type: string, example: list }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        object: { type: string, example: model }
+                        owned_by: { type: string }
   /v1/chat/completions:
     post:
       operationId: openaiChatCompletions
@@ -1061,6 +1417,109 @@ components:
           $ref: "#/components/schemas/AnthropicUsage"
           description: Present on message_delta.
 
+    # -- Control-plane Schemas ------------------------------------------------
+    Tenant:
+      type: object
+      required: [id, name, created_at]
+      properties:
+        id: { type: string, example: ten_e19321097fc42a65 }
+        name: { type: string, example: default }
+        created_at: { type: string, format: date-time }
+
+    APIKey:
+      type: object
+      description: Public view of an API key — never includes the secret.
+      required: [id, name, prefix, role, created_at]
+      properties:
+        id: { type: string, example: key_a1b2 }
+        name: { type: string, example: ci-bot }
+        prefix: { type: string, example: mak_4d00115a, description: Public key prefix (no secret). }
+        role: { type: string, enum: [viewer, editor, admin, platform] }
+        tenant_id: { type: string }
+        created_at: { type: string, format: date-time }
+        last_used: { type: string, format: date-time, nullable: true }
+
+    NewKeyResult:
+      type: object
+      description: Returned once on mint/rotate — carries the only copy of the plaintext.
+      required: [key, plaintext]
+      properties:
+        key: { $ref: "#/components/schemas/APIKey" }
+        plaintext:
+          type: string
+          example: mak_4d00115a_neV5hFQoDiw4ajfeQLvq6vLru6TQkBqz
+          description: Shown exactly once; bcrypt-hashed immediately server-side.
+
+    AuditEvent:
+      type: object
+      required: [kind, actor, timestamp]
+      properties:
+        kind:
+          type: string
+          enum: [tenant.created, tenant.deleted, api_key.created, api_key.deleted, api_key.role_changed, api_key.rotated, agent.reloaded, auth.denied]
+        actor: { type: string, example: bootstrap-admin }
+        tenant_id: { type: string }
+        key_id: { type: string }
+        role: { type: string }
+        remote_ip: { type: string }
+        target: { type: string }
+        timestamp: { type: string, format: date-time }
+
+    CostReport:
+      type: object
+      properties:
+        total_requests: { type: integer }
+        total_prompt_tokens: { type: integer }
+        total_completion_tokens: { type: integer }
+        total_cost_usd: { type: number, format: double }
+        by_model: { type: array, items: { $ref: "#/components/schemas/CostGroup" } }
+        by_agent: { type: array, items: { $ref: "#/components/schemas/CostGroup" } }
+
+    CostGroup:
+      type: object
+      properties:
+        key: { type: string }
+        requests: { type: integer }
+        cost_usd: { type: number, format: double }
+
+    Pipeline:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        topology: { type: string, enum: [sequential, parallel, graph] }
+        nodes:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              agent: { type: string }
+        edges:
+          type: array
+          items:
+            type: object
+            properties:
+              from: { type: string }
+              to: { type: string }
+              when_contains: { type: string }
+
+    ValidateResult:
+      type: object
+      required: [ok, kind, errors]
+      properties:
+        ok: { type: boolean }
+        kind: { type: string, example: Agent }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              message: { type: string }
+              line: { type: integer }
+              suggestion: { type: string }
+
   # ---------------------------------------------------------------------------
   # Reusable Responses
   # ---------------------------------------------------------------------------
@@ -1100,3 +1559,50 @@ components:
               code: internal_error
               message: An unexpected error occurred.
               details: {}
+
+    Unauthorized:
+      description: Missing or invalid API key (multi-tenant mode).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              message: missing Authorization bearer token or X-Api-Key header
+              type: authentication_error
+
+    Forbidden:
+      description: Authenticated, but the key's role is below the route's floor.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    Conflict:
+      description: The resource already exists (e.g. duplicate tenant name).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  # ---------------------------------------------------------------------------
+  # Security Schemes
+  # ---------------------------------------------------------------------------
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        `Authorization: Bearer <api-key>`. Required on `/api/v1/*` routes when
+        the server runs with `MOCKAGENTS_MULTI_TENANT=1`.
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+      description: "Alternative to `Authorization: Bearer` for the same API key."
+
+# Applies to the management API in multi-tenant mode. Protocol endpoints
+# (/v1/*) are always unauthenticated and override this with `security: []`.
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []

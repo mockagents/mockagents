@@ -1,11 +1,20 @@
 # MockAgents -- Product Requirements Document
 
-> **Implementation status (2026-04-13):** this document describes the
-> *intended* product. For the authoritative list of what actually ships
-> today — including every Phase 2/3/4 v0.1 slice landed (multi-agent
-> pipelines, chaos engine, MCP, contracts, OTel, TS/Go SDKs, GUI, Helm,
-> multi-tenant auth) — see [PROGRESS.md](./PROGRESS.md). When this PRD
-> and PROGRESS.md disagree, PROGRESS.md wins.
+> **Implementation status (updated 2026-06-04):** this document captures
+> the original **Phase-1 MVP** requirements (single-agent mocking, CLI,
+> Python SDK). It is preserved as the historical product spec; its
+> "Out of Scope for MVP" items (MCP, chaos, multi-agent, cloud/SaaS) have
+> since shipped in later phases. The product now spans Phases 1–4: multi-
+> agent pipelines, chaos, MCP (incl. bidirectional), record/replay,
+> contracts, OpenTelemetry, Python/TypeScript/Go SDKs, a Next.js web
+> console, Helm packaging, and a multi-tenant control plane (RBAC with a
+> `platform` super-admin role, audit, costs, in-place key rotation) — plus
+> dedicated performance and security-hardening passes. For the
+> authoritative, current list of what ships today see
+> [PROGRESS.md](./PROGRESS.md) (slice ledger through §2.55) and
+> [CHANGELOG.md](../CHANGELOG.md); for the live API surface see
+> [api-spec.yaml](./api-spec.yaml). When this PRD and PROGRESS.md
+> disagree, PROGRESS.md wins.
 
 ## 1. Document Info
 

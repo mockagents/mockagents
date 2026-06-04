@@ -11,10 +11,11 @@ make setup
 ## Running Tests
 
 ```bash
-make test          # Go tests
-make test-python   # Python SDK tests
-make test-all      # Both
-make test-race     # Go tests with race detector
+make test            # Go tests
+make test-python     # Python SDK tests
+make test-typescript # TypeScript SDK tests
+make test-all        # Go + Python + TypeScript
+make gui-build       # GUI build (tsc --strict gate)
 ```
 
 ## Code Quality
@@ -35,20 +36,30 @@ make release   # GoReleaser snapshot
 ## Project Structure
 
 ```
-cmd/mockagents/          # CLI entry point
+cmd/mockagents/          # Cobra CLI entry points
 internal/
   adapter/               # OpenAI + Anthropic protocol adapters
+  audit/                 # Append-only audit log
   cli/                   # CLI scaffolding and color utilities
-  config/                # YAML loading and validation
+  config/                # YAML loading and validation (all 4 kinds)
+  contract/              # Contract extraction + diffing
   engine/                # Core mock engine (matching, generation, tools)
   engine/state/          # Session state management
+  mcp/                   # Mock MCP server (JSON-RPC, HTTP/stdio/SSE)
+  observability/         # OpenTelemetry tracing
+  pricing/               # Per-model cost table
+  recording/             # Record / replay cassettes
+  runner/                # TestSuite executor + JUnit
   server/                # HTTP server, middleware, handlers
   storage/               # SQLite interaction logging
   streaming/             # SSE streaming (OpenAI + Anthropic)
+  tenancy/               # Multi-tenant store + RBAC + auth cache
   types/                 # Domain types (agent, tool, behavior)
-sdk/python/              # Python SDK
-schema/                  # JSON Schema for agent definitions
-examples/                # Example agent definitions
+sdk/{python,typescript,go}/  # Three language SDKs
+gui/                     # Next.js 15 web console
+deploy/                  # Helm chart, CI/CD templates
+schema/                  # JSON Schemas for the 4 document kinds
+examples/                # Example definitions
 site/                    # Documentation (MkDocs)
 ```
 

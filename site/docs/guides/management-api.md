@@ -2,6 +2,14 @@
 
 The management API provides server introspection and control. All endpoints are prefixed with `/api/v1/`.
 
+> **Authentication.** In single-tenant mode (default) the management API is open.
+> With `MOCKAGENTS_MULTI_TENANT=1`, every route requires an API key
+> (`Authorization: Bearer <key>` or `X-Api-Key: <key>`) whose role meets the
+> route's floor: `viewer < editor < admin < platform`. The `platform` role
+> (bootstrap-only) is the only one allowed to manage the tenant *collection*.
+> The protocol endpoints (`/v1/*`) are always unauthenticated. The full machine-
+> readable contract is in [`docs/api-spec.yaml`](https://github.com/mockagents/mockagents/blob/main/docs/api-spec.yaml).
+
 ## Health Check
 
 ```
@@ -113,4 +121,74 @@ curl -X DELETE http://localhost:8080/api/v1/logs
 
 ```json
 { "deleted_count": 150 }
+```
+
+## Live Log Feed (SSE)
+
+```
+GET /api/v1/logs/stream            # text/event-stream — one frame per new row
+GET /api/v1/logs/stream/metrics    # admin: subscriber drop counts + buffer use
+```
+
+New interaction rows are pushed sub-second after the SQLite write. The web
+console subscribes to this for its live feed.
+
+## Costs
+
+```
+GET /api/v1/costs?since=<rfc3339>&until=<rfc3339>&limit=1000
+```
+
+Aggregates interaction-log usage against the configured price table; returns
+totals plus by-model and by-agent breakdowns. Tenant-scoped in multi-tenant mode.
+
+## Audit Log
+
+```
+GET /api/v1/audit?kind=<kind>&actor=<name>&since=<rfc3339>&limit=100   # admin
+```
+
+Append-only control-plane events. `kind` is one of `tenant.created`,
+`tenant.deleted`, `api_key.created`, `api_key.deleted`, `api_key.role_changed`,
+`api_key.rotated`, `agent.reloaded`, `auth.denied`.
+
+## Pipelines
+
+```
+GET /api/v1/pipelines             # list kind:Pipeline documents
+GET /api/v1/pipelines/{name}      # detail incl. DAG nodes + edges
+```
+
+## Config Validation
+
+```
+POST /api/v1/config/validate      # editor — body is a YAML document
+```
+
+Runs the same validator as `mockagents validate` and returns `{ ok, kind, errors }`.
+
+## Multi-tenant Control Plane
+
+Available when `MOCKAGENTS_MULTI_TENANT=1`. Plaintext keys are returned **exactly
+once** on mint/rotate.
+
+| Method & Path | Min role | Description |
+|---------------|----------|-------------|
+| `GET /api/v1/tenants` | platform | List tenants |
+| `POST /api/v1/tenants` | platform | Create a tenant |
+| `DELETE /api/v1/tenants/{id}` | platform | Delete a tenant (cascades to keys) |
+| `GET /api/v1/tenants/{id}/keys` | editor | List a tenant's keys (no secret) |
+| `POST /api/v1/tenants/{id}/keys` | admin | Mint a key |
+| `POST /api/v1/tenants/{id}/keys/rotate` | admin | Bulk-rotate (`?except=self`) |
+| `PATCH /api/v1/keys/{id}` | admin | Change a key's role |
+| `POST /api/v1/keys/{id}/rotate` | admin | Rotate a key's secret in place |
+| `DELETE /api/v1/keys/{id}` | admin | Delete a key |
+| `POST /api/v1/keys/me/rotate` | viewer | Self-service rotation |
+| `POST /api/v1/keys/me/burn` | viewer | Rotate without returning plaintext |
+
+```bash
+# Mint a read-only CI key
+curl -H "Authorization: Bearer $ADMIN_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"ci-bot","role":"viewer"}' \
+  http://localhost:8080/api/v1/tenants/$TENANT_ID/keys
 ```
