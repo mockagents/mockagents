@@ -106,7 +106,17 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
-	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_logs_tenant ON interaction_logs(tenant_id)`)
+	// Composite (tenant_id, id DESC) index for the tenant-scoped dashboard query
+	// `WHERE tenant_id = ? ORDER BY id DESC LIMIT ?`: it serves both the equality
+	// filter and the id-desc ordering from one index, so SQLite skips a separate
+	// sort and the LIMIT short-circuits (PERF-13).
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_logs_tenant_id ON interaction_logs(tenant_id, id DESC)`); err != nil {
+		return err
+	}
+	// The old single-column tenant index is now redundant — the composite's
+	// leftmost column serves the same `WHERE tenant_id = ?` equality (incl.
+	// DeleteForTenant) — so drop it to avoid the extra per-insert write cost.
+	_, err = db.Exec(`DROP INDEX IF EXISTS idx_logs_tenant`)
 	return err
 }
 
