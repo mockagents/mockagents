@@ -28,18 +28,23 @@ const (
 	DefaultReadTimeout  = 30 * time.Second
 	DefaultWriteTimeout = 60 * time.Second
 	DefaultIdleTimeout  = 120 * time.Second
-	DefaultMaxBodyBytes = 10 * 1024 * 1024 // 10 MB
-	ShutdownTimeout     = 5 * time.Second
+	// DefaultReadHeaderTimeout bounds the request-header read on its own, so a
+	// slow-loris client dribbling headers can't tie up a connection for the full
+	// ReadTimeout window (PERF-21, slow-loris hardening).
+	DefaultReadHeaderTimeout = 10 * time.Second
+	DefaultMaxBodyBytes      = 10 * 1024 * 1024 // 10 MB
+	ShutdownTimeout          = 5 * time.Second
 )
 
 // Config holds HTTP server configuration.
 type Config struct {
-	Host         string
-	Port         int
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	IdleTimeout  time.Duration
-	MaxBodyBytes int64
+	Host              string
+	Port              int
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	IdleTimeout       time.Duration
+	ReadHeaderTimeout time.Duration
+	MaxBodyBytes      int64
 	// CORSAllowedOrigins restricts Access-Control-Allow-Origin. Empty (the
 	// default) or a list containing "*" keeps the permissive wildcard; an
 	// explicit list locks CORS down to those origins (F-MW-001).
@@ -67,13 +72,14 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		Host:         DefaultHost,
-		Port:         DefaultPort,
-		ReadTimeout:  DefaultReadTimeout,
-		WriteTimeout: DefaultWriteTimeout,
-		IdleTimeout:  DefaultIdleTimeout,
-		MaxBodyBytes: DefaultMaxBodyBytes,
-		Version:      "dev",
+		Host:              DefaultHost,
+		Port:              DefaultPort,
+		ReadTimeout:       DefaultReadTimeout,
+		WriteTimeout:      DefaultWriteTimeout,
+		IdleTimeout:       DefaultIdleTimeout,
+		ReadHeaderTimeout: DefaultReadHeaderTimeout,
+		MaxBodyBytes:      DefaultMaxBodyBytes,
+		Version:           "dev",
 	}
 }
 
@@ -179,12 +185,20 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 	handler = RequestContext(handler)
 	handler = observability.HTTPMiddleware(handler)
 
+	// Fall back to the default so a hand-built Config (one that skipped
+	// DefaultConfig) still gets slow-loris protection rather than an unbounded
+	// header read (PERF-21).
+	readHeaderTimeout := cfg.ReadHeaderTimeout
+	if readHeaderTimeout <= 0 {
+		readHeaderTimeout = DefaultReadHeaderTimeout
+	}
 	s.httpServer = &http.Server{
-		Addr:         net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port)),
-		Handler:      handler,
-		ReadTimeout:  cfg.ReadTimeout,
-		WriteTimeout: cfg.WriteTimeout,
-		IdleTimeout:  cfg.IdleTimeout,
+		Addr:              net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port)),
+		Handler:           handler,
+		ReadTimeout:       cfg.ReadTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
+		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
 	return s

@@ -105,13 +105,13 @@ break the fix, confirm the new bench/test regresses, restore).
 | PERF-12 | S | `tenancy/store.go`, `audit/store.go` | Prepare the hot `Resolve` prefix-SELECT + `last_used` UPDATE and the audit `Append` INSERT once (`db.Prepare`) instead of re-parsing every call — matters more on the serialized tenancy connection and under `auth.denied` floods. |
 | PERF-13 | S | `storage/sqlite.go` | Add a composite `(tenant_id, id DESC)` index for the tenant-scoped log dashboard, and prefer keyset pagination (`WHERE id < ?`) over `OFFSET` for deep pages (single-column indexes can serve the WHERE *or* the `id DESC` sort, not both). |
 | PERF-14 | S | `engine/tool_processor.go` | Fast path: run `processOne` inline when `len(toolCalls) <= 2` (skip the goroutine + WaitGroup + `errs` slice); cache `indexTools` per agent at registration instead of rebuilding the map per request. |
-| PERF-15 | S | `adapter/anthropic.go:166` | Pre-size `convertAnthropicMessages` result (`make(..., 0, len(msgs)+1)`); the OpenAI twin already does. |
+| ~~PERF-15~~ ✅ | S | `adapter/anthropic.go:166` | Pre-size `convertAnthropicMessages` result (`make(..., 0, len(msgs)+1)`); the OpenAI twin already does. **Done 2026-06-03.** |
 | PERF-16 | S | `server/handlers.go` error responses | Encode a fixed `type apiError struct{ Error string }` instead of `map[string]string{"error": …}` literals (matters under chaos 4xx/5xx storms). |
 | PERF-17 | S | `engine/response_generator.go` `generateUUID`/fakers | Hand-roll hex into a fixed `[36]byte` instead of `fmt.Sprintf` (the hottest template builtin's reflect cost). |
 | PERF-18 | M | `server/log_broadcaster.go` `Publish` | Copy-on-write `atomic.Pointer[[]*LogSubscription]` snapshot so `Publish` ranges a lock-free slice (today it holds one `Mutex` across the whole subscriber iteration on the async write loop). Low impact at the single-process target. |
 | PERF-19 | S | `engine/token.go` callers | `estimatePromptTokens` re-extracts/`strings.Join`s message content that `convertOpenAIMessages` already flattened into `inbound.Messages`; count off the flattened strings. |
-| PERF-20 | S | `storage/sqlite.go`, `tenancy/store.go` scan loops | Pre-size result slices to the known `limit` (`make([]T, 0, limit)`) to avoid `growslice` churn on large pages. |
-| PERF-21 | S | `server/server.go` http.Server | Add `ReadHeaderTimeout` (e.g. 10 s) — robustness, slow-loris hardening, not an alloc fix. |
+| ~~PERF-20~~ ✅ | S | `storage/sqlite.go`, `tenancy/store.go` scan loops | Pre-size result slices to the known `limit` (`make([]T, 0, limit)`) to avoid `growslice` churn on large pages. **Done 2026-06-03** for the log `Query` (`make([]InteractionLog, 0, limit)`, limit clamped to `[1, MaxLimit=1000]`). The tenancy `ListTenants`/`ListAPIKeys` loops have **no LIMIT** (they return all rows), so there is no known cap to pre-size to — left as-is rather than guess. |
+| ~~PERF-21~~ ✅ | S | `server/server.go` http.Server | Add `ReadHeaderTimeout` (e.g. 10 s) — robustness, slow-loris hardening, not an alloc fix. **Done 2026-06-03:** `DefaultReadHeaderTimeout = 10s` + Config field + a fallback in `New` so a hand-built `Config{}` still gets the protection. |
 
 ---
 
