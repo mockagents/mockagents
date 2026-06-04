@@ -210,7 +210,9 @@ func (s *SQLiteStore) Query(ctx context.Context, filter InteractionFilter) ([]In
 	}
 	defer rows.Close()
 
-	var logs []InteractionLog
+	// Pre-size to the page limit so a full page fills without growslice churn
+	// (PERF-20). limit is already clamped to [1, MaxLimit] above.
+	logs := make([]InteractionLog, 0, limit)
 	for rows.Next() {
 		var log InteractionLog
 		var streaming int

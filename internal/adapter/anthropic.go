@@ -163,7 +163,10 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 // --- Conversion Helpers ---
 
 func convertAnthropicMessages(msgs []AnthropicMessage, system string) []engine.RequestMessage {
-	var result []engine.RequestMessage
+	// Pre-size for the worst case (every message + an optional system prepend) so
+	// the append loop never grows the slice (PERF-15; the OpenAI twin already
+	// pre-sizes).
+	result := make([]engine.RequestMessage, 0, len(msgs)+1)
 
 	// Prepend system message if provided.
 	if system != "" {
