@@ -15,6 +15,7 @@ import {
 } from "@/lib/api";
 import { getAuthStatus } from "@/lib/auth";
 import { setFlash, takeFlash } from "@/lib/flash";
+import { Icon } from "@/lib/icons";
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -200,38 +201,62 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
   }
 
   return (
-    <div>
+    <div className="view-enter">
       <div className="breadcrumb">
         <Link href="/admin/tenants">Tenants</Link> · <code>{id}</code>
       </div>
-      <h1 className="page-title">API keys</h1>
-      <p className="page-lede">
-        Keys for tenant <code>{id}</code>. Roles: <strong>viewer</strong>{" "}
-        (read-only), <strong>editor</strong> (read + list-keys), <strong>admin</strong>{" "}
-        (full control).
-      </p>
+      <div className="page-head">
+        <h1 className="page-title">API keys</h1>
+        <p className="page-lede">
+          Keys for tenant <code>{id}</code>. Roles:{" "}
+          <code className="mono">viewer &lt; editor &lt; admin</code> — viewer
+          is read-only, editor adds list-keys, admin has full control.
+          Plaintext is shown exactly once.
+        </p>
+      </div>
 
-      {error && <div className="banner banner-error">{error}</div>}
+      {error && (
+        <div className="banner banner-error">
+          <div className="row gap-2">
+            <Icon name="x-circle" size={16} />
+            <div>{error}</div>
+          </div>
+        </div>
+      )}
       {plaintext && (
-        <div className="banner banner-warn">
-          <strong>Copy this now — it will never be shown again.</strong>
+        <div className="banner banner-ok">
+          <div className="row gap-2">
+            <Icon name="key-round" size={16} />
+            <div className="grow">
+              <strong>Key minted · {plaintextName}.</strong> Copy it now — it is
+              shown exactly once and bcrypt-hashed immediately.
+            </div>
+          </div>
           <div className="plaintext-box">
             <code>{plaintext}</code>
           </div>
-          <span className="muted">Key name: {plaintextName}</span>
         </div>
       )}
       {bulkRotation && bulkRotation.length > 0 && (
         <div className="banner banner-warn">
-          <strong>
-            Rotated {bulkRotation.length} key{bulkRotation.length === 1 ? "" : "s"}.
-            Copy every new secret now — they will never be shown again.
-          </strong>
+          <div className="row gap-2">
+            <Icon name="rotate-cw" size={16} />
+            <div className="grow">
+              <strong>
+                Rotated {bulkRotation.length} key
+                {bulkRotation.length === 1 ? "" : "s"}.
+              </strong>{" "}
+              Copy every new secret now — they will never be shown again. Every
+              external consumer must be updated before the old secrets die from
+              any remaining caches.
+            </div>
+          </div>
           <ul className="bulk-rotation-list">
             {bulkRotation.map((entry) => (
               <li key={entry.id}>
-                <div className="muted">
-                  <strong>{entry.name}</strong> · prefix <code>{entry.prefix}</code>
+                <div className="muted txt-xs mb-2">
+                  <strong>{entry.name}</strong> · prefix{" "}
+                  <code className="mono">{entry.prefix}</code>
                 </div>
                 <div className="plaintext-box">
                   <code>{entry.plaintext}</code>
@@ -239,102 +264,137 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
               </li>
             ))}
           </ul>
-          <span className="muted">
-            Every external consumer of these keys must be updated before the
-            old secrets fully die from any remaining caches.
-          </span>
         </div>
       )}
 
-      <div className="inline-form">
-        <form action={createKeyAction} className="inline">
-          <input name="name" placeholder="key name" required />{" "}
-          <select name="role" defaultValue="viewer">
-            {ROLES.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>{" "}
-          <button type="submit" className="btn btn-primary">
-            Mint key
-          </button>
-        </form>
-        {keys.length > 0 && (
-          <form action={bulkRotateAction} className="inline">
-            <button
-              type="submit"
-              className="btn btn-danger"
-              title="Regenerate every key in this tenant atomically. Emergency response to a suspected compromise."
+      <div className="card" style={{ overflow: "hidden" }}>
+        <div className="card-head">
+          <div className="grow">
+            <h3>Keys</h3>
+            <div className="sub mono">{id}</div>
+          </div>
+          {keys.length > 0 && (
+            <form action={bulkRotateAction} className="inline">
+              <button
+                type="submit"
+                className="btn btn-outline btn-sm"
+                title="Regenerate every key in this tenant atomically. Emergency response to a suspected compromise."
+              >
+                <Icon name="rotate-cw" size={14} />
+                Rotate all
+              </button>
+            </form>
+          )}
+          <form action={createKeyAction} className="row gap-2">
+            <input
+              name="name"
+              className="input"
+              style={{ width: 150, height: "var(--sr-control-h-sm)" }}
+              placeholder="key name"
+              required
+            />
+            <select
+              name="role"
+              className="select"
+              defaultValue="viewer"
+              style={{ width: 96, height: "var(--sr-control-h-sm)" }}
             >
-              Rotate all keys
+              {ROLES.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+            <button type="submit" className="btn btn-default btn-sm">
+              <Icon name="plus" size={15} />
+              Mint key
             </button>
           </form>
+        </div>
+
+        {keys.length === 0 ? (
+          <div className="empty">No keys for this tenant yet.</div>
+        ) : (
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>name</th>
+                <th>prefix</th>
+                <th>role</th>
+                <th>last used</th>
+                <th className="right"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {keys.map((k) => (
+                <tr key={k.id}>
+                  <td>
+                    <div className="col" style={{ gap: 0 }}>
+                      <span style={{ fontWeight: 500 }}>{k.name}</span>
+                      <span className="muted mono" style={{ fontSize: 10.5 }}>
+                        {k.id}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="mono" style={{ fontSize: 12 }}>
+                    {k.prefix}…
+                  </td>
+                  <td>
+                    <form action={changeRoleAction} className="row gap-2">
+                      <input type="hidden" name="id" value={k.id} />
+                      <select
+                        name="role"
+                        className="select"
+                        defaultValue={k.role}
+                        style={{ width: 96, height: 28, fontSize: 12 }}
+                      >
+                        {ROLES.map((r) => (
+                          <option key={r} value={r}>
+                            {r}
+                          </option>
+                        ))}
+                      </select>
+                      <button type="submit" className="btn btn-outline btn-xs">
+                        Save
+                      </button>
+                    </form>
+                  </td>
+                  <td className="muted txt-xs nowrap">{k.last_used ?? "—"}</td>
+                  <td>
+                    <div
+                      className="row gap-2"
+                      style={{ justifyContent: "flex-end" }}
+                    >
+                      <form action={rotateKeyAction} className="inline">
+                        <input type="hidden" name="id" value={k.id} />
+                        <input type="hidden" name="name" value={k.name} />
+                        <button
+                          type="submit"
+                          className="btn btn-ghost btn-icon btn-xs"
+                          title="Regenerate the secret in place"
+                        >
+                          <Icon name="rotate-cw" size={13} />
+                        </button>
+                      </form>
+                      <form action={deleteKeyAction} className="inline">
+                        <input type="hidden" name="id" value={k.id} />
+                        <button
+                          type="submit"
+                          className="btn btn-ghost btn-icon btn-xs"
+                          title="Delete key"
+                          style={{ color: "var(--sr-danger-fg)" }}
+                        >
+                          <Icon name="trash" size={13} />
+                        </button>
+                      </form>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
-
-      {keys.length === 0 ? (
-        <p className="muted">No keys yet.</p>
-      ) : (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Name</th>
-              <th>Prefix</th>
-              <th>Role</th>
-              <th>Created</th>
-              <th>Last used</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {keys.map((k) => (
-              <tr key={k.id}>
-                <td>
-                  <code className="muted">{k.id}</code>
-                </td>
-                <td>{k.name}</td>
-                <td>
-                  <code>{k.prefix}…</code>
-                </td>
-                <td>
-                  <form action={changeRoleAction} className="inline">
-                    <input type="hidden" name="id" value={k.id} />
-                    <select name="role" defaultValue={k.role}>
-                      {ROLES.map((r) => (
-                        <option key={r} value={r}>
-                          {r}
-                        </option>
-                      ))}
-                    </select>
-                    <button type="submit" className="btn btn-xsmall">
-                      Save
-                    </button>
-                  </form>
-                </td>
-                <td className="muted">{k.created_at}</td>
-                <td className="muted">{k.last_used ?? "—"}</td>
-                <td>
-                  <form action={rotateKeyAction} className="inline">
-                    <input type="hidden" name="id" value={k.id} />
-                    <input type="hidden" name="name" value={k.name} />
-                    <button type="submit" className="btn btn-xsmall" title="Regenerate the secret in place">
-                      Rotate
-                    </button>
-                  </form>{" "}
-                  <form action={deleteKeyAction} className="inline">
-                    <input type="hidden" name="id" value={k.id} />
-                    <button type="submit" className="btn btn-danger">
-                      Delete
-                    </button>
-                  </form>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
     </div>
   );
 }

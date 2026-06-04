@@ -24,17 +24,5 @@ export default function EditorPage() {
     }
   }
 
-  return (
-    <div>
-      <h1 className="page-title">Config editor</h1>
-      <p className="page-lede">
-        Paste an agent definition below and click <strong>Validate</strong>.
-        The server runs the same validator as <code>mockagents validate</code>
-        and returns inline errors. This is a validation playground — it does
-        not persist changes. Edit the file on disk and restart
-        <code> mockagents start</code> (or rely on hot reload) to apply.
-      </p>
-      <YamlEditor validateAction={validateAction} />
-    </div>
-  );
+  return <YamlEditor validateAction={validateAction} />;
 }
