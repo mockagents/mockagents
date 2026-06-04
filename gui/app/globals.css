@@ -349,7 +349,12 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance
 /* filter pills (segmented) */
 .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border-radius: var(--sr-radius-full); font-size: 12.5px; border: 1px solid var(--sr-border); background: var(--sr-bg); cursor: pointer; color: var(--sr-fg-muted); white-space: nowrap; }
 .pill:hover { background: var(--sr-bg-muted); color: var(--sr-fg); }
-.pill[aria-pressed="true"] { background: var(--sr-primary); color: var(--sr-fg-on-primary); border-color: var(--sr-primary); }
+.pill[aria-pressed="true"], .pill.active { background: var(--sr-primary); color: var(--sr-fg-on-primary); border-color: var(--sr-primary); }
+.pill.active:hover { background: var(--sr-primary); color: var(--sr-fg-on-primary); }
+
+/* meter bar (cost magnitude) */
+.meter { height: 7px; border-radius: 999px; background: var(--sr-bg-muted); overflow: hidden; }
+.meter > span { display: block; height: 100%; border-radius: 999px; background: var(--sr-primary); }
 
 /* card (design container + header) */
 .card { background: var(--sr-bg); border: 1px solid var(--sr-border); border-radius: var(--sr-radius-lg); box-shadow: var(--sr-shadow-sm); }
