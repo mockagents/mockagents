@@ -19,6 +19,15 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   shell with breadcrumbs, and every surface (agent catalog, agent detail, logs,
   costs, audit, pipelines, editor, tenants/keys, account) rebuilt to the design.
   Icons render as JSX (no `dangerouslySetInnerHTML`). (§2.55)
+- **Homelab deployment scripts** — a `homelabsetup/` suite that provisions a K3s
+  cluster (`bootstrap-homelab.sh`: K3s + MetalLB + an in-cluster registry +
+  containerd mirror) and deploys MockAgents via the bundled Helm chart
+  (`deploy-homelab.sh`: build/push an immutable `build-<ts>` image, render
+  `examples/` into a ConfigMap, `helm upgrade --install` with a Traefik ingress
+  on `mockagents.local`). Includes `fresh-deploy`, `stop`/`restart` (pause/resume
+  via replica annotations), and `cleanup` lifecycle scripts plus a
+  `DEPLOY_MOCKAGENTS.md` guide. Supports `--multi-tenant` (captures the bootstrap
+  admin key) and `--persist` (PVC-backed SQLite log).
 
 ### Changed
 - Documentation refresh: `CHANGELOG.md` rebuilt to cover v0.1–v0.3,
