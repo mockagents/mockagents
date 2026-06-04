@@ -176,8 +176,9 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Build non-streaming response.
-	promptTokens := estimatePromptTokens(req.Messages)
+	// Build non-streaming response. Count prompt tokens off the already-flattened
+	// inbound.Messages rather than re-extracting req.Messages (PERF-19).
+	promptTokens := sumMessageTokens(inbound.Messages)
 	completionTokens := EstimateTokens(resp.Content)
 
 	openAIResp := formatOpenAIResponse(resp, promptTokens, completionTokens)
@@ -291,10 +292,18 @@ func formatOpenAIResponse(resp *engine.Response, promptTokens, completionTokens 
 	}
 }
 
-func estimatePromptTokens(msgs []OpenAIMessage) int {
+// sumMessageTokens counts prompt tokens off the already-flattened engine
+// messages. Both adapters convert their wire messages into
+// []engine.RequestMessage — flattening multi-part content via
+// extractStringContent / extractAnthropicContent — before calling the engine,
+// so re-extracting the raw wire content for the token estimate would repeat that
+// work, including a strings.Join + slice alloc per multi-part message (PERF-19).
+// For Anthropic the prepended system message is already part of the flattened
+// slice, so the totals match the old system-plus-messages split exactly.
+func sumMessageTokens(msgs []engine.RequestMessage) int {
 	total := 0
-	for _, m := range msgs {
-		total += EstimateTokens(extractStringContent(m.Content))
+	for i := range msgs {
+		total += EstimateTokens(msgs[i].Content)
 	}
 	return total
 }

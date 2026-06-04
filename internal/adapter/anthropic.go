@@ -152,8 +152,10 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Non-streaming response.
-	inputTokens := estimateAnthropicPromptTokens(req.Messages, req.System)
+	// Non-streaming response. Count prompt tokens off the already-flattened
+	// inbound.Messages (the system message is prepended there) rather than
+	// re-extracting req.Messages + req.System (PERF-19).
+	inputTokens := sumMessageTokens(inbound.Messages)
 	outputTokens := EstimateTokens(resp.Content)
 
 	anthropicResp := formatAnthropicResponse(resp, inputTokens, outputTokens)
@@ -257,14 +259,6 @@ func formatAnthropicResponse(resp *engine.Response, inputTokens, outputTokens in
 			OutputTokens: outputTokens,
 		},
 	}
-}
-
-func estimateAnthropicPromptTokens(msgs []AnthropicMessage, system string) int {
-	total := EstimateTokens(system)
-	for _, m := range msgs {
-		total += EstimateTokens(extractAnthropicContent(m.Content))
-	}
-	return total
 }
 
 func writeAnthropicError(w http.ResponseWriter, status int, errType, message string) {

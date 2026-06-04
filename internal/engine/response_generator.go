@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -163,14 +164,28 @@ func dateOffset(days int, unit string) string {
 }
 
 func generateUUID() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
 		return "00000000-0000-0000-0000-000000000000"
 	}
 	b[6] = (b[6] & 0x0f) | 0x40 // version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // variant 2
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+	// Hand-roll the canonical 8-4-4-4-12 hex layout instead of fmt.Sprintf:
+	// `{{ uuid }}` is the hottest template builtin, and Sprintf's reflect +
+	// per-arg []byte boxing dominated its cost (PERF-17). hex.Encode writes
+	// straight into the fixed buffer, so the only allocation is the result
+	// string.
+	var buf [36]byte
+	hex.Encode(buf[0:8], b[0:4])
+	buf[8] = '-'
+	hex.Encode(buf[9:13], b[4:6])
+	buf[13] = '-'
+	hex.Encode(buf[14:18], b[6:8])
+	buf[18] = '-'
+	hex.Encode(buf[19:23], b[8:10])
+	buf[23] = '-'
+	hex.Encode(buf[24:36], b[10:16])
+	return string(buf[:])
 }
 
 // randomInt returns a uniformly random int in the INCLUSIVE range
