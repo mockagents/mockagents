@@ -52,6 +52,13 @@ type Config struct {
 	AgentsDir          string
 	Version            string
 	LogStore           *storage.SQLiteStore // Optional interaction log store.
+	// LogBodyMode controls how much of a captured response body is persisted
+	// (full | sanitized | none) for privacy-sensitive deployments (SEC-05).
+	// Empty/unknown normalizes to "full" (the historical behavior).
+	LogBodyMode LogBodyMode
+	// LogMaxRows bounds the interaction-log table: a background pruner keeps
+	// only the newest LogMaxRows rows. 0 (default) means unlimited / no pruning.
+	LogMaxRows int
 	// TenancyStore enables multi-tenant mode when non-nil. Every
 	// /api/v1/* request then requires a valid API key and the routes
 	// /api/v1/tenants and /api/v1/keys are mounted for admin CRUD.
@@ -93,6 +100,7 @@ type Server struct {
 	recorder       *audit.Recorder
 	logWorker      *LogWorker
 	logBroadcaster *LogBroadcaster
+	logPruner      *logPruner
 	logger         *slog.Logger
 	config         Config
 	listener       net.Listener
@@ -156,6 +164,12 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 		s.logWorker = NewLogWorker(cfg.LogStore, logger, LogWorkerConfig{
 			Broadcaster: s.logBroadcaster,
 		})
+		// Retention pruner (SEC-05): keep only the newest LogMaxRows rows. Only
+		// started when a bound is configured; 0 means unlimited.
+		if cfg.LogMaxRows > 0 {
+			s.logPruner = newLogPruner(cfg.LogStore, cfg.LogMaxRows, DefaultLogPruneInterval, logger)
+			s.logPruner.start()
+		}
 	}
 
 	s.registerRoutes(mux)
@@ -163,7 +177,7 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 	// Build middleware chain: outermost first.
 	var handler http.Handler = mux
 	if s.logWorker != nil {
-		handler = InteractionCapture(s.logWorker)(handler)
+		handler = InteractionCapture(s.logWorker, NormalizeLogBodyMode(string(cfg.LogBodyMode)))(handler)
 	}
 	handler = WithPrincipalTenantScope(handler)
 	// Tenancy auth gates every /api/v1/* route when multi-tenant mode
@@ -460,6 +474,11 @@ func (s *Server) Shutdown() error {
 	// an immediately-terminating stream rather than a hang (F-SV-001).
 	if s.logBroadcaster != nil {
 		s.logBroadcaster.Close()
+	}
+	// Stop the retention pruner before draining the worker; it's independent of
+	// the write path and must not outlive the store (SEC-05).
+	if s.logPruner != nil {
+		s.logPruner.Stop()
 	}
 
 	err := s.httpServer.Shutdown(ctx)

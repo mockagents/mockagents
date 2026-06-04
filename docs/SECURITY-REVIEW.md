@@ -35,10 +35,9 @@ HTTP server). The rest are defense-in-depth / consistency / privacy items.
 
 ## 2. Action plan (execute in this order)
 
-> **Status 2026-06-04:** SEC-01, SEC-02, SEC-03, SEC-04, SEC-06 **implemented**
-> (each with a test; SEC-01 and SEC-02 neuter-verified). **SEC-05** deferred
-> (privacy *feature* — config flag + retention design, not a quick fix).
-> **SEC-07 declined** — see the note under its checkbox.
+> **Status 2026-06-04:** SEC-01, SEC-02, SEC-03, SEC-04, SEC-05, SEC-06
+> **implemented** (each with a test; SEC-01/02/05 + the retention prune
+> neuter-verified). **SEC-07 declined** — see the note under its checkbox.
 
 - [x] **SEC-01 (Medium) — implemented.** Bound the request body on the standalone MCP HTTP
   transport. Wrap the body in `http.MaxBytesReader` before `io.ReadAll` /
@@ -71,14 +70,20 @@ HTTP server). The rest are defense-in-depth / consistency / privacy items.
   **Done when:** `offset` is clamped like `limit`; a test asserts an
   out-of-range offset is capped, not passed through.
 
-- [ ] **SEC-05 (Low, privacy) — DEFERRED** (feature, not a quick fix). Give operators control over response-body
-  capture. Wire the **already-existing but dead** `SanitizeBody`/`TruncateBody`
-  (`internal/storage/sqlite.go`) into `InteractionCapture`, gated behind a flag
-  (e.g. `MOCKAGENTS_LOG_BODIES`, default on for back-compat), and/or add a
-  retention bound (max-age or max-rows pruning) to the interaction-log table.
-  **Done when:** a privacy-sensitive deployment can disable response-body
-  persistence (or auto-prune), and the dead `SanitizeBody` is either wired in
-  or removed.
+- [x] **SEC-05 (Low, privacy) — implemented 2026-06-04.** Operators now control
+  response-body capture via **`MOCKAGENTS_LOG_BODIES`** = `full` (default,
+  back-compat) | `sanitized` (wires in the formerly-dead `storage.SanitizeBody`
+  to redact `sk-`/`key-`/`Bearer` tokens while keeping the usage block so cost
+  annotation still works) | `none` (drop the body; the model probe still runs on
+  the raw body so by_agent grouping is preserved). Retention is bounded via
+  **`MOCKAGENTS_LOG_MAX_ROWS`** = N, enforced by a background `logPruner` (1-min
+  tick, also prunes once at boot) calling the new
+  `storage.PruneToMaxRows(ctx, max)` which keeps the newest N rows; 0 = unlimited.
+  Tests: `storage/prune_test.go`, `server/log_bodymode_test.go` (mode parsing +
+  `none`/`sanitized` integration + pruner lifecycle); `none`, `sanitized`, and
+  the prune threshold are neuter-verified. **Note:** in `none` mode, body-derived
+  cost/token annotation is unavailable for those rows (documented tradeoff —
+  `sanitized` keeps it).
 
 - [x] **SEC-06 (Low) — implemented.** Harden the record-mode proxy: validate `--upstream`
   scheme is `http`/`https` in `recording.NewProxy`, and normalize/clean the

@@ -35,7 +35,7 @@ func TestCaptureWriterPool_ReusedCleanly(t *testing.T) {
 	t.Cleanup(func() { worker.Shutdown(2 * time.Second) })
 
 	var counter atomic.Int32
-	handler := InteractionCapture(worker)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := InteractionCapture(worker, LogBodyFull)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := counter.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -118,7 +118,7 @@ func newTestWorker(t *testing.T) (*LogWorker, *storage.SQLiteStore) {
 func TestInteractionCapture_AgentNameFromContext(t *testing.T) {
 	worker, store := newTestWorker(t)
 
-	handler := InteractionCapture(worker)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := InteractionCapture(worker, LogBodyFull)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if meta := engine.RequestMetaFromContext(r.Context()); meta != nil {
 			meta.AgentName = "weather-bot"
 			meta.Model = "gpt-4o"
@@ -157,7 +157,7 @@ func TestInteractionCapture_AgentNameFromContext(t *testing.T) {
 func TestInteractionCapture_BodyProbeFallback(t *testing.T) {
 	worker, store := newTestWorker(t)
 
-	handler := InteractionCapture(worker)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := InteractionCapture(worker, LogBodyFull)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Deliberately do NOT touch engine.RequestMetaFromContext.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -191,7 +191,7 @@ func TestInteractionCapture_SSENotBuffered(t *testing.T) {
 	worker, store := newTestWorker(t)
 
 	const chunk = "data: {\"delta\":\"hello\"}\n\n"
-	handler := InteractionCapture(worker)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := InteractionCapture(worker, LogBodyFull)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// charset param exercises the tolerant media-type match.
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
