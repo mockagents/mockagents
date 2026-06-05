@@ -79,15 +79,15 @@ session state, trustworthy interaction logs, and clean package metadata.
 | AHR-03a | Add tenant id to interaction log model, SQLite schema, and insert path | AHR-03 | BE-2 | 0.75 | P0 | DONE | AHR-02a | New log rows include tenant id; existing DBs migrate cleanly. |
 | AHR-03b | Filter log list/detail/delete, cost aggregates, and live streams by tenant | AHR-03 | BE-2 | 1.0 | P0 | DONE | AHR-03a | Tenant callers see only their rows; admin/global behavior is documented. |
 | AHR-04a | Make session state updates atomic for same-session concurrent requests | AHR-04 | BE-3 | 1.0 | P1 | DONE | -- | Concurrent same-session tests do not lose turns or race under `go test -race`. |
-| AHR-04b | Add CI/race documentation for Windows CGO caveat | AHR-04 | BE-3 | 0.25 | P1 | TODO | AHR-04a | CI retains race coverage on supported runners; local caveat is documented. |
-| AHR-05a | Capture sanitized request body and real protocol/session metadata | AHR-05 | BE-1 | 0.75 | P1 | TODO | AHR-03a | Logs show useful request context without leaking common secrets. |
-| AHR-05b | Record scenario name, tool count, error, and truncation state | AHR-05 | BE-1 | 0.75 | P1 | TODO | AHR-05a | Log detail and costs can be trusted for debugging and dashboarding. |
+| AHR-04b | Add CI/race documentation for Windows CGO caveat | AHR-04 | BE-3 | 0.25 | P1 | DONE | AHR-04a | REF-03: CI runs `-race` on Linux/macOS only; CONTRIBUTING "Race detection" + Makefile note. |
+| AHR-05a | Capture sanitized request body and real protocol/session metadata | AHR-05 | BE-1 | 0.75 | P1 | DONE | AHR-03a | REF-04: request-body tee under `MOCKAGENTS_LOG_BODIES`; real `X-Session-Id`. |
+| AHR-05b | Record scenario name, tool count, error, and truncation state | AHR-05 | BE-1 | 0.75 | P1 | DONE | AHR-05a | REF-04: scenario/tool-count/error stamped via RequestMeta; persisted `truncated` column. |
 | AHR-06a | Add configurable CORS origins and allowed headers | AHR-06 | DX-1 | 0.5 | P1 | DONE | -- | `Config.CORSAllowedOrigins` reflects an explicit allow-list with `Vary: Origin` (empty/`*` keeps wildcard); `internal/server/middleware.go` (F-MW-001). |
 | AHR-06b | Set secure GUI auth cookies when deployment URL is HTTPS | AHR-06 | DX-1 | 0.5 | P1 | DONE | -- | `gui/lib/auth.ts` sets `httpOnly`, `sameSite: "strict"`, and `secure` (gated on `NODE_ENV === "production"`). |
-| AHR-07a | Define adapter route registration interface and migrate OpenAI/Anthropic mounting | AHR-07 | BE-3 | 1.0 | P2 | TODO | AHR-01a | Server registers adapters through a common boundary; behavior unchanged. |
+| AHR-07a | Define adapter route registration interface and migrate OpenAI/Anthropic mounting | AHR-07 | BE-3 | 1.0 | P2 | DONE | AHR-01a | REF-05: `adapter.Adapter`/`Registry`/`DefaultRegistry`; server mounts via one loop. |
 | AHR-08a | Align package/license metadata and OpenAPI license to Apache 2.0 | AHR-08 | DX-1 | 0.25 | P2 | DONE | -- | Both SDK manifests now read `Apache-2.0` (see REF-01, 2026-06-05). |
 | AHR-08b | Expand `.gitignore` and remove generated artifacts from tracking | AHR-08 | DX-1 | 0.5 | P2 | DONE | -- | `.gitignore` expanded; 56 tracked artifacts (egg-info + `*.pyc`) untracked (see REF-02, 2026-06-05). |
-| AHR-08c | Add lightweight schema/API/SDK drift check to CI | AHR-08 | DX-1 | 0.75 | P2 | TODO | AHR-08a | CI fails when public API metadata or SDK models drift unintentionally. |
+| AHR-08c | Add lightweight schema/API/SDK drift check to CI | AHR-08 | DX-1 | 0.75 | P2 | DONE | AHR-08a | REF-06: `tools/driftcheck` (api-spec `$ref` resolution + license agreement), wired into CI `lint` + `make drift`. |
 
 ---
 
@@ -102,6 +102,11 @@ sharper acceptance criteria. Ordered by ROI (low-risk hygiene first,
 then correctness, then larger slices).
 
 ### Verification summary (what's actually open)
+
+> **Update 2026-06-05:** REF-01 through REF-06 all landed on `main` the same
+> day (PRs #18–#20 + the drift-check PR). The table below is the original
+> as-found snapshot; every row except the two big-bet slices (REF-07/08) is now
+> closed — see each ticket's ✅ marker.
 
 | ID | Was | Verified state (2026-06-05) | Evidence |
 | -- | --- | --------------------------- | -------- |
@@ -123,7 +128,7 @@ Apache-2.0 root license.
 **Acceptance criteria:**
 - [x] `sdk/python/pyproject.toml` `license` reads `Apache-2.0` (SPDX expression form, dropping the deprecated `{text = "MIT"}` table; bumped `setuptools>=77` so the string form parses, dropped the MIT classifier).
 - [x] `sdk/typescript/package.json` `"license"` reads `"Apache-2.0"`.
-- [ ] A short grep/CI assertion (or a note in REF-06) guards against future drift. — deferred to REF-06.
+- [x] A CI assertion guards against future drift — delivered as REF-06 (`tools/driftcheck`).
 - [x] Changes are metadata-only; no test logic touched.
 
 ### Refined ticket: REF-02 — `.gitignore` hygiene (was AHR-08b) ✅ DONE 2026-06-05
@@ -135,20 +140,21 @@ Apache-2.0 root license.
 - [x] `git ls-files` shows none of the above still tracked — 56 artifacts untracked (the `mockagents.egg-info/` dir incl. a stale MIT `PKG-INFO`, plus ~50 `*.pyc` across `examples/` and the SDK).
 - [x] No tracked `.db` fixtures existed, so no negation was needed.
 
-### Refined ticket: REF-03 — Document the race-detector caveat (was AHR-04b)
+### Refined ticket: REF-03 — Document the race-detector caveat (was AHR-04b) ✅ DONE 2026-06-05
 
 **Priority:** P1 · **Points:** 1 · **Lane:** correctness/ops
 
-`go test -race` requires cgo; this build is pure-Go (`modernc.org/sqlite`),
-so `-race` compiles but detects nothing. CI currently implies race coverage
-it does not provide.
+`go test -race` requires `CGO_ENABLED=1` + a C compiler; this build is
+otherwise pure-Go (`modernc.org/sqlite`), so a bare Windows dev box can't run
+it. (Note: `-race` is a hard error without cgo, not a silent no-op — the
+original framing was slightly off.)
 
 **Acceptance criteria:**
-- [ ] Decide and document the policy: either (a) drop `-race` from CI to stop implying false coverage, or (b) add one cgo-enabled race job on Linux only and document why Windows/macos can't.
-- [ ] `CONTRIBUTING.md` (and a Makefile comment near `test-race`) explains the no-cgo constraint and the chosen CI policy.
-- [ ] `.github/workflows/ci.yml` matches the documented policy.
+- [x] Policy chosen: CI runs `-race` on the **Linux + macOS** legs (always have a C toolchain) and the **Windows** leg without `-race`, so the job never depends on the runner image's C compiler.
+- [x] `CONTRIBUTING.md` gains a "Race detection" section; `Makefile` `test-race` carries a comment + explicit `CGO_ENABLED=1`.
+- [x] `.github/workflows/ci.yml` matches the documented policy (split race / no-race steps gated on `runner.os`).
 
-### Refined ticket: REF-04 — Interaction-log fidelity (was AHR-05)
+### Refined ticket: REF-04 — Interaction-log fidelity (was AHR-05) ✅ DONE 2026-06-05
 
 **Priority:** P1 · **Points:** 5 · **Lane:** correctness/observability
 
@@ -157,30 +163,34 @@ costs/audit/log-detail surfaces show blanks. SEC-05 sanitization already
 exists — this wires the remaining metadata through.
 
 **Acceptance criteria:**
-- [ ] `InteractionCapture` populates `Protocol`, `ScenarioName`, `ToolCallsCount`, and `Error` from `RequestMeta`/engine result (thread them out of the adapter the way tenant id already is).
-- [ ] `RequestBody` is captured under the existing `MOCKAGENTS_LOG_BODIES` mode (sanitized/none honored), reusing `SanitizeBody`.
-- [ ] A persisted truncation flag records when a captured body was clipped.
-- [ ] `SessionID` reflects a real session id (`X-Session-Id` when supplied) and falls back to request id only when absent.
-- [ ] SQLite schema migrates cleanly on an existing `.mockagents.db` (additive columns, no data loss); storage tests cover the new fields.
+- [x] `InteractionCapture` populates `Protocol`, `ScenarioName`, `ToolCallsCount`, and `Error` from `RequestMeta` (both adapters stamp them — protocol first so early validation errors still record the surface).
+- [x] `RequestBody` is captured via a bounded, pooled request-body tee under the existing `MOCKAGENTS_LOG_BODIES` mode (sanitized/none honored), preserving `MaxBytesReader` semantics.
+- [x] A persisted `truncated` flag records when a captured body was clipped.
+- [x] `SessionID` reflects the real engine session id (`X-Session-Id` when supplied), falling back to request id only when the engine never ran.
+- [x] Additive SQLite `truncated` column with a migration for existing DBs; storage round-trip + legacy-migration tests and three server capture tests cover the new behavior.
 
-### Refined ticket: REF-05 — Adapter registration boundary (was AHR-07)
+### Refined ticket: REF-05 — Adapter registration boundary (was AHR-07) ✅ DONE 2026-06-05
 
 **Priority:** P2 · **Points:** 5 · **Lane:** architecture (do after REF-04 so route/log behavior is stable)
 
 **Acceptance criteria:**
-- [ ] An `Adapter` interface (name + route registration) replaces the hardwired `mux.HandleFunc` block in `server.go:264-271`.
-- [ ] OpenAI and Anthropic handlers register through that boundary; external wire behavior is byte-identical (conformance suite unchanged and green).
-- [ ] Adding a third provider requires no edits to `server.go` route wiring — only an adapter registration.
-- [ ] Tenant-header / `ProcessRequestContext` plumbing is preserved through the new boundary.
+- [x] `adapter.Adapter` interface (`Name()` + `Routes()`) plus an ordered `Registry` replace the hardwired `mux.HandleFunc` block; the server mounts via one loop over `adapter.DefaultRegistry(engine).Adapters()`.
+- [x] OpenAI and Anthropic register through that boundary; wire behavior is byte-identical (conformance suite green).
+- [x] Adding a third provider requires no `server.go` edits — only `DefaultRegistry` + an `Adapter` impl; a `fakeAdapter` test proves it mounts and serves.
+- [x] Tenant scope / `ProcessRequestContext` plumbing preserved (handlers unchanged).
 
-### Refined ticket: REF-06 — API/SDK drift check in CI (was AHR-08c)
+### Refined ticket: REF-06 — API/SDK drift check in CI (was AHR-08c) ✅ DONE 2026-06-05
 
 **Priority:** P2 · **Points:** 2 · **Lane:** release hygiene (depends on REF-01)
 
+Implemented as a dependency-light Go tool, `tools/driftcheck` (matching the
+`tools/benchreport` precedent), rather than an ad-hoc shell/Python sweep — so
+it has unit tests and runs anywhere Go does.
+
 **Acceptance criteria:**
-- [ ] CI step parses `docs/api-spec.yaml` and asserts every `#/components/...` `$ref` resolves (the regex sweep from the 2026-06-04 session, scripted).
-- [ ] CI asserts license strings agree across root `LICENSE`, both SDK manifests, and `api-spec.yaml` (guards REF-01).
-- [ ] The check is fast (<10s), runs on PRs, and fails loudly on drift.
+- [x] `tools/driftcheck` walks `docs/api-spec.yaml` and asserts every internal `#/...` `$ref` resolves to an existing node (full JSON-pointer resolution, not just a regex).
+- [x] It asserts the license string agrees (`Apache-2.0`) across root `LICENSE`, both SDK manifests, and the OpenAPI `info.license.name` (guards REF-01).
+- [x] Wired into the CI `lint` job (`go run ./tools/driftcheck`) + `make drift`; runs in <1s and exits 1 with a per-problem list on drift. Tool unit tests run in the Go job and include live-repo integration guards.
 
 ### Larger slices (unchanged, still the two big next bets)
 

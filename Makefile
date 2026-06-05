@@ -1,5 +1,5 @@
 .PHONY: build test test-verbose test-coverage test-python test-typescript test-all \
-       lint fmt clean validate docker docker-up docker-down \
+       lint drift fmt clean validate docker docker-up docker-down \
        gui-dev gui-build \
        helm-lint helm-template helm-package \
        bench bench-report \
@@ -46,6 +46,9 @@ test-all: test test-python test-typescript ## Run all tests (Go + Python + TypeS
 ## Code Quality
 lint:                           ## Run Go vet
 	$(GO) vet ./...
+
+drift:                          ## Check api-spec $refs + license agreement (REF-06)
+	$(GO) run ./tools/driftcheck
 
 fmt:                            ## Format Go code
 	gofmt -w .

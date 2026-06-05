@@ -91,6 +91,14 @@ jobs:
       - name: Go build (verify compilation)
         run: go build ./...
 
+      # Fast guard (REF-06): every internal $ref in docs/api-spec.yaml must
+      # resolve, and the license string must agree (Apache-2.0) across the
+      # root LICENSE, both SDK manifests, and the OpenAPI info block. Fails
+      # loudly on drift so a renamed component or a manifest regenerated back
+      # to MIT can't slip in. The tool's own unit tests run in the Go job.
+      - name: API/SDK drift check
+        run: go run ./tools/driftcheck
+
   docker:
     name: Docker Build
     runs-on: ubuntu-latest
