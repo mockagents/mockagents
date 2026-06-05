@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"strconv"
@@ -238,6 +239,47 @@ func releaseCaptureWriter(cw *captureWriter) {
 	captureWriterPool.Put(cw)
 }
 
+// reqBodyBufPool recycles the bytes.Buffer instances that back the
+// request-body tee, mirroring captureWriterPool on the response side so
+// capturing the request payload doesn't allocate a fresh buffer per
+// loggable request under sustained load.
+var reqBodyBufPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
+
+// reqBodyCaptureReader wraps the request body so the interaction-capture
+// middleware records up to maxCaptureBodyBytes of the bytes the handler
+// actually reads. Wrapping (rather than draining the body up front and
+// restoring it) preserves the upstream http.MaxBytesReader semantics: the
+// handler reads straight through to the limited body and sees exactly the
+// errors it would without capture. Bytes beyond the cap flip truncated and
+// are not buffered, bounding worst-case memory the same way the response
+// writer does.
+type reqBodyCaptureReader struct {
+	rc        io.ReadCloser
+	buf       *bytes.Buffer
+	truncated bool
+}
+
+func (t *reqBodyCaptureReader) Read(p []byte) (int, error) {
+	n, err := t.rc.Read(p)
+	if n > 0 {
+		room := maxCaptureBodyBytes - t.buf.Len()
+		switch {
+		case room <= 0:
+			t.truncated = true
+		case n <= room:
+			t.buf.Write(p[:n])
+		default:
+			t.buf.Write(p[:room])
+			t.truncated = true
+		}
+	}
+	return n, err
+}
+
+func (t *reqBodyCaptureReader) Close() error { return t.rc.Close() }
+
 // LogBodyMode controls how much of a captured response body the interaction-log
 // store persists, so privacy-sensitive deployments can redact or drop bodies
 // that may carry sensitive content (SEC-05). Configured via MOCKAGENTS_LOG_BODIES.
@@ -316,13 +358,40 @@ func InteractionCapture(worker *LogWorker, bodyMode LogBodyMode) func(http.Handl
 			defer releaseCaptureWriter(cw)
 
 			// Attach a mutable RequestMeta to the context so the
-			// adapter handlers can stamp the matched agent name and
-			// model after engine resolution. Reading it back after
+			// adapter handlers can stamp the matched agent name,
+			// model, protocol, scenario, tool count, and (on failure)
+			// the engine error after resolution. Reading it back after
 			// ServeHTTP returns gives an authoritative answer without
 			// having to reparse the response body.
 			r, meta := engine.WithRequestMeta(r)
 
+			// Tee the request body so the persisted row can show what was
+			// sent, subject to the configured privacy mode. LogBodyNone
+			// skips capture entirely so the request payload is neither
+			// buffered nor copied.
+			var reqCap *reqBodyCaptureReader
+			if bodyMode != LogBodyNone && r.Body != nil {
+				buf := reqBodyBufPool.Get().(*bytes.Buffer)
+				buf.Reset()
+				reqCap = &reqBodyCaptureReader{rc: r.Body, buf: buf}
+				r.Body = reqCap
+			}
+
 			next.ServeHTTP(cw, r)
+
+			// Snapshot the captured request body (one copy into a string the
+			// worker owns) and release the pooled buffer. Drop a pathologically
+			// large backing array instead of pinning it in the pool, mirroring
+			// releaseCaptureWriter.
+			var reqBody string
+			reqTruncated := false
+			if reqCap != nil {
+				reqBody = applyLogBodyMode(bodyMode, reqCap.buf.String())
+				reqTruncated = reqCap.truncated
+				if reqCap.buf.Cap() <= maxCaptureBodyBytes/4 {
+					reqBodyBufPool.Put(reqCap.buf)
+				}
+			}
 
 			// One independent copy of the body for the async worker; the
 			// captureWriter is released and reused right after this block, so
@@ -346,22 +415,40 @@ func InteractionCapture(worker *LogWorker, bodyMode LogBodyMode) func(http.Handl
 			// grouping is unaffected even when the stored body is dropped.
 			storedBody := applyLogBodyMode(bodyMode, respBody)
 
+			// Truncated reflects whether the *persisted* body is clipped, so it
+			// stays false in LogBodyNone where nothing is stored even if the
+			// real payload was large.
+			truncated := false
+			if bodyMode != LogBodyNone {
+				truncated = reqTruncated || cw.truncated
+			}
+
 			entry := &storage.InteractionLog{
 				Timestamp:      start.UTC().Format(time.RFC3339),
 				TenantID:       engine.TenantIDFromContext(r.Context()),
+				Protocol:       meta.Protocol,
 				RequestMethod:  r.Method,
 				RequestPath:    path,
+				RequestBody:    reqBody,
 				ResponseStatus: cw.statusCode,
 				LatencyMs:      time.Since(start).Milliseconds(),
 				Streaming:      streaming,
 				ResponseBody:   storedBody,
 				AgentName:      agentName,
+				ScenarioName:   meta.ScenarioName,
+				ToolCallsCount: meta.ToolCallsCount,
+				Error:          meta.Error,
+				Truncated:      truncated,
 			}
-			// Protocol-adapter interactions have no application-level session,
-			// so SessionID carries the per-request id here; the /api/v1/logs
-			// `session_id` filter therefore doubles as a request-id filter for
-			// these rows (F-LH-007).
-			if reqID := requestIDFromContext(r.Context()); reqID != "" {
+			// Prefer the engine session id the adapter resolved (the request's
+			// X-Session-Id when the client sent one, otherwise the generated
+			// sess-* id the turn history is keyed on). Fall back to the per-
+			// request id when the engine never ran — e.g. a malformed request
+			// rejected before the adapter built the inbound — so the row still
+			// carries a correlatable id (F-LH-007).
+			if meta.SessionID != "" {
+				entry.SessionID = meta.SessionID
+			} else if reqID := requestIDFromContext(r.Context()); reqID != "" {
 				entry.SessionID = reqID
 			}
 			// Submit is non-blocking and drops on a full queue. The drop is

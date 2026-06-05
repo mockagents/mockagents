@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS interaction_logs (
     tool_calls_count INTEGER DEFAULT 0,
     streaming       INTEGER DEFAULT 0,
     error           TEXT,
-    scenario_name   TEXT    DEFAULT ''
+    scenario_name   TEXT    DEFAULT '',
+    truncated       INTEGER DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_logs_agent     ON interaction_logs(agent_name);
@@ -106,6 +107,17 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	// truncated landed with the log-fidelity slice (REF-04). Additive,
+	// defaulted to 0, so pre-existing rows read back as "not truncated".
+	hasTruncated, err := columnExists(db, "interaction_logs", "truncated")
+	if err != nil {
+		return err
+	}
+	if !hasTruncated {
+		if _, err := db.Exec(`ALTER TABLE interaction_logs ADD COLUMN truncated INTEGER DEFAULT 0`); err != nil {
+			return err
+		}
+	}
 	// Composite (tenant_id, id DESC) index for the tenant-scoped dashboard query
 	// `WHERE tenant_id = ? ORDER BY id DESC LIMIT ?`: it serves both the equality
 	// filter and the id-desc ordering from one index, so SQLite skips a separate
@@ -148,13 +160,13 @@ func (s *SQLiteStore) Log(ctx context.Context, entry *InteractionLog) error {
 		INSERT INTO interaction_logs
 			(timestamp, tenant_id, agent_name, session_id, protocol, request_method, request_path,
 			 request_body, response_status, response_body, latency_ms,
-			 tool_calls_count, streaming, error, scenario_name)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 tool_calls_count, streaming, error, scenario_name, truncated)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.Timestamp, entry.TenantID, entry.AgentName, entry.SessionID, entry.Protocol,
 		entry.RequestMethod, entry.RequestPath,
 		entry.RequestBody, entry.ResponseStatus, entry.ResponseBody,
 		entry.LatencyMs, entry.ToolCallsCount, boolToInt(entry.Streaming),
-		entry.Error, entry.ScenarioName,
+		entry.Error, entry.ScenarioName, boolToInt(entry.Truncated),
 	)
 	if err != nil {
 		return err
@@ -173,7 +185,7 @@ func (s *SQLiteStore) Log(ctx context.Context, entry *InteractionLog) error {
 func (s *SQLiteStore) Query(ctx context.Context, filter InteractionFilter) ([]InteractionLog, error) {
 	query := `SELECT id, timestamp, tenant_id, agent_name, session_id, protocol,
 		request_method, request_path, request_body, response_status,
-		response_body, latency_ms, tool_calls_count, streaming, error, scenario_name
+		response_body, latency_ms, tool_calls_count, streaming, error, scenario_name, truncated
 		FROM interaction_logs WHERE 1=1`
 
 	var args []any
@@ -225,18 +237,19 @@ func (s *SQLiteStore) Query(ctx context.Context, filter InteractionFilter) ([]In
 	logs := make([]InteractionLog, 0, limit)
 	for rows.Next() {
 		var log InteractionLog
-		var streaming int
+		var streaming, truncated int
 		var errStr, reqBody, respBody, scenarioName sql.NullString
 		if err := rows.Scan(
 			&log.ID, &log.Timestamp, &log.TenantID, &log.AgentName, &log.SessionID,
 			&log.Protocol, &log.RequestMethod, &log.RequestPath,
 			&reqBody, &log.ResponseStatus,
 			&respBody, &log.LatencyMs, &log.ToolCallsCount,
-			&streaming, &errStr, &scenarioName,
+			&streaming, &errStr, &scenarioName, &truncated,
 		); err != nil {
 			return nil, fmt.Errorf("scanning row: %w", err)
 		}
 		log.Streaming = streaming != 0
+		log.Truncated = truncated != 0
 		log.Error = errStr.String
 		log.RequestBody = reqBody.String
 		log.ResponseBody = respBody.String
@@ -251,18 +264,18 @@ func (s *SQLiteStore) GetByID(ctx context.Context, id int64) (*InteractionLog, e
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, timestamp, tenant_id, agent_name, session_id, protocol,
 			request_method, request_path, request_body, response_status,
-			response_body, latency_ms, tool_calls_count, streaming, error, scenario_name
+			response_body, latency_ms, tool_calls_count, streaming, error, scenario_name, truncated
 		FROM interaction_logs WHERE id = ?`, id)
 
 	var log InteractionLog
-	var streaming int
+	var streaming, truncated int
 	var errStr, reqBody, respBody, scenarioName sql.NullString
 	if err := row.Scan(
 		&log.ID, &log.Timestamp, &log.TenantID, &log.AgentName, &log.SessionID,
 		&log.Protocol, &log.RequestMethod, &log.RequestPath,
 		&reqBody, &log.ResponseStatus,
 		&respBody, &log.LatencyMs, &log.ToolCallsCount,
-		&streaming, &errStr, &scenarioName,
+		&streaming, &errStr, &scenarioName, &truncated,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -270,6 +283,7 @@ func (s *SQLiteStore) GetByID(ctx context.Context, id int64) (*InteractionLog, e
 		return nil, fmt.Errorf("getting log %d: %w", id, err)
 	}
 	log.Streaming = streaming != 0
+	log.Truncated = truncated != 0
 	log.Error = errStr.String
 	log.RequestBody = reqBody.String
 	log.ResponseBody = respBody.String

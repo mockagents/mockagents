@@ -18,6 +18,10 @@ type InteractionLog struct {
 	Streaming      bool   `json:"streaming"`
 	Error          string `json:"error,omitempty"`
 	ScenarioName   string `json:"scenario_name,omitempty"`
+	// Truncated reports that the request and/or response body exceeded
+	// the capture cap and the stored body is clipped, so a consumer
+	// knows the persisted body is not the complete payload.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // InteractionFilter specifies query criteria for log retrieval.

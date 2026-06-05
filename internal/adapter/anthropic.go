@@ -71,8 +71,20 @@ type AnthropicHandler struct {
 	Engine *engine.Engine
 }
 
+// ProtocolAnthropicMessages is the wire-protocol label recorded on
+// interaction logs for this endpoint; it matches the agent-spec
+// `protocol` enum value.
+const ProtocolAnthropicMessages = "anthropic-messages"
+
 // HandleMessages handles POST /v1/messages.
 func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
+	// Stamp the protocol first so even a malformed request that never
+	// reaches the engine still logs which surface it hit.
+	meta := engine.RequestMetaFromContext(r.Context())
+	if meta != nil {
+		meta.Protocol = ProtocolAnthropicMessages
+	}
+
 	var req AnthropicRequest
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("invalid JSON: %s", err))
@@ -104,9 +116,15 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 		Messages:  convertAnthropicMessages(req.Messages, req.System),
 		Stream:    req.Stream,
 	}
+	if meta != nil {
+		meta.SessionID = inbound.SessionID
+	}
 
 	resp, err := h.Engine.ProcessRequestContext(r.Context(), inbound)
 	if err != nil {
+		if meta != nil {
+			meta.Error = err.Error()
+		}
 		if ce := engine.AsChaosError(err); ce != nil {
 			if ce.RetryAfter > 0 {
 				w.Header().Set("Retry-After", fmt.Sprintf("%d", int(ce.RetryAfter.Seconds())))
@@ -124,12 +142,14 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Stamp the matched agent onto the request meta so the
-	// InteractionCapture middleware can record the real agent name
-	// instead of probing the response body for a model name.
-	if meta := engine.RequestMetaFromContext(r.Context()); meta != nil {
+	// Stamp the matched agent + scenario onto the request meta so the
+	// InteractionCapture middleware can record the real agent name and
+	// scenario instead of probing the response body for a model name.
+	if meta != nil {
 		meta.AgentName = resp.AgentName
 		meta.Model = req.Model
+		meta.ScenarioName = resp.ScenarioName
+		meta.ToolCallsCount = len(resp.ToolCalls)
 	}
 
 	// Stream or JSON.

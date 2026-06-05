@@ -1,6 +1,7 @@
 package server
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -180,6 +181,139 @@ func TestInteractionCapture_BodyProbeFallback(t *testing.T) {
 	}
 	if rows[0].AgentName != "gpt-4o-mini" {
 		t.Fatalf("expected fallback AgentName=gpt-4o-mini, got %q", rows[0].AgentName)
+	}
+}
+
+// TestInteractionCapture_FidelityFromMeta verifies the middleware records the
+// full set of metadata the adapter stamps onto RequestMeta — protocol,
+// resolved session id, scenario, tool-call count — plus the captured request
+// body, so the log/cost dashboards have real context (REF-04).
+func TestInteractionCapture_FidelityFromMeta(t *testing.T) {
+	worker, store := newTestWorker(t)
+
+	const reqBody = `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`
+	handler := InteractionCapture(worker, LogBodyFull)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Drain the body like the real adapter so the tee captures it.
+		_, _ = io.ReadAll(r.Body)
+		if meta := engine.RequestMetaFromContext(r.Context()); meta != nil {
+			meta.Protocol = "openai-chat-completions"
+			meta.SessionID = "sess-xyz"
+			meta.AgentName = "weather-bot"
+			meta.Model = "gpt-4o"
+			meta.ScenarioName = "lookup"
+			meta.ToolCallsCount = 2
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"model":"gpt-4o","choices":[]}`))
+	}))
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(reqBody))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if !waitForLog(t, store, 1, time.Second) {
+		t.Fatal("log never appeared")
+	}
+	rows, err := store.Query(t.Context(), storage.InteractionFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	row := rows[0]
+	if row.Protocol != "openai-chat-completions" {
+		t.Errorf("Protocol = %q, want openai-chat-completions", row.Protocol)
+	}
+	if row.SessionID != "sess-xyz" {
+		t.Errorf("SessionID = %q, want sess-xyz (real session, not request id)", row.SessionID)
+	}
+	if row.ScenarioName != "lookup" {
+		t.Errorf("ScenarioName = %q, want lookup", row.ScenarioName)
+	}
+	if row.ToolCallsCount != 2 {
+		t.Errorf("ToolCallsCount = %d, want 2", row.ToolCallsCount)
+	}
+	if row.RequestBody != reqBody {
+		t.Errorf("RequestBody = %q, want %q", row.RequestBody, reqBody)
+	}
+	if row.Error != "" {
+		t.Errorf("Error = %q, want empty on success", row.Error)
+	}
+	if row.Truncated {
+		t.Error("Truncated = true, want false for a small body")
+	}
+}
+
+// TestInteractionCapture_RequestBodyTruncated proves an over-cap request body
+// is clipped to maxCaptureBodyBytes and flags Truncated, while the handler
+// still reads the full payload through the tee (REF-04).
+func TestInteractionCapture_RequestBodyTruncated(t *testing.T) {
+	worker, store := newTestWorker(t)
+
+	big := strings.Repeat("a", maxCaptureBodyBytes+1024)
+	var readN int
+	handler := InteractionCapture(worker, LogBodyFull)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		readN = len(b)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"model":"m"}`))
+	}))
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(big))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if readN != len(big) {
+		t.Fatalf("handler read %d bytes, want full %d — tee disturbed the read path", readN, len(big))
+	}
+	if !waitForLog(t, store, 1, time.Second) {
+		t.Fatal("log never appeared")
+	}
+	rows, err := store.Query(t.Context(), storage.InteractionFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	row := rows[0]
+	if !row.Truncated {
+		t.Error("Truncated = false, want true for an over-cap request body")
+	}
+	if len(row.RequestBody) != maxCaptureBodyBytes {
+		t.Errorf("stored RequestBody len = %d, want clipped to %d", len(row.RequestBody), maxCaptureBodyBytes)
+	}
+}
+
+// TestInteractionCapture_LogBodyNoneSkipsRequestBody verifies LogBodyNone
+// drops both bodies and never flags truncation (REF-04 + SEC-05).
+func TestInteractionCapture_LogBodyNoneSkipsRequestBody(t *testing.T) {
+	worker, store := newTestWorker(t)
+
+	handler := InteractionCapture(worker, LogBodyNone)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"model":"m"}`))
+	}))
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m","secret":"x"}`))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if !waitForLog(t, store, 1, time.Second) {
+		t.Fatal("log never appeared")
+	}
+	rows, err := store.Query(t.Context(), storage.InteractionFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	row := rows[0]
+	if row.RequestBody != "" {
+		t.Errorf("RequestBody = %q, want empty under LogBodyNone", row.RequestBody)
+	}
+	if row.ResponseBody != "" {
+		t.Errorf("ResponseBody = %q, want empty under LogBodyNone", row.ResponseBody)
+	}
+	if row.Truncated {
+		t.Error("Truncated = true, want false under LogBodyNone (nothing stored)")
 	}
 }
 

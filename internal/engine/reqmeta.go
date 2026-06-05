@@ -18,6 +18,26 @@ import (
 type RequestMeta struct {
 	AgentName string
 	Model     string
+	// Protocol is the wire protocol the adapter speaks
+	// ("openai-chat-completions" / "anthropic-messages"). Stamped at
+	// the top of the handler so even an early validation error still
+	// records which surface it hit.
+	Protocol string
+	// SessionID is the resolved engine session id (the request's
+	// X-Session-Id header when supplied, otherwise the generated
+	// sess-* id the engine keyed its turn history on). Empty until the
+	// adapter builds the inbound request.
+	SessionID string
+	// ScenarioName is the scenario the engine matched. Empty on the
+	// error path (the engine never produced a response).
+	ScenarioName string
+	// ToolCallsCount is how many tool calls the matched scenario
+	// emitted, so log/cost dashboards can flag tool-heavy traffic
+	// without reparsing the response body.
+	ToolCallsCount int
+	// Error is the engine error string when ProcessRequest failed, so
+	// a failed interaction row carries why it failed. Empty on success.
+	Error string
 }
 
 // tenantKey is the unexported context key the engine uses to thread

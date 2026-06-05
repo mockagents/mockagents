@@ -101,8 +101,19 @@ type OpenAIHandler struct {
 	Engine *engine.Engine
 }
 
+// ProtocolOpenAIChat is the wire-protocol label recorded on interaction
+// logs for this endpoint; it matches the agent-spec `protocol` enum value.
+const ProtocolOpenAIChat = "openai-chat-completions"
+
 // HandleChatCompletions handles POST /v1/chat/completions.
 func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	// Stamp the protocol first so even a malformed request that never
+	// reaches the engine still logs which surface it hit.
+	meta := engine.RequestMetaFromContext(r.Context())
+	if meta != nil {
+		meta.Protocol = ProtocolOpenAIChat
+	}
+
 	var req ChatCompletionRequest
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("invalid JSON: %s", err))
@@ -126,10 +137,16 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 		Messages:  convertOpenAIMessages(req.Messages),
 		Stream:    req.Stream,
 	}
+	if meta != nil {
+		meta.SessionID = inbound.SessionID
+	}
 
 	// Process through engine.
 	resp, err := h.Engine.ProcessRequestContext(r.Context(), inbound)
 	if err != nil {
+		if meta != nil {
+			meta.Error = err.Error()
+		}
 		if ce := engine.AsChaosError(err); ce != nil {
 			if ce.RetryAfter > 0 {
 				w.Header().Set("Retry-After", fmt.Sprintf("%d", int(ce.RetryAfter.Seconds())))
@@ -147,12 +164,14 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Stamp the matched agent onto the request meta so the
-	// InteractionCapture middleware can record the real agent name
-	// (instead of falling back to a model-name probe of the body).
-	if meta := engine.RequestMetaFromContext(r.Context()); meta != nil {
+	// Stamp the matched agent + scenario onto the request meta so the
+	// InteractionCapture middleware can record the real agent name and
+	// scenario (instead of falling back to a model-name probe of the body).
+	if meta != nil {
 		meta.AgentName = resp.AgentName
 		meta.Model = req.Model
+		meta.ScenarioName = resp.ScenarioName
+		meta.ToolCallsCount = len(resp.ToolCalls)
 	}
 
 	// Stream or JSON response.

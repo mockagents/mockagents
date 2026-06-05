@@ -74,6 +74,46 @@ func TestSQLiteStore_MigratesTenantColumn(t *testing.T) {
 	ok, err := columnExists(store.db, "interaction_logs", "tenant_id")
 	require.NoError(t, err)
 	assert.True(t, ok)
+
+	// The same legacy table predates the truncated column too; migrate
+	// must add it additively so inserts/queries against an existing DB work.
+	ok, err = columnExists(store.db, "interaction_logs", "truncated")
+	require.NoError(t, err)
+	assert.True(t, ok, "truncated column should be added by migrate")
+
+	// A round-trip through the migrated DB confirms the new column reads back.
+	require.NoError(t, store.Log(context.Background(), sampleLog("agent-a", "sess-1")))
+	logs, err := store.Query(context.Background(), InteractionFilter{})
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+}
+
+func TestSQLiteStore_TruncatedRoundTrip(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	entry := sampleLog("agent-a", "sess-1")
+	entry.Truncated = true
+	require.NoError(t, store.Log(ctx, entry))
+
+	// Via Query.
+	logs, err := store.Query(ctx, InteractionFilter{})
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+	assert.True(t, logs[0].Truncated, "Query should read back Truncated=true")
+
+	// Via GetByID.
+	got, err := store.GetByID(ctx, logs[0].ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.True(t, got.Truncated, "GetByID should read back Truncated=true")
+
+	// Default (unset) round-trips as false.
+	require.NoError(t, store.Log(ctx, sampleLog("agent-b", "sess-2")))
+	logs, err = store.Query(ctx, InteractionFilter{AgentName: "agent-b"})
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+	assert.False(t, logs[0].Truncated)
 }
 
 func TestSQLiteStore_LogAndQuery(t *testing.T) {
