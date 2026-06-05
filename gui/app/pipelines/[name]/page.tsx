@@ -29,9 +29,16 @@ export default async function PipelineDetailPage({ params }: PageProps) {
           <Icon name="workflow" size={22} />
         </div>
         <div className="grow">
-          <div className="row gap-3" style={{ flexWrap: "wrap" }}>
+          <div className="row gap-3" style={{ flexWrap: "wrap", alignItems: "center" }}>
             <h1 className="page-title">{name}</h1>
             <span className="badge badge-outline">{pipeline.spec.topology}</span>
+            <Link
+              href={`/pipelines/${encodeURIComponent(name)}/edit`}
+              className="btn btn-outline btn-sm"
+              style={{ marginLeft: "auto" }}
+            >
+              <Icon name="file-code" size={15} /> Edit
+            </Link>
           </div>
           <div className="row gap-2 mt-2" style={{ flexWrap: "wrap" }}>
             <span className="tag">
