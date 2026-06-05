@@ -71,6 +71,17 @@ type AnthropicHandler struct {
 	Engine *engine.Engine
 }
 
+// Name identifies this adapter in logs and diagnostics.
+func (h *AnthropicHandler) Name() string { return "anthropic" }
+
+// Routes returns the Anthropic-compatible routes this adapter serves,
+// mounted by the server through the adapter Registry (REF-05).
+func (h *AnthropicHandler) Routes() []Route {
+	return []Route{
+		{Pattern: "POST /v1/messages", Handler: h.HandleMessages},
+	}
+}
+
 // HandleMessages handles POST /v1/messages.
 func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	var req AnthropicRequest

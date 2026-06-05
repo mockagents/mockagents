@@ -261,14 +261,18 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		s.mountManaged(mux, "GET /api/v1/audit", http.HandlerFunc(s.auditH.ListEvents))
 	}
 
-	// OpenAI-compatible endpoints.
-	openai := &adapter.OpenAIHandler{Engine: s.engine}
-	mux.HandleFunc("POST /v1/chat/completions", openai.HandleChatCompletions)
-	mux.HandleFunc("GET /v1/models", openai.HandleModels)
-
-	// Anthropic-compatible endpoint.
-	anthropic := &adapter.AnthropicHandler{Engine: s.engine}
-	mux.HandleFunc("POST /v1/messages", anthropic.HandleMessages)
+	// Protocol adapters (OpenAI, Anthropic, ...) mount through a common
+	// registration boundary instead of hardwiring each provider's routes
+	// here. Adding a provider is "implement adapter.Adapter + add it to
+	// adapter.DefaultRegistry" — no edits to this route wiring (REF-05).
+	// These stay open (no mountManaged): the outer middleware chain still
+	// applies, and tenant scope / ProcessRequestContext plumbing lives in
+	// the handlers, unchanged by the move.
+	for _, a := range adapter.DefaultRegistry(s.engine).Adapters() {
+		for _, route := range a.Routes() {
+			mux.HandleFunc(route.Pattern, route.Handler)
+		}
+	}
 
 	// Log query API. Prices is threaded in so rows returned by
 	// ListLogs carry a computed cost_usd field when a pricing table
