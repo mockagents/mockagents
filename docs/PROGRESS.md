@@ -3255,12 +3255,13 @@ Design:
 - **`Metadata.TenantID` is the ownership marker.** Empty string =
   "global" agent visible to every caller (the v0.1 default behavior).
   A non-empty value declares the agent as private to that tenant.
-- **Visibility-only model.** The registry still keys agents by name
-  (not by `(tenant, name)`), so name collisions across tenants are
-  not supported within a single MockAgents process. This is the
-  right tradeoff for a single-process mock — real multi-tenancy at
-  scale uses one process per tenant or moves to the deferred
-  Postgres slice.
+- **Visibility-only model.** At the time of this slice the registry
+  keyed agents by name (not by `(tenant, name)`), so name collisions
+  across tenants were not supported within a single process.
+  **Superseded 2026-06-05 by REF-08 slice A:** the registry now keys by
+  `(owner tenant, name)`, so two tenants can each own an agent of the
+  same name, with a global agent as a shared fallback. See the REF-08
+  design (`docs/REF-08-saas-multitenancy-design.md`).
 - **Two lookup layers.** Control-plane handlers
   (`/api/v1/agents`, `/api/v1/agents/{name}`,
   `/api/v1/agents/{name}/reload`) read the authenticated principal
@@ -4364,9 +4365,7 @@ deferred deliberately:
 
 | Area             | Gap                                                      | Earmarked for          |
 | ---------------- | -------------------------------------------------------- | ---------------------- |
-| Multi-tenancy    | Postgres store, SSO/OAuth, billing/quotas                | Future SaaS slices     |
-| Multi-tenancy    | Per-tenant agent name collisions (currently global)      | Postgres slice         |
-| GUI              | Workflow editor for `kind: Pipeline` (drag-to-rewire)    | GUI v0.3 (continued)   |
+| Multi-tenancy    | Postgres store, SSO/OAuth, enforcement-only quotas       | REF-08 (scoped; slice A — per-tenant agent collisions — landed 2026-06-05) |
 
 ---
 
