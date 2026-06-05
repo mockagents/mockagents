@@ -313,9 +313,16 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// deployments that never loaded a Pipeline YAML still get a
 	// well-formed response.
 	if s.config.Pipelines != nil {
-		pipelineH := &PipelineHandlers{Registry: s.config.Pipelines}
-		s.mountManaged(mux, "GET /api/v1/pipelines", http.HandlerFunc(pipelineH.ListPipelines))      // F-PL-001
-		s.mountManaged(mux, "GET /api/v1/pipelines/{name}", http.HandlerFunc(pipelineH.GetPipeline)) // F-PL-001
+		pipelineH := &PipelineHandlers{
+			Registry:      s.config.Pipelines,
+			AgentRegistry: s.engine.Registry,
+			AgentsDir:     s.config.AgentsDir,
+			Recorder:      s.recorder,
+			Logger:        s.logger,
+		}
+		s.mountManaged(mux, "GET /api/v1/pipelines", http.HandlerFunc(pipelineH.ListPipelines))         // F-PL-001
+		s.mountManaged(mux, "GET /api/v1/pipelines/{name}", http.HandlerFunc(pipelineH.GetPipeline))    // F-PL-001
+		s.mountManaged(mux, "PUT /api/v1/pipelines/{name}", http.HandlerFunc(pipelineH.UpdatePipeline)) // REF-07
 	}
 
 	// Agent config validation endpoint. Open in single-tenant mode

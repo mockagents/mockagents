@@ -256,8 +256,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 // Failures are non-fatal: the server can still serve agent traffic
 // even if every pipeline YAML is malformed.
 //
-// Note: pipelines are not live-reloadable (the watcher only reacts to
-// Agent-kind documents), so this runs once at boot.
+// Note: the file watcher only reacts to Agent-kind documents, so this
+// boot-time pass is the only file-driven pipeline load. Pipelines can still
+// be updated at runtime through PUT /api/v1/pipelines/{name} (the GUI editor,
+// REF-07), which re-registers in place.
 func registerPipelines(pipelines []*config.PipelineLoadResult, logger *slog.Logger) *engine.PipelineRegistry {
 	reg := engine.NewPipelineRegistry()
 	for _, pr := range pipelines {
@@ -271,7 +273,7 @@ func registerPipelines(pipelines []*config.PipelineLoadResult, logger *slog.Logg
 			)
 			continue
 		}
-		reg.Register(pr.Definition)
+		reg.RegisterWithSource(pr.Definition, pr.FilePath)
 		logger.Info("loaded pipeline",
 			"name", pr.Definition.Metadata.Name,
 			"topology", pr.Definition.Spec.Topology,

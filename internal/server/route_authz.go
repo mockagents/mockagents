@@ -65,6 +65,8 @@ var managementRouteFloors = map[string]tenancy.Role{
 	// Pipeline topology (read) — previously ungated even in multi-tenant mode.
 	"GET /api/v1/pipelines":        tenancy.RoleViewer, // F-PL-001
 	"GET /api/v1/pipelines/{name}": tenancy.RoleViewer, // F-PL-001
+	// Pipeline edit (write: persists YAML to disk) → editor (REF-07).
+	"PUT /api/v1/pipelines/{name}": tenancy.RoleEditor,
 
 	// Config validation (write-ish: sprays YAML at the parser) → editor.
 	"POST /api/v1/config/validate": tenancy.RoleEditor,

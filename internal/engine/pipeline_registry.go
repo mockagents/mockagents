@@ -8,15 +8,21 @@ import (
 )
 
 // PipelineRegistry is a thread-safe in-memory store of pipeline definitions
-// keyed by metadata.name.
+// keyed by metadata.name. It also records the on-disk source file each
+// pipeline was loaded from (when known) so the GUI editor can write an edited
+// definition back to the file it came from rather than guessing (REF-07).
 type PipelineRegistry struct {
 	mu        sync.RWMutex
 	pipelines map[string]*types.PipelineDefinition
+	sources   map[string]string // name -> source file path (best-effort)
 }
 
 // NewPipelineRegistry creates an empty pipeline registry.
 func NewPipelineRegistry() *PipelineRegistry {
-	return &PipelineRegistry{pipelines: make(map[string]*types.PipelineDefinition)}
+	return &PipelineRegistry{
+		pipelines: make(map[string]*types.PipelineDefinition),
+		sources:   make(map[string]string),
+	}
 }
 
 // Register adds or replaces a pipeline definition. A nil def or one with
@@ -24,7 +30,8 @@ func NewPipelineRegistry() *PipelineRegistry {
 // on the Name deref under the write lock, and an empty name would key the
 // pipeline under "" where it shadows any other unnamed pipeline and can
 // never be looked up. Callers validate first, so this only guards
-// programmatic misuse.
+// programmatic misuse. Register leaves any previously recorded source path
+// for the name intact; use RegisterWithSource to set it.
 func (r *PipelineRegistry) Register(def *types.PipelineDefinition) {
 	if def == nil || def.Metadata.Name == "" {
 		return
@@ -32,6 +39,31 @@ func (r *PipelineRegistry) Register(def *types.PipelineDefinition) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.pipelines[def.Metadata.Name] = def
+}
+
+// RegisterWithSource adds or replaces a pipeline definition and records the
+// on-disk file it was loaded from (or written to). An empty sourcePath clears
+// any recorded source for the name.
+func (r *PipelineRegistry) RegisterWithSource(def *types.PipelineDefinition, sourcePath string) {
+	if def == nil || def.Metadata.Name == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pipelines[def.Metadata.Name] = def
+	if sourcePath == "" {
+		delete(r.sources, def.Metadata.Name)
+		return
+	}
+	r.sources[def.Metadata.Name] = sourcePath
+}
+
+// Source returns the on-disk file a pipeline was loaded from, or "" when the
+// name is unknown or has no recorded source.
+func (r *PipelineRegistry) Source(name string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.sources[name]
 }
 
 // GetPipeline retrieves a pipeline by name. Returns nil if not found.

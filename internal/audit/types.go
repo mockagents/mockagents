@@ -33,6 +33,12 @@ const (
 	// specific compromised credential.
 	EventAPIKeyRotated EventKind = "api_key.rotated"
 	EventAgentReloaded EventKind = "agent.reloaded"
+	// EventPipelineSaved fires when an operator writes an edited Pipeline
+	// definition back to disk via PUT /api/v1/pipelines/{name} (the GUI
+	// editor, REF-07). Target is the pipeline name; Details carries the
+	// target file so operators can correlate the change with a working-tree
+	// edit.
+	EventPipelineSaved EventKind = "pipeline.saved"
 	// EventAuthDenied fires on every 401 (missing/invalid credentials)
 	// and 403 (valid credential, insufficient role) at the control
 	// plane. The Target carries the HTTP method + path of the denied
@@ -49,7 +55,7 @@ func (k EventKind) Valid() bool {
 	switch k {
 	case EventTenantCreated, EventTenantDeleted,
 		EventAPIKeyCreated, EventAPIKeyDeleted, EventAPIKeyRoleChanged,
-		EventAPIKeyRotated, EventAgentReloaded, EventAuthDenied:
+		EventAPIKeyRotated, EventAgentReloaded, EventPipelineSaved, EventAuthDenied:
 		return true
 	}
 	return false
