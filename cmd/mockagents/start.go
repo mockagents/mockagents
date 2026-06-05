@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"context"
-	"errors"
 
 	"github.com/mockagents/mockagents/internal/audit"
 	"github.com/mockagents/mockagents/internal/config"
@@ -188,16 +187,30 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// tenant and an admin API key; the plaintext is printed to stderr
 	// exactly once so the operator can capture it.
 	if os.Getenv("MOCKAGENTS_MULTI_TENANT") == "1" {
-		tenancyStore, err := tenancy.NewSQLiteStore(".mockagents-tenancy.db")
-		if err != nil {
-			return fmt.Errorf("multi-tenant mode: %w", err)
+		// Backend selection (REF-08 slice B): MOCKAGENTS_TENANCY_DSN opts into the
+		// pluggable Postgres store; unset keeps the zero-dependency SQLite default.
+		var tenancyStore tenancy.Store
+		if dsn := os.Getenv("MOCKAGENTS_TENANCY_DSN"); dsn != "" {
+			ps, err := tenancy.NewPostgresStore(dsn)
+			if err != nil {
+				return fmt.Errorf("multi-tenant mode (postgres): %w", err)
+			}
+			ps.EnableAuthCache(5*time.Minute, 1024)
+			tenancyStore = ps
+			logger.Info("tenancy: using Postgres store")
+		} else {
+			ss, err := tenancy.NewSQLiteStore(".mockagents-tenancy.db")
+			if err != nil {
+				return fmt.Errorf("multi-tenant mode: %w", err)
+			}
+			ss.EnableAuthCache(5*time.Minute, 1024)
+			tenancyStore = ss
 		}
+		// Enable the auth cache so bcrypt runs at most once per plaintext-key per
+		// TTL window. Mutations flush the cache so cached principals can never
+		// outlive their backing row. (Done per-store above before the interface
+		// assignment, since EnableAuthCache is a concrete method.)
 		defer tenancyStore.Close()
-		// Enable the auth cache so bcrypt runs at most once per
-		// plaintext-key per TTL window. Mutations (delete, role
-		// change) flush the cache so cached principals can never
-		// outlive their backing row.
-		tenancyStore.EnableAuthCache(5*time.Minute, 1024)
 		cfg.TenancyStore = tenancyStore
 		if err := bootstrapTenancy(cmd.Context(), tenancyStore, logger); err != nil {
 			return fmt.Errorf("bootstrap tenancy: %w", err)
@@ -288,13 +301,24 @@ func registerPipelines(pipelines []*config.PipelineLoadResult, logger *slog.Logg
 // after this run it is bcrypt-hashed and unrecoverable. Callers can
 // preset a specific plaintext via MOCKAGENTS_BOOTSTRAP_KEY (useful in
 // Helm deployments where the key is piped in from a Secret).
-func bootstrapTenancy(ctx context.Context, store *tenancy.SQLiteStore, logger *slog.Logger) error {
+func bootstrapTenancy(ctx context.Context, store tenancy.Store, logger *slog.Logger) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	tenant, err := store.GetTenantByName(ctx, "default")
-	if err != nil && !errors.Is(err, tenancy.ErrNotFound) {
+	// Find the "default" tenant via the Store interface. GetTenantByName is a
+	// SQLite-only helper, so we scan ListTenants instead — the tenant set is
+	// tiny at bootstrap, so the linear scan is free and keeps bootstrap
+	// backend-agnostic (works against Postgres too).
+	tenants, err := store.ListTenants(ctx)
+	if err != nil {
 		return err
+	}
+	var tenant *tenancy.Tenant
+	for _, t := range tenants {
+		if t.Name == "default" {
+			tenant = t
+			break
+		}
 	}
 	if tenant == nil {
 		tenant, err = store.CreateTenant(ctx, "default")
