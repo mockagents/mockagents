@@ -82,6 +82,11 @@ func (h *AnthropicHandler) Routes() []Route {
 	}
 }
 
+// ProtocolAnthropicMessages is the wire-protocol label recorded on
+// interaction logs for this endpoint; it matches the agent-spec
+// `protocol` enum value.
+const ProtocolAnthropicMessages = "anthropic-messages"
+
 // HandleMessages handles POST /v1/messages.
 func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	// Stamp the protocol first so even a malformed request that never

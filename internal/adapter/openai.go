@@ -113,6 +113,10 @@ func (h *OpenAIHandler) Routes() []Route {
 	}
 }
 
+// ProtocolOpenAIChat is the wire-protocol label recorded on interaction
+// logs for this endpoint; it matches the agent-spec `protocol` enum value.
+const ProtocolOpenAIChat = "openai-chat-completions"
+
 // HandleChatCompletions handles POST /v1/chat/completions.
 func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Stamp the protocol first so even a malformed request that never
