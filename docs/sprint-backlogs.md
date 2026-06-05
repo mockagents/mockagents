@@ -192,19 +192,19 @@ it has unit tests and runs anywhere Go does.
 - [x] It asserts the license string agrees (`Apache-2.0`) across root `LICENSE`, both SDK manifests, and the OpenAPI `info.license.name` (guards REF-01).
 - [x] Wired into the CI `lint` job (`go run ./tools/driftcheck`) + `make drift`; runs in <1s and exits 1 with a per-problem list on drift. Tool unit tests run in the Go job and include live-repo integration guards.
 
-### Larger slices (unchanged, still the two big next bets)
+### Larger slices
 
 | ID | Title | Priority | Points | Notes |
 | -- | ----- | -------- | ------ | ----- |
-| REF-07 | GUI v0.3 workflow editor (drag-to-rewire `kind: Pipeline`) | P1 | 13 | `DAGViewer.tsx` is explicitly read-only; needs a DAG widget (React Flow) + YAML round-trip + the existing `validateYAML`/`POST /config/validate` plumbing. Largest single item; design first. |
-| REF-08 | SaaS-tier multi-tenancy | P2 | 21 | Postgres tenancy store, SSO/OAuth, per-tenant agent-name collisions, billing/quotas. Needs a design doc before any code. |
+| REF-07 | GUI workflow editor (drag-to-rewire `kind: Pipeline`) | P1 | 13 | ✅ **DONE 2026-06-05** (PRs #22/#23/#24). Server write-back (`PUT /api/v1/pipelines/{name}`, ETag/If-Match) + React Flow canvas + live-validate/save. Design: `docs/REF-07-pipeline-editor-design.md`. |
+| REF-08 | SaaS-tier multi-tenancy | P2 | 21 | **Scoped 2026-06-05** — `docs/REF-08-saas-multitenancy-design.md` covers all four sub-slices (per-tenant agent collisions, pluggable Postgres tenancy store, enforcement-only quotas, OIDC/SSO) with sequencing. Not yet built. |
 
 ### Recommended pull order
 
 1. **One-sitting hygiene batch:** REF-01 → REF-02 (tiny, no-risk, unblock REF-06).
 2. **Correctness lane:** REF-03 (doc) and REF-04 (log fidelity) — REF-04 is the highest-value functional fix.
 3. **Architecture lane:** REF-05 then REF-06.
-4. **Big bets:** REF-07 (design + build) and REF-08 (design only) when product wants to push surface area.
+4. **Big bets:** REF-07 ✅ done; REF-08 scoped (design doc) — build its four sub-slices in the documented order (collisions → Postgres → quotas → SSO) when product wants to push surface area.
 
 ---
 
