@@ -103,10 +103,12 @@ then correctness, then larger slices).
 
 ### Verification summary (what's actually open)
 
-> **Update 2026-06-05:** REF-01 through REF-06 all landed on `main` the same
-> day (PRs #18–#20 + the drift-check PR). The table below is the original
-> as-found snapshot; every row except the two big-bet slices (REF-07/08) is now
-> closed — see each ticket's ✅ marker.
+> **Update 2026-06-05:** the ENTIRE refinement arc shipped the same day —
+> REF-01 through REF-08 (PRs #18–#29) plus the REF-08 follow-ons (#30, #31, and
+> #32 open). The table below is the original as-found snapshot; every row is now
+> closed — see each ticket's ✅ marker and the "Larger slices" + "REF-08
+> follow-ons" tables below. Remaining work is the two ⬜ follow-ons (per-tenant
+> agent provisioning; Postgres for logs/audit).
 
 | ID | Was | Verified state (2026-06-05) | Evidence |
 | -- | --- | --------------------------- | -------- |
@@ -197,14 +199,25 @@ it has unit tests and runs anywhere Go does.
 | ID | Title | Priority | Points | Notes |
 | -- | ----- | -------- | ------ | ----- |
 | REF-07 | GUI workflow editor (drag-to-rewire `kind: Pipeline`) | P1 | 13 | ✅ **DONE 2026-06-05** (PRs #22/#23/#24). Server write-back (`PUT /api/v1/pipelines/{name}`, ETag/If-Match) + React Flow canvas + live-validate/save. Design: `docs/REF-07-pipeline-editor-design.md`. |
-| REF-08 | SaaS-tier multi-tenancy | P2 | 21 | **Scoped 2026-06-05** — `docs/REF-08-saas-multitenancy-design.md` covers all four sub-slices (per-tenant agent collisions, pluggable Postgres tenancy store, enforcement-only quotas, OIDC/SSO) with sequencing. Not yet built. |
+| REF-08 | SaaS-tier multi-tenancy | P2 | 21 | ✅ **DONE 2026-06-05**. Design `docs/REF-08-saas-multitenancy-design.md` (PR #25) + all four sub-slices: **A** per-tenant agent collisions (#26), **B** pluggable Postgres tenancy store (#27), **C** enforcement-only quotas (#28), **D** OIDC/SSO foundation (#29). See the follow-ons table below for what shipped after. |
+
+### REF-08 follow-ons (shipped after the four slices)
+
+| Item | Status | Notes |
+| ---- | ------ | ----- |
+| GUI "Sign in with SSO" button | ✅ DONE (PR #30) | Backend Bearer accepts `mas_` session tokens; GUI reads `mockagents_session`; button gated on `MOCKAGENTS_SSO_ENABLED=1`. Same-origin / reverse-proxy topology. |
+| Persistent per-tenant quota overrides | ✅ DONE (PR #31) | `tenant_quotas` table (both backends) + `Get/SetTenantQuota` + startup loader; `PUT …/quota` persists. |
+| CI Postgres conformance job | ✅ DONE (PR #31) | Linux-only `test-go-postgres` runs the Store conformance against a `postgres:16` service container (first CI coverage of `PostgresStore`). |
+| Multi-replica spend counters | 🔄 PR #32 (open) | Shared `tenant_spend` ledger (atomic upsert + `RETURNING`, both backends) + `quota.SpendBackend` write-through cache; spend now accurate across replicas + survives restart. |
+| Per-tenant agent provisioning API | ⬜ Not started | Slice-A follow-on: an upload/manage-agents-per-tenant surface (the registry already keys by `(tenant, name)`). |
+| Postgres for interaction logs + audit | ⬜ Not started | The high-volume path; `storage/` + `audit/` are still SQLite-only. |
 
 ### Recommended pull order
 
 1. **One-sitting hygiene batch:** REF-01 → REF-02 (tiny, no-risk, unblock REF-06).
 2. **Correctness lane:** REF-03 (doc) and REF-04 (log fidelity) — REF-04 is the highest-value functional fix.
 3. **Architecture lane:** REF-05 then REF-06.
-4. **Big bets:** REF-07 ✅ done; REF-08 scoped (design doc) — build its four sub-slices in the documented order (collisions → Postgres → quotas → SSO) when product wants to push surface area.
+4. **Big bets:** REF-07 ✅ done; REF-08 ✅ done (design + slices A→D in order, plus the follow-ons above). The whole refinement arc (REF-01..08) is shipped; remaining work is the two ⬜ follow-ons.
 
 ---
 
