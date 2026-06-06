@@ -11,8 +11,8 @@ info:
 
 
     The Model Context Protocol mock (`/mcp`, `/mcp/events`, `/mcp/response`) is
-    JSON-RPC 2.0 rather than REST and is documented in the project README and
-    `docs/sequence-diagrams.md`, not in this OpenAPI document.
+    JSON-RPC 2.0 rather than REST and is documented in the project README,
+    not in this OpenAPI document.
 
 
     **Authentication.** When the server runs with `MOCKAGENTS_MULTI_TENANT=1`,

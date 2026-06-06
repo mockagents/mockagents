@@ -226,6 +226,6 @@ A MockAgents project for testing AI agent integrations.
 ## Learn More
 
 - [MockAgents Documentation](https://github.com/mockagents/mockagents)
-- [Agent Definition Reference](https://github.com/mockagents/mockagents/blob/main/docs/developer-guide.md)
+- [Agent Definition Reference](https://github.com/mockagents/mockagents/blob/main/schema/mockagents-v1-agent.json)
 `, title, title)
 }
