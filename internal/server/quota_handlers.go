@@ -2,9 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/mockagents/mockagents/internal/quota"
+	"github.com/mockagents/mockagents/internal/tenancy"
 )
 
 // QuotaHandlers serves the per-tenant quota API (REF-08 slice C): a caller can
@@ -12,6 +14,9 @@ import (
 // override.
 type QuotaHandlers struct {
 	Enforcer *quota.Enforcer
+	// Store, when set, persists overrides so they survive restarts. Nil keeps
+	// overrides in-memory only.
+	Store tenancy.Store
 }
 
 // GetQuota handles GET /api/v1/quota — the caller tenant's effective limits and
@@ -53,6 +58,18 @@ func (h *QuotaHandlers) SetTenantQuota(w http.ResponseWriter, r *http.Request) {
 	if cfg.RatePerSec < 0 || cfg.RateBurst < 0 || cfg.MonthlySpendUSD < 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "quota values must be non-negative"})
 		return
+	}
+	// Persist first (so a restart keeps the override); only then apply it to the
+	// live enforcer, so the in-memory and on-disk views never diverge.
+	if h.Store != nil {
+		if err := h.Store.SetTenantQuota(r.Context(), id, cfg); err != nil {
+			if errors.Is(err, tenancy.ErrNotFound) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "tenant not found"})
+				return
+			}
+			writeServerError(w, err)
+			return
+		}
 	}
 	h.Enforcer.SetOverride(id, cfg)
 	writeJSON(w, http.StatusOK, map[string]any{"tenant_id": id, "limits": cfg})

@@ -481,10 +481,11 @@ paths:
             schema: { $ref: "#/components/schemas/QuotaConfig" }
       responses:
         "200":
-          description: Override applied.
+          description: Override applied (persisted to the tenancy store, so it survives restarts).
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/logs/stream/metrics:
     get:

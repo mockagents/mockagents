@@ -231,6 +231,14 @@ func runStart(cmd *cobra.Command, args []string) error {
 				"rate_burst", quotaDefaults.RateBurst,
 				"monthly_spend_usd", quotaDefaults.MonthlySpendUSD)
 		}
+		// Seed the enforcer with any persisted per-tenant overrides so they
+		// survive restarts. Non-fatal: a load failure logs and falls back to
+		// env defaults rather than blocking startup.
+		if n, err := loadQuotaOverrides(cmd.Context(), tenancyStore, cfg.QuotaEnforcer); err != nil {
+			logger.Warn("could not load persisted quota overrides", "error", err)
+		} else if n > 0 {
+			logger.Info("tenancy: loaded persisted quota overrides", "count", n)
+		}
 
 		// SSO / OIDC login (REF-08 slice D). Enabled only when the OIDC env vars
 		// are set; a misconfiguration fails startup rather than silently
@@ -445,6 +453,27 @@ func buildSSO(ctx context.Context, store tenancy.Store, logger *slog.Logger) (*s
 		SessionTTL:  ttl,
 		Secure:      secure,
 	}, nil
+}
+
+// loadQuotaOverrides seeds the enforcer with every tenant's persisted quota
+// override at startup. Returns the number applied.
+func loadQuotaOverrides(ctx context.Context, store tenancy.Store, enf *quota.Enforcer) (int, error) {
+	tenants, err := store.ListTenants(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, t := range tenants {
+		q, err := store.GetTenantQuota(ctx, t.ID)
+		if err != nil {
+			return n, err
+		}
+		if q != nil {
+			enf.SetOverride(t.ID, *q)
+			n++
+		}
+	}
+	return n, nil
 }
 
 // parseDomainMap parses "acme.com=ten_acme,beta.com=ten_beta" into a

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/mockagents/mockagents/internal/quota"
 	"golang.org/x/crypto/bcrypt"
 	sqlitedriver "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -104,6 +105,14 @@ type Store interface {
 	// is not an error (idempotent logout).
 	DeleteSession(ctx context.Context, token string) error
 
+	// --- Per-tenant quota overrides (REF-08 slice C follow-on) ---
+
+	// GetTenantQuota returns a tenant's persisted quota override, or (nil, nil)
+	// when none is set (the enforcer then uses the env defaults).
+	GetTenantQuota(ctx context.Context, tenantID string) (*quota.Config, error)
+	// SetTenantQuota upserts a tenant's quota override so it survives restarts.
+	SetTenantQuota(ctx context.Context, tenantID string, c quota.Config) error
+
 	Close() error
 }
 
@@ -147,6 +156,13 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+CREATE TABLE IF NOT EXISTS tenant_quotas (
+    tenant_id         TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+    rate_per_sec      REAL    NOT NULL DEFAULT 0,
+    rate_burst        INTEGER NOT NULL DEFAULT 0,
+    monthly_spend_usd REAL    NOT NULL DEFAULT 0
+);
 `
 
 // SQLiteStore implements Store against a pure-Go SQLite driver.
@@ -777,6 +793,38 @@ func shouldBumpLastUsed(lastUsed sql.NullString, now time.Time) bool {
 		return true // corrupt/legacy value — refresh it
 	}
 	return now.Sub(prev) >= lastUsedResolution
+}
+
+// GetTenantQuota returns a tenant's persisted quota override, or (nil, nil)
+// when none is set.
+func (s *SQLiteStore) GetTenantQuota(ctx context.Context, tenantID string) (*quota.Config, error) {
+	var c quota.Config
+	err := s.db.QueryRowContext(ctx,
+		`SELECT rate_per_sec, rate_burst, monthly_spend_usd FROM tenant_quotas WHERE tenant_id = ?`, tenantID,
+	).Scan(&c.RatePerSec, &c.RateBurst, &c.MonthlySpendUSD)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &c, nil
+}
+
+// SetTenantQuota upserts a tenant's quota override.
+func (s *SQLiteStore) SetTenantQuota(ctx context.Context, tenantID string, c quota.Config) error {
+	if _, err := s.GetTenant(ctx, tenantID); err != nil {
+		return fmt.Errorf("tenant %s: %w", tenantID, err)
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO tenant_quotas (tenant_id, rate_per_sec, rate_burst, monthly_spend_usd)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(tenant_id) DO UPDATE SET
+		   rate_per_sec = excluded.rate_per_sec,
+		   rate_burst = excluded.rate_burst,
+		   monthly_spend_usd = excluded.monthly_spend_usd`,
+		tenantID, c.RatePerSec, c.RateBurst, c.MonthlySpendUSD)
+	return err
 }
 
 // --- helpers ---

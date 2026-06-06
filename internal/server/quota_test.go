@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -146,5 +148,48 @@ func TestQuotaHandlers_SetTenantQuota(t *testing.T) {
 	mux.ServeHTTP(badRec, bad)
 	if badRec.Code != http.StatusBadRequest {
 		t.Errorf("negative quota = %d, want 400", badRec.Code)
+	}
+}
+
+// TestQuotaHandlers_SetTenantQuota_Persists verifies that with a Store wired in,
+// PUT persists the override (so it survives a restart) and an unknown tenant is
+// a 404.
+func TestQuotaHandlers_SetTenantQuota_Persists(t *testing.T) {
+	store, err := tenancy.NewSQLiteStore(filepath.Join(t.TempDir(), "tenancy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	ten, err := store.CreateTenant(context.Background(), "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enf := quota.NewEnforcer(quota.Config{})
+	h := &QuotaHandlers{Enforcer: enf, Store: store}
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /api/v1/tenants/{id}/quota", h.SetTenantQuota)
+
+	body := `{"rate_per_sec":10,"rate_burst":20,"monthly_spend_usd":100}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/tenants/"+ten.ID+"/quota", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	// Applied to the live enforcer AND persisted in the store.
+	if got := enf.Effective(ten.ID); got.MonthlySpendUSD != 100 {
+		t.Errorf("enforcer override = %+v", got)
+	}
+	q, err := store.GetTenantQuota(context.Background(), ten.ID)
+	if err != nil || q == nil || q.RatePerSec != 10 || q.RateBurst != 20 || q.MonthlySpendUSD != 100 {
+		t.Errorf("persisted = %+v err=%v", q, err)
+	}
+
+	// An unknown tenant → 404 (and nothing persisted).
+	missing := httptest.NewRequest(http.MethodPut, "/api/v1/tenants/ten_missing/quota", strings.NewReader(body))
+	missingRec := httptest.NewRecorder()
+	mux.ServeHTTP(missingRec, missing)
+	if missingRec.Code != http.StatusNotFound {
+		t.Errorf("unknown tenant = %d, want 404", missingRec.Code)
 	}
 }

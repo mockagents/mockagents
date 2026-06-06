@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/mockagents/mockagents/internal/quota"
 )
 
 // TestStoreConformance exercises the Store contract against every available
@@ -67,6 +69,7 @@ func TestStoreConformance(t *testing.T) {
 		{"DeleteTenantCascade", conformDeleteCascade},
 		{"InvalidKeyRejected", conformInvalidKey},
 		{"UsersAndSessions", conformUsersAndSessions},
+		{"TenantQuota", conformTenantQuota},
 	}
 	for _, f := range factories {
 		t.Run(f.name, func(t *testing.T) {
@@ -347,6 +350,44 @@ func conformUsersAndSessions(t *testing.T, s Store) {
 	}
 	if _, err := s.ResolveSession(ctx, live); !errors.Is(err, ErrInvalidSession) {
 		t.Errorf("session after tenant delete = %v, want ErrInvalidSession (cascade)", err)
+	}
+}
+
+func conformTenantQuota(t *testing.T, s Store) {
+	ctx := context.Background()
+	ten := mustTenant(t, s, "acme")
+
+	// Unset → (nil, nil).
+	if q, err := s.GetTenantQuota(ctx, ten.ID); err != nil || q != nil {
+		t.Fatalf("GetTenantQuota(unset) = %+v err=%v, want nil", q, err)
+	}
+	// Set → read back exactly.
+	want := quota.Config{RatePerSec: 5, RateBurst: 10, MonthlySpendUSD: 99.5}
+	if err := s.SetTenantQuota(ctx, ten.ID, want); err != nil {
+		t.Fatalf("SetTenantQuota: %v", err)
+	}
+	got, err := s.GetTenantQuota(ctx, ten.ID)
+	if err != nil || got == nil || *got != want {
+		t.Fatalf("GetTenantQuota = %+v err=%v, want %+v", got, err, want)
+	}
+	// Upsert overwrites.
+	want2 := quota.Config{RatePerSec: 1, RateBurst: 2, MonthlySpendUSD: 3}
+	if err := s.SetTenantQuota(ctx, ten.ID, want2); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.GetTenantQuota(ctx, ten.ID); got == nil || *got != want2 {
+		t.Fatalf("after upsert = %+v, want %+v", got, want2)
+	}
+	// Unknown tenant → error.
+	if err := s.SetTenantQuota(ctx, "ten_missing", want); err == nil {
+		t.Error("SetTenantQuota for an unknown tenant should error")
+	}
+	// Deleting the tenant cascades to its quota row.
+	if err := s.DeleteTenant(ctx, ten.ID); err != nil {
+		t.Fatal(err)
+	}
+	if q, err := s.GetTenantQuota(ctx, ten.ID); err != nil || q != nil {
+		t.Errorf("quota after tenant delete = %+v err=%v, want nil (cascade)", q, err)
 	}
 }
 

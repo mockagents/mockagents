@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
+	"github.com/mockagents/mockagents/internal/quota"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -76,6 +77,13 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+CREATE TABLE IF NOT EXISTS tenant_quotas (
+    tenant_id         TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+    rate_per_sec      DOUBLE PRECISION NOT NULL DEFAULT 0,
+    rate_burst        INTEGER          NOT NULL DEFAULT 0,
+    monthly_spend_usd DOUBLE PRECISION NOT NULL DEFAULT 0
+);
 `
 
 // isPGUniqueViolation reports whether err is a Postgres unique/PK constraint
@@ -450,6 +458,38 @@ func (s *PostgresStore) BulkRotateTenantKeys(ctx context.Context, tenantID strin
 	}
 	s.cache.Invalidate()
 	return results, oldPrefixes, nil
+}
+
+// GetTenantQuota returns a tenant's persisted quota override, or (nil, nil)
+// when none is set.
+func (s *PostgresStore) GetTenantQuota(ctx context.Context, tenantID string) (*quota.Config, error) {
+	var c quota.Config
+	err := s.db.QueryRowContext(ctx,
+		`SELECT rate_per_sec, rate_burst, monthly_spend_usd FROM tenant_quotas WHERE tenant_id = $1`, tenantID,
+	).Scan(&c.RatePerSec, &c.RateBurst, &c.MonthlySpendUSD)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &c, nil
+}
+
+// SetTenantQuota upserts a tenant's quota override.
+func (s *PostgresStore) SetTenantQuota(ctx context.Context, tenantID string, c quota.Config) error {
+	if _, err := s.GetTenant(ctx, tenantID); err != nil {
+		return fmt.Errorf("tenant %s: %w", tenantID, err)
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO tenant_quotas (tenant_id, rate_per_sec, rate_burst, monthly_spend_usd)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (tenant_id) DO UPDATE SET
+		   rate_per_sec = EXCLUDED.rate_per_sec,
+		   rate_burst = EXCLUDED.rate_burst,
+		   monthly_spend_usd = EXCLUDED.monthly_spend_usd`,
+		tenantID, c.RatePerSec, c.RateBurst, c.MonthlySpendUSD)
+	return err
 }
 
 // DeleteAPIKey permanently removes a key, scoped to tenantID.

@@ -365,7 +365,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Per-tenant quota read + management (REF-08 slice C). Only mounted when an
 	// enforcer is configured (multi-tenant mode with quotas).
 	if s.config.QuotaEnforcer != nil {
-		quotaH := &QuotaHandlers{Enforcer: s.config.QuotaEnforcer}
+		quotaH := &QuotaHandlers{Enforcer: s.config.QuotaEnforcer, Store: s.config.TenancyStore}
 		s.mountManaged(mux, "GET /api/v1/quota", http.HandlerFunc(quotaH.GetQuota))
 		s.mountManaged(mux, "PUT /api/v1/tenants/{id}/quota", http.HandlerFunc(quotaH.SetTenantQuota))
 	}
