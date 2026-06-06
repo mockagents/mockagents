@@ -16,6 +16,7 @@ import (
 	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/observability"
 	pricingpkg "github.com/mockagents/mockagents/internal/pricing"
+	"github.com/mockagents/mockagents/internal/quota"
 	"github.com/mockagents/mockagents/internal/storage"
 	"github.com/mockagents/mockagents/internal/streaming"
 	"github.com/mockagents/mockagents/internal/tenancy"
@@ -74,6 +75,10 @@ type Config struct {
 	// the /api/v1/pipelines management endpoints so the GUI can
 	// render a DAG viewer. Nil leaves the routes unmounted.
 	Pipelines *engine.PipelineRegistry
+	// QuotaEnforcer enforces per-tenant rate + monthly-spend caps on the LLM
+	// endpoints and powers the /api/v1/quota routes (REF-08 slice C). Nil
+	// disables quota enforcement (the single-tenant default).
+	QuotaEnforcer *quota.Enforcer
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -176,8 +181,29 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 
 	// Build middleware chain: outermost first.
 	var handler http.Handler = mux
+	// QuotaEnforce is innermost (just around the mux) so the tenant is already
+	// on the context (WithPrincipalTenantScope is outer) and a 429/402 is still
+	// captured by InteractionCapture (also outer). REF-08 slice C.
+	if cfg.QuotaEnforcer != nil {
+		handler = QuotaEnforce(cfg.QuotaEnforcer)(handler)
+	}
 	if s.logWorker != nil {
-		handler = InteractionCapture(s.logWorker, NormalizeLogBodyMode(string(cfg.LogBodyMode)))(handler)
+		// When quotas + pricing are configured, accrue each response's cost
+		// against the tenant's monthly spend as it's captured.
+		var spendHook func(tenantID, respBody string)
+		if cfg.QuotaEnforcer != nil && cfg.Prices != nil {
+			enf, prices := cfg.QuotaEnforcer, cfg.Prices
+			spendHook = func(tenantID, respBody string) {
+				if tenantID == "" || respBody == "" {
+					return
+				}
+				usage := pricingpkg.ExtractUsage([]byte(respBody))
+				if cost := prices.Estimate(usage.Model, usage.PromptTokens, usage.CompletionTokens); cost > 0 {
+					enf.AddSpend(tenantID, cost)
+				}
+			}
+		}
+		handler = InteractionCapture(s.logWorker, NormalizeLogBodyMode(string(cfg.LogBodyMode)), spendHook)(handler)
 	}
 	handler = WithPrincipalTenantScope(handler)
 	// Tenancy auth gates every /api/v1/* route when multi-tenant mode
@@ -331,6 +357,14 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// spraying YAML at the parser.
 	validateH := NewValidateHandler()
 	s.mountManaged(mux, "POST /api/v1/config/validate", validateH)
+
+	// Per-tenant quota read + management (REF-08 slice C). Only mounted when an
+	// enforcer is configured (multi-tenant mode with quotas).
+	if s.config.QuotaEnforcer != nil {
+		quotaH := &QuotaHandlers{Enforcer: s.config.QuotaEnforcer}
+		s.mountManaged(mux, "GET /api/v1/quota", http.HandlerFunc(quotaH.GetQuota))
+		s.mountManaged(mux, "PUT /api/v1/tenants/{id}/quota", http.HandlerFunc(quotaH.SetTenantQuota))
+	}
 
 	// Generic engine endpoint (internal/testing).
 	mux.HandleFunc("POST /v1/engines/process", s.handleProcessRequest)

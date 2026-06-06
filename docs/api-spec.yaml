@@ -390,6 +390,57 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/v1/quota:
+    get:
+      operationId: getQuota
+      summary: Caller tenant's quota limits and usage
+      description: >
+        Returns the calling tenant's effective per-tenant quota (rate +
+        monthly spend) and current-month usage (REF-08 slice C). In
+        single-tenant mode the caller has no tenant and sees the unlimited
+        defaults. Requires `viewer` in multi-tenant mode.
+      tags: [Tenancy]
+      responses:
+        "200":
+          description: Effective limits and current-month usage.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant_id: { type: string }
+                  limits: { $ref: "#/components/schemas/QuotaConfig" }
+                  usage:
+                    type: object
+                    properties:
+                      month: { type: string, example: "2026-06" }
+                      spend_usd: { type: number }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/tenants/{id}/quota:
+    put:
+      operationId: setTenantQuota
+      summary: Set a tenant's quota override
+      description: >
+        Sets a per-tenant quota override (REF-08 slice C). Platform-gated: a
+        tenant admin must not raise its own cap, so quota management is a
+        cross-tenant operator action.
+      tags: [Tenancy]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/QuotaConfig" }
+      responses:
+        "200":
+          description: Override applied.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /api/v1/logs/stream/metrics:
     get:
       operationId: getStreamMetrics
@@ -1522,6 +1573,14 @@ components:
         key: { type: string }
         requests: { type: integer }
         cost_usd: { type: number, format: double }
+
+    QuotaConfig:
+      type: object
+      description: Per-tenant quota. A 0 value means "unlimited" for that dimension.
+      properties:
+        rate_per_sec: { type: number, description: "Sustained request rate; 0 = unlimited." }
+        rate_burst: { type: integer, description: "Token-bucket capacity (max burst)." }
+        monthly_spend_usd: { type: number, description: "Monthly spend cap in USD; 0 = unlimited." }
 
     Pipeline:
       type: object
