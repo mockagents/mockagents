@@ -1,9 +1,7 @@
 # Changelog
 
 All notable changes to MockAgents are documented here. The format follows
-[Keep a Changelog](https://keepachangelog.com/), and the project tracks its
-slice ledger in [`docs/PROGRESS.md`](docs/PROGRESS.md) — every entry below maps
-to one or more `§2.x` slices there.
+[Keep a Changelog](https://keepachangelog.com/).
 
 MockAgents has not cut a tagged release yet; the version headings below mark the
 internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `main`.

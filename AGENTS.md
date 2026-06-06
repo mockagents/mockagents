@@ -6,8 +6,6 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 **MockAgents** is a Go-based mock server that acts as a drop-in replacement for the OpenAI (`/v1/chat/completions`) and Anthropic (`/v1/messages`) APIs. Developers define agents declaratively in YAML; the server matches incoming requests against scenarios and returns canned responses, simulated tool calls, and optional SSE streams — no real LLM calls.
 
-Note: `mock-agents-product-plan.md` describes a broader multi-language vision (Rust core, React GUI, NATS, chaos engine, etc.). The current codebase is the Phase 1 Go implementation only — ignore the product plan when making code decisions unless explicitly asked.
-
 ## Common Commands
 
 All workflows go through the `Makefile`:
@@ -91,7 +89,6 @@ Outside `internal/`:
 - **Scenario matching** precedence and the `default: true` fallback are exercised by `engine/scenario_matcher_test.go` and the `_e008_` test files — consult those before changing match semantics.
 - **Python SDK** in `sdk/python/` is a separate package with its own `pyproject.toml`; it talks to the server over HTTP and has no direct Go coupling.
 - **Docs site** in `site/` is MkDocs — not part of the Go build.
-- **Resume notes** for picking up unfinished work live in `docs/PROGRESS.md` §1A. Read it before starting any new slice — it has the latest test counts, recommended next task, and the import-direction conventions worth preserving.
 - **Performance baseline**: `docs/benchmarks/latest.{json,md}` is checked in. Every perf-affecting change should rerun `make bench-report` and confirm the hot path stays inside the target envelope (see `docs/benchmarks/README.md`). Hot path moved -10 to -24 % during the v0.2 perf workstream — don't regress it.
 - **Tenancy import direction**: `tenancy` may import `engine` but not vice versa. The engine uses `engine.WithTenantID` / `engine.TenantIDFromContext` (in `engine/reqmeta.go`) instead of importing `tenancy`. The audit recorder receives a principal-extraction function from the server package for the same reason.
 - **Page files in `gui/app/`** can only export `default` plus a small set of config keys. Helper components must live in sibling `.tsx` files (e.g. `LogsConsole.tsx` next to `logs/page.tsx`, `AgentCatalog.tsx` next to `page.tsx`, `DAGViewer.tsx` next to `pipelines/[name]/page.tsx`, `YamlEditor.tsx` next to `editor/page.tsx`).
