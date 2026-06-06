@@ -84,6 +84,13 @@ CREATE TABLE IF NOT EXISTS tenant_quotas (
     rate_burst        INTEGER          NOT NULL DEFAULT 0,
     monthly_spend_usd DOUBLE PRECISION NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS tenant_spend (
+    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    month     TEXT NOT NULL,
+    usd       DOUBLE PRECISION NOT NULL DEFAULT 0,
+    PRIMARY KEY (tenant_id, month)
+);
 `
 
 // isPGUniqueViolation reports whether err is a Postgres unique/PK constraint
@@ -490,6 +497,30 @@ func (s *PostgresStore) SetTenantQuota(ctx context.Context, tenantID string, c q
 		   monthly_spend_usd = EXCLUDED.monthly_spend_usd`,
 		tenantID, c.RatePerSec, c.RateBurst, c.MonthlySpendUSD)
 	return err
+}
+
+// AddSpend atomically increments a tenant's monthly spend and returns the new
+// total. The single upsert-with-RETURNING is atomic across concurrent replicas,
+// so the spend cap stays accurate under horizontal scale.
+func (s *PostgresStore) AddSpend(ctx context.Context, tenantID, month string, usd float64) (float64, error) {
+	var total float64
+	err := s.db.QueryRowContext(ctx,
+		`INSERT INTO tenant_spend (tenant_id, month, usd) VALUES ($1, $2, $3)
+		 ON CONFLICT (tenant_id, month) DO UPDATE SET usd = tenant_spend.usd + EXCLUDED.usd
+		 RETURNING usd`,
+		tenantID, month, usd).Scan(&total)
+	return total, err
+}
+
+// GetSpend returns a tenant's spend total for the month, or 0 when none.
+func (s *PostgresStore) GetSpend(ctx context.Context, tenantID, month string) (float64, error) {
+	var total float64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT usd FROM tenant_spend WHERE tenant_id = $1 AND month = $2`, tenantID, month).Scan(&total)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return total, err
 }
 
 // DeleteAPIKey permanently removes a key, scoped to tenantID.

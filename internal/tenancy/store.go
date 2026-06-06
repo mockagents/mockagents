@@ -113,6 +113,13 @@ type Store interface {
 	// SetTenantQuota upserts a tenant's quota override so it survives restarts.
 	SetTenantQuota(ctx context.Context, tenantID string, c quota.Config) error
 
+	// AddSpend atomically increments a tenant's spend for the given UTC month
+	// and returns the new running total — a shared ledger so the spend cap is
+	// accurate across replicas (implements quota.SpendBackend).
+	AddSpend(ctx context.Context, tenantID, month string, usd float64) (float64, error)
+	// GetSpend returns a tenant's spend total for the month (0 if none).
+	GetSpend(ctx context.Context, tenantID, month string) (float64, error)
+
 	Close() error
 }
 
@@ -162,6 +169,13 @@ CREATE TABLE IF NOT EXISTS tenant_quotas (
     rate_per_sec      REAL    NOT NULL DEFAULT 0,
     rate_burst        INTEGER NOT NULL DEFAULT 0,
     monthly_spend_usd REAL    NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS tenant_spend (
+    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    month     TEXT NOT NULL,
+    usd       REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (tenant_id, month)
 );
 `
 
@@ -825,6 +839,31 @@ func (s *SQLiteStore) SetTenantQuota(ctx context.Context, tenantID string, c quo
 		   monthly_spend_usd = excluded.monthly_spend_usd`,
 		tenantID, c.RatePerSec, c.RateBurst, c.MonthlySpendUSD)
 	return err
+}
+
+// AddSpend atomically increments a tenant's monthly spend and returns the new
+// total. The single upsert-with-RETURNING is atomic, so concurrent writers
+// (replicas sharing a Postgres ledger; the same holds for SQLite's serialized
+// connection) never lose an increment.
+func (s *SQLiteStore) AddSpend(ctx context.Context, tenantID, month string, usd float64) (float64, error) {
+	var total float64
+	err := s.db.QueryRowContext(ctx,
+		`INSERT INTO tenant_spend (tenant_id, month, usd) VALUES (?, ?, ?)
+		 ON CONFLICT(tenant_id, month) DO UPDATE SET usd = usd + excluded.usd
+		 RETURNING usd`,
+		tenantID, month, usd).Scan(&total)
+	return total, err
+}
+
+// GetSpend returns a tenant's spend total for the month, or 0 when none.
+func (s *SQLiteStore) GetSpend(ctx context.Context, tenantID, month string) (float64, error) {
+	var total float64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT usd FROM tenant_spend WHERE tenant_id = ? AND month = ?`, tenantID, month).Scan(&total)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return total, err
 }
 
 // --- helpers ---

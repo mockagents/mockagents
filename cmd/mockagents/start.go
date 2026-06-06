@@ -239,6 +239,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 		} else if n > 0 {
 			logger.Info("tenancy: loaded persisted quota overrides", "count", n)
 		}
+		// Back spend accounting with the tenancy store's shared ledger so the
+		// monthly-spend cap is accurate across replicas (atomic increments) and
+		// survives restarts, rather than per-process in-memory counters.
+		cfg.QuotaEnforcer.SetSpendBackend(tenancyStore)
 
 		// SSO / OIDC login (REF-08 slice D). Enabled only when the OIDC env vars
 		// are set; a misconfiguration fails startup rather than silently

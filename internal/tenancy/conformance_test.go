@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -70,6 +71,8 @@ func TestStoreConformance(t *testing.T) {
 		{"InvalidKeyRejected", conformInvalidKey},
 		{"UsersAndSessions", conformUsersAndSessions},
 		{"TenantQuota", conformTenantQuota},
+		{"SpendLedger", conformSpendLedger},
+		{"SpendConcurrent", conformSpendConcurrent},
 	}
 	for _, f := range factories {
 		t.Run(f.name, func(t *testing.T) {
@@ -388,6 +391,58 @@ func conformTenantQuota(t *testing.T, s Store) {
 	}
 	if q, err := s.GetTenantQuota(ctx, ten.ID); err != nil || q != nil {
 		t.Errorf("quota after tenant delete = %+v err=%v, want nil (cascade)", q, err)
+	}
+}
+
+func conformSpendLedger(t *testing.T, s Store) {
+	ctx := context.Background()
+	ten := mustTenant(t, s, "acme")
+
+	// Empty → 0.
+	if v, err := s.GetSpend(ctx, ten.ID, "2026-06"); err != nil || v != 0 {
+		t.Fatalf("GetSpend(empty) = %v err=%v, want 0", v, err)
+	}
+	// Atomic increments accumulate and return the running total.
+	if total, err := s.AddSpend(ctx, ten.ID, "2026-06", 1.5); err != nil || total != 1.5 {
+		t.Fatalf("AddSpend#1 = %v err=%v, want 1.5", total, err)
+	}
+	if total, err := s.AddSpend(ctx, ten.ID, "2026-06", 2.0); err != nil || total != 3.5 {
+		t.Fatalf("AddSpend#2 = %v err=%v, want 3.5", total, err)
+	}
+	if v, _ := s.GetSpend(ctx, ten.ID, "2026-06"); v != 3.5 {
+		t.Errorf("GetSpend = %v, want 3.5", v)
+	}
+	// A different month is an independent bucket.
+	if total, err := s.AddSpend(ctx, ten.ID, "2026-07", 1.0); err != nil || total != 1.0 {
+		t.Errorf("AddSpend(july) = %v err=%v, want 1.0", total, err)
+	}
+	// Deleting the tenant cascades to its spend rows.
+	if err := s.DeleteTenant(ctx, ten.ID); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := s.GetSpend(ctx, ten.ID, "2026-06"); err != nil || v != 0 {
+		t.Errorf("spend after tenant delete = %v err=%v, want 0 (cascade)", v, err)
+	}
+}
+
+// conformSpendConcurrent is the headline correctness property of the shared
+// ledger: concurrent AddSpend calls must not lose updates (the atomic
+// upsert serializes them), so the final total equals the sum.
+func conformSpendConcurrent(t *testing.T, s Store) {
+	ctx := context.Background()
+	ten := mustTenant(t, s, "acme")
+	const n = 50
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = s.AddSpend(ctx, ten.ID, "2026-06", 1.0)
+		}()
+	}
+	wg.Wait()
+	if v, err := s.GetSpend(ctx, ten.ID, "2026-06"); err != nil || v != float64(n) {
+		t.Errorf("concurrent AddSpend total = %v err=%v, want %d (lost updates)", v, err, n)
 	}
 }
 

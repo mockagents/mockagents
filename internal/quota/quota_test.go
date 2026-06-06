@@ -1,9 +1,45 @@
 package quota
 
 import (
+	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 )
+
+// errBackend always fails, to exercise the local-fallback path.
+type errBackend struct{}
+
+func (errBackend) AddSpend(context.Context, string, string, float64) (float64, error) {
+	return 0, errors.New("backend down")
+}
+func (errBackend) GetSpend(context.Context, string, string) (float64, error) {
+	return 0, errors.New("backend down")
+}
+
+// fakeSpendBackend is an in-test shared ledger standing in for the tenancy
+// store, letting one Enforcer observe "another replica's" increments.
+type fakeSpendBackend struct {
+	mu     sync.Mutex
+	totals map[string]float64
+}
+
+func newFakeBackend() *fakeSpendBackend { return &fakeSpendBackend{totals: map[string]float64{}} }
+
+func (f *fakeSpendBackend) AddSpend(_ context.Context, tenantID, month string, usd float64) (float64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := tenantID + "|" + month
+	f.totals[k] += usd
+	return f.totals[k], nil
+}
+
+func (f *fakeSpendBackend) GetSpend(_ context.Context, tenantID, month string) (float64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.totals[tenantID+"|"+month], nil
+}
 
 // newClocked returns an Enforcer whose clock is driven by the returned pointer,
 // so tests advance time deterministically.
@@ -100,6 +136,50 @@ func TestEnforcer_SpendUnlimitedAndAnonymous(t *testing.T) {
 	strict.AddSpend("", 5)
 	if !strict.CheckSpend("") {
 		t.Error("empty tenant must never be spend-limited")
+	}
+}
+
+func TestEnforcer_SpendBackend_CrossReplica(t *testing.T) {
+	e, clock := newClocked(t, Config{MonthlySpendUSD: 10})
+	be := newFakeBackend()
+	e.SetSpendBackend(be)
+
+	// This replica accrues 4 via write-through; its cache reflects the total.
+	e.AddSpend("ten_a", 4)
+	if !e.CheckSpend("ten_a") {
+		t.Fatal("4 < 10 should pass")
+	}
+	if u := e.Usage("ten_a"); u.SpendUSD != 4 {
+		t.Errorf("usage = %+v, want 4", u)
+	}
+
+	// Another replica accrues 7 straight to the shared ledger (total now 11).
+	if _, err := be.AddSpend(context.Background(), "ten_a", "2026-06", 7); err != nil {
+		t.Fatal(err)
+	}
+	// Within the cache TTL this replica still serves its stale local view (4).
+	if !e.CheckSpend("ten_a") {
+		t.Error("within TTL the cached under-cap view should still pass")
+	}
+	// After the TTL it refreshes from the shared ledger and sees the real 11.
+	*clock = clock.Add(spendCacheTTL + time.Second)
+	if e.CheckSpend("ten_a") {
+		t.Error("after refresh, 11 >= 10 must fail — cross-replica spend counted")
+	}
+	if u := e.Usage("ten_a"); u.SpendUSD != 11 {
+		t.Errorf("usage after refresh = %+v, want 11", u)
+	}
+}
+
+func TestEnforcer_SpendBackend_ErrorFallsBackLocal(t *testing.T) {
+	e, _ := newClocked(t, Config{MonthlySpendUSD: 5})
+	e.SetSpendBackend(errBackend{})
+
+	// A backend error must not lose the charge: it bumps the local counter.
+	e.AddSpend("ten_a", 3)
+	e.AddSpend("ten_a", 3) // local total 6 > cap 5
+	if e.CheckSpend("ten_a") {
+		t.Error("local fallback should still enforce the cap when the backend errors")
 	}
 }
 

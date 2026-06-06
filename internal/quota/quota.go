@@ -14,10 +14,31 @@
 package quota
 
 import (
+	"context"
 	"math"
 	"sync"
 	"time"
 )
+
+// SpendBackend is a shared, atomic per-(tenant, month) spend ledger. When an
+// Enforcer has one, spend accounting goes through it so the cap is enforced
+// across replicas (each AddSpend is an atomic increment over a shared row), not
+// per-process. nil leaves spend in-memory/single-process. The tenancy store
+// implements this against SQLite/Postgres.
+type SpendBackend interface {
+	// AddSpend atomically increments the tenant's spend for the given UTC month
+	// and returns the new running total (reflecting other replicas' increments).
+	AddSpend(ctx context.Context, tenantID, month string, usd float64) (float64, error)
+	// GetSpend returns the tenant's current total for the month (0 if none).
+	GetSpend(ctx context.Context, tenantID, month string) (float64, error)
+}
+
+// spendCacheTTL bounds how long a replica serves CheckSpend from its cached view
+// of the shared total before re-reading the backend. Small enough that the cap
+// is enforced within a few seconds across replicas, large enough to keep the
+// per-request DB read off the hot path. Write-through on AddSpend keeps the
+// active replica's view fresh between refreshes.
+const spendCacheTTL = 5 * time.Second
 
 // Config is the quota for one tenant. A zero RatePerSec or MonthlySpendUSD
 // means "unlimited" for that dimension, so the zero Config enforces nothing.
@@ -45,6 +66,8 @@ type bucket struct {
 type counter struct {
 	month string
 	usd   float64
+	// expiry is when this cached total goes stale (backend mode only).
+	expiry time.Time
 }
 
 // Enforcer is the per-tenant quota state. The zero value is not usable; use
@@ -54,7 +77,12 @@ type Enforcer struct {
 	defaults  Config
 	overrides map[string]Config
 	buckets   map[string]*bucket
-	spend     map[string]*counter
+	// spendCache holds each tenant's current-month spend: the authoritative
+	// counter in in-memory mode, or a short-TTL cache of the shared total in
+	// backend mode.
+	spendCache map[string]*counter
+	// spendBackend, when non-nil, is the shared spend ledger (multi-replica).
+	spendBackend SpendBackend
 	// now is injectable so tests can advance time deterministically.
 	now func() time.Time
 }
@@ -63,12 +91,21 @@ type Enforcer struct {
 // every tenant that has no override.
 func NewEnforcer(defaults Config) *Enforcer {
 	return &Enforcer{
-		defaults:  defaults,
-		overrides: make(map[string]Config),
-		buckets:   make(map[string]*bucket),
-		spend:     make(map[string]*counter),
-		now:       time.Now,
+		defaults:   defaults,
+		overrides:  make(map[string]Config),
+		buckets:    make(map[string]*bucket),
+		spendCache: make(map[string]*counter),
+		now:        time.Now,
 	}
+}
+
+// SetSpendBackend installs a shared spend ledger so spend is accounted across
+// replicas. Nil (the default) keeps spend in-memory/single-process. Call once
+// at startup before serving.
+func (e *Enforcer) SetSpendBackend(b SpendBackend) {
+	e.mu.Lock()
+	e.spendBackend = b
+	e.mu.Unlock()
 }
 
 // SetOverride sets a per-tenant config that takes precedence over the defaults.
@@ -142,47 +179,105 @@ func (e *Enforcer) AllowRequest(tenantID string) (bool, time.Duration) {
 
 // CheckSpend reports whether a tenant is still under its monthly spend cap. It
 // does NOT consume anything — call AddSpend after a response's cost is known.
-// An empty tenant id or an unlimited cap always passes.
+// An empty tenant id or an unlimited cap always passes. In backend mode the
+// total reflects all replicas (refreshed within spendCacheTTL).
 func (e *Enforcer) CheckSpend(tenantID string) bool {
 	if tenantID == "" {
 		return true
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	cfg := e.effectiveLocked(tenantID)
-	if cfg.MonthlySpendUSD <= 0 {
+	if e.Effective(tenantID).MonthlySpendUSD <= 0 {
 		return true
 	}
-	return e.counterLocked(tenantID).usd < cfg.MonthlySpendUSD
+	total, _ := e.currentSpend(tenantID)
+	return total < e.Effective(tenantID).MonthlySpendUSD
 }
 
-// AddSpend accrues usd against a tenant's current-month counter. Non-positive
-// amounts and empty tenant ids are ignored.
+// AddSpend accrues usd against a tenant's current-month total. In backend mode
+// it is an atomic shared increment whose returned global total refreshes this
+// replica's cache; a backend error falls back to a best-effort local bump.
+// Non-positive amounts and empty tenant ids are ignored.
 func (e *Enforcer) AddSpend(tenantID string, usd float64) {
 	if tenantID == "" || usd <= 0 {
 		return
 	}
+	month := e.monthKey()
+
 	e.mu.Lock()
-	e.counterLocked(tenantID).usd += usd
+	backend := e.spendBackend
+	e.mu.Unlock()
+
+	if backend != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		total, err := backend.AddSpend(ctx, tenantID, month, usd)
+		cancel()
+		e.mu.Lock()
+		c := e.counterForMonthLocked(tenantID, month)
+		if err == nil {
+			c.usd = total // authoritative cross-replica total
+			c.expiry = e.now().Add(spendCacheTTL)
+		} else {
+			c.usd += usd // best-effort local fallback so we don't lose the charge
+		}
+		e.mu.Unlock()
+		return
+	}
+
+	e.mu.Lock()
+	e.counterForMonthLocked(tenantID, month).usd += usd
 	e.mu.Unlock()
 }
 
 // Usage returns a tenant's current-month spend snapshot.
 func (e *Enforcer) Usage(tenantID string) Usage {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	c := e.counterLocked(tenantID)
-	return Usage{Month: c.month, SpendUSD: c.usd}
+	month := e.monthKey()
+	total, _ := e.currentSpend(tenantID)
+	return Usage{Month: month, SpendUSD: total}
 }
 
-// counterLocked returns the tenant's spend counter for the current UTC month,
-// rolling it over (resetting to zero) at a month boundary. Caller holds e.mu.
-func (e *Enforcer) counterLocked(tenantID string) *counter {
-	month := e.now().UTC().Format("2006-01")
-	c := e.spend[tenantID]
+// currentSpend returns the tenant's current-month total. In in-memory mode it
+// reads the local counter; in backend mode it serves a fresh cache or refreshes
+// from the shared ledger (without holding the lock during the DB read).
+func (e *Enforcer) currentSpend(tenantID string) (float64, error) {
+	month := e.monthKey()
+
+	e.mu.Lock()
+	backend := e.spendBackend
+	c := e.counterForMonthLocked(tenantID, month)
+	if backend == nil || e.now().Before(c.expiry) {
+		v := c.usd
+		e.mu.Unlock()
+		return v, nil
+	}
+	e.mu.Unlock()
+
+	// Cache stale: refresh from the shared ledger off the lock.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	total, err := backend.GetSpend(ctx, tenantID, month)
+	cancel()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	c = e.counterForMonthLocked(tenantID, month)
+	if err == nil {
+		c.usd = total
+		c.expiry = e.now().Add(spendCacheTTL)
+	}
+	// On error, serve the last-known (stale) value rather than fail open/closed.
+	return c.usd, err
+}
+
+// monthKey is the current UTC month bucket key, "2006-01".
+func (e *Enforcer) monthKey() string {
+	return e.now().UTC().Format("2006-01")
+}
+
+// counterForMonthLocked returns the tenant's spend counter for the given month,
+// rolling it over (resetting) when the cached month differs. Caller holds e.mu.
+func (e *Enforcer) counterForMonthLocked(tenantID, month string) *counter {
+	c := e.spendCache[tenantID]
 	if c == nil || c.month != month {
 		c = &counter{month: month}
-		e.spend[tenantID] = c
+		e.spendCache[tenantID] = c
 	}
 	return c
 }
