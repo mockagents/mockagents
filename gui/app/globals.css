@@ -524,3 +524,14 @@ form.inline select { background: var(--sr-bg); border: 1px solid var(--sr-input)
 .pe-errors { margin-bottom: 12px; }
 .pe-error-list { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.7; }
 .pe-error-hint { color: var(--sr-fg-muted); }
+
+/* Login — SSO button + divider (REF-08 slice D) */
+.login-sso { margin-top: 18px; }
+.login-or {
+  display: flex; align-items: center; gap: 12px;
+  margin: 8px 0 14px; color: var(--sr-fg-muted); font-size: 12px;
+}
+.login-or::before, .login-or::after {
+  content: ""; flex: 1; height: 1px; background: var(--sr-border);
+}
+.login-sso-btn { width: 100%; justify-content: center; }

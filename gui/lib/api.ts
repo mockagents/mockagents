@@ -10,6 +10,10 @@
 import { cookies } from "next/headers";
 
 export const AUTH_COOKIE = "mockagents_api_key";
+// SESSION_COOKIE is the SSO session cookie the backend's OIDC callback sets
+// (REF-08 slice D). In a same-origin deployment the GUI reads it here and
+// forwards it as a Bearer credential, which the backend accepts like an API key.
+export const SESSION_COOKIE = "mockagents_session";
 
 export interface Health {
   status: string;
@@ -95,7 +99,10 @@ function baseUrl(): string {
 export async function getAuthKey(): Promise<string> {
   try {
     const store = await cookies();
-    return store.get(AUTH_COOKIE)?.value ?? "";
+    // Prefer an explicit API key; fall back to an SSO session token. Both are
+    // forwarded to the backend as a Bearer credential — the backend's auth
+    // middleware accepts either (a session token is prefixed `mas_`).
+    return store.get(AUTH_COOKIE)?.value ?? store.get(SESSION_COOKIE)?.value ?? "";
   } catch {
     return "";
   }

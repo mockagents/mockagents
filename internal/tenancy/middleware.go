@@ -120,12 +120,25 @@ func extractSessionToken(r *http.Request) string {
 	return ""
 }
 
-// bestEffortPrincipal resolves a principal from an API key or session cookie
-// without failing the request — used on skip routes so a present credential
-// still attaches a principal but a bad/absent one proceeds anonymously.
+// resolveBearer resolves a bearer credential to a Principal, routing by prefix:
+// an SSO session token (mas_) goes through ResolveSession, anything else through
+// the API-key path (Resolve). This lets a session token authenticate as a
+// bearer — the GUI forwards its session cookie as a bearer, so the SSO and
+// API-key credential models share one resolution path (REF-08 slice D, GUI).
+func resolveBearer(store Store, r *http.Request, token string) (*Principal, error) {
+	if strings.HasPrefix(token, sessionTokenPrefix) {
+		return store.ResolveSession(r.Context(), token)
+	}
+	return store.Resolve(r.Context(), token)
+}
+
+// bestEffortPrincipal resolves a principal from a bearer credential (API key or
+// session token) or a session cookie without failing the request — used on skip
+// routes so a present credential still attaches a principal but a bad/absent one
+// proceeds anonymously.
 func bestEffortPrincipal(store Store, r *http.Request) *Principal {
 	if key := ExtractAPIKey(r); key != "" {
-		if p, err := store.Resolve(r.Context(), key); err == nil {
+		if p, err := resolveBearer(store, r, key); err == nil {
 			return p
 		}
 	}
@@ -159,14 +172,14 @@ func AuthMiddleware(store Store, skip func(*http.Request) bool) func(http.Handle
 			// session cookie (browser). Either resolves to the same Principal so
 			// every downstream authz check is unchanged (REF-08 slice D).
 			if key := ExtractAPIKey(r); key != "" {
-				principal, err := store.Resolve(r.Context(), key)
+				principal, err := resolveBearer(store, r, key)
 				if err != nil {
-					// A missing/wrong key is a 401; a store outage is a 500 — fail
-					// closed. ErrNotFound is matched too for label accuracy
-					// (F-MW-002).
-					if errors.Is(err, ErrInvalidKey) || errors.Is(err, ErrNotFound) {
-						fireDenial(r, http.StatusUnauthorized, "invalid api key")
-						writeAuthError(w, http.StatusUnauthorized, "invalid api key")
+					// A missing/wrong key or session is a 401; a store outage is a
+					// 500 — fail closed. ErrNotFound is matched too for label
+					// accuracy (F-MW-002).
+					if errors.Is(err, ErrInvalidKey) || errors.Is(err, ErrInvalidSession) || errors.Is(err, ErrNotFound) {
+						fireDenial(r, http.StatusUnauthorized, "invalid credential")
+						writeAuthError(w, http.StatusUnauthorized, "invalid api key or session token")
 						return
 					}
 					fireDenial(r, http.StatusInternalServerError, "auth store error")

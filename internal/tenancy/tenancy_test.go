@@ -307,7 +307,7 @@ func TestDenialHook_AuthMiddleware(t *testing.T) {
 	if got[0].status != http.StatusUnauthorized || got[0].reason != "missing credentials" {
 		t.Errorf("first denial wrong: %+v", got[0])
 	}
-	if got[1].status != http.StatusUnauthorized || got[1].reason != "invalid api key" {
+	if got[1].status != http.StatusUnauthorized || got[1].reason != "invalid credential" {
 		t.Errorf("second denial wrong: %+v", got[1])
 	}
 }

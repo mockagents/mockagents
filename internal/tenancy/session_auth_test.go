@@ -74,3 +74,49 @@ func TestAuthMiddleware_SessionCookie(t *testing.T) {
 		t.Errorf("revoked session = %d, want 401", goneRec.Code)
 	}
 }
+
+// TestAuthMiddleware_SessionAsBearer verifies a session token (mas_) presented
+// as a Bearer credential authenticates — the GUI forwards its session cookie as
+// a bearer, so the API-key and session credential models share one path.
+func TestAuthMiddleware_SessionAsBearer(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	ten, err := store.CreateTenant(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := store.CreateUser(ctx, "alice@acme.com", ten.ID, RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := store.CreateSession(ctx, u.ID, ten.ID, u.Role, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got *Principal
+	h := AuthMiddleware(store, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = PrincipalFrom(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tenants", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("session-as-bearer = %d, want 200", rec.Code)
+	}
+	if got == nil || got.TenantID != ten.ID || got.Role != RoleAdmin {
+		t.Fatalf("principal = %+v", got)
+	}
+
+	// A bogus session bearer is 401.
+	bad := httptest.NewRequest(http.MethodGet, "/api/v1/tenants", nil)
+	bad.Header.Set("Authorization", "Bearer mas_bogus")
+	badRec := httptest.NewRecorder()
+	h.ServeHTTP(badRec, bad)
+	if badRec.Code != http.StatusUnauthorized {
+		t.Errorf("bogus session bearer = %d, want 401", badRec.Code)
+	}
+}

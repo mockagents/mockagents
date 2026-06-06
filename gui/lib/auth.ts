@@ -12,6 +12,7 @@ import { cookies } from "next/headers";
 
 import {
   AUTH_COOKIE,
+  SESSION_COOKIE,
   APIError,
   burnMyAPIKey,
   probeTenants,
@@ -151,9 +152,12 @@ export async function burnSession(): Promise<{ ok: true } | { ok: false; error: 
   return { ok: true };
 }
 
-/** Clear the session cookies. Called from the logout form in layout.tsx. */
+/** Clear the session cookies. Called from the logout form in layout.tsx. Also
+ * clears the SSO session cookie; full server-side session revocation happens by
+ * navigating to the backend's /auth/logout (or via the session TTL). */
 export async function logout(): Promise<void> {
   const store = await cookies();
   store.delete(AUTH_COOKIE);
   store.delete(ROLE_COOKIE);
+  store.delete(SESSION_COOKIE);
 }

@@ -9,6 +9,11 @@ type PageProps = {
 export default async function LoginPage({ searchParams }: PageProps) {
   const { error, next, burned } = await searchParams;
 
+  // The SSO button is shown when the deployment enables it. SSO requires the
+  // API and GUI to share an origin (a reverse proxy routing /auth + /api to the
+  // backend) so the backend's session cookie is readable here (REF-08 slice D).
+  const ssoEnabled = process.env.MOCKAGENTS_SSO_ENABLED?.trim() === "1";
+
   async function loginAction(formData: FormData) {
     "use server";
     const result = await login(formData);
@@ -65,6 +70,24 @@ export default async function LoginPage({ searchParams }: PageProps) {
           Sign in
         </button>
       </form>
+
+      {ssoEnabled && (
+        <div className="login-sso">
+          <div className="login-or">
+            <span>or</span>
+          </div>
+          {/* Relative /auth/login → the backend's OIDC start, via the shared
+              origin. A full-page navigation (not fetch) so the IdP redirect
+              chain runs in the browser. */}
+          <a href="/auth/login" className="btn btn-outline login-sso-btn">
+            Sign in with SSO
+          </a>
+          <p className="hint">
+            Uses your organization&rsquo;s identity provider (OIDC). Your account
+            is created on first login from your email domain.
+          </p>
+        </div>
+      )}
 
       <p className="hint">
         Running in single-tenant mode? You can skip this page — every
