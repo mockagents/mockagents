@@ -1,5 +1,15 @@
-.claude
+# Coding-agent instructions / config — keep local, never publish to GitHub
+.claude/
 CLAUDE.md
+AGENTS.md
+.cursor/
+.cursorrules
+.windsurfrules
+.clinerules
+.aider*
+GEMINI.md
+.github/copilot-instructions.md
+
 .idea
 
 # Homelab deploy: generated at runtime, may contain the bootstrap admin key
