@@ -18,10 +18,13 @@ homelabsetup/.homelab-credentials
 # Go build output
 /mockagents
 /mockagents.exe
+/benchreport
+/benchreport.exe
 
 # Test / coverage artifacts
 coverage.out
 coverage.html
+cov_*.out
 *.test
 
 # SQLite databases (runtime / test scratch)
