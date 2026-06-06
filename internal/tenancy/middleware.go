@@ -105,6 +105,38 @@ func ExtractAPIKey(r *http.Request) string {
 	return strings.TrimSpace(r.Header.Get("X-Api-Key"))
 }
 
+// SessionCookieName is the browser cookie carrying an opaque SSO session token
+// (REF-08 slice D). Defined here (not in the server package) so the auth
+// middleware and the SSO handlers — which live in different packages — agree
+// without a server→tenancy import cycle.
+const SessionCookieName = "mockagents_session"
+
+// extractSessionToken returns the SSO session token from the request cookie, or
+// "" when absent.
+func extractSessionToken(r *http.Request) string {
+	if c, err := r.Cookie(SessionCookieName); err == nil {
+		return c.Value
+	}
+	return ""
+}
+
+// bestEffortPrincipal resolves a principal from an API key or session cookie
+// without failing the request — used on skip routes so a present credential
+// still attaches a principal but a bad/absent one proceeds anonymously.
+func bestEffortPrincipal(store Store, r *http.Request) *Principal {
+	if key := ExtractAPIKey(r); key != "" {
+		if p, err := store.Resolve(r.Context(), key); err == nil {
+			return p
+		}
+	}
+	if token := extractSessionToken(r); token != "" {
+		if p, err := store.ResolveSession(r.Context(), token); err == nil {
+			return p
+		}
+	}
+	return nil
+}
+
 // AuthMiddleware builds an HTTP middleware that requires a valid API
 // key for every request. The skip predicate lets callers exempt routes
 // that must remain unauthenticated (e.g. /api/v1/health probes used by
@@ -113,42 +145,54 @@ func AuthMiddleware(store Store, skip func(*http.Request) bool) func(http.Handle
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if skip != nil && skip(r) {
-				// Best-effort: a valid key still attaches the principal so a
-				// skip route can self-check it, but any Resolve error (invalid
-				// key OR a store outage) is swallowed and the request proceeds
-				// anonymously — skip routes (health probes, the LLM endpoints)
-				// must never fail closed (F-MW-003).
-				if key := ExtractAPIKey(r); key != "" {
-					if principal, err := store.Resolve(r.Context(), key); err == nil {
-						r = r.WithContext(WithPrincipal(r.Context(), principal))
-					}
+				// Best-effort: a valid key or session still attaches the principal
+				// so a skip route can self-check it, but a bad/absent credential
+				// proceeds anonymously — skip routes (health probes, the LLM
+				// endpoints) must never fail closed (F-MW-003).
+				if p := bestEffortPrincipal(store, r); p != nil {
+					r = r.WithContext(WithPrincipal(r.Context(), p))
 				}
 				next.ServeHTTP(w, r)
 				return
 			}
-			key := ExtractAPIKey(r)
-			if key == "" {
-				fireDenial(r, http.StatusUnauthorized, "missing credentials")
-				writeAuthError(w, http.StatusUnauthorized, "missing Authorization bearer token or X-Api-Key header")
-				return
-			}
-			principal, err := store.Resolve(r.Context(), key)
-			if err != nil {
-				// A missing/wrong key is a 401; anything else (a store outage)
-				// is a 500 — fail closed. ErrNotFound is matched too for label
-				// accuracy even though Resolve currently only returns
-				// ErrInvalidKey (F-MW-002).
-				if errors.Is(err, ErrInvalidKey) || errors.Is(err, ErrNotFound) {
-					fireDenial(r, http.StatusUnauthorized, "invalid api key")
-					writeAuthError(w, http.StatusUnauthorized, "invalid api key")
+			// Credential precedence: an API key (programmatic) first, then an SSO
+			// session cookie (browser). Either resolves to the same Principal so
+			// every downstream authz check is unchanged (REF-08 slice D).
+			if key := ExtractAPIKey(r); key != "" {
+				principal, err := store.Resolve(r.Context(), key)
+				if err != nil {
+					// A missing/wrong key is a 401; a store outage is a 500 — fail
+					// closed. ErrNotFound is matched too for label accuracy
+					// (F-MW-002).
+					if errors.Is(err, ErrInvalidKey) || errors.Is(err, ErrNotFound) {
+						fireDenial(r, http.StatusUnauthorized, "invalid api key")
+						writeAuthError(w, http.StatusUnauthorized, "invalid api key")
+						return
+					}
+					fireDenial(r, http.StatusInternalServerError, "auth store error")
+					writeAuthError(w, http.StatusInternalServerError, "auth store error")
 					return
 				}
-				fireDenial(r, http.StatusInternalServerError, "auth store error")
-				writeAuthError(w, http.StatusInternalServerError, "auth store error")
+				next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), principal)))
 				return
 			}
-			ctx := WithPrincipal(r.Context(), principal)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			if token := extractSessionToken(r); token != "" {
+				principal, err := store.ResolveSession(r.Context(), token)
+				if err != nil {
+					if errors.Is(err, ErrInvalidSession) || errors.Is(err, ErrNotFound) {
+						fireDenial(r, http.StatusUnauthorized, "invalid session")
+						writeAuthError(w, http.StatusUnauthorized, "invalid or expired session")
+						return
+					}
+					fireDenial(r, http.StatusInternalServerError, "auth store error")
+					writeAuthError(w, http.StatusInternalServerError, "auth store error")
+					return
+				}
+				next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), principal)))
+				return
+			}
+			fireDenial(r, http.StatusUnauthorized, "missing credentials")
+			writeAuthError(w, http.StatusUnauthorized, "missing Authorization bearer token, X-Api-Key header, or session cookie")
 		})
 	}
 }

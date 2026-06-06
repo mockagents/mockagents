@@ -16,6 +16,7 @@ import (
 	"github.com/mockagents/mockagents/internal/config"
 	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/engine/state"
+	"github.com/mockagents/mockagents/internal/oidcauth"
 	"github.com/mockagents/mockagents/internal/pricing"
 	"github.com/mockagents/mockagents/internal/quota"
 	"github.com/mockagents/mockagents/internal/server"
@@ -230,6 +231,15 @@ func runStart(cmd *cobra.Command, args []string) error {
 				"rate_burst", quotaDefaults.RateBurst,
 				"monthly_spend_usd", quotaDefaults.MonthlySpendUSD)
 		}
+
+		// SSO / OIDC login (REF-08 slice D). Enabled only when the OIDC env vars
+		// are set; a misconfiguration fails startup rather than silently
+		// disabling SSO.
+		sso, err := buildSSO(cmd.Context(), tenancyStore, logger)
+		if err != nil {
+			return fmt.Errorf("oidc/sso: %w", err)
+		}
+		cfg.SSO = sso
 	}
 
 	srv := server.New(eng, cfg, logger)
@@ -379,6 +389,80 @@ func quotaDefaultsFromEnv() quota.Config {
 		RateBurst:       pi("MOCKAGENTS_DEFAULT_RATE_BURST"),
 		MonthlySpendUSD: pf("MOCKAGENTS_DEFAULT_MONTHLY_SPEND_USD"),
 	}
+}
+
+// buildSSO constructs the OIDC SSO handlers from the environment, or returns
+// (nil, nil) when SSO is not configured. A configured-but-broken setup (missing
+// domain map, bad role, unreachable issuer) returns an error so startup fails
+// loudly rather than silently disabling login.
+func buildSSO(ctx context.Context, store tenancy.Store, logger *slog.Logger) (*server.SSOHandlers, error) {
+	issuer := os.Getenv("MOCKAGENTS_OIDC_ISSUER")
+	clientID := os.Getenv("MOCKAGENTS_OIDC_CLIENT_ID")
+	clientSecret := os.Getenv("MOCKAGENTS_OIDC_CLIENT_SECRET")
+	redirect := os.Getenv("MOCKAGENTS_OIDC_REDIRECT_URL")
+	if issuer == "" || clientID == "" || clientSecret == "" || redirect == "" {
+		return nil, nil // SSO not configured
+	}
+
+	domainMap := parseDomainMap(os.Getenv("MOCKAGENTS_OIDC_DOMAIN_MAP"))
+	if len(domainMap) == 0 {
+		return nil, fmt.Errorf(`MOCKAGENTS_OIDC_DOMAIN_MAP is required when OIDC is configured (e.g. "acme.com=ten_acme")`)
+	}
+	role := tenancy.Role(os.Getenv("MOCKAGENTS_OIDC_DEFAULT_ROLE"))
+	if role == "" {
+		role = tenancy.RoleViewer
+	}
+	// SSO users are provisioned at viewer/editor/admin only — never the
+	// bootstrap-only platform role.
+	if !role.IsAssignableViaAPI() {
+		return nil, fmt.Errorf("MOCKAGENTS_OIDC_DEFAULT_ROLE %q is invalid (use viewer/editor/admin)", role)
+	}
+	ttl := 24 * time.Hour
+	if v := os.Getenv("MOCKAGENTS_OIDC_SESSION_TTL"); v != "" {
+		if d, perr := time.ParseDuration(v); perr == nil && d > 0 {
+			ttl = d
+		}
+	}
+
+	auth, err := oidcauth.New(ctx, oidcauth.Settings{
+		Issuer:       issuer,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  redirect,
+	})
+	if err != nil {
+		return nil, err
+	}
+	secure := strings.HasPrefix(strings.ToLower(redirect), "https://") ||
+		os.Getenv("MOCKAGENTS_OIDC_SECURE_COOKIES") == "1"
+	logger.Info("SSO/OIDC login enabled",
+		"issuer", issuer, "mapped_domains", len(domainMap), "default_role", string(role))
+	return &server.SSOHandlers{
+		Auth:        auth,
+		Store:       store,
+		DomainMap:   domainMap,
+		DefaultRole: role,
+		SessionTTL:  ttl,
+		Secure:      secure,
+	}, nil
+}
+
+// parseDomainMap parses "acme.com=ten_acme,beta.com=ten_beta" into a
+// lowercase-domain → tenant-id map.
+func parseDomainMap(s string) map[string]string {
+	m := make(map[string]string)
+	for _, pair := range strings.Split(s, ",") {
+		kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		domain := strings.ToLower(strings.TrimSpace(kv[0]))
+		tenant := strings.TrimSpace(kv[1])
+		if domain != "" && tenant != "" {
+			m[domain] = tenant
+		}
+	}
+	return m
 }
 
 func parseLogLevel(cmd *cobra.Command) slog.Level {

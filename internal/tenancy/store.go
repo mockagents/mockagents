@@ -87,6 +87,23 @@ type Store interface {
 	// bcrypt hash, bumps last_used, and returns the derived Principal.
 	Resolve(ctx context.Context, plaintext string) (*Principal, error)
 
+	// --- SSO users + sessions (REF-08 slice D) ---
+
+	// GetUserByEmail returns the user with the given email, or ErrNotFound.
+	GetUserByEmail(ctx context.Context, email string) (*User, error)
+	// CreateUser provisions a new SSO user mapped to a tenant + role. Returns
+	// ErrConflict if the email already exists.
+	CreateUser(ctx context.Context, email, tenantID string, role Role) (*User, error)
+	// CreateSession issues an opaque session token for a user (valid for ttl)
+	// and persists only its hash. Returns the plaintext token once.
+	CreateSession(ctx context.Context, userID, tenantID string, role Role, ttl time.Duration) (token string, session *Session, err error)
+	// ResolveSession validates a session token (hash lookup + expiry) and
+	// returns the derived Principal, or ErrInvalidSession.
+	ResolveSession(ctx context.Context, token string) (*Principal, error)
+	// DeleteSession revokes a session by its token (logout). A missing token
+	// is not an error (idempotent logout).
+	DeleteSession(ctx context.Context, token string) error
+
 	Close() error
 }
 
@@ -110,6 +127,26 @@ CREATE TABLE IF NOT EXISTS api_keys (
 
 CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(prefix);
+
+CREATE TABLE IF NOT EXISTS users (
+    id         TEXT PRIMARY KEY,
+    email      TEXT NOT NULL UNIQUE,
+    tenant_id  TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    role       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    tenant_id  TEXT NOT NULL,
+    role       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 `
 
 // SQLiteStore implements Store against a pure-Go SQLite driver.

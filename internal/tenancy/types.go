@@ -145,3 +145,30 @@ var ErrConflict = errors.New("tenancy: already exists")
 // ErrInvalidKey is returned when an API key doesn't exist or the hash
 // doesn't match. Middleware turns this into a 401.
 var ErrInvalidKey = errors.New("tenancy: invalid api key")
+
+// ErrInvalidSession is returned when a session token doesn't exist or has
+// expired. Middleware turns this into a 401. (REF-08 slice D.)
+var ErrInvalidSession = errors.New("tenancy: invalid or expired session")
+
+// User is an SSO-authenticated identity, mapped to a tenant + role. Users are
+// just-in-time provisioned on first OIDC login (email-domain → tenant), and
+// distinct from API keys: a user authenticates via a session, a key via its
+// secret. (REF-08 slice D.)
+type User struct {
+	ID        string    `json:"id"`
+	Email     string    `json:"email"`
+	TenantID  string    `json:"tenant_id"`
+	Role      Role      `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// Session is a server-side login session for a User. The opaque token is
+// returned once at creation; only its SHA-256 hash is persisted, so a database
+// dump never yields usable tokens. Sessions are revocable (unlike a bare JWT).
+type Session struct {
+	UserID    string    `json:"user_id"`
+	TenantID  string    `json:"tenant_id"`
+	Role      Role      `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}

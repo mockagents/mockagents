@@ -390,6 +390,51 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /auth/login:
+    get:
+      operationId: ssoLogin
+      summary: Begin SSO login (OIDC)
+      description: >
+        Starts the OpenID Connect authorization-code flow (REF-08 slice D):
+        sets short-lived state + PKCE cookies and redirects to the configured
+        identity provider. Only mounted when OIDC is configured.
+      tags: [Auth]
+      responses:
+        "302":
+          description: Redirect to the identity provider's authorization endpoint.
+
+  /auth/callback:
+    get:
+      operationId: ssoCallback
+      summary: Complete SSO login (OIDC callback)
+      description: >
+        The IdP redirect target. Validates state (CSRF) + PKCE, exchanges the
+        code, maps the verified email domain to a tenant, just-in-time
+        provisions the user, mints a session, and sets the session cookie.
+      tags: [Auth]
+      parameters:
+        - { name: code, in: query, required: true, schema: { type: string } }
+        - { name: state, in: query, required: true, schema: { type: string } }
+      responses:
+        "302":
+          description: On success, sets the session cookie and redirects to the app root.
+        "400":
+          description: Missing/mismatched state or code.
+        "401":
+          description: Code exchange failed or the IdP returned no email.
+        "403":
+          description: The email domain is not mapped to a tenant.
+
+  /auth/logout:
+    post:
+      operationId: ssoLogout
+      summary: Revoke the current SSO session
+      description: Revokes the session behind the cookie and clears it.
+      tags: [Auth]
+      responses:
+        "200":
+          description: Logged out.
+
   /api/v1/quota:
     get:
       operationId: getQuota

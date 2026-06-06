@@ -66,6 +66,7 @@ func TestStoreConformance(t *testing.T) {
 		{"BulkRotateWithExclude", conformBulkRotate},
 		{"DeleteTenantCascade", conformDeleteCascade},
 		{"InvalidKeyRejected", conformInvalidKey},
+		{"UsersAndSessions", conformUsersAndSessions},
 	}
 	for _, f := range factories {
 		t.Run(f.name, func(t *testing.T) {
@@ -280,6 +281,72 @@ func conformDeleteCascade(t *testing.T, s Store) {
 	// The cascade removed the key row, so its plaintext no longer resolves.
 	if _, err := s.Resolve(ctx, res.Plaintext); !errors.Is(err, ErrInvalidKey) {
 		t.Errorf("key after tenant delete = %v, want ErrInvalidKey (cascade)", err)
+	}
+}
+
+func conformUsersAndSessions(t *testing.T, s Store) {
+	ctx := context.Background()
+	ten := mustTenant(t, s, "acme")
+
+	if _, err := s.GetUserByEmail(ctx, "ghost@acme.com"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetUserByEmail(missing) = %v, want ErrNotFound", err)
+	}
+	u, err := s.CreateUser(ctx, "alice@acme.com", ten.ID, RoleEditor)
+	if err != nil || u.Email != "alice@acme.com" || u.Role != RoleEditor {
+		t.Fatalf("CreateUser = %+v err=%v", u, err)
+	}
+	got, err := s.GetUserByEmail(ctx, "alice@acme.com")
+	if err != nil || got.ID != u.ID || got.TenantID != ten.ID {
+		t.Fatalf("GetUserByEmail = %+v err=%v", got, err)
+	}
+	if _, err := s.CreateUser(ctx, "alice@acme.com", ten.ID, RoleViewer); !errors.Is(err, ErrConflict) {
+		t.Errorf("duplicate user = %v, want ErrConflict", err)
+	}
+
+	// Session lifecycle: create → resolve → reject bogus/tampered → logout.
+	token, sess, err := s.CreateSession(ctx, u.ID, ten.ID, u.Role, time.Hour)
+	if err != nil || token == "" || sess.UserID != u.ID {
+		t.Fatalf("CreateSession = %q %+v err=%v", token, sess, err)
+	}
+	p, err := s.ResolveSession(ctx, token)
+	if err != nil || p.TenantID != ten.ID || p.Role != RoleEditor || p.KeyID != u.ID {
+		t.Fatalf("ResolveSession = %+v err=%v", p, err)
+	}
+	if _, err := s.ResolveSession(ctx, "notasession"); !errors.Is(err, ErrInvalidSession) {
+		t.Errorf("bad token = %v, want ErrInvalidSession", err)
+	}
+	if _, err := s.ResolveSession(ctx, token+"x"); !errors.Is(err, ErrInvalidSession) {
+		t.Errorf("tampered token = %v, want ErrInvalidSession", err)
+	}
+	if err := s.DeleteSession(ctx, token); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	if _, err := s.ResolveSession(ctx, token); !errors.Is(err, ErrInvalidSession) {
+		t.Errorf("post-logout = %v, want ErrInvalidSession", err)
+	}
+
+	// An already-expired session is rejected.
+	expToken, _, err := s.CreateSession(ctx, u.ID, ten.ID, u.Role, -time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ResolveSession(ctx, expToken); !errors.Is(err, ErrInvalidSession) {
+		t.Errorf("expired session = %v, want ErrInvalidSession", err)
+	}
+
+	// Deleting the tenant cascades to its users and their sessions.
+	live, _, err := s.CreateSession(ctx, u.ID, ten.ID, u.Role, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteTenant(ctx, ten.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetUserByEmail(ctx, "alice@acme.com"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("user after tenant delete = %v, want ErrNotFound (cascade)", err)
+	}
+	if _, err := s.ResolveSession(ctx, live); !errors.Is(err, ErrInvalidSession) {
+		t.Errorf("session after tenant delete = %v, want ErrInvalidSession (cascade)", err)
 	}
 }
 

@@ -79,6 +79,10 @@ type Config struct {
 	// endpoints and powers the /api/v1/quota routes (REF-08 slice C). Nil
 	// disables quota enforcement (the single-tenant default).
 	QuotaEnforcer *quota.Enforcer
+	// SSO, when non-nil, mounts the OIDC relying-party endpoints
+	// (/auth/login, /auth/callback, /auth/logout) for SSO login (REF-08
+	// slice D). Configured only when the OIDC env vars are set.
+	SSO *SSOHandlers
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -366,6 +370,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		s.mountManaged(mux, "PUT /api/v1/tenants/{id}/quota", http.HandlerFunc(quotaH.SetTenantQuota))
 	}
 
+	// SSO / OIDC relying-party endpoints (REF-08 slice D). Open (in skipAuth),
+	// since login/callback precede authentication and logout clears its own
+	// session cookie. Mounted only when OIDC is configured.
+	if s.config.SSO != nil {
+		mux.HandleFunc("GET /auth/login", s.config.SSO.Login)
+		mux.HandleFunc("GET /auth/callback", s.config.SSO.Callback)
+		mux.HandleFunc("POST /auth/logout", s.config.SSO.Logout)
+	}
+
 	// Generic engine endpoint (internal/testing).
 	mux.HandleFunc("POST /v1/engines/process", s.handleProcessRequest)
 }
@@ -599,7 +612,12 @@ func skipAuth(r *http.Request) bool {
 		"/v1/chat/completions",
 		"/v1/messages",
 		"/v1/models",
-		"/v1/engines/process":
+		"/v1/engines/process",
+		// SSO endpoints start/clear a session, so they precede authentication
+		// (REF-08 slice D). They are not under /api/v1 and do their own checks.
+		"/auth/login",
+		"/auth/callback",
+		"/auth/logout":
 		return true
 	}
 	return false
