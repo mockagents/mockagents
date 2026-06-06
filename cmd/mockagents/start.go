@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/engine/state"
 	"github.com/mockagents/mockagents/internal/pricing"
+	"github.com/mockagents/mockagents/internal/quota"
 	"github.com/mockagents/mockagents/internal/server"
 	"github.com/mockagents/mockagents/internal/storage"
 	"github.com/mockagents/mockagents/internal/tenancy"
@@ -215,6 +217,19 @@ func runStart(cmd *cobra.Command, args []string) error {
 		if err := bootstrapTenancy(cmd.Context(), tenancyStore, logger); err != nil {
 			return fmt.Errorf("bootstrap tenancy: %w", err)
 		}
+
+		// Per-tenant quotas (REF-08 slice C). Defaults come from env; per-tenant
+		// overrides are set at runtime via PUT /api/v1/tenants/{id}/quota. The
+		// enforcer is always created in multi-tenant mode so the /api/v1/quota
+		// endpoints exist; with zero defaults it simply enforces nothing.
+		quotaDefaults := quotaDefaultsFromEnv()
+		cfg.QuotaEnforcer = quota.NewEnforcer(quotaDefaults)
+		if quotaDefaults.RatePerSec > 0 || quotaDefaults.MonthlySpendUSD > 0 {
+			logger.Info("tenancy: per-tenant quota defaults",
+				"rate_per_sec", quotaDefaults.RatePerSec,
+				"rate_burst", quotaDefaults.RateBurst,
+				"monthly_spend_usd", quotaDefaults.MonthlySpendUSD)
+		}
 	}
 
 	srv := server.New(eng, cfg, logger)
@@ -351,6 +366,19 @@ func bootstrapTenancy(ctx context.Context, store tenancy.Store, logger *slog.Log
 	fmt.Fprintln(os.Stderr, "  Authorization: Bearer <key>   or   X-Api-Key: <key>")
 	fmt.Fprintln(os.Stderr, "================================================================")
 	return nil
+}
+
+// quotaDefaultsFromEnv reads the default per-tenant quota from the environment.
+// Any unset/garbage value parses to 0 (= unlimited for that dimension), so the
+// zero-config default enforces nothing until an operator sets limits.
+func quotaDefaultsFromEnv() quota.Config {
+	pf := func(k string) float64 { v, _ := strconv.ParseFloat(os.Getenv(k), 64); return v }
+	pi := func(k string) int { n, _ := strconv.Atoi(os.Getenv(k)); return n }
+	return quota.Config{
+		RatePerSec:      pf("MOCKAGENTS_DEFAULT_RATE_PER_SEC"),
+		RateBurst:       pi("MOCKAGENTS_DEFAULT_RATE_BURST"),
+		MonthlySpendUSD: pf("MOCKAGENTS_DEFAULT_MONTHLY_SPEND_USD"),
+	}
 }
 
 func parseLogLevel(cmd *cobra.Command) slog.Level {

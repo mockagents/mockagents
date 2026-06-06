@@ -70,6 +70,12 @@ var managementRouteFloors = map[string]tenancy.Role{
 
 	// Config validation (write-ish: sprays YAML at the parser) → editor.
 	"POST /api/v1/config/validate": tenancy.RoleEditor,
+
+	// Per-tenant quotas (REF-08 slice C). Reading your own usage is open to any
+	// authenticated caller; setting a tenant's cap is a cross-tenant operator
+	// action (a tenant admin must not raise its own cap), so it's platform-gated.
+	"GET /api/v1/quota":                  tenancy.RoleViewer,
+	"PUT /api/v1/tenants/{id}/quota":     tenancy.RolePlatform,
 }
 
 // mountManaged registers a management-API route on mux, applying the role

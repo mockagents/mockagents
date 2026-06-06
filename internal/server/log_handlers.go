@@ -338,7 +338,16 @@ func applyLogBodyMode(mode LogBodyMode, body string) string {
 //
 // The captureWriter itself is pooled via captureWriterPool so each
 // request reuses both the struct and the body slice's backing array.
-func InteractionCapture(worker *LogWorker, bodyMode LogBodyMode) func(http.Handler) http.Handler {
+// The optional spendHook is called once per captured interaction with the
+// caller's tenant id and the raw response body, so per-tenant spend accounting
+// (REF-08 slice C) can compute the response's cost and accrue it. It receives
+// the raw body (not the privacy-masked one) because it reads only the usage
+// numbers, never content. nil disables it.
+func InteractionCapture(worker *LogWorker, bodyMode LogBodyMode, spendHook ...func(tenantID, respBody string)) func(http.Handler) http.Handler {
+	var hook func(tenantID, respBody string)
+	if len(spendHook) > 0 {
+		hook = spendHook[0]
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if worker == nil || worker.store == nil {
@@ -450,6 +459,13 @@ func InteractionCapture(worker *LogWorker, bodyMode LogBodyMode) func(http.Handl
 				entry.SessionID = meta.SessionID
 			} else if reqID := requestIDFromContext(r.Context()); reqID != "" {
 				entry.SessionID = reqID
+			}
+			// Accrue this response's cost against the tenant's monthly spend
+			// (REF-08 slice C). Uses the raw response body for the usage numbers;
+			// streaming responses have no captured body, so their spend isn't
+			// counted (a documented soft-margin limitation).
+			if hook != nil {
+				hook(entry.TenantID, respBody)
 			}
 			// Submit is non-blocking and drops on a full queue. The drop is
 			// already metered (worker.Metrics().Dropped); surface it at debug
