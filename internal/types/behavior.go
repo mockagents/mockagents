@@ -34,11 +34,35 @@ type ToolCallSpec struct {
 	Arguments map[string]any `yaml:"arguments,omitempty" json:"arguments,omitempty"`
 }
 
-// StreamingConfig controls SSE streaming behavior.
+// StreamingConfig controls SSE streaming behavior, including stream-timing
+// physics and mid-stream fault injection (RR-07).
 type StreamingConfig struct {
 	Enabled      bool `yaml:"enabled" json:"enabled"`
 	ChunkSize    int  `yaml:"chunk_size,omitempty" json:"chunk_size,omitempty"`
 	ChunkDelayMs int  `yaml:"chunk_delay_ms,omitempty" json:"chunk_delay_ms,omitempty"`
+
+	// --- Stream-timing physics ---
+
+	// TTFTMs is the time-to-first-token: a delay before the first content
+	// chunk is emitted (the structural opening frame is sent immediately).
+	TTFTMs int `yaml:"ttft_ms,omitempty" json:"ttft_ms,omitempty"`
+	// TokensPerSec, when > 0, paces content chunks at this rate (the per-chunk
+	// delay is derived from the chunk length), overriding ChunkDelayMs.
+	TokensPerSec float64 `yaml:"tokens_per_sec,omitempty" json:"tokens_per_sec,omitempty"`
+	// JitterMs adds a deterministic +/- jitter (up to this many ms) to each
+	// inter-chunk delay, modeling network variance.
+	JitterMs int `yaml:"jitter_ms,omitempty" json:"jitter_ms,omitempty"`
+
+	// --- Mid-stream fault injection ---
+
+	// TruncateAfterChunks, when > 0, ends the stream after this many content
+	// chunks WITHOUT the terminating finish frame / [DONE] sentinel — a
+	// truncated stream, to test client robustness to early disconnects.
+	TruncateAfterChunks int `yaml:"truncate_after_chunks,omitempty" json:"truncate_after_chunks,omitempty"`
+	// Malformed, when true, emits one deliberately invalid JSON SSE frame at
+	// the stop point and then ends the stream (no finish frame / [DONE]) — to
+	// test client parser/error handling of malformed chunks and tool calls.
+	Malformed bool `yaml:"malformed,omitempty" json:"malformed,omitempty"`
 }
 
 // ChaosConfig defines fault injection settings applied to every request

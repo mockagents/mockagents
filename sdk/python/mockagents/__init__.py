@@ -1,6 +1,7 @@
 """MockAgents Python SDK — simulate, test, and validate AI agent integrations."""
 
 from . import adapters
+from ._binary import BinaryNotFoundError, ensure_binary, find_binary
 from .assertions import expect
 from .client import MockAgentClient
 from .mcp import McpClient, McpEvent, McpEventStream
@@ -35,5 +36,8 @@ __all__ = [
     "Interaction",
     "ConfigError",
     "ServerError",
+    "BinaryNotFoundError",
+    "ensure_binary",
+    "find_binary",
     "adapters",
 ]

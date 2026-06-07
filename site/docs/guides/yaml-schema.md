@@ -49,6 +49,7 @@ spec:                         # Required. Agent specification.
 |-------|-------------|
 | `openai-chat-completions` | OpenAI Chat Completions API format |
 | `anthropic-messages` | Anthropic Messages API format |
+| `google-gemini` | Google Gemini `generateContent` API format |
 
 ## `spec.tools`
 
@@ -144,8 +145,15 @@ Use Go template syntax in `response.content`:
 ```yaml
 streaming:
   enabled: true       # Default: false
-  chunk_size: 4       # Tokens per SSE chunk. Default: 4.
+  chunk_size: 4       # Words per SSE chunk. Default: 4.
   chunk_delay_ms: 50  # Milliseconds between chunks. Default: 50.
+
+  # Stream-timing physics + mid-stream fault injection (optional):
+  ttft_ms: 200             # Time-to-first-token: delay before the first chunk.
+  tokens_per_sec: 20       # Pace chunks at this word rate (overrides chunk_delay_ms).
+  jitter_ms: 30            # Deterministic +/- jitter (ms) per inter-chunk delay.
+  truncate_after_chunks: 3 # End the stream after N chunks, no finish frame / [DONE].
+  malformed: true          # Emit one invalid-JSON SSE frame, then end (parser fault).
 ```
 
 ## `spec.behavior.chaos`

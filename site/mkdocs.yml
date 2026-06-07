@@ -34,6 +34,9 @@ nav:
     - Quickstart: getting-started/quickstart.md
     - Installation: getting-started/installation.md
   - Guides:
+    - Testing AI Agents: guides/testing-agents.md
+    - Drop-in Recipes: guides/drop-in-recipes.md
+    - Record & Replay: guides/record-replay.md
     - CLI Reference: guides/cli-reference.md
     - YAML Schema: guides/yaml-schema.md
     - Management API: guides/management-api.md

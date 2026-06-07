@@ -1,0 +1,39 @@
+# Cookbook: stream-timing physics + mid-stream fault injection (RR-07).
+#
+# Test how your client handles realistic and adversarial streams — slow first
+# token, paced output, and a truncated/malformed stream — deterministically.
+#
+# Try it:
+#   mockagents start --agents-dir examples
+#   curl -N http://localhost:8080/v1/chat/completions \
+#     -H 'content-type: application/json' \
+#     -d '{"model":"stream-faulty","stream":true,"messages":[{"role":"user","content":"hi"}]}'
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: stream-faulty
+  description: Demonstrates SSE timing physics and a truncated stream fault.
+  tags: [cookbook, chaos, streaming]
+
+spec:
+  protocol: openai-chat-completions
+  model: stream-faulty
+  behavior:
+    scenarios:
+      - name: default
+        response:
+          content: "This response is streamed slowly and then cut off partway."
+
+    streaming:
+      enabled: true
+      chunk_size: 4
+      # --- timing physics ---
+      ttft_ms: 200          # 200ms before the first token
+      tokens_per_sec: 20    # paced output (overrides chunk_delay_ms)
+      jitter_ms: 30         # +/- 30ms deterministic jitter per chunk
+      # --- fault injection ---
+      truncate_after_chunks: 3   # cut the stream after 3 chunks (no finish / [DONE])
+      # malformed: true          # alternatively, emit an invalid-JSON frame and stop
+
+# For request-level faults (429 rate limit, synthetic 504 timeout, injected
+# errors), see examples/chaos-agent.yaml and spec.behavior.chaos.

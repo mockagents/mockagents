@@ -121,6 +121,64 @@ func TestManagementRouteFloors_FlaggedRoutes(t *testing.T) {
 	}
 }
 
+// TestManagementRouteFloors_Snapshot locks the COMPLETE role-floor table.
+// Adding, removing, or re-leveling any route fails here — forcing a deliberate
+// update AND a cross-check against the documented RBAC table in
+// docs/guides/multi-tenant.md, which must stay in sync (RR-05 anti-drift).
+func TestManagementRouteFloors_Snapshot(t *testing.T) {
+	want := map[string]tenancy.Role{
+		"GET /api/v1/health":                roleOpen,
+		"GET /api/v1/agents":                roleOpen,
+		"GET /api/v1/agents/{name}":         roleOpen,
+		"POST /api/v1/agents/{name}/reload": tenancy.RoleEditor,
+		"GET /api/v1/tenants":               tenancy.RolePlatform,
+		"POST /api/v1/tenants":              tenancy.RolePlatform,
+		"DELETE /api/v1/tenants/{id}":       tenancy.RolePlatform,
+		"GET /api/v1/tenants/{id}/keys":         tenancy.RoleEditor,
+		"POST /api/v1/tenants/{id}/keys":        tenancy.RoleAdmin,
+		"POST /api/v1/tenants/{id}/keys/rotate": tenancy.RoleAdmin,
+		"PATCH /api/v1/keys/{id}":               tenancy.RoleAdmin,
+		"POST /api/v1/keys/{id}/rotate":         tenancy.RoleAdmin,
+		"POST /api/v1/keys/me/rotate":           tenancy.RoleViewer,
+		"POST /api/v1/keys/me/burn":             tenancy.RoleViewer,
+		"DELETE /api/v1/keys/{id}":              tenancy.RoleAdmin,
+		"GET /api/v1/audit":                     tenancy.RoleAdmin,
+		"GET /api/v1/logs":                roleOpen,
+		"GET /api/v1/logs/{id}":           roleOpen,
+		"DELETE /api/v1/logs":             roleOpen,
+		"GET /api/v1/logs/stream":         roleOpen,
+		"GET /api/v1/logs/stream/metrics": tenancy.RoleAdmin,
+		"GET /api/v1/costs":               tenancy.RoleViewer,
+		"GET /api/v1/pipelines":           tenancy.RoleViewer,
+		"GET /api/v1/pipelines/{name}":    tenancy.RoleViewer,
+		"PUT /api/v1/pipelines/{name}":    tenancy.RoleEditor,
+		"POST /api/v1/config/validate":    tenancy.RoleEditor,
+		"GET /api/v1/quota":               tenancy.RoleViewer,
+		"PUT /api/v1/tenants/{id}/quota":  tenancy.RolePlatform,
+	}
+
+	const sync = " — update this snapshot AND docs/guides/multi-tenant.md"
+	if len(managementRouteFloors) != len(want) {
+		t.Errorf("route count = %d, want %d (a route was added/removed%s)",
+			len(managementRouteFloors), len(want), sync)
+	}
+	for pat, w := range want {
+		got, ok := managementRouteFloors[pat]
+		if !ok {
+			t.Errorf("snapshot route %q missing from managementRouteFloors%s", pat, sync)
+			continue
+		}
+		if got != w {
+			t.Errorf("floor[%q] = %q, want %q%s", pat, got, w, sync)
+		}
+	}
+	for pat := range managementRouteFloors {
+		if _, ok := want[pat]; !ok {
+			t.Errorf("route %q is not in the snapshot%s", pat, sync)
+		}
+	}
+}
+
 // TestManagementRouteFloors_AllValid asserts every floor is roleOpen or a
 // real role, so a typo'd value can't silently mean "open".
 func TestManagementRouteFloors_AllValid(t *testing.T) {

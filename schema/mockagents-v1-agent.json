@@ -60,7 +60,7 @@
       "properties": {
         "protocol": {
           "type": "string",
-          "enum": ["openai-chat-completions", "anthropic-messages"],
+          "enum": ["openai-chat-completions", "anthropic-messages", "google-gemini"],
           "description": "Wire protocol the agent speaks."
         },
         "model": {
@@ -269,6 +269,30 @@
           "type": "integer",
           "minimum": 0,
           "description": "Delay between chunks in milliseconds. Default: 50."
+        },
+        "ttft_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Time-to-first-token: delay before the first content chunk."
+        },
+        "tokens_per_sec": {
+          "type": "number",
+          "minimum": 0,
+          "description": "When > 0, pace content chunks at this rate (overrides chunk_delay_ms)."
+        },
+        "jitter_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Deterministic +/- jitter (ms) added to each inter-chunk delay."
+        },
+        "truncate_after_chunks": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "When > 0, end the stream after N content chunks with no finish frame / [DONE] (truncated stream fault)."
+        },
+        "malformed": {
+          "type": "boolean",
+          "description": "Emit one invalid-JSON SSE frame at the stop point, then end the stream (malformed-chunk fault)."
         }
       }
     },

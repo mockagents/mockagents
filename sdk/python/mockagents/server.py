@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import signal
 import socket
 import subprocess
@@ -13,6 +12,7 @@ from typing import Any, Optional
 
 import yaml
 
+from ._binary import ensure_binary
 from .client import MockAgentClient
 from .types import ConfigError, ServerError
 
@@ -29,6 +29,10 @@ class MockAgentServer:
         binary_path: Path to the mockagents binary. Auto-detected if None.
         log_level: Server log level (debug, info, warn, error).
         config_path: Path to .mockagents.yaml project config.
+        auto_download: When the binary isn't found, download the matching
+            release binary from GitHub and cache it (Playwright-style). Also
+            enabled by setting MOCKAGENTS_AUTO_DOWNLOAD=1. Default False, which
+            instead raises BinaryNotFoundError with install instructions.
 
     Example:
         with MockAgentServer(agents_dir="./agents") as server:
@@ -43,10 +47,15 @@ class MockAgentServer:
         binary_path: Optional[str] = None,
         log_level: str = "warn",
         config_path: Optional[str] = None,
+        auto_download: bool = False,
     ):
         self.agents_dir = os.path.abspath(agents_dir)
         self.port = port if port != 0 else self._find_free_port()
-        self.binary_path = binary_path or self._find_binary()
+        self.auto_download = auto_download
+        # Resolve (or download) the binary up front so failures surface a clear,
+        # actionable BinaryNotFoundError at construction — not a cryptic
+        # FileNotFoundError later.
+        self.binary_path = binary_path or ensure_binary(auto_download=auto_download)
         self.log_level = log_level
         self.config_path = config_path
         self._process: Optional[subprocess.Popen[bytes]] = None
@@ -59,6 +68,7 @@ class MockAgentServer:
         port: int = 0,
         binary_path: Optional[str] = None,
         log_level: str = "warn",
+        auto_download: bool = False,
     ) -> MockAgentServer:
         """Create a MockAgentServer from YAML configuration file(s).
 
@@ -104,6 +114,7 @@ class MockAgentServer:
             port=port,
             binary_path=binary_path,
             log_level=log_level,
+            auto_download=auto_download,
         )
 
     def start(self, timeout: float = 10.0) -> None:
@@ -176,8 +187,13 @@ class MockAgentServer:
 
     @property
     def url(self) -> str:
-        """The server's base URL."""
-        return f"http://localhost:{self.port}"
+        """The server's base URL.
+
+        Uses 127.0.0.1 (not localhost) to match the Go binary's IPv4-only
+        default bind; localhost can resolve to ::1 first on dual-stack hosts,
+        adding connection-refused fallback latency to health polls/requests.
+        """
+        return f"http://127.0.0.1:{self.port}"
 
     @property
     def is_running(self) -> bool:
@@ -240,14 +256,10 @@ class MockAgentServer:
 
     @staticmethod
     def _find_binary() -> str:
-        """Locate the mockagents binary on PATH."""
-        binary = shutil.which("mockagents")
-        if binary:
-            return binary
-        # Check common locations.
-        for candidate in ["./mockagents", "./mockagents.exe", "mockagents.exe"]:
-            if os.path.isfile(candidate):
-                return os.path.abspath(candidate)
-        raise FileNotFoundError(
-            "mockagents binary not found. Install it or pass binary_path explicitly."
-        )
+        """Resolve the mockagents binary path (back-compat shim).
+
+        Prefer ``mockagents._binary.ensure_binary`` / ``find_binary``; this
+        raises BinaryNotFoundError (a FileNotFoundError subclass) with install
+        guidance when the binary is absent.
+        """
+        return ensure_binary()

@@ -1,27 +1,18 @@
 name: Documentation
 
-# DISABLED (2026-04-13).
+# Builds the MkDocs site and deploys it to GitHub Pages (RR-05).
 #
-# The automatic `push` trigger has been removed so this workflow no
-# longer fires on merges to main. It stays in the repo as
-# `workflow_dispatch`-only so it shows up in the Actions tab and can
-# be re-enabled by a maintainer running it manually, but it will not
-# report failures on every push.
-#
-# To fully re-enable later, restore:
-#   on:
-#     push:
-#       branches: [main]
-#       paths:
-#         - "site/**"
-#
-# The second failing job — "pages build and deployment / build
-# (dynamic)" — is GitHub's auto-generated Pages workflow, not a file
-# in this repo. Disable it via Settings → Pages → Build and deployment
-# → Source → "None" (or "GitHub Actions" if you want Pages served by
-# this workflow once it is re-enabled).
+# Prerequisite (one-time, repo Settings → Pages → Build and deployment):
+#   Source = "GitHub Actions"
+# Until that is set, the deploy job will no-op/fail on the Pages API; the
+# build job is always safe to run.
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 permissions:
@@ -37,9 +28,6 @@ jobs:
   build:
     name: Build MkDocs site
     runs-on: ubuntu-latest
-    # Hard guard so even a manual dispatch is a no-op until the
-    # workflow is deliberately re-enabled.
-    if: false
     steps:
       - uses: actions/checkout@v4
 
@@ -53,7 +41,7 @@ jobs:
 
       - name: Build docs
         working-directory: site
-        run: mkdocs build
+        run: mkdocs build --strict
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -64,7 +52,6 @@ jobs:
     name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
-    if: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

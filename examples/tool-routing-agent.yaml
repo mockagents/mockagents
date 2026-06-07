@@ -1,0 +1,67 @@
+# Cookbook: deterministic agent tool-call routing.
+#
+# This agent picks a different tool depending on the user's message, always the
+# same way — so you can assert *which* tool fired with *what* arguments in CI,
+# without a live model deciding differently each run.
+#
+# Paired with examples/tool-routing-suite.yaml. See the guide:
+#   site/docs/guides/testing-agents.md
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: tool-router
+  description: Routes requests to the right tool deterministically.
+  tags: [cookbook, tools]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-4o
+  systemPrompt: |
+    You are a support assistant that uses tools to answer questions.
+
+  tools:
+    - name: get_weather
+      description: Look up the current weather for a city.
+      parameters:
+        type: object
+        properties:
+          city: { type: string }
+        required: [city]
+      responses:
+        - match: { city: "London" }
+          response: { value: { tempC: 14, conditions: "drizzle" } }
+        - default: true
+          response: { value: { tempC: 22, conditions: "sunny" } }
+
+    - name: search_orders
+      description: Look up an order by id.
+      parameters:
+        type: object
+        properties:
+          order_id: { type: string }
+        required: [order_id]
+      responses:
+        - default: true
+          response: { value: { status: "shipped", tracking: "1Z999" } }
+
+  behavior:
+    scenarios:
+      - name: weather-route
+        match: { content_contains: "weather" }
+        response:
+          content: "Checking the weather for you."
+          tool_calls:
+            - name: get_weather
+              arguments: { city: "London" }
+
+      - name: order-route
+        match: { content_contains: "order" }
+        response:
+          content: "Looking up your order."
+          tool_calls:
+            - name: search_orders
+              arguments: { order_id: "ORD-42" }
+
+      - name: default
+        response:
+          content: "How can I help you today?"

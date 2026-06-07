@@ -1,0 +1,110 @@
+name: "Setup MockAgents"
+description: >-
+  Install the MockAgents CLI and (optionally) start it as a background mock
+  server for the rest of the job, exporting OPENAI_BASE_URL / ANTHROPIC_BASE_URL
+  so your existing test suite runs against deterministic, zero-cost mocks with
+  no code changes. Pairs with the "MockAgents Test" action for the test-run step.
+
+branding:
+  icon: "server"
+  color: "purple"
+
+inputs:
+  version:
+    description: >-
+      mockagents binary version to install ("latest" or a tag like v0.1.0).
+      Pin a tag for reproducible CI.
+    required: false
+    default: "latest"
+  agents-dir:
+    description: "Directory containing kind:Agent YAML files."
+    required: false
+    default: "./agents"
+  port:
+    description: "Port the mock server listens on."
+    required: false
+    default: "8080"
+  start:
+    description: >-
+      When 'true' (default), start the server in the background and export the
+      base-URL env vars. Set 'false' to only install the CLI.
+    required: false
+    default: "true"
+  go-version:
+    description: "Go version used to install the CLI."
+    required: false
+    default: "1.26"
+  export-env:
+    description: >-
+      When 'true' (default), export OPENAI_BASE_URL, ANTHROPIC_BASE_URL and
+      MOCKAGENTS_BASE_URL to GITHUB_ENV for subsequent steps.
+    required: false
+    default: "true"
+
+outputs:
+  base-url:
+    description: "Base URL of the running mock server (e.g. http://localhost:8080)."
+    value: ${{ steps.start.outputs.base-url }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go-version }}
+
+    - name: Install mockagents CLI
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ "${{ inputs.version }}" == "latest" ]]; then
+          go install github.com/mockagents/mockagents/cmd/mockagents@latest
+        else
+          go install "github.com/mockagents/mockagents/cmd/mockagents@${{ inputs.version }}"
+        fi
+        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+    - name: Start mock server
+      id: start
+      if: inputs.start == 'true'
+      shell: bash
+      env:
+        AGENTS_DIR: ${{ inputs.agents-dir }}
+        PORT: ${{ inputs.port }}
+        EXPORT_ENV: ${{ inputs.export-env }}
+      run: |
+        set -euo pipefail
+        # Use 127.0.0.1 (not localhost) to match the IPv4-only --host bind below;
+        # localhost can resolve to ::1 first on dual-stack runners, adding
+        # connection-refused fallback latency to every poll/request.
+        base="http://127.0.0.1:${PORT}"
+        # Start detached; survive the step boundary for the rest of the job.
+        nohup mockagents start \
+          --agents-dir "$AGENTS_DIR" \
+          --port "$PORT" \
+          --host 127.0.0.1 \
+          --log-level warn > "${RUNNER_TEMP:-/tmp}/mockagents.log" 2>&1 &
+        # Health-poll until ready (max ~20s).
+        for i in $(seq 1 100); do
+          if curl -fsS "${base}/api/v1/health" >/dev/null 2>&1; then
+            ready=1; break
+          fi
+          sleep 0.2
+        done
+        if [[ "${ready:-0}" != "1" ]]; then
+          echo "::error::MockAgents did not become ready on ${base}"
+          cat "${RUNNER_TEMP:-/tmp}/mockagents.log" || true
+          exit 1
+        fi
+        echo "base-url=${base}" >> "$GITHUB_OUTPUT"
+        if [[ "$EXPORT_ENV" == "true" ]]; then
+          {
+            echo "MOCKAGENTS_BASE_URL=${base}"
+            echo "OPENAI_BASE_URL=${base}/v1"
+            echo "OPENAI_API_KEY=mock-key"
+            echo "ANTHROPIC_BASE_URL=${base}"
+            echo "ANTHROPIC_API_KEY=mock-key"
+          } >> "$GITHUB_ENV"
+        fi
+        echo "MockAgents ready at ${base}"

@@ -1,13 +1,53 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/mockagents/mockagents/internal/config"
 	"github.com/mockagents/mockagents/internal/types"
 )
+
+func TestPrintStartBanner(t *testing.T) {
+	var buf bytes.Buffer
+	printStartBanner(&buf, "0.0.0.0", 8080) // 0.0.0.0 must display as localhost
+	out := buf.String()
+	for _, want := range []string{
+		"export OPENAI_BASE_URL=http://localhost:8080/v1",
+		"export OPENAI_API_KEY=mock",
+		"ANTHROPIC_BASE_URL=http://localhost:8080",
+		"http://localhost:8080/v1beta/models/<model>:generateContent",
+		"http://localhost:8080/api/v1/health",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("banner missing %q\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "0.0.0.0") {
+		t.Error("banner should not advertise the unroutable 0.0.0.0 bind address")
+	}
+}
+
+func TestPrintStartBanner_HostDisplay(t *testing.T) {
+	cases := []struct{ host, want string }{
+		{"", "http://localhost:9090"},
+		{"0.0.0.0", "http://localhost:9090"},
+		{"::", "http://localhost:9090"},
+		{"127.0.0.1", "http://127.0.0.1:9090"},        // explicit host echoed verbatim
+		{"example.com", "http://example.com:9090"},    // hostname echoed verbatim
+		{"::1", "http://[::1]:9090"},                   // IPv6 literal bracketed
+	}
+	for _, c := range cases {
+		var buf bytes.Buffer
+		printStartBanner(&buf, c.host, 9090)
+		if !strings.Contains(buf.String(), "OPENAI_BASE_URL="+c.want+"/v1") {
+			t.Errorf("host %q: banner base URL = ...; want %q\n%s", c.host, c.want, buf.String())
+		}
+	}
+}
 
 // quietLogger discards output so the registerPipelines warnings don't
 // clutter test output.

@@ -34,7 +34,7 @@ def test_find_free_port_unique():
 def test_server_url_property():
     server = MockAgentServer.__new__(MockAgentServer)
     server.port = 9999
-    assert server.url == "http://localhost:9999"
+    assert server.url == "http://127.0.0.1:9999"
 
 
 def test_server_is_running_false_initially():
@@ -126,14 +126,20 @@ def test_from_config_multiple_files():
             os.unlink(p)
 
 
-def test_find_binary_not_found():
-    original_path = os.environ.get("PATH", "")
-    try:
-        os.environ["PATH"] = ""
-        with pytest.raises(FileNotFoundError, match="mockagents binary not found"):
-            MockAgentServer._find_binary()
-    finally:
-        os.environ["PATH"] = original_path
+def test_find_binary_not_found(tmp_path, monkeypatch):
+    from mockagents import _binary
+
+    # Hermetic: empty PATH, no env override, a binary-less cwd + cache, so the
+    # result doesn't depend on a locally-built ./mockagents or a primed cache.
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.delenv("MOCKAGENTS_BINARY", raising=False)
+    monkeypatch.delenv("MOCKAGENTS_AUTO_DOWNLOAD", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_binary, "cache_dir", lambda: tmp_path / "empty-cache")
+    # BinaryNotFoundError (a FileNotFoundError subclass) now carries actionable
+    # install guidance instead of a bare message (RR-04).
+    with pytest.raises(FileNotFoundError, match="binary was not found"):
+        MockAgentServer._find_binary()
 
 
 def test_stop_when_not_running():
@@ -147,5 +153,5 @@ def test_client_returns_mock_agent_client():
     server = MockAgentServer.__new__(MockAgentServer)
     server.port = 8080
     client = server.client()
-    assert client.base_url == "http://localhost:8080"
+    assert client.base_url == "http://127.0.0.1:8080"
     client.close()

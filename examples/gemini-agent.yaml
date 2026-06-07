@@ -1,0 +1,64 @@
+# Google Gemini mock agent.
+#
+# Speaks the Gemini generateContent wire format. Point the official
+# google-generativeai / @google/generative-ai SDK (or a raw client) at:
+#   http://localhost:8080/v1beta/models/gemini-1.5-pro:generateContent
+#   http://localhost:8080/v1beta/models/gemini-1.5-pro:streamGenerateContent?alt=sse
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: gemini-assistant
+  description: A mock Google Gemini agent with greeting, tool-call, and weather scenarios.
+  tags: [example, gemini]
+
+spec:
+  protocol: google-gemini
+  model: gemini-1.5-pro
+  systemPrompt: |
+    You are a helpful assistant powered by Gemini.
+
+  tools:
+    - name: get_weather
+      description: Look up the current weather for a city.
+      parameters:
+        type: object
+        properties:
+          city:
+            type: string
+            description: City name
+        required: [city]
+      responses:
+        - match:
+            city: "London"
+          response:
+            value: { tempC: 14, conditions: "rainy" }
+        - default: true
+          response:
+            value: { tempC: 22, conditions: "sunny" }
+
+  behavior:
+    scenarios:
+      - name: greeting
+        match:
+          content_contains: "hello"
+        response:
+          content: "Hello! I'm a mock Gemini assistant. Ask me about the weather."
+
+      - name: weather-request
+        match:
+          content_contains: "weather"
+        response:
+          content: "Let me check the weather for you."
+          tool_calls:
+            - name: get_weather
+              arguments:
+                city: "London"
+
+      - name: default
+        response:
+          content: "I'm a mock Gemini agent. Try saying 'hello' or asking about the 'weather'."
+
+    streaming:
+      enabled: true
+      chunk_size: 4
+      chunk_delay_ms: 0

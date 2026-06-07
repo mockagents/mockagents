@@ -1,5 +1,5 @@
 {
-  "name": "mockagents",
+  "name": "@mockagents/sdk",
   "version": "0.1.0",
   "description": "TypeScript SDK for MockAgents — simulate, test, and validate AI agent integrations",
   "type": "module",

@@ -52,10 +52,14 @@ coverage:
 
 ## Project Structure
 
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the request flow, package
+responsibilities, design rules (import direction, no-cgo, the authorization
+chokepoint), and a step-by-step guide to adding a provider adapter.
+
 | Directory | Description |
 |-----------|-------------|
 | `cmd/mockagents/` | CLI entry point (Cobra commands) |
-| `internal/adapter/` | OpenAI + Anthropic protocol adapters |
+| `internal/adapter/` | OpenAI + Anthropic + Gemini protocol adapters |
 | `internal/engine/` | Core mock engine |
 | `internal/server/` | HTTP server and middleware |
 | `internal/streaming/` | SSE streaming |

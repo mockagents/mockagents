@@ -1,0 +1,48 @@
+# Cookbook: assert agent tool-call routing deterministically.
+#
+# Run:
+#   mockagents test --agents-dir examples examples/tool-routing-suite.yaml
+#   mockagents test --agents-dir examples examples/tool-routing-suite.yaml --format junit > report.xml
+#
+# Targets examples/tool-routing-agent.yaml. See site/docs/guides/testing-agents.md
+apiVersion: mockagents/v1
+kind: TestSuite
+metadata:
+  name: tool-router-suite
+  description: Verifies the tool-router agent picks the right tool with the right args.
+
+spec:
+  target:
+    agent: tool-router
+  cases:
+    - name: weather-question-calls-get_weather
+      steps:
+        - role: user
+          content: "what's the weather in London?"
+      assertions:
+        - type: tool_call
+          tool: get_weather
+          arguments: { city: "London" }
+        - type: scenario_matched
+          value: weather-route
+
+    - name: order-question-calls-search_orders
+      steps:
+        - role: user
+          content: "track my order please"
+      assertions:
+        - type: tool_call
+          tool: search_orders
+          arguments: { order_id: "ORD-42" }
+        - type: scenario_matched
+          value: order-route
+
+    - name: smalltalk-calls-no-tool
+      steps:
+        - role: user
+          content: "hi there"
+      assertions:
+        - type: response_contains
+          value: "How can I help"
+        - type: scenario_matched
+          value: default

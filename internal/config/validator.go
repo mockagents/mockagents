@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	validProtocols  = []string{"openai-chat-completions", "anthropic-messages"}
+	validProtocols  = []string{"openai-chat-completions", "anthropic-messages", "google-gemini"}
 	metadataNameRe  = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 	toolNameRe      = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 )

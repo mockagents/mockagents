@@ -43,6 +43,13 @@ crewai = [
     "crewai>=0.80.0",
 ]
 
+[project.scripts]
+mockagents = "mockagents.launcher:main"
+mockagents-install = "mockagents.install:main"
+
+[project.entry-points.pytest11]
+mockagents = "mockagents.pytest_plugin"
+
 [tool.setuptools.packages.find]
 include = ["mockagents*"]
 

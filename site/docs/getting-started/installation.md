@@ -36,7 +36,7 @@ assertions, streaming helpers):
 
 ```bash
 pip install mockagents                                          # Python
-npm install mockagents                                          # TypeScript
+npm install @mockagents/sdk                                          # TypeScript
 go get github.com/mockagents/mockagents/sdk/go/mockagents       # Go
 ```
 

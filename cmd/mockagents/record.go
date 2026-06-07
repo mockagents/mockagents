@@ -23,8 +23,8 @@ exchange to a JSON-lines cassette file, and returns the upstream response to
 the client. Point your SDK at this server to record live interactions that
 can later be replayed offline with "mockagents replay".
 
-Streaming responses are not captured in v1; requests with stream=true will
-still be proxied, but only their non-streaming JSON body (if any) is stored.`,
+Streaming (SSE) responses are tee'd: each chunk is relayed to the client and
+captured to the cassette, then replayed in order by "mockagents replay".`,
 	RunE: runRecord,
 }
 

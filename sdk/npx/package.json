@@ -1,0 +1,35 @@
+{
+  "name": "mockagents",
+  "version": "0.1.0",
+  "description": "Run the MockAgents mock server via npx — a drop-in mock for the OpenAI, Anthropic & Gemini APIs for testing AI agents.",
+  "bin": {
+    "mockagents": "bin/mockagents.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md"
+  ],
+  "keywords": [
+    "openai",
+    "anthropic",
+    "gemini",
+    "mock",
+    "llm",
+    "testing",
+    "ai-agents"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mockagents/mockagents.git",
+    "directory": "sdk/npx"
+  },
+  "homepage": "https://github.com/mockagents/mockagents"
+}

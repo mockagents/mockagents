@@ -85,16 +85,24 @@ func StreamOpenAI(
 		return err
 	}
 
-	// 2. Content chunks.
+	pacer := newPacer(streamCfg)
+
+	// 2. Content chunks (with stream-timing physics + fault injection).
 	if resp.Content != "" {
-		chunker := NewChunker(chunkSize)
-		chunks := chunker.Chunk(resp.Content)
-		for _, chunk := range chunks {
+		if err := pacer.firstByte(ctx); err != nil {
+			return err
+		}
+		chunks := NewChunker(chunkSize).Chunk(resp.Content)
+		for i, chunk := range chunks {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if delayMs > 0 {
-				time.Sleep(time.Duration(delayMs) * time.Millisecond)
+			truncate, err := pacer.beforeChunk(ctx, i, tokenLen(chunk))
+			if err != nil {
+				return err
+			}
+			if truncate {
+				return pacer.writeStop(sse) // truncated/malformed: no finish, no [DONE]
 			}
 			if err := sse.WriteData(ChatCompletionChunk{
 				ID: id, Object: "chat.completion.chunk", Created: created, Model: resp.Model,
@@ -103,6 +111,12 @@ func StreamOpenAI(
 				return err
 			}
 		}
+	}
+
+	// Mid-stream malformed fault: emit a bad frame and stop, skipping the tool
+	// calls, the finish frame, and [DONE].
+	if pacer.malformed {
+		return pacer.writeStop(sse)
 	}
 
 	// 3. Tool call chunks (if any).
@@ -151,8 +165,8 @@ func streamOpenAIToolCalls(
 		argsJSON, _ := json.Marshal(tc.Arguments)
 		argsStr := string(argsJSON)
 
-		if delayMs > 0 {
-			time.Sleep(time.Duration(delayMs) * time.Millisecond)
+		if err := sleepCtx(ctx, time.Duration(delayMs)*time.Millisecond); err != nil {
+			return err
 		}
 
 		// First chunk: function name.

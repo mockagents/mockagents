@@ -1,4 +1,4 @@
-# mockagents (TypeScript SDK)
+# @mockagents/sdk (TypeScript SDK)
 
 TypeScript / JavaScript SDK for [MockAgents](https://github.com/mockagents/mockagents) —
 spin up mock AI agents, point your OpenAI / Anthropic / LangChain / Vercel AI
@@ -8,7 +8,7 @@ real LLM tokens.
 ## Install
 
 ```bash
-npm install mockagents
+npm install @mockagents/sdk
 ```
 
 Requires Node.js **18 or later** (uses the built-in `fetch`). The
@@ -19,7 +19,7 @@ or build it from the repo with `make build`.
 ## Quick start
 
 ```ts
-import { MockAgentServer, Scenario, runScenario, expect } from "mockagents";
+import { MockAgentServer, Scenario, runScenario, expect } from "@mockagents/sdk";
 
 const server = new MockAgentServer({ agentsDir: "./agents" });
 await server.start();
@@ -56,7 +56,7 @@ try {
 | `adapters.patchEnv(server)` | Temporarily sets `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` for LangGraph-style frameworks. |
 | `adapters.mockOpenAIProvider(server)` | Returns a `@ai-sdk/openai` provider pointed at the mock. |
 
-Framework adapters are lazy-imported — installing `mockagents` does **not**
+Framework adapters are lazy-imported — installing `@mockagents/sdk` does **not**
 pull in LangChain or Vercel AI SDK. They raise a descriptive error on first
 use when the optional peer is missing.
 

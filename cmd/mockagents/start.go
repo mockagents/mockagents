@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -280,6 +282,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 		errCh <- srv.ListenAndServe()
 	}()
 
+	printStartBanner(os.Stderr, host, port)
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -295,6 +299,36 @@ func runStart(cmd *cobra.Command, args []string) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+// printStartBanner shows the base-URL-swap "hero" so a developer's first move
+// is obvious: point your existing SDK at MockAgents, change nothing else.
+func printStartBanner(w io.Writer, host string, port int) {
+	disp := host
+	if disp == "" || disp == "0.0.0.0" || disp == "::" {
+		disp = "localhost"
+	}
+	// net.JoinHostPort brackets IPv6 literals (e.g. [::1]:8080) so the printed
+	// URLs are valid for any bind address.
+	base := "http://" + net.JoinHostPort(disp, strconv.Itoa(port))
+
+	const line = "────────────────────────────────────────────────────────────"
+	fmt.Fprintln(w, line)
+	fmt.Fprintf(w, "MockAgents is mocking OpenAI + Anthropic + Gemini at %s\n", base)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Point your app at it — no code changes, just the base URL:")
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  export OPENAI_BASE_URL=%s/v1\n", base)
+	fmt.Fprintln(w, "  export OPENAI_API_KEY=mock")
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  curl %s/v1/chat/completions \\\n", base)
+	fmt.Fprintln(w, "    -H 'content-type: application/json' \\")
+	fmt.Fprintln(w, `    -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'`)
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  Anthropic   ANTHROPIC_BASE_URL=%s\n", base)
+	fmt.Fprintf(w, "  Gemini      %s/v1beta/models/<model>:generateContent\n", base)
+	fmt.Fprintf(w, "  Health      %s/api/v1/health\n", base)
+	fmt.Fprintln(w, line)
 }
 
 // registerPipelines validates each loaded pipeline definition and

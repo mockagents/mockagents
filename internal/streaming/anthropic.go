@@ -124,7 +124,9 @@ func StreamAnthropic(
 
 	blockIndex := 0
 
-	// 2. Text content blocks.
+	pacer := newPacer(streamCfg)
+
+	// 2. Text content blocks (with stream-timing physics + fault injection).
 	if resp.Content != "" {
 		// content_block_start
 		if err := sse.WriteEvent("content_block_start", anthropicContentBlockStart{
@@ -134,15 +136,22 @@ func StreamAnthropic(
 			return err
 		}
 
+		if err := pacer.firstByte(ctx); err != nil {
+			return err
+		}
+
 		// content_block_delta(s)
-		chunker := NewChunker(chunkSize)
-		chunks := chunker.Chunk(resp.Content)
-		for _, chunk := range chunks {
+		chunks := NewChunker(chunkSize).Chunk(resp.Content)
+		for i, chunk := range chunks {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if delayMs > 0 {
-				time.Sleep(time.Duration(delayMs) * time.Millisecond)
+			truncate, err := pacer.beforeChunk(ctx, i, tokenLen(chunk))
+			if err != nil {
+				return err
+			}
+			if truncate {
+				return pacer.writeStop(sse) // truncated/malformed: no stop events
 			}
 			if err := sse.WriteEvent("content_block_delta", anthropicContentBlockDelta{
 				Type: "content_block_delta", Index: blockIndex,
@@ -159,6 +168,10 @@ func StreamAnthropic(
 			return err
 		}
 		blockIndex++
+	}
+
+	if pacer.malformed {
+		return pacer.writeStop(sse)
 	}
 
 	// 3. Tool use blocks.
@@ -190,8 +203,8 @@ func StreamAnthropic(
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if delayMs > 0 {
-				time.Sleep(time.Duration(delayMs) * time.Millisecond)
+			if err := sleepCtx(ctx, time.Duration(delayMs)*time.Millisecond); err != nil {
+				return err
 			}
 			if err := sse.WriteEvent("content_block_delta", anthropicContentBlockDelta{
 				Type: "content_block_delta", Index: blockIndex,
