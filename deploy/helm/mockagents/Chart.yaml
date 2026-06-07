@@ -3,9 +3,9 @@ name: mockagents
 description: Mock AI agent server for testing LLM and multi-agent integrations.
 type: application
 # Chart version is independent of the app version; bump on any template change.
-version: 0.2.0
+version: 0.4.0
 # Tracks the Go binary / Docker image release this chart has been validated against.
-appVersion: "0.1.0"
+appVersion: "0.4.0"
 kubeVersion: ">=1.24.0-0"
 home: https://github.com/mockagents/mockagents
 sources:

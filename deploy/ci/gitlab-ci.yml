@@ -19,7 +19,7 @@ mockagents:test:
   stage: test
   image: golang:1.26-alpine
   variables:
-    MOCKAGENTS_VERSION: latest     # pin to "v0.1.0" etc. for reproducibility
+    MOCKAGENTS_VERSION: latest     # pin to "v0.4.0" etc. for reproducibility
     AGENTS_DIR: "./agents"
     SUITES: ""                     # optional; defaults to AGENTS_DIR
     REPORT_PATH: "mockagents-junit.xml"

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MockAgents API
-  version: 0.3.0-dev
+  version: 0.4.0
   description: >
     MockAgents is a platform for mocking AI agent integrations. It exposes a
     Management API (agents, interaction logs, costs, audit, pipelines, config

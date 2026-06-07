@@ -1,6 +1,6 @@
 {
   "name": "mockagents",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "description": "Run the MockAgents mock server via npx — a drop-in mock for the OpenAI, Anthropic & Gemini APIs for testing AI agents.",
   "bin": {
     "mockagents": "bin/mockagents.js"
