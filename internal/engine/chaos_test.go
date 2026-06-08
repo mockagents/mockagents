@@ -312,3 +312,103 @@ func TestEngine_CancelledContextShortCircuits(t *testing.T) {
 		t.Fatalf("cancelled request: got err = %v, want context.Canceled", err)
 	}
 }
+
+// TestChaosFailFirstThenRecovers covers the Nth-call stateful trigger (FB-03):
+// the first N requests fail deterministically, then every request recovers —
+// the canonical retry/backoff fixture. Rate is 0, proving FailFirst drives
+// injection on its own.
+func TestChaosFailFirstThenRecovers(t *testing.T) {
+	inj, _, _ := newChaosInjectorForTest(1)
+	agent := agentWithChaos(&types.ChaosConfig{
+		Errors: &types.ChaosErrorConfig{FailFirst: 2, StatusCode: http.StatusServiceUnavailable},
+	})
+
+	for i := 1; i <= 2; i++ {
+		ce := AsChaosError(inj.Before(context.Background(), agent))
+		if ce == nil || ce.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("call %d: expected 503 ChaosError, got %v", i, ce)
+		}
+	}
+	for i := 3; i <= 5; i++ {
+		if err := inj.Before(context.Background(), agent); err != nil {
+			t.Fatalf("call %d: expected recovery, got %v", i, err)
+		}
+	}
+}
+
+// TestChaosFailFirstIsPerAgent confirms each agent has its own counter, so one
+// agent's first-N failures don't consume another's allotment.
+func TestChaosFailFirstIsPerAgent(t *testing.T) {
+	inj, _, _ := newChaosInjectorForTest(1)
+	mk := func(name string) *types.AgentDefinition {
+		return &types.AgentDefinition{
+			Metadata: types.Metadata{Name: name},
+			Spec: types.AgentSpec{Behavior: types.BehaviorConfig{
+				Chaos: &types.ChaosConfig{Errors: &types.ChaosErrorConfig{FailFirst: 1, StatusCode: 500}},
+			}},
+		}
+	}
+	a, b := mk("agent-a"), mk("agent-b")
+	if AsChaosError(inj.Before(context.Background(), a)) == nil {
+		t.Fatal("agent-a call 1 should fail")
+	}
+	// agent-b is independent: its first call still fails.
+	if AsChaosError(inj.Before(context.Background(), b)) == nil {
+		t.Fatal("agent-b call 1 should fail (independent counter)")
+	}
+	// agent-a has recovered.
+	if err := inj.Before(context.Background(), a); err != nil {
+		t.Fatalf("agent-a call 2 should recover, got %v", err)
+	}
+}
+
+// TestChaosFailFirstWithRateLimit pins the gate ordering (rate-limit BEFORE
+// error injection) and the fail_first counter-consumption semantics: a request
+// rejected by the rate gate does NOT consume the fail_first budget.
+func TestChaosFailFirstWithRateLimit(t *testing.T) {
+	inj, _, nowPtr := newChaosInjectorForTest(1)
+	agent := agentWithChaos(&types.ChaosConfig{
+		Errors:    &types.ChaosErrorConfig{FailFirst: 2, StatusCode: http.StatusServiceUnavailable},
+		RateLimit: &types.ChaosRateLimitConfig{Requests: 1, WindowMs: 1000},
+	})
+	ctx := context.Background()
+
+	// req1: passes the rate gate (count 1), consumes 1 fail_first -> 503.
+	if ce := AsChaosError(inj.Before(ctx, agent)); ce == nil || ce.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("req1: want 503, got %v", ce)
+	}
+	// req2 (same window): rate gate trips -> 429; fail_first NOT consumed.
+	if ce := AsChaosError(inj.Before(ctx, agent)); ce == nil || ce.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("req2: want 429, got %v", ce)
+	}
+	// Advance past the window: req3 passes the rate gate, consumes the 2nd
+	// fail_first -> 503 (proving req2 did not advance the counter).
+	*nowPtr = nowPtr.Add(2 * time.Second)
+	if ce := AsChaosError(inj.Before(ctx, agent)); ce == nil || ce.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("req3: want 503, got %v", ce)
+	}
+	// Advance again: the 2-failure budget is exhausted -> recovery.
+	*nowPtr = nowPtr.Add(2 * time.Second)
+	if err := inj.Before(ctx, agent); err != nil {
+		t.Fatalf("req4: want recovery, got %v", err)
+	}
+}
+
+// TestChaosFailFirstTimeout confirms the stateful trigger composes with the
+// timeout fault: the first call blocks then 504s, the next recovers.
+func TestChaosFailFirstTimeout(t *testing.T) {
+	inj, sleeps, _ := newChaosInjectorForTest(1)
+	agent := agentWithChaos(&types.ChaosConfig{
+		Errors: &types.ChaosErrorConfig{FailFirst: 1, Timeout: true, TimeoutMs: 1000},
+	})
+	ce := AsChaosError(inj.Before(context.Background(), agent))
+	if ce == nil || !ce.Timeout {
+		t.Fatalf("expected timeout ChaosError, got %v", ce)
+	}
+	if len(*sleeps) != 1 || (*sleeps)[0] != time.Second {
+		t.Errorf("expected one 1s sleep, got %v", *sleeps)
+	}
+	if err := inj.Before(context.Background(), agent); err != nil {
+		t.Errorf("expected recovery after first failure, got %v", err)
+	}
+}

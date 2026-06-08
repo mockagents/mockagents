@@ -110,6 +110,14 @@ func StreamAnthropic(
 
 	msgID := fmt.Sprintf("msg_%s", generateAnthropicID())
 
+	pacer := newPacer(streamCfg)
+
+	// Time-to-first-token: sleep before the FIRST emitted frame so a client's
+	// first-byte timing reflects the configured TTFT (FB-05).
+	if err := pacer.firstByte(ctx); err != nil {
+		return err
+	}
+
 	// 1. message_start
 	if err := sse.WriteEvent("message_start", anthropicMessageStart{
 		Type: "message_start",
@@ -124,10 +132,13 @@ func StreamAnthropic(
 
 	blockIndex := 0
 
-	pacer := newPacer(streamCfg)
-
 	// 2. Text content blocks (with stream-timing physics + fault injection).
-	if resp.Content != "" {
+	// A refusal-only response (FB-03) streams its refusal text as the text block.
+	textBody := resp.Content
+	if textBody == "" {
+		textBody = resp.Refusal
+	}
+	if textBody != "" {
 		// content_block_start
 		if err := sse.WriteEvent("content_block_start", anthropicContentBlockStart{
 			Type: "content_block_start", Index: blockIndex,
@@ -136,12 +147,8 @@ func StreamAnthropic(
 			return err
 		}
 
-		if err := pacer.firstByte(ctx); err != nil {
-			return err
-		}
-
 		// content_block_delta(s)
-		chunks := NewChunker(chunkSize).Chunk(resp.Content)
+		chunks := NewChunker(chunkSize).Chunk(textBody)
 		for i, chunk := range chunks {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -225,8 +232,15 @@ func StreamAnthropic(
 
 	// 4. message_delta
 	stopReason := "end_turn"
+	if resp.Refusal != "" {
+		stopReason = "refusal"
+	}
 	if len(resp.ToolCalls) > 0 {
 		stopReason = "tool_use"
+	}
+	// Scenario-forced stop reason (e.g. "length" -> max_tokens) wins (FB-03).
+	if resp.FinishReason != "" {
+		stopReason = AnthropicStopReason(resp.FinishReason)
 	}
 	outputTokens := len(resp.Content)/4 + 1
 	if err := sse.WriteEvent("message_delta", anthropicMessageDelta{

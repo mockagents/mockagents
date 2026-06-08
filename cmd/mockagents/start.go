@@ -102,7 +102,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 			)
 			continue
 		}
-		registry.Register(result.Definition)
+		registry.RegisterWithSource(result.Definition, result.FilePath)
 		validCount++
 		logger.Info("loaded agent",
 			"name", result.Definition.Metadata.Name,

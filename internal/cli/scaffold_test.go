@@ -51,10 +51,11 @@ func TestScaffold_FileContents(t *testing.T) {
 	assert.Contains(t, agent, "protocol: openai-chat-completions")
 	assert.Contains(t, agent, "scenarios:")
 
-	// Check test file.
+	// Check test file (real TestSuite format: spec.cases).
 	testFile := readFile(t, filepath.Join(projectDir, "tests", "example-test.yaml"))
 	assert.Contains(t, testFile, "kind: TestSuite")
-	assert.Contains(t, testFile, "tests:")
+	assert.Contains(t, testFile, "cases:")
+	assert.Contains(t, testFile, "target:")
 
 	// Check README.
 	readme := readFile(t, filepath.Join(projectDir, "README.md"))
@@ -63,9 +64,10 @@ func TestScaffold_FileContents(t *testing.T) {
 	assert.Contains(t, readme, "mockagents validate")
 }
 
-func TestScaffold_NonEmptyDirectory_NoForce(t *testing.T) {
+func TestScaffold_NonEmptyDirectory_UnrelatedFilesOK(t *testing.T) {
 	dir := t.TempDir()
-	// Create a file in the directory so it's not empty.
+	// An UNRELATED file (e.g. a .git artifact in an existing repo) must not
+	// block init — only the scaffold's own managed files are protected.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "existing.txt"), []byte("data"), 0644))
 
 	_, err := Scaffold(ScaffoldOptions{
@@ -73,8 +75,9 @@ func TestScaffold_NonEmptyDirectory_NoForce(t *testing.T) {
 		TargetDir:   dir,
 		Force:       false,
 	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not empty")
+	require.NoError(t, err)
+	assertFileExists(t, filepath.Join(dir, ".mockagents.yaml"))
+	assertFileExists(t, filepath.Join(dir, "existing.txt")) // untouched
 }
 
 func TestScaffold_NonEmptyDirectory_WithForce(t *testing.T) {
@@ -91,11 +94,11 @@ func TestScaffold_NonEmptyDirectory_WithForce(t *testing.T) {
 	assertFileExists(t, filepath.Join(dir, "existing.txt")) // Should not be deleted.
 }
 
-func TestScaffold_ExistingFileNoForce(t *testing.T) {
+func TestScaffold_ExistingManagedFileNoForce(t *testing.T) {
 	dir := t.TempDir()
 	projectDir := filepath.Join(dir, "proj")
 	require.NoError(t, os.MkdirAll(projectDir, 0755))
-	// Create the config file so it conflicts — directory has contents.
+	// A managed file (.mockagents.yaml) already exists — refuse without --force.
 	require.NoError(t, os.WriteFile(filepath.Join(projectDir, ".mockagents.yaml"), []byte("old"), 0644))
 
 	_, err := Scaffold(ScaffoldOptions{
@@ -104,7 +107,7 @@ func TestScaffold_ExistingFileNoForce(t *testing.T) {
 		Force:       false,
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not empty")
+	assert.Contains(t, err.Error(), "already exists")
 }
 
 func TestScaffold_ExistingFileWithForce(t *testing.T) {

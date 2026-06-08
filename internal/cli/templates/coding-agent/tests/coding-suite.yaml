@@ -1,0 +1,54 @@
+# Exercises the coding agent's multi-step tool use.
+#   mockagents test --agents-dir agents tests/coding-suite.yaml
+apiVersion: mockagents/v1
+kind: TestSuite
+metadata:
+  name: coding-suite
+  description: Asserts the read-then-edit multi-step tool trajectory.
+
+spec:
+  target:
+    agent: coding-agent
+  cases:
+    - name: explain-reads-file
+      steps:
+        - role: user
+          content: "explain src/app.py"
+      assertions:
+        - type: tool_call
+          tool: read_file
+          arguments: { path: "src/app.py" }
+        - type: scenario_matched
+          value: explain-code
+
+    - name: fix-reads-then-edits
+      steps:
+        - role: user
+          content: "fix the bug in src/app.py"
+      assertions:
+        - type: tool_call
+          tool: read_file
+        - type: tool_call
+          tool: edit_file
+        - type: scenario_matched
+          value: fix-bug
+
+    # Regression: a combined "fix + explain" request must still edit, not just
+    # read (the specific fix-bug rule is ordered before the broad explain rule).
+    - name: fix-and-explain-still-edits
+      steps:
+        - role: user
+          content: "fix the bug and explain the change"
+      assertions:
+        - type: tool_call
+          tool: edit_file
+        - type: scenario_matched
+          value: fix-bug
+
+    - name: default-help
+      steps:
+        - role: user
+          content: "what can you do?"
+      assertions:
+        - type: scenario_matched
+          value: default

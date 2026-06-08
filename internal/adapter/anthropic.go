@@ -137,10 +137,10 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 			meta.Error = err.Error()
 		}
 		if ce := engine.AsChaosError(err); ce != nil {
-			if ce.RetryAfter > 0 {
-				w.Header().Set("Retry-After", fmt.Sprintf("%d", int(ce.RetryAfter.Seconds())))
+			if ra, ok := chaosRetryAfter(ce); ok {
+				w.Header().Set("Retry-After", ra)
 			}
-			writeAnthropicError(w, ce.StatusCode, chaosErrorType(ce), ce.Message)
+			writeAnthropicError(w, ce.StatusCode, anthropicChaosErrorType(ce.StatusCode), ce.Message)
 			return
 		}
 		status := http.StatusInternalServerError
@@ -162,6 +162,8 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 		meta.ScenarioName = resp.ScenarioName
 		meta.ToolCallsCount = len(resp.ToolCalls)
 	}
+
+	setHallucinationHeader(w, resp)
 
 	// Stream or JSON.
 	if req.Stream {
@@ -260,8 +262,17 @@ func formatAnthropicResponse(resp *engine.Response, inputTokens, outputTokens in
 		})
 	}
 
+	// Refusal is surfaced as a text block (Anthropic has no structured refusal
+	// field) with a refusal stop reason (FB-03).
+	if resp.Refusal != "" {
+		content = append(content, AnthropicContent{Type: "text", Text: resp.Refusal})
+	}
+
 	// Tool use blocks.
 	stopReason := "end_turn"
+	if resp.Refusal != "" {
+		stopReason = "refusal"
+	}
 	if len(resp.ToolCalls) > 0 {
 		stopReason = "tool_use"
 		for i, tc := range resp.ToolCalls {
@@ -276,6 +287,11 @@ func formatAnthropicResponse(resp *engine.Response, inputTokens, outputTokens in
 				Input: tc.Arguments,
 			})
 		}
+	}
+
+	// Scenario-forced stop reason (e.g. "length" -> max_tokens) wins (FB-03).
+	if resp.FinishReason != "" {
+		stopReason = streaming.AnthropicStopReason(resp.FinishReason)
 	}
 
 	return &AnthropicResponse{

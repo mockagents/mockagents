@@ -1,5 +1,5 @@
 import { YamlEditor } from "./YamlEditor";
-import { validateYAML, ValidateResult } from "@/lib/api";
+import { validateYAML, saveAgentYAML, ValidateResult, SaveResult } from "@/lib/api";
 
 export default function EditorPage() {
   // The "validate" action runs server-side so we get the auth
@@ -24,5 +24,17 @@ export default function EditorPage() {
     }
   }
 
-  return <YamlEditor validateAction={validateAction} />;
+  // The "save" action persists the document via the FB-04 write API
+  // (create-or-replace), also server-side so the cookie auth is forwarded.
+  async function saveAction(yaml: string): Promise<SaveResult> {
+    "use server";
+    try {
+      return await saveAgentYAML(yaml);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "unknown error";
+      return { ok: false, status: "error", message: `Server unreachable: ${message}` };
+    }
+  }
+
+  return <YamlEditor validateAction={validateAction} saveAction={saveAction} />;
 }

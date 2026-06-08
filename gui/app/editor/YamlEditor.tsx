@@ -15,7 +15,7 @@
 import { useMemo, useState, useTransition } from "react";
 
 import { Icon } from "@/lib/icons";
-import type { ValidateResult, ValidationError } from "@/lib/api";
+import type { ValidateResult, ValidationError, SaveResult } from "@/lib/api";
 
 const SAMPLE_AGENT = `apiVersion: mockagents/v1
 kind: Agent
@@ -52,30 +52,48 @@ spec:
 
 interface YamlEditorProps {
   validateAction: (yaml: string) => Promise<ValidateResult>;
+  saveAction: (yaml: string) => Promise<SaveResult>;
 }
 
-export function YamlEditor({ validateAction }: YamlEditorProps) {
+export function YamlEditor({ validateAction, saveAction }: YamlEditorProps) {
   const [yaml, setYaml] = useState(SAMPLE_AGENT);
   const [result, setResult] = useState<ValidateResult | null>(null);
+  const [saved, setSaved] = useState<SaveResult | null>(null);
   const [isPending, startTransition] = useTransition();
 
   const lines = useMemo(() => yaml.split("\n"), [yaml]);
   // Lines the server flagged — rendered red in the gutter for at-a-glance triage.
+  // Includes errors from a failed save (422) so a rejected save highlights too.
   const errLines = useMemo(
-    () => new Set((result?.errors ?? []).map((e) => e.line).filter(Boolean)),
-    [result],
+    () =>
+      new Set(
+        [...(result?.errors ?? []), ...(saved?.errors ?? [])]
+          .map((e) => e.line)
+          .filter(Boolean),
+      ),
+    [result, saved],
   );
 
   function onValidate() {
     startTransition(async () => {
       const r = await validateAction(yaml);
       setResult(r);
+      setSaved(null);
+    });
+  }
+
+  function onSave() {
+    startTransition(async () => {
+      const r = await saveAction(yaml);
+      setSaved(r);
+      setResult(null);
     });
   }
 
   function load(sample: string) {
     setYaml(sample);
     setResult(null);
+    setSaved(null);
   }
 
   return (
@@ -84,10 +102,11 @@ export function YamlEditor({ validateAction }: YamlEditorProps) {
         <div className="grow">
           <h1 className="page-title">Config editor</h1>
           <p className="page-lede">
-            Validation playground. Posts to{" "}
-            <code>POST /api/v1/config/validate</code> — the same validator{" "}
-            <code>mockagents validate</code> runs. It does not persist: edit the
-            file on disk and rely on hot reload (or restart) to apply changes.
+            Validate against <code>POST /api/v1/config/validate</code> (the same
+            validator <code>mockagents validate</code> runs), then <strong>Save</strong>{" "}
+            to create or replace the agent on the running server via{" "}
+            <code>PUT /api/v1/agents/&#123;name&#125;</code> — live immediately, no
+            restart. (Save needs the editor role in multi-tenant mode.)
           </p>
         </div>
         <div className="row gap-2">
@@ -109,12 +128,21 @@ export function YamlEditor({ validateAction }: YamlEditorProps) {
           </button>
           <button
             type="button"
-            className="btn btn-default btn-sm"
+            className="btn btn-outline btn-sm"
             onClick={onValidate}
             disabled={isPending}
           >
             <Icon name="check-circle" size={15} />
-            {isPending ? "Validating…" : "Validate"}
+            {isPending ? "Working…" : "Validate"}
+          </button>
+          <button
+            type="button"
+            className="btn btn-default btn-sm"
+            onClick={onSave}
+            disabled={isPending}
+          >
+            <Icon name="save" size={15} />
+            {isPending ? "Working…" : "Save"}
           </button>
         </div>
       </div>
@@ -154,7 +182,10 @@ export function YamlEditor({ validateAction }: YamlEditorProps) {
               value={yaml}
               onChange={(e) => {
                 setYaml(e.target.value);
+                // Clear BOTH feedback panels on edit so a stale "Created/Updated"
+                // (or 422 highlight) can't outlive the document it described.
                 setResult(null);
+                setSaved(null);
               }}
               aria-label="Agent YAML"
             />
@@ -162,10 +193,45 @@ export function YamlEditor({ validateAction }: YamlEditorProps) {
         </div>
 
         <div className="card card-pad">
-          <div className="eyebrow mb-3">validation result</div>
-          <ResultPanel result={result} pending={isPending} />
+          <div className="eyebrow mb-3">{saved ? "save result" : "validation result"}</div>
+          {saved ? (
+            <SavePanel saved={saved} />
+          ) : (
+            <ResultPanel result={result} pending={isPending} />
+          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function SavePanel({ saved }: { saved: SaveResult }) {
+  if (saved.ok) {
+    return (
+      <div className="banner banner-ok">
+        <div className="row gap-2">
+          <Icon name="check-circle" size={16} />
+          <div>
+            <strong>{saved.status === "created" ? "Created." : "Updated."}</strong>{" "}
+            {saved.message} It is serving immediately — no restart.
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="col gap-3">
+      <div className="banner banner-error">
+        <div className="row gap-2">
+          <Icon name="x-circle" size={16} />
+          <div>
+            <strong>Save failed.</strong> {saved.message}
+          </div>
+        </div>
+      </div>
+      {(saved.errors ?? []).map((err, i) => (
+        <ErrorCard key={i} err={err} />
+      ))}
     </div>
   );
 }

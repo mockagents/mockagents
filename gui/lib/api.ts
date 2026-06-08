@@ -577,3 +577,126 @@ export async function validateYAML(yaml: string): Promise<ValidateResult> {
   }
   return (await res.json()) as ValidateResult;
 }
+
+// --- Agent write API (FB-06: persist edits from the console via the FB-04 API) ---
+
+export interface SaveResult {
+  ok: boolean;
+  /** "created" | "updated" on success; "error" otherwise. */
+  status: "created" | "updated" | "error";
+  message: string;
+  /** Populated on a 422 so the editor can render the same per-field errors. */
+  errors?: ValidationError[];
+}
+
+/** extractAgentName finds the agent's kebab-case metadata.name to build the PUT
+ * path. It is a focused YAML-aware scanner (not a full parser, to avoid a
+ * browser-bundle dependency): it handles flow-style `metadata: {name: x}`, only
+ * matches `name:` at the metadata block's own child-indent level, and skips the
+ * (deeper-indented) content of block scalars like `description: |` so a `name:`
+ * line inside a description/prose value isn't mistaken for the key. Returns null
+ * when no name is found. */
+function extractAgentName(yaml: string): string | null {
+  // Flow-style mapping: metadata: { name: x, ... }
+  const flow = yaml.match(/^metadata:\s*\{([^}]*)\}/m);
+  if (flow) {
+    const m = flow[1].match(/(?:^|,)\s*name:\s*["']?([a-z0-9][a-z0-9-]*)/);
+    if (m) return m[1];
+  }
+
+  const lines = yaml.split("\n");
+  let inMeta = false;
+  let baseIndent = -1; // indent of metadata's direct children
+  let skipDeeperThan = -1; // inside a block scalar: skip lines more indented than this
+  for (const raw of lines) {
+    const line = raw.replace(/\t/g, "  ");
+    if (/^metadata:\s*(#.*)?$/.test(line)) {
+      inMeta = true;
+      continue;
+    }
+    if (!inMeta) continue;
+    if (line.trim() === "") continue;
+    if (/^\S/.test(line)) break; // a dedented (top-level) key ends the metadata block
+    const indent = line.length - line.trimStart().length;
+    if (skipDeeperThan >= 0) {
+      if (indent > skipDeeperThan) continue; // block-scalar content line
+      skipDeeperThan = -1; // back to a metadata sibling
+    }
+    if (baseIndent < 0) baseIndent = indent;
+    if (indent !== baseIndent) continue; // only direct children of metadata
+    if (/:\s*[|>][+-]?\d*\s*(#.*)?$/.test(line)) {
+      skipDeeperThan = indent; // a block scalar value begins; skip its content
+      continue;
+    }
+    const m = line.match(/^\s+name:\s*["']?([a-z0-9][a-z0-9-]*)["']?\s*(#.*)?$/);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+/** saveAgentYAML create-or-replaces an agent from a YAML document via the FB-04
+ * write API (PUT /api/v1/agents/{name}). Runs server-side so the auth cookie is
+ * threaded upstream. A 422 returns the validator errors for inline display. */
+export async function saveAgentYAML(yaml: string): Promise<SaveResult> {
+  const name = extractAgentName(yaml);
+  if (!name) {
+    return {
+      ok: false,
+      status: "error",
+      message: "Could not find a valid metadata.name in the document.",
+    };
+  }
+  const key = await getAuthKey();
+  const headers: Record<string, string> = { "Content-Type": "application/x-yaml" };
+  if (key) headers.Authorization = `Bearer ${key}`;
+  const res = await fetch(`${baseUrl()}/api/v1/agents/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    cache: "no-store",
+    headers,
+    body: yaml,
+  });
+  if (res.status === 200 || res.status === 201) {
+    const created = res.status === 201;
+    return {
+      ok: true,
+      status: created ? "created" : "updated",
+      message: `Agent "${name}" ${created ? "created" : "updated"}.`,
+    };
+  }
+  const text = await res.text();
+  if (res.status === 422) {
+    try {
+      const body = JSON.parse(text) as { errors?: ValidationError[] };
+      return { ok: false, status: "error", message: "Validation failed.", errors: body.errors ?? [] };
+    } catch {
+      /* fall through to the generic message */
+    }
+  }
+  return {
+    ok: false,
+    status: "error",
+    message: `Server rejected the save (HTTP ${res.status}): ${text.slice(0, 200)}`,
+  };
+}
+
+/** deleteAgentByName removes an agent via DELETE /api/v1/agents/{name}. The
+ * upstream error detail is logged server-side; the browser sees a clean,
+ * status-aware message (no raw upstream body — GUI-07). */
+export async function deleteAgentByName(name: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    await fetchJSON<void>(`/api/v1/agents/${encodeURIComponent(name)}`, { method: "DELETE" });
+    return { ok: true, message: `Agent "${name}" deleted.` };
+  } catch (err) {
+    console.error("deleteAgentByName: upstream request failed:", err);
+    if (err instanceof APIError) {
+      const reason =
+        err.status === 403
+          ? "you don't have permission (editor role required)"
+          : err.status === 404
+            ? "it no longer exists"
+            : `the server returned HTTP ${err.status}`;
+      return { ok: false, message: `Could not delete "${name}": ${reason}.` };
+    }
+    return { ok: false, message: `Could not delete "${name}": the server is unreachable.` };
+  }
+}

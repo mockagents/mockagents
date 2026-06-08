@@ -27,6 +27,15 @@ type Response struct {
 	ScenarioName string               `json:"scenario_name"`
 	SystemPrompt string               `json:"system_prompt,omitempty"`
 	Metadata     map[string]any       `json:"metadata,omitempty"`
+	// FinishReason / Refusal carry the scenario's semantic-error overrides
+	// (FB-03): a forced finish/stop reason (e.g. "length") and an assistant
+	// refusal. Adapters render them per provider.
+	FinishReason string `json:"finish_reason,omitempty"`
+	Refusal      string `json:"refusal,omitempty"`
+	// Hallucination, when set, marks this response as a planted hallucination
+	// fixture (FB-02). Adapters advertise it via the X-Mockagents-Hallucination
+	// response header.
+	Hallucination *types.HallucinationSpec `json:"hallucination,omitempty"`
 }
 
 // TemplateContext provides data available to Go templates in response content.
@@ -101,9 +110,12 @@ func (g *ResponseGenerator) Generate(agent *types.AgentDefinition, scenario *typ
 		Model:        agent.Spec.Model,
 		Content:      content,
 		ToolCalls:    scenario.Response.ToolCalls,
-		ScenarioName: scenario.Name,
-		SystemPrompt: agent.Spec.SystemPrompt,
-		Metadata:     scenario.Response.Metadata,
+		ScenarioName:  scenario.Name,
+		SystemPrompt:  agent.Spec.SystemPrompt,
+		Metadata:      scenario.Response.Metadata,
+		Hallucination: scenario.Response.Hallucination,
+		FinishReason:  scenario.Response.FinishReason,
+		Refusal:       scenario.Response.Refusal,
 	}, nil
 }
 

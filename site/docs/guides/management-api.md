@@ -76,6 +76,68 @@ curl -X POST http://localhost:8080/api/v1/agents/customer-support/reload
 { "status": "reloaded", "agent": "customer-support" }
 ```
 
+## Create Agent
+
+```
+POST /api/v1/agents
+```
+
+Registers a **new** agent at runtime — it serves immediately, no restart. The
+body is a YAML or JSON `Agent` definition (same schema as a file on disk); it is
+run through the same validator the CLI uses. When the server was started with an
+agents directory, the definition is also persisted there so it survives a
+restart. Returns `409` if an agent of that name already exists (use `PUT` to
+replace). Requires the **editor** role in multi-tenant mode.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/agents \
+  -H 'Content-Type: application/yaml' --data-binary @my-agent.yaml
+```
+
+```json
+{ "status": "created", "agent": "my-agent", "persisted": true, "file": "my-agent.yaml" }
+```
+
+## Create or Replace Agent
+
+```
+PUT /api/v1/agents/{name}
+```
+
+Create-or-replace (upsert). The path `{name}` is authoritative — the body's
+`metadata.name` must match. Replacing an existing agent is live immediately. The
+response `status` is `created` (HTTP 201) for a new agent or `updated` (HTTP
+200) for a replacement. Editor role.
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/agents/my-agent \
+  -H 'Content-Type: application/json' --data-binary @my-agent.json
+```
+
+## Delete Agent
+
+```
+DELETE /api/v1/agents/{name}
+```
+
+Removes the agent from the engine (it stops serving immediately) and deletes its
+persisted file when one exists. Returns `404` if no such agent is visible to the
+caller. Editor role.
+
+```bash
+curl -X DELETE http://localhost:8080/api/v1/agents/my-agent
+```
+
+```json
+{ "status": "deleted", "agent": "my-agent", "file": "my-agent.yaml" }
+```
+
+> Validation, ownership, and audit: a write that fails validation returns `422`
+> with the same error report as `POST /api/v1/config/validate` and changes
+> nothing. In multi-tenant mode the new agent is owned by the caller's tenant (a
+> body-supplied `tenant_id` is ignored), and every create/replace/delete is
+> recorded in the audit log (`agent.created` / `agent.updated` / `agent.deleted`).
+
 ## List Interaction Logs
 
 ```
@@ -150,7 +212,8 @@ GET /api/v1/audit?kind=<kind>&actor=<name>&since=<rfc3339>&limit=100   # admin
 
 Append-only control-plane events. `kind` is one of `tenant.created`,
 `tenant.deleted`, `api_key.created`, `api_key.deleted`, `api_key.role_changed`,
-`api_key.rotated`, `agent.reloaded`, `auth.denied`.
+`api_key.rotated`, `agent.reloaded`, `agent.created`, `agent.updated`,
+`agent.deleted`, `pipeline.saved`, `auth.denied`.
 
 ## Pipelines
 

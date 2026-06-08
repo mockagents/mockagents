@@ -1,0 +1,59 @@
+# Cookbook: semantic agent error modes (FB-03).
+#
+# Where real agent code actually breaks — not an HTTP error, but a *well-formed*
+# response your app then mishandles. Each scenario plants one deterministic
+# failure so you can test your guardrails/parsers/fallbacks:
+#   - "truncate" -> finish_reason: length (a cut-off answer)
+#   - "refuse"   -> an assistant refusal (OpenAI message.refusal)
+#   - "bad args" -> a tool call whose arguments are MALFORMED JSON
+#
+#   mockagents start --agents-dir examples
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: semantic-errors
+  description: Truncation, refusal, and malformed tool-call arguments for guardrail testing.
+  tags: [cookbook, errors, tools]
+
+spec:
+  protocol: openai-chat-completions
+  model: semantic-errors-model   # distinct model so requests route here unambiguously
+  tools:
+    - name: get_weather
+      description: Look up the weather for a city.
+      parameters:
+        type: object
+        properties:
+          city: { type: string }
+        required: [city]
+      responses:
+        - default: true
+          response: { value: { tempC: 14 } }
+
+  behavior:
+    scenarios:
+      # 1. Truncated response — test handling of an incomplete answer.
+      - name: truncated
+        match: { content_contains: "truncate" }
+        response:
+          content: "Here is the first half of the answer but it got cut o"
+          finish_reason: length
+
+      # 2. Refusal — test your refusal-handling path.
+      - name: refusal
+        match: { content_contains: "refuse" }
+        response:
+          refusal: "I'm sorry, but I can't help with that request."
+
+      # 3. Malformed tool-call arguments — test your tool-arg JSON parser.
+      - name: bad-tool-args
+        match: { content_contains: "bad args" }
+        response:
+          content: "Looking that up."
+          tool_calls:
+            - name: get_weather
+              raw_arguments: '{"city":'   # deliberately invalid JSON
+
+      - name: default
+        response:
+          content: "Ask me to 'truncate', 'refuse', or send 'bad args'."

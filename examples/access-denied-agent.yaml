@@ -1,0 +1,27 @@
+# Cookbook: a named chaos PRESET (FB-03).
+#
+# `chaos.preset` is a one-line shorthand for a common failure mode — here every
+# request returns a provider-accurate 403 (permission_error / PERMISSION_DENIED),
+# so you can test how your app handles an access-denied response without writing
+# out the full chaos block. Other presets: server-down, rate-limited,
+# unauthorized, flaky, slow.
+#
+#   mockagents start --agents-dir examples
+#   # every call to this agent -> 403 access denied
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: access-denied
+  description: Every request returns 403 — the `access-denied` chaos preset.
+  tags: [cookbook, chaos, preset]
+
+spec:
+  protocol: openai-chat-completions
+  model: access-denied-model   # distinct model so requests route here unambiguously
+  behavior:
+    chaos:
+      preset: access-denied
+    scenarios:
+      - name: default
+        response:
+          content: "You should never see this — the preset denies every request."

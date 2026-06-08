@@ -1,0 +1,60 @@
+# Cookbook: deterministic hallucination fixtures (FB-02).
+#
+# Each scenario returns a planted BAD output so you can assert your app's
+# guardrails / validators / fallback logic catch it — failures that are hard to
+# elicit reliably from a real model. The mock advertises each as a fixture via
+# the `X-Mockagents-Hallucination: <type>` response header, so a negative test
+# can detect it while knowing the ground truth.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: hallucinator
+  description: A mock agent that returns deterministic hallucinated outputs for guardrail testing.
+  tags: [cookbook, hallucination]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-4o-halluc   # distinct model so requests route here unambiguously
+  behavior:
+    scenarios:
+      # 1. Confidently wrong fact.
+      - name: fabricated-fact
+        match: { content_contains: "capital of australia" }
+        response:
+          content: "The capital of Australia is Sydney."
+          hallucination:
+            type: fabricated_fact
+            ground_truth: "Canberra"
+            note: "Sydney is the largest city, not the capital."
+
+      # 2. Made-up citation / source.
+      - name: fabricated-citation
+        match: { content_contains: "cite" }
+        response:
+          content: "According to Smith et al. (2021), 'mock servers cut CI cost by 92%' [J. Fake Studies, vol. 7, p. 142]."
+          hallucination:
+            type: fabricated_citation
+            note: "The paper, journal, and statistic are invented."
+
+      # 3. RAG answer NOT grounded in the supplied context.
+      - name: ungrounded-rag
+        match: { content_contains: "refund policy" }
+        response:
+          content: "Your refund policy allows returns within 90 days for a full refund, including shipping."
+          hallucination:
+            type: ungrounded
+            ground_truth: "The provided context states 30 days, store credit only, excluding shipping."
+            note: "Answer contradicts / is not supported by the retrieved context."
+
+      # 4. Fabricated tool result presented as fact.
+      - name: bad-tool-result
+        match: { content_contains: "order status" }
+        response:
+          content: "Your order ORD-1 shipped on 2099-01-01 via QuantumExpress, tracking ZZ-000."
+          hallucination:
+            type: bad_tool_result
+            note: "Carrier, date, and tracking are fabricated; no such tool result exists."
+
+      - name: default
+        response:
+          content: "Ask me about the 'capital of australia', a 'cite', the 'refund policy', or an 'order status'."

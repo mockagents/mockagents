@@ -32,9 +32,12 @@ type ChunkChoice struct {
 
 // ChunkDelta represents incremental content changes.
 type ChunkDelta struct {
-	Role      string              `json:"role,omitempty"`
-	Content   string              `json:"content,omitempty"`
-	ToolCalls []ChunkToolCall     `json:"tool_calls,omitempty"`
+	Role      string          `json:"role,omitempty"`
+	Content   string          `json:"content,omitempty"`
+	ToolCalls []ChunkToolCall `json:"tool_calls,omitempty"`
+	// Refusal mirrors the non-streaming message.refusal field (FB-03), emitted
+	// when a scenario plants a refusal instead of content.
+	Refusal *string `json:"refusal,omitempty"`
 }
 
 // ChunkToolCall represents a tool call in a streaming chunk.
@@ -77,6 +80,15 @@ func StreamOpenAI(
 	id := fmt.Sprintf("chatcmpl-%s", generateStreamID())
 	created := time.Now().Unix()
 
+	pacer := newPacer(streamCfg)
+
+	// Time-to-first-token: sleep before the FIRST emitted frame so a client's
+	// first-byte timing reflects the configured TTFT (FB-05). Real providers
+	// likewise deliver the role/message-start frame only after TTFT.
+	if err := pacer.firstByte(ctx); err != nil {
+		return err
+	}
+
 	// 1. Role chunk.
 	if err := sse.WriteData(ChatCompletionChunk{
 		ID: id, Object: "chat.completion.chunk", Created: created, Model: resp.Model,
@@ -85,13 +97,8 @@ func StreamOpenAI(
 		return err
 	}
 
-	pacer := newPacer(streamCfg)
-
 	// 2. Content chunks (with stream-timing physics + fault injection).
 	if resp.Content != "" {
-		if err := pacer.firstByte(ctx); err != nil {
-			return err
-		}
 		chunks := NewChunker(chunkSize).Chunk(resp.Content)
 		for i, chunk := range chunks {
 			if err := ctx.Err(); err != nil {
@@ -113,6 +120,19 @@ func StreamOpenAI(
 		}
 	}
 
+	// Refusal (FB-03): a refusal-only response carries no content, so emit the
+	// refusal via the structured delta field, mirroring non-streaming. (TTFT was
+	// already applied before the role frame above.)
+	if resp.Refusal != "" {
+		refusal := resp.Refusal
+		if err := sse.WriteData(ChatCompletionChunk{
+			ID: id, Object: "chat.completion.chunk", Created: created, Model: resp.Model,
+			Choices: []ChunkChoice{{Index: 0, Delta: ChunkDelta{Refusal: &refusal}}},
+		}); err != nil {
+			return err
+		}
+	}
+
 	// Mid-stream malformed fault: emit a bad frame and stop, skipping the tool
 	// calls, the finish frame, and [DONE].
 	if pacer.malformed {
@@ -130,6 +150,11 @@ func StreamOpenAI(
 	finishReason := "stop"
 	if len(resp.ToolCalls) > 0 {
 		finishReason = "tool_calls"
+	}
+	// Scenario-forced finish reason (e.g. "length") wins (FB-03), matching the
+	// non-streaming builder.
+	if resp.FinishReason != "" {
+		finishReason = resp.FinishReason
 	}
 	if err := sse.WriteData(ChatCompletionChunk{
 		ID: id, Object: "chat.completion.chunk", Created: created, Model: resp.Model,
@@ -161,9 +186,13 @@ func streamOpenAIToolCalls(
 			callID = resp.ToolResults[i].ID
 		}
 
-		// Marshal arguments.
-		argsJSON, _ := json.Marshal(tc.Arguments)
-		argsStr := string(argsJSON)
+		// Marshal arguments — unless the scenario planted raw (possibly
+		// malformed) argument bytes to emit verbatim (FB-03).
+		argsStr := tc.RawArguments
+		if argsStr == "" {
+			argsJSON, _ := json.Marshal(tc.Arguments)
+			argsStr = string(argsJSON)
+		}
 
 		if err := sleepCtx(ctx, time.Duration(delayMs)*time.Millisecond); err != nil {
 			return err

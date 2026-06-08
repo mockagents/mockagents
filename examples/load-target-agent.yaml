@@ -1,0 +1,39 @@
+# Cookbook: a realistic LOAD-TEST TARGET (FB-05).
+#
+# Point k6 or Locust at THIS agent (instead of a real provider) to load-test
+# your LLM app for free — no tokens, no rate limits, no bill. The mock supplies
+# realistic, long-tailed streaming latency so your client sees production-like
+# TTFT and inter-token timing instead of an instant response.
+#
+# See examples/loadtest/ for ready-to-run k6 + Locust scripts and
+# site/docs/guides/load-testing.md for the walkthrough.
+#
+#   mockagents start --agents-dir examples
+#   k6 run examples/loadtest/k6.js
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: load-target
+  description: A streaming agent with realistic latency percentiles — a free LLM load-test target.
+  tags: [cookbook, load, streaming]
+
+spec:
+  protocol: openai-chat-completions
+  model: load-target-model   # distinct model so requests route here unambiguously
+  behavior:
+    scenarios:
+      - name: default
+        response:
+          content: >
+            This is a representative streamed completion long enough to exercise
+            inter-token pacing across many chunks so a load test sees realistic
+            time-to-first-token and inter-token latency rather than an instant
+            response from the mock server.
+    streaming:
+      enabled: true
+      chunk_size: 1
+      # Distribution-based timing (lognormal fit to the percentiles below):
+      ttft_p50_ms: 350      # median time-to-first-token
+      ttft_p95_ms: 1400     # p95 TTFT (long tail)
+      itl_p50_ms: 20        # median inter-token latency
+      itl_p95_ms: 60        # p95 inter-token latency

@@ -1,0 +1,31 @@
+# Cookbook: a "flaky then healthy" agent for testing retry / backoff (FB-03).
+#
+# The first 2 requests deterministically fail with 503 (overloaded); the 3rd and
+# every request after recover. Point your client at this agent to assert that
+# your retry/backoff/circuit-breaker actually recovers — a scenario that's
+# impossible to reproduce reliably against a live provider.
+#
+#   mockagents start --agents-dir examples
+#   # 1st call -> 503, 2nd call -> 503, 3rd call -> 200 "recovered"
+#
+# The counter is per-agent and resets when the server restarts.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: flaky-startup
+  description: Fails its first 2 requests with 503, then recovers — a retry/backoff fixture.
+  tags: [cookbook, chaos, retry]
+
+spec:
+  protocol: openai-chat-completions
+  model: flaky-startup-model   # distinct model so requests route here unambiguously
+  behavior:
+    chaos:
+      errors:
+        fail_first: 2          # first 2 requests fail, then recover
+        status_code: 503       # overloaded_error, the #1 production retry case
+        message: "the server is temporarily overloaded, please retry"
+    scenarios:
+      - name: default
+        response:
+          content: "Recovered — the upstream is healthy now."

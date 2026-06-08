@@ -259,6 +259,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	s.mountManaged(mux, "GET /api/v1/agents", http.HandlerFunc(s.handlers.ListAgents))
 	s.mountManaged(mux, "GET /api/v1/agents/{name}", http.HandlerFunc(s.handlers.GetAgent))
 	s.mountManaged(mux, "POST /api/v1/agents/{name}/reload", http.HandlerFunc(s.handlers.ReloadAgent))
+	// Agent write API (FB-04): create / replace / delete at runtime.
+	s.mountManaged(mux, "POST /api/v1/agents", http.HandlerFunc(s.handlers.CreateAgent))
+	s.mountManaged(mux, "PUT /api/v1/agents/{name}", http.HandlerFunc(s.handlers.PutAgent))
+	s.mountManaged(mux, "DELETE /api/v1/agents/{name}", http.HandlerFunc(s.handlers.DeleteAgent))
 
 	// Tenancy CRUD — only mounted when multi-tenant mode is enabled.
 	// Per-route floors (admin for tenant/key writes, editor for key list,

@@ -1,11 +1,28 @@
 import Link from "next/link";
+import { revalidatePath } from "next/cache";
 
-import { AgentSummary, APIError, getBaseUrl, getHealth, listAgents } from "@/lib/api";
+import {
+  AgentSummary,
+  APIError,
+  deleteAgentByName,
+  getBaseUrl,
+  getHealth,
+  listAgents,
+} from "@/lib/api";
 import { Icon } from "@/lib/icons";
 import { AgentCatalog } from "./AgentCatalog";
 import { Stat } from "./Stat";
 
 export default async function HomePage() {
+  // Server action: delete an agent via the FB-04 write API, then revalidate so
+  // the catalog re-renders without the removed agent.
+  async function deleteAction(name: string): Promise<{ ok: boolean; message: string }> {
+    "use server";
+    const r = await deleteAgentByName(name);
+    if (r.ok) revalidatePath("/");
+    return r;
+  }
+
   let agents: AgentSummary[] = [];
   let error: string | null = null;
   try {
@@ -67,7 +84,7 @@ export default async function HomePage() {
               No agents loaded. Add a YAML file to the agents directory and reload.
             </div>
           ) : (
-            <AgentCatalog agents={agents} />
+            <AgentCatalog agents={agents} deleteAction={deleteAction} />
           )}
         </>
       )}

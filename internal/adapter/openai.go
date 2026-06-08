@@ -85,6 +85,9 @@ type OpenAIResponseMessage struct {
 	Role      string           `json:"role"`
 	Content   *string          `json:"content"`
 	ToolCalls []OpenAIToolCall `json:"tool_calls,omitempty"`
+	// Refusal is OpenAI's structured refusal field (FB-03 semantic errors);
+	// omitted unless the scenario plants one.
+	Refusal *string `json:"refusal,omitempty"`
 }
 
 // OpenAIUsage represents token usage in the response.
@@ -160,10 +163,11 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 			meta.Error = err.Error()
 		}
 		if ce := engine.AsChaosError(err); ce != nil {
-			if ce.RetryAfter > 0 {
-				w.Header().Set("Retry-After", fmt.Sprintf("%d", int(ce.RetryAfter.Seconds())))
+			if ra, ok := chaosRetryAfter(ce); ok {
+				w.Header().Set("Retry-After", ra)
 			}
-			writeError(w, ce.StatusCode, chaosErrorType(ce), ce.Message)
+			errType, code := openAIChaosError(ce.StatusCode)
+			writeErrorCode(w, ce.StatusCode, errType, code, ce.Message)
 			return
 		}
 		status := http.StatusInternalServerError
@@ -185,6 +189,8 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 		meta.ScenarioName = resp.ScenarioName
 		meta.ToolCallsCount = len(resp.ToolCalls)
 	}
+
+	setHallucinationHeader(w, resp)
 
 	// Stream or JSON response.
 	if req.Stream {
@@ -282,21 +288,37 @@ func formatOpenAIResponse(resp *engine.Response, promptTokens, completionTokens 
 			if i < len(resp.ToolResults) {
 				callID = resp.ToolResults[i].ID
 			}
-			argsJSON, _ := json.Marshal(tc.Arguments)
+			// raw_arguments lets a scenario plant malformed/invalid JSON args
+			// verbatim (FB-03); otherwise marshal the structured Arguments.
+			args := tc.RawArguments
+			if args == "" {
+				argsJSON, _ := json.Marshal(tc.Arguments)
+				args = string(argsJSON)
+			}
 			toolCalls = append(toolCalls, OpenAIToolCall{
 				ID:   callID,
 				Type: "function",
 				Function: OpenAIFunctionCall{
 					Name:      tc.Name,
-					Arguments: string(argsJSON),
+					Arguments: args,
 				},
 			})
 		}
 	}
 
+	// Scenario-forced finish reason (e.g. "length" for a truncated response)
+	// wins over the inferred one (FB-03).
+	if resp.FinishReason != "" {
+		finishReason = resp.FinishReason
+	}
+
 	var content *string
 	if resp.Content != "" {
 		content = &resp.Content
+	}
+	var refusal *string
+	if resp.Refusal != "" {
+		refusal = &resp.Refusal
 	}
 
 	return &ChatCompletionResponse{
@@ -311,6 +333,7 @@ func formatOpenAIResponse(resp *engine.Response, promptTokens, completionTokens 
 					Role:      "assistant",
 					Content:   content,
 					ToolCalls: toolCalls,
+					Refusal:   refusal,
 				},
 				FinishReason: finishReason,
 			},
@@ -365,8 +388,16 @@ type openAIError struct {
 type openAIErrorBody struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
+	// Code is OpenAI's stable machine-readable error code (e.g. invalid_api_key,
+	// rate_limit_exceeded). Omitted when empty so non-chaos errors are unchanged.
+	Code string `json:"code,omitempty"`
 }
 
 func writeError(w http.ResponseWriter, status int, errType, message string) {
-	writeJSON(w, status, openAIError{Error: openAIErrorBody{Type: errType, Message: message}})
+	writeErrorCode(w, status, errType, "", message)
+}
+
+// writeErrorCode writes an OpenAI error envelope including the `code` field.
+func writeErrorCode(w http.ResponseWriter, status int, errType, code, message string) {
+	writeJSON(w, status, openAIError{Error: openAIErrorBody{Type: errType, Message: message, Code: code}})
 }

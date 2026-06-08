@@ -33,8 +33,11 @@ See [YAML Schema Guide](../guides/yaml-schema.md) for practical usage examples.
 | `spec.behavior.scenarios[].match.content_contains` | string | | Case-insensitive substring match |
 | `spec.behavior.scenarios[].match.content_regex` | string | | Regex pattern match |
 | `spec.behavior.scenarios[].match.turn_number` | int | | Conversation turn (1-indexed) |
-| `spec.behavior.scenarios[].response.content` | string | | Response text (supports Go templates) |
+| `spec.behavior.scenarios[].response.content` | string | | Response text (supports Go templates). One of content / refusal / tool_calls is required |
 | `spec.behavior.scenarios[].response.tool_calls` | array | | Tool calls to simulate |
+| `spec.behavior.scenarios[].response.tool_calls[].raw_arguments` | string | | Emit verbatim as the tool-call arguments (e.g. malformed JSON). OpenAI only (FB-03) |
+| `spec.behavior.scenarios[].response.finish_reason` | string | | Override the finish/stop reason (e.g. `length` for truncation) (FB-03) |
+| `spec.behavior.scenarios[].response.refusal` | string | | Emit an assistant refusal instead of content (FB-03) |
 | `spec.behavior.scenarios[].response.metadata` | object | | Custom key-value metadata |
 | `spec.behavior.streaming.enabled` | boolean | `false` | Enable SSE streaming |
 | `spec.behavior.streaming.chunk_size` | int | `4` | Tokens per SSE chunk |

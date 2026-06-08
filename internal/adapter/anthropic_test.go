@@ -245,3 +245,21 @@ func TestAnthropic_ToolResultMessage(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
+
+// FB-02: the Anthropic adapter also advertises hallucination fixtures.
+func TestAnthropic_HallucinationHeader(t *testing.T) {
+	h := &AnthropicHandler{Engine: testEngine(halluAgent("anthropic-messages", "claude-3"))}
+	post := func(text string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(AnthropicRequest{Model: "claude-3", MaxTokens: 16,
+			Messages: []AnthropicMessage{{Role: "user", Content: text}}})
+		req := httptest.NewRequest("POST", "/v1/messages", bytes.NewReader(body))
+		req.Header.Set("X-Api-Key", "k")
+		rec := httptest.NewRecorder()
+		h.HandleMessages(rec, req)
+		return rec
+	}
+	hit := post("tell me a fact")
+	assert.Equal(t, http.StatusOK, hit.Code)
+	assert.Equal(t, "fabricated_fact", hit.Header().Get("X-Mockagents-Hallucination"))
+	assert.Empty(t, post("hi").Header().Get("X-Mockagents-Hallucination"))
+}

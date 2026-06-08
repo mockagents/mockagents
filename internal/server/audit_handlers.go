@@ -21,7 +21,7 @@ type AuditHandlers struct {
 //
 // Query parameters:
 //
-//	kind    one of tenant.created|tenant.deleted|api_key.created|api_key.deleted|api_key.role_changed|api_key.rotated|agent.reloaded|auth.denied
+//	kind    one of tenant.created|tenant.deleted|api_key.created|api_key.deleted|api_key.role_changed|api_key.rotated|agent.reloaded|agent.created|agent.updated|agent.deleted|pipeline.saved|auth.denied
 //	actor   exact-match actor name (e.g. "bootstrap-admin")
 //	since   RFC3339 timestamp; returns events with timestamp >= since
 //	limit   max rows to return (default 100, max 1000)
@@ -45,7 +45,7 @@ func (h *AuditHandlers) ListEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	if q.Kind != "" && !q.Kind.Valid() {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "unknown kind; try one of: tenant.created, tenant.deleted, api_key.created, api_key.deleted, api_key.role_changed, api_key.rotated, agent.reloaded, auth.denied",
+			"error": "unknown kind; try one of: tenant.created, tenant.deleted, api_key.created, api_key.deleted, api_key.role_changed, api_key.rotated, agent.reloaded, agent.created, agent.updated, agent.deleted, pipeline.saved, auth.denied",
 		})
 		return
 	}

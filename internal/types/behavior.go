@@ -26,12 +26,49 @@ type ScenarioResponse struct {
 	Content   string         `yaml:"content" json:"content"`
 	ToolCalls []ToolCallSpec `yaml:"tool_calls,omitempty" json:"tool_calls,omitempty"`
 	Metadata  map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	// FinishReason overrides the emitted finish/stop reason (FB-03 semantic
+	// errors). Given as an OpenAI-style value ("length", "content_filter",
+	// "stop", "tool_calls") and mapped per provider (Anthropic stop_reason,
+	// Gemini finishReason). Use "length" to simulate a truncated response.
+	FinishReason string `yaml:"finish_reason,omitempty" json:"finish_reason,omitempty"`
+	// Refusal, when set, emits an assistant refusal instead of normal content —
+	// OpenAI's structured `message.refusal` field (and the refusal text as
+	// content on Anthropic/Gemini), to exercise refusal-handling code paths.
+	Refusal       string             `yaml:"refusal,omitempty" json:"refusal,omitempty"`
+	Hallucination *HallucinationSpec `yaml:"hallucination,omitempty" json:"hallucination,omitempty"`
 }
+
+// HallucinationSpec marks a scenario response as a deterministic *hallucination
+// fixture* (FB-02): a planted bad output for testing the client's guardrails,
+// validators, and fallback logic against failures that are hard to elicit from
+// a real model. The mock advertises it via the `X-Mockagents-Hallucination`
+// response header so negative tests can assert their guardrail flagged it while
+// knowing the ground truth. The Content itself is the (deliberately wrong)
+// output; this struct only labels/categorizes it.
+type HallucinationSpec struct {
+	// Type categorizes the planted fault. One of: fabricated_fact,
+	// fabricated_citation, ungrounded, bad_tool_result, other (default: other).
+	Type string `yaml:"type,omitempty" json:"type,omitempty"`
+	// GroundTruth is the correct answer — documentation for the test author and
+	// a reference an assertion can compare against.
+	GroundTruth string `yaml:"ground_truth,omitempty" json:"ground_truth,omitempty"`
+	// Note explains why the output is wrong.
+	Note string `yaml:"note,omitempty" json:"note,omitempty"`
+}
+
+// HallucinationTypes are the recognized HallucinationSpec.Type values.
+var HallucinationTypes = []string{"fabricated_fact", "fabricated_citation", "ungrounded", "bad_tool_result", "other"}
 
 // ToolCallSpec describes a tool call the agent should simulate in a response.
 type ToolCallSpec struct {
 	Name      string         `yaml:"name" json:"name"`
 	Arguments map[string]any `yaml:"arguments,omitempty" json:"arguments,omitempty"`
+	// RawArguments, when set, is emitted VERBATIM as the tool call's argument
+	// string instead of marshaling Arguments — so a scenario can plant malformed
+	// or schema-violating JSON (e.g. `{"city":`) to exercise a client's tool-call
+	// argument parser (FB-03 semantic errors). OpenAI only (the provider whose
+	// tool-call arguments are a JSON string).
+	RawArguments string `yaml:"raw_arguments,omitempty" json:"raw_arguments,omitempty"`
 }
 
 // StreamingConfig controls SSE streaming behavior, including stream-timing
@@ -53,6 +90,21 @@ type StreamingConfig struct {
 	// inter-chunk delay, modeling network variance.
 	JitterMs int `yaml:"jitter_ms,omitempty" json:"jitter_ms,omitempty"`
 
+	// --- Distribution-based stream timing (FB-05: load-target physics) ---
+	//
+	// Real LLM latency is long-tailed, so a single fixed value under-models a
+	// load test. When the p50 AND p95 of either metric are both > 0, the pacer
+	// samples that delay from a lognormal fit to the two percentiles (overriding
+	// the fixed TTFTMs / TokensPerSec). Values are milliseconds.
+
+	// TTFTP50Ms / TTFTP95Ms are the median and 95th-percentile time-to-first-token.
+	TTFTP50Ms int `yaml:"ttft_p50_ms,omitempty" json:"ttft_p50_ms,omitempty"`
+	TTFTP95Ms int `yaml:"ttft_p95_ms,omitempty" json:"ttft_p95_ms,omitempty"`
+	// ITLP50Ms / ITLP95Ms are the median and 95th-percentile inter-token latency
+	// (per token); the per-chunk delay is the sample times the chunk's token count.
+	ITLP50Ms int `yaml:"itl_p50_ms,omitempty" json:"itl_p50_ms,omitempty"`
+	ITLP95Ms int `yaml:"itl_p95_ms,omitempty" json:"itl_p95_ms,omitempty"`
+
 	// --- Mid-stream fault injection ---
 
 	// TruncateAfterChunks, when > 0, ends the stream after this many content
@@ -69,11 +121,20 @@ type StreamingConfig struct {
 // served by the owning agent. All fields are optional; a nil ChaosConfig
 // disables chaos entirely for the agent.
 type ChaosConfig struct {
-	Enabled   bool                  `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Enabled bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// Preset is a named shorthand (e.g. "server-down", "rate-limited",
+	// "access-denied") that expands at load time into the concrete sub-sections
+	// below. Explicitly-set sub-sections take precedence over the preset's
+	// values. See ChaosPresets for the recognized names.
+	Preset    string                `yaml:"preset,omitempty" json:"preset,omitempty"`
 	Latency   *ChaosLatencyConfig   `yaml:"latency,omitempty" json:"latency,omitempty"`
 	Errors    *ChaosErrorConfig     `yaml:"errors,omitempty" json:"errors,omitempty"`
 	RateLimit *ChaosRateLimitConfig `yaml:"rate_limit,omitempty" json:"rate_limit,omitempty"`
 }
+
+// ChaosPresets are the recognized ChaosConfig.Preset names. Kept here so the
+// validator, the schema, and docs share one source of truth.
+var ChaosPresets = []string{"server-down", "rate-limited", "access-denied", "unauthorized", "flaky", "slow"}
 
 // ChaosLatencyConfig controls how artificial delay is added to responses.
 // Supported distributions: "fixed" (uses MinMs), "uniform" (MinMs..MaxMs),
@@ -101,6 +162,14 @@ type ChaosErrorConfig struct {
 	Timeout     bool    `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 	TimeoutMs   int     `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
 	Message     string  `yaml:"message,omitempty" json:"message,omitempty"`
+	// FailFirst, when > 0, deterministically injects the error on the first N
+	// requests to the agent and then RECOVERS (every request after the Nth
+	// succeeds) — a stateful "flaky then healthy" trigger for exercising client
+	// retry/backoff/circuit-breaker logic, which is otherwise impossible to test
+	// reproducibly against a live API. It takes precedence over Rate: the first N
+	// requests always fail regardless of the probability, then injection stops.
+	// The count is per agent and resets when the server restarts.
+	FailFirst int `yaml:"fail_first,omitempty" json:"fail_first,omitempty"`
 }
 
 // ChaosRateLimitConfig caps the number of requests per window. When exceeded,

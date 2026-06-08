@@ -573,3 +573,41 @@ func findError(errs *ValidationErrorList, field string) *ValidationError {
 	}
 	return nil
 }
+
+func TestValidate_InvalidHallucinationType(t *testing.T) {
+	errs := loadAndValidate(t, `
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: h
+spec:
+  protocol: openai-chat-completions
+  behavior:
+    scenarios:
+      - name: bad
+        response:
+          content: "wrong"
+          hallucination:
+            type: typoed
+`)
+	assertHasError(t, errs, "spec.behavior.scenarios.0.response.hallucination.type", "invalid hallucination type")
+}
+
+func TestValidate_ValidHallucinationType(t *testing.T) {
+	errs := loadAndValidate(t, `
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: h
+spec:
+  protocol: openai-chat-completions
+  behavior:
+    scenarios:
+      - name: bad
+        response:
+          content: "wrong"
+          hallucination:
+            type: ungrounded
+`)
+	assert.Nil(t, errs)
+}

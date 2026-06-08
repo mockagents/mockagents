@@ -30,6 +30,12 @@ var managementRouteFloors = map[string]tenancy.Role{
 	"GET /api/v1/agents":                roleOpen,
 	"GET /api/v1/agents/{name}":         roleOpen,
 	"POST /api/v1/agents/{name}/reload": tenancy.RoleEditor, // F-HD-001: write → editor
+	// Agent write API (FB-04): create/replace/delete at runtime → editor floor,
+	// matching reload and pipeline edit. Tenant ownership is enforced in the
+	// handlers (the new agent is stamped with the caller's tenant).
+	"POST /api/v1/agents":          tenancy.RoleEditor,
+	"PUT /api/v1/agents/{name}":    tenancy.RoleEditor,
+	"DELETE /api/v1/agents/{name}": tenancy.RoleEditor,
 
 	// Tenant collection management is a cross-tenant operation, so it
 	// requires the platform role — a per-tenant admin must not list, create,

@@ -1,0 +1,43 @@
+# Retrieval-augmented (RAG) pack (FB-01, ties to FB-02).
+#
+# Two deterministic answers: one GROUNDED in the retrieved context, and one
+# UNGROUNDED — a planted hallucination fixture (advertised via the
+# X-Mockagents-Hallucination header) so you can test that your grounding
+# guardrail rejects the unsupported answer.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: rag-agent
+  description: RAG agent with a grounded answer and an ungrounded hallucination fixture.
+  tags: [pack, rag, hallucination]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-4o
+  systemPrompt: |
+    You answer strictly from the retrieved context. If unsure, say you don't know.
+
+  behavior:
+    scenarios:
+      - name: grounded-answer
+        match: { content_contains: "what is mockagents" }
+        response:
+          content: "MockAgents is a mock server for the OpenAI and Anthropic APIs. [source: docs/overview]"
+
+      - name: ungrounded-answer
+        match: { content_contains: "refund" }
+        response:
+          content: "You can return anything within 90 days for a full cash refund, shipping included."
+          hallucination:
+            type: ungrounded
+            ground_truth: "The retrieved context states 30 days, store credit only, excluding shipping."
+            note: "Answer is not supported by the retrieved context."
+
+      - name: default
+        response:
+          content: "I don't have enough context to answer that. Try asking 'what is mockagents'."
+
+    streaming:
+      enabled: true
+      chunk_size: 8
+      chunk_delay_ms: 25

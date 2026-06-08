@@ -244,8 +244,14 @@ func TestHTTPBidirectionalSampleRoundTrip(t *testing.T) {
 	done := make(chan *http.Response, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		body := strings.NewReader(`{"prompt":"ping"}`)
-		r, err := http.Post(base+"/mcp/sample", "application/json", body)
+		// Use a generous server-side timeout (not the 5s default): under a
+		// loaded full-suite run the read-frame -> reply-POST sequence below can
+		// take several seconds, and a fired SendRequest timeout would delete the
+		// pending waiter and make the reply POST 404 (the historical flake).
+		postReq, _ := http.NewRequest(http.MethodPost, base+"/mcp/sample", strings.NewReader(`{"prompt":"ping"}`))
+		postReq.Header.Set("Content-Type", "application/json")
+		postReq.Header.Set("X-MCP-Timeout-Ms", "60000")
+		r, err := http.DefaultClient.Do(postReq)
 		if err != nil {
 			errCh <- err
 			return

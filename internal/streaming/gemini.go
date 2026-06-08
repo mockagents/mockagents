@@ -75,12 +75,20 @@ func StreamGemini(
 
 	pacer := newPacer(streamCfg)
 
+	// Time-to-first-token: sleep before the FIRST emitted frame so a client's
+	// first-byte timing reflects the configured TTFT (FB-05).
+	if err := pacer.firstByte(ctx); err != nil {
+		return err
+	}
+
 	// 1. Content chunks (with stream-timing physics + fault injection).
-	if resp.Content != "" {
-		if err := pacer.firstByte(ctx); err != nil {
-			return err
-		}
-		chunks := NewChunker(chunkSize).Chunk(resp.Content)
+	// A refusal-only response (FB-03) streams its refusal text here.
+	textBody := resp.Content
+	if textBody == "" {
+		textBody = resp.Refusal
+	}
+	if textBody != "" {
+		chunks := NewChunker(chunkSize).Chunk(textBody)
 		for i, chunk := range chunks {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -130,10 +138,16 @@ func StreamGemini(
 	// 3. Final event with finishReason + usage (no [DONE] sentinel in Gemini).
 	// The real streamGenerateContent emits usageMetadata, in practice on the
 	// terminal chunk.
+	finishReason := "STOP"
+	if resp.FinishReason != "" {
+		finishReason = GeminiFinishReason(resp.FinishReason) // FB-03: e.g. "length" -> MAX_TOKENS
+	} else if resp.Refusal != "" {
+		finishReason = "SAFETY"
+	}
 	return sse.WriteData(geminiStreamResponse{
 		Candidates: []geminiStreamCandidate{{
 			Content:      geminiStreamContent{Role: "model", Parts: []geminiStreamPart{}},
-			FinishReason: "STOP",
+			FinishReason: finishReason,
 			Index:        0,
 		}},
 		UsageMetadata: &geminiStreamUsage{

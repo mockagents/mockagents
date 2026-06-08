@@ -1,0 +1,39 @@
+# Exercises grounded vs ungrounded RAG answers.
+#   mockagents test --agents-dir agents tests/rag-suite.yaml
+apiVersion: mockagents/v1
+kind: TestSuite
+metadata:
+  name: rag-suite
+  description: Asserts the grounded answer and the planted ungrounded fixture.
+
+spec:
+  target:
+    agent: rag-agent
+  cases:
+    - name: grounded-cites-source
+      steps:
+        - role: user
+          content: "what is mockagents?"
+      assertions:
+        - type: response_contains
+          value: "mock server"
+        - type: scenario_matched
+          value: grounded-answer
+
+    - name: ungrounded-is-planted
+      steps:
+        - role: user
+          content: "what is the refund policy?"
+      assertions:
+        - type: response_contains
+          value: "90 days"
+        - type: scenario_matched
+          value: ungrounded-answer
+
+    - name: no-context-fallback
+      steps:
+        - role: user
+          content: "tell me about quantum physics"
+      assertions:
+        - type: scenario_matched
+          value: default

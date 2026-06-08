@@ -242,8 +242,14 @@ code, pre { font-family: var(--sr-font-mono); }
 
 /* agent catalog cards (design layout) */
 .catalog { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
-.agent-card { border: 1px solid var(--sr-border); border-radius: var(--sr-radius-lg); background: var(--sr-bg); box-shadow: var(--sr-shadow-sm); padding: 16px; cursor: pointer; transition: border-color .14s, box-shadow .14s; display: flex; flex-direction: column; min-height: 168px; color: inherit; }
+.agent-card { position: relative; border: 1px solid var(--sr-border); border-radius: var(--sr-radius-lg); background: var(--sr-bg); box-shadow: var(--sr-shadow-sm); padding: 16px; cursor: pointer; transition: border-color .14s, box-shadow .14s; display: flex; flex-direction: column; min-height: 168px; color: inherit; }
 .agent-card:hover { border-color: hsl(215 20% 80%); box-shadow: var(--sr-shadow-md); text-decoration: none; }
+/* Stretched link: the title <a> covers the whole card so it stays fully clickable,
+   while the Delete <button> is a sibling (not nested in the anchor — valid HTML)
+   that sits above the overlay via z-index. */
+.agent-card .ac-link { color: inherit; text-decoration: none; }
+.agent-card .ac-link::after { content: ""; position: absolute; inset: 0; z-index: 0; border-radius: var(--sr-radius-lg); }
+.agent-card .ac-del { position: relative; z-index: 1; flex-shrink: 0; }
 .agent-card .ac-top { display: flex; align-items: flex-start; gap: 11px; }
 .agent-icon { width: 36px; height: 36px; border-radius: var(--sr-radius); flex: 0 0 36px; display: grid; place-items: center; background: var(--sr-bg-muted); color: var(--sr-fg); border: 1px solid var(--sr-border); }
 .agent-icon svg { width: 18px; height: 18px; stroke-width: 1.75; }

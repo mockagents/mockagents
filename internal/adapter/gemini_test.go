@@ -208,3 +208,17 @@ func TestGemini_BadPath(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.True(t, strings.Contains(rec.Body.String(), "INVALID_ARGUMENT"))
 }
+
+// FB-02: the Gemini adapter also advertises hallucination fixtures.
+func TestGemini_HallucinationHeader(t *testing.T) {
+	h := &GeminiHandler{Engine: testEngine(halluAgent("google-gemini", "gemini-1.5-pro"))}
+	hit := doGeminiRequest(t, h, "gemini-1.5-pro", "generateContent", GeminiRequest{
+		Contents: []GeminiContent{{Role: "user", Parts: []GeminiPart{{Text: "tell me a fact"}}}},
+	})
+	assert.Equal(t, http.StatusOK, hit.Code)
+	assert.Equal(t, "fabricated_fact", hit.Header().Get("X-Mockagents-Hallucination"))
+	clean := doGeminiRequest(t, h, "gemini-1.5-pro", "generateContent", GeminiRequest{
+		Contents: []GeminiContent{{Role: "user", Parts: []GeminiPart{{Text: "hi"}}}},
+	})
+	assert.Empty(t, clean.Header().Get("X-Mockagents-Hallucination"))
+}

@@ -43,6 +43,9 @@ self-escalate. Roles gate the control-plane routes:
 | `GET  /api/v1/health`                     | open     |
 | `GET  /api/v1/agents`, `/api/v1/logs`     | viewer   |
 | `POST /api/v1/agents/{name}/reload`       | editor   |
+| `POST /api/v1/agents` (create)            | editor   |
+| `PUT  /api/v1/agents/{name}` (replace)    | editor   |
+| `DELETE /api/v1/agents/{name}`            | editor   |
 | `POST /api/v1/keys/me/rotate`             | viewer   |
 | `POST /api/v1/keys/me/burn`               | viewer   |
 | `GET  /api/v1/tenants/{id}/keys`          | editor   |
@@ -99,7 +102,8 @@ curl -H "Authorization: Bearer $ADMIN_KEY" \
 
 Supported `kind` values: `tenant.created`, `tenant.deleted`, `api_key.created`,
 `api_key.deleted`, `api_key.role_changed`, `api_key.rotated`, `agent.reloaded`,
-`pipeline.saved`, `auth.denied`. Additional filters: `actor` (exact-match actor name), `since`
+`agent.created`, `agent.updated`, `agent.deleted`, `pipeline.saved`,
+`auth.denied`. Additional filters: `actor` (exact-match actor name), `since`
 (RFC3339 lower bound), `limit` (default 100, max 1000).
 
 Each event records the authenticated principal's tenant id, key id, role, and

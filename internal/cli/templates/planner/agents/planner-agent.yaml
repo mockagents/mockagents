@@ -1,0 +1,67 @@
+# Multi-step planner pack (FB-01).
+#
+# A planner that decomposes a goal into an ordered plan and drives it one step
+# at a time via a run_step tool. Deterministic, so you can assert the planning
+# loop and per-step tool calls in CI.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: planner-agent
+  description: Multi-step planner that decomposes a goal and runs one step at a time.
+  tags: [pack, planner, tools]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-4o
+  systemPrompt: |
+    You are a planning assistant. Break the user's goal into ordered steps and
+    execute them one at a time using the run_step tool.
+
+  tools:
+    - name: run_step
+      description: Execute a single planned step.
+      parameters:
+        type: object
+        properties:
+          step: { type: string }
+        required: [step]
+      responses:
+        - default: true
+          response: { value: { ok: true } }
+
+  behavior:
+    # Scenarios are evaluated top-to-bottom; the FIRST whose match substring is
+    # present wins. next-step is listed before make-plan so an advance request
+    # like "what's the next step in the plan?" (which contains both "next" and
+    # "plan") advances the plan instead of restarting it.
+    scenarios:
+      - name: next-step
+        match: { content_contains: "next" }
+        response:
+          content: "Running the next step in the plan."
+          tool_calls:
+            - name: run_step
+              arguments: { step: "Draft the design" }
+
+      - name: make-plan
+        match: { content_contains: "plan" }
+        response:
+          content: |
+            Here is the plan:
+            1. Gather requirements
+            2. Draft the design
+            3. Implement
+            4. Test
+            Starting step 1 now.
+          tool_calls:
+            - name: run_step
+              arguments: { step: "Gather requirements" }
+
+      - name: default
+        response:
+          content: "Give me a goal and say 'plan' to get an ordered, step-by-step plan."
+
+    streaming:
+      enabled: true
+      chunk_size: 6
+      chunk_delay_ms: 30

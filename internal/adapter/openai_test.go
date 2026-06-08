@@ -248,3 +248,67 @@ func TestOpenAI_NullContent(t *testing.T) {
 	// Content should still be set since the scenario provides both content and tool calls.
 	assert.NotNil(t, resp.Choices[0].Message.Content)
 }
+
+// halluAgent builds an agent with hallucination fixtures, shared by the FB-02
+// header tests across the OpenAI/Anthropic/Gemini adapters.
+func halluAgent(protocol, model string) *types.AgentDefinition {
+	return &types.AgentDefinition{
+		Metadata: types.Metadata{Name: "hallucinator"},
+		Spec: types.AgentSpec{
+			Protocol: protocol,
+			Model:    model,
+			Behavior: types.BehaviorConfig{
+				Scenarios: []types.Scenario{
+					{
+						Name:  "bad-fact",
+						Match: &types.MatchRule{ContentContains: "fact"},
+						Response: types.ScenarioResponse{
+							Content:       "The capital of Australia is Sydney.",
+							Hallucination: &types.HallucinationSpec{Type: "fabricated_fact", GroundTruth: "Canberra"},
+						},
+					},
+					{
+						Name:  "untyped",
+						Match: &types.MatchRule{ContentContains: "untyped"},
+						Response: types.ScenarioResponse{
+							Content:       "wrong but unlabeled",
+							Hallucination: &types.HallucinationSpec{}, // no Type -> header "true"
+						},
+					},
+					{Name: "default", Response: types.ScenarioResponse{Content: "ok"}},
+				},
+				Streaming: &types.StreamingConfig{Enabled: true, ChunkSize: 2},
+			},
+		},
+	}
+}
+
+// FB-02: a hallucination-fixture scenario advertises itself via the
+// X-Mockagents-Hallucination header (JSON + SSE); a normal scenario does not.
+func TestOpenAI_HallucinationHeader(t *testing.T) {
+	h := &OpenAIHandler{Engine: testEngine(halluAgent("openai-chat-completions", "gpt-4o"))}
+
+	typed := doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model: "gpt-4o", Messages: []OpenAIMessage{{Role: "user", Content: "tell me a fact"}},
+	})
+	assert.Equal(t, http.StatusOK, typed.Code)
+	assert.Equal(t, "fabricated_fact", typed.Header().Get("X-Mockagents-Hallucination"))
+
+	// Empty type defaults to "true".
+	untyped := doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model: "gpt-4o", Messages: []OpenAIMessage{{Role: "user", Content: "untyped please"}},
+	})
+	assert.Equal(t, "true", untyped.Header().Get("X-Mockagents-Hallucination"))
+
+	// The header must survive on the streaming/SSE path (set before the body).
+	stream := doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model: "gpt-4o", Stream: true, Messages: []OpenAIMessage{{Role: "user", Content: "a fact"}},
+	})
+	assert.Equal(t, "fabricated_fact", stream.Header().Get("X-Mockagents-Hallucination"))
+	assert.Contains(t, stream.Body.String(), "[DONE]", "expected an SSE stream")
+
+	clean := doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model: "gpt-4o", Messages: []OpenAIMessage{{Role: "user", Content: "hello"}},
+	})
+	assert.Empty(t, clean.Header().Get("X-Mockagents-Hallucination"), "non-hallucination scenario must not set the header")
+}

@@ -35,6 +35,9 @@ nav:
     - Installation: getting-started/installation.md
   - Guides:
     - Testing AI Agents: guides/testing-agents.md
+    - Scenario Packs: guides/scenario-packs.md
+    - Hallucination Testing: guides/hallucination-testing.md
+    - Load Testing: guides/load-testing.md
     - Drop-in Recipes: guides/drop-in-recipes.md
     - Record & Replay: guides/record-replay.md
     - CLI Reference: guides/cli-reference.md

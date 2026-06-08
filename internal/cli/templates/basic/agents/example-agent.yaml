@@ -1,0 +1,64 @@
+# Example mock agent definition
+# Docs: https://github.com/mockagents/mockagents
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: example-agent
+  description: A simple example mock agent
+  tags: [example]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-4o
+  systemPrompt: |
+    You are a helpful assistant.
+
+  tools:
+    - name: get_info
+      description: Retrieve information by key
+      parameters:
+        type: object
+        properties:
+          key:
+            type: string
+            description: The lookup key
+        required: [key]
+      responses:
+        - match:
+            key: "greeting"
+          response:
+            value: "Hello, world!"
+        - match:
+            key: "info"
+          response:
+            value: "Here is the info you requested."
+        - default: true
+          response:
+            value: "No information found."
+
+  behavior:
+    scenarios:
+      - name: greeting
+        match:
+          content_contains: "hello"
+        response:
+          content: "Hello! I'm your mock assistant. How can I help?"
+
+      - name: info-request
+        match:
+          content_contains: "info"
+        response:
+          content: "Let me look that up for you."
+          tool_calls:
+            - name: get_info
+              arguments:
+                key: "info"
+
+      - name: default
+        response:
+          content: "I'm a mock agent. Try saying 'hello' or asking for 'info'."
+
+    streaming:
+      enabled: true
+      chunk_size: 4
+      chunk_delay_ms: 50

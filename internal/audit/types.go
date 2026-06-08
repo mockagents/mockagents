@@ -33,6 +33,15 @@ const (
 	// specific compromised credential.
 	EventAPIKeyRotated EventKind = "api_key.rotated"
 	EventAgentReloaded EventKind = "agent.reloaded"
+	// EventAgentCreated / EventAgentUpdated / EventAgentDeleted fire when an
+	// operator manages an agent at runtime via the write API (FB-04):
+	// POST /api/v1/agents (create), PUT /api/v1/agents/{name} (create-or-replace),
+	// DELETE /api/v1/agents/{name}. Target is the agent name; Details carries the
+	// persisted file (when AgentsDir is configured) so operators can correlate
+	// the hot-add with a working-tree file.
+	EventAgentCreated EventKind = "agent.created"
+	EventAgentUpdated EventKind = "agent.updated"
+	EventAgentDeleted EventKind = "agent.deleted"
 	// EventPipelineSaved fires when an operator writes an edited Pipeline
 	// definition back to disk via PUT /api/v1/pipelines/{name} (the GUI
 	// editor, REF-07). Target is the pipeline name; Details carries the
@@ -55,7 +64,9 @@ func (k EventKind) Valid() bool {
 	switch k {
 	case EventTenantCreated, EventTenantDeleted,
 		EventAPIKeyCreated, EventAPIKeyDeleted, EventAPIKeyRoleChanged,
-		EventAPIKeyRotated, EventAgentReloaded, EventPipelineSaved, EventAuthDenied:
+		EventAPIKeyRotated, EventAgentReloaded,
+		EventAgentCreated, EventAgentUpdated, EventAgentDeleted,
+		EventPipelineSaved, EventAuthDenied:
 		return true
 	}
 	return false

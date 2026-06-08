@@ -93,6 +93,38 @@ paths:
                   $ref: "#/components/schemas/AgentSummary"
         "500":
           $ref: "#/components/responses/InternalServerError"
+    post:
+      operationId: createAgent
+      summary: Create a new agent at runtime
+      description: >
+        Registers a new agent from a YAML or JSON `Agent` definition. The agent
+        serves immediately (no restart) and is persisted to the agents directory
+        when one is configured. The body is validated with the same rules as the
+        CLI; an invalid body returns 422 and changes nothing. In multi-tenant
+        mode the agent is owned by the caller's tenant and the route requires the
+        `editor` role. Emits an `agent.created` audit event.
+      tags: [Agents]
+      requestBody:
+        required: true
+        content:
+          application/yaml:
+            schema: { type: string }
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentDefinition" }
+      responses:
+        "201":
+          description: Agent created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentWriteResult" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: An agent of that name already exists (use PUT to replace).
+        "422":
+          description: Validation failed; the body lists the errors.
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/v1/agents/{name}:
     get:
@@ -114,6 +146,74 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AgentDefinition"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    put:
+      operationId: putAgent
+      summary: Create or replace an agent at runtime
+      description: >
+        Create-or-replace (upsert). The path name is authoritative and the
+        body's `metadata.name` must match it. The change is live immediately and
+        persisted when an agents directory is configured. Returns 201 when a new
+        agent was created or 200 when an existing one was replaced. Requires the
+        `editor` role in multi-tenant mode. Emits `agent.created` or
+        `agent.updated`.
+      tags: [Agents]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Agent name (must equal the body's metadata.name).
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/yaml:
+            schema: { type: string }
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentDefinition" }
+      responses:
+        "200":
+          description: Existing agent replaced.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentWriteResult" }
+        "201":
+          description: New agent created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentWriteResult" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          description: Validation failed; the body lists the errors.
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      operationId: deleteAgent
+      summary: Delete an agent at runtime
+      description: >
+        Removes the agent from the engine (it stops serving immediately) and
+        deletes its persisted file when one exists. Tenant-scoped: a caller can
+        only delete an agent owned by its own tenant. Requires the `editor` role
+        in multi-tenant mode. Emits an `agent.deleted` audit event.
+      tags: [Agents]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Agent name.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Agent deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentWriteResult" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -278,7 +378,7 @@ paths:
           description: Event kind filter.
           schema:
             type: string
-            enum: [tenant.created, tenant.deleted, api_key.created, api_key.deleted, api_key.role_changed, api_key.rotated, agent.reloaded, auth.denied]
+            enum: [tenant.created, tenant.deleted, api_key.created, api_key.deleted, api_key.role_changed, api_key.rotated, agent.reloaded, agent.created, agent.updated, agent.deleted, pipeline.saved, auth.denied]
         - { name: actor, in: query, schema: { type: string } }
         - { name: since, in: query, schema: { type: string, format: date-time } }
         - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
@@ -861,6 +961,23 @@ components:
           type: integer
           example: 4
 
+    AgentWriteResult:
+      type: object
+      required: [status, agent, persisted]
+      properties:
+        status:
+          type: string
+          enum: [created, updated, deleted]
+        agent:
+          type: string
+          example: my-agent
+        persisted:
+          type: boolean
+          description: Whether the definition was written to the agents directory.
+        file:
+          type: string
+          description: Base filename written/removed (omitted when not persisted).
+          example: my-agent.yaml
     AgentSummary:
       type: object
       required: [name, description, protocol, tags, tools_count, scenarios_count, status]
@@ -1594,7 +1711,7 @@ components:
       properties:
         kind:
           type: string
-          enum: [tenant.created, tenant.deleted, api_key.created, api_key.deleted, api_key.role_changed, api_key.rotated, agent.reloaded, auth.denied]
+          enum: [tenant.created, tenant.deleted, api_key.created, api_key.deleted, api_key.role_changed, api_key.rotated, agent.reloaded, agent.created, agent.updated, agent.deleted, pipeline.saved, auth.denied]
         actor: { type: string, example: bootstrap-admin }
         tenant_id: { type: string }
         key_id: { type: string }

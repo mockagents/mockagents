@@ -214,8 +214,7 @@
     },
     "ScenarioResponse": {
       "type": "object",
-      "description": "Response produced when a scenario matches.",
-      "required": ["content"],
+      "description": "Response produced when a scenario matches. Provide at least one of content, refusal, or tool_calls.",
       "additionalProperties": false,
       "properties": {
         "content": {
@@ -229,9 +228,40 @@
           },
           "description": "Tool calls to simulate in the response."
         },
+        "finish_reason": {
+          "type": "string",
+          "description": "Override the emitted finish/stop reason (OpenAI-style, e.g. 'length' for a truncated response, 'content_filter'). Mapped per provider (FB-03)."
+        },
+        "refusal": {
+          "type": "string",
+          "description": "Emit an assistant refusal instead of content — OpenAI's structured message.refusal field (refusal text as content on Anthropic/Gemini) (FB-03)."
+        },
         "metadata": {
           "type": "object",
           "description": "Arbitrary metadata to include in the response."
+        },
+        "hallucination": {
+          "$ref": "#/$defs/HallucinationSpec"
+        }
+      }
+    },
+    "HallucinationSpec": {
+      "type": "object",
+      "description": "Marks this response as a deterministic hallucination fixture (FB-02). The content is the planted bad output; the mock advertises it via the X-Mockagents-Hallucination response header.",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["fabricated_fact", "fabricated_citation", "ungrounded", "bad_tool_result", "other"],
+          "description": "Category of the planted fault."
+        },
+        "ground_truth": {
+          "type": "string",
+          "description": "The correct answer (documentation + assertion reference)."
+        },
+        "note": {
+          "type": "string",
+          "description": "Why the output is wrong."
         }
       }
     },
@@ -248,6 +278,10 @@
         "arguments": {
           "type": "object",
           "description": "Arguments to pass to the tool."
+        },
+        "raw_arguments": {
+          "type": "string",
+          "description": "Emit this string VERBATIM as the tool call's arguments (e.g. malformed JSON like '{\"city\":') instead of marshaling arguments — to test a client's tool-call argument parser. OpenAI only (FB-03)."
         }
       }
     },
@@ -285,6 +319,26 @@
           "minimum": 0,
           "description": "Deterministic +/- jitter (ms) added to each inter-chunk delay."
         },
+        "ttft_p50_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Median time-to-first-token (ms). With ttft_p95_ms, TTFT is sampled from a lognormal fit to the two percentiles, overriding ttft_ms (FB-05)."
+        },
+        "ttft_p95_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "95th-percentile time-to-first-token (ms). Pair with ttft_p50_ms."
+        },
+        "itl_p50_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Median inter-token latency (ms, per token). With itl_p95_ms, the per-chunk delay is sampled from a lognormal and scaled by token count, overriding tokens_per_sec (FB-05)."
+        },
+        "itl_p95_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "95th-percentile inter-token latency (ms, per token). Pair with itl_p50_ms."
+        },
         "truncate_after_chunks": {
           "type": "integer",
           "minimum": 0,
@@ -304,6 +358,11 @@
         "enabled": {
           "type": "boolean",
           "description": "Explicitly toggle chaos on/off. Defaults to true when any sub-section is present."
+        },
+        "preset": {
+          "type": "string",
+          "enum": ["server-down", "rate-limited", "access-denied", "unauthorized", "flaky", "slow"],
+          "description": "Named shorthand that expands into the concrete chaos sub-sections at load time. Explicit sub-sections override the preset."
         },
         "latency": {
           "type": "object",
@@ -353,6 +412,11 @@
             "message": {
               "type": "string",
               "description": "Human-readable error message surfaced to clients."
+            },
+            "fail_first": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Stateful trigger: deterministically fail the first N requests to this agent, then recover (every later request succeeds). Takes precedence over rate. For testing client retry/backoff."
             }
           }
         },

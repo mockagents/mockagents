@@ -46,6 +46,8 @@ AI SDK — anything that talks these APIs over HTTP.
 
 ```bash
 mockagents init my-project && cd my-project   # scaffold an example agent
+# ...or start from a curated pack:
+mockagents init my-bot --template customer-support   # see `--list-templates`
 mockagents start                              # prints your base URL + a ready-to-paste snippet
 ```
 
@@ -65,6 +67,9 @@ mockagents start                              # prints your base URL + a ready-t
   topologies with conditional edges.
 - **Chaos & fault injection** — inject latency, errors, and rate limits per agent
   to test the unhappy paths.
+- **Hallucination fixtures** — return a deterministic confidently-wrong / ungrounded /
+  fabricated output (advertised via a response header) to test that your guardrails
+  catch it — something a real model won't do on demand.
 - **Record & replay** — capture real upstream traffic once, replay it offline
   forever (SSE streams included).
 - **Contract testing** — extract an agent contract as JSON; diff breaking changes
@@ -143,9 +148,11 @@ with an eval tool (e.g. promptfoo) for output quality.
 ## CLI Commands
 
 ```bash
-mockagents init [name]         # Scaffold a new project
+mockagents init [name] [--template <pack>|--list-templates]   # Scaffold a new project from a starter pack
 mockagents start [--watch]     # Start the mock server (-w = fsnotify auto-reload)
 mockagents validate [path]     # Validate agent definitions
+mockagents add <file> [--replace] [--server URL] [--api-key KEY]   # Hot-add/replace an agent on a running server
+mockagents rm <name> [--server URL] [--api-key KEY]               # Delete an agent from a running server
 mockagents logs                # Query interaction logs
 mockagents test [path] [--format text|json|junit]   # Run TestSuite YAML
 mockagents record              # Proxy a real upstream LLM API and record to a cassette
@@ -379,6 +386,7 @@ of it. **See the [Multi-Tenant & Control-Plane guide](docs/guides/multi-tenant.m
 - [Quickstart Guide](site/docs/getting-started/quickstart.md)
 - [Drop-in Recipes (OpenAI/Anthropic/Gemini SDKs, Vercel AI, LangChain, LlamaIndex)](site/docs/guides/drop-in-recipes.md)
 - [Testing AI Agents (tool-calls + MCP)](site/docs/guides/testing-agents.md)
+- [Scenario Packs](site/docs/guides/scenario-packs.md) · [Hallucination Testing](site/docs/guides/hallucination-testing.md)
 - [Record & Replay](site/docs/guides/record-replay.md)
 - [CLI Reference](site/docs/guides/cli-reference.md)
 - [YAML Schema](site/docs/guides/yaml-schema.md)

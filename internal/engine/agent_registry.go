@@ -32,6 +32,13 @@ type AgentRegistry struct {
 	// into two map reads. Maintained by rebuilding only the affected model
 	// bucket on Register/Remove (rare).
 	byModelTenant map[string]map[string]*types.AgentDefinition
+	// sources records the on-disk file each registered agent was loaded from or
+	// persisted to, keyed the same way (ownerTenantID -> name -> path). It lets
+	// the write API overwrite/delete the EXACT backing file instead of guessing a
+	// name-derived path, so an agent loaded from a differently-named file isn't
+	// duplicated on update or resurrected after delete (FB04-01/02). "" means the
+	// source is unknown (e.g. an agent created in memory only).
+	sources map[string]map[string]string
 }
 
 // NewAgentRegistry creates an empty agent registry.
@@ -40,6 +47,7 @@ func NewAgentRegistry() *AgentRegistry {
 		agents:        make(map[string]map[string]*types.AgentDefinition),
 		byModel:       make(map[string]*types.AgentDefinition),
 		byModelTenant: make(map[string]map[string]*types.AgentDefinition),
+		sources:       make(map[string]map[string]string),
 	}
 }
 
@@ -88,6 +96,35 @@ func (r *AgentRegistry) Register(def *types.AgentDefinition) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.registerLocked(def)
+}
+
+// RegisterWithSource is Register plus recording the on-disk file the definition
+// was loaded from or persisted to (see the sources field). Pass "" to register
+// without a known source. The write API uses Source() to find the exact file to
+// overwrite/delete so an agent loaded from a differently-named file is neither
+// duplicated on update nor resurrected after delete (FB04-01/02).
+func (r *AgentRegistry) RegisterWithSource(def *types.AgentDefinition, sourcePath string) {
+	if def == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.registerLocked(def)
+	if sourcePath != "" {
+		if r.sources == nil {
+			r.sources = make(map[string]map[string]string)
+		}
+		owner := def.Metadata.TenantID
+		if r.sources[owner] == nil {
+			r.sources[owner] = make(map[string]string)
+		}
+		r.sources[owner][def.Metadata.Name] = sourcePath
+	}
+}
+
+// registerLocked performs the registration under the caller-held write lock.
+func (r *AgentRegistry) registerLocked(def *types.AgentDefinition) {
 	owner := def.Metadata.TenantID
 	name := def.Metadata.Name
 	bucket := r.agents[owner]
@@ -214,6 +251,12 @@ func (r *AgentRegistry) Remove(name string) error {
 		if len(byName) == 0 {
 			delete(r.agents, owner)
 		}
+		if sb := r.sources[owner]; sb != nil {
+			delete(sb, name)
+			if len(sb) == 0 {
+				delete(r.sources, owner)
+			}
+		}
 	}
 	if !found {
 		return fmt.Errorf("agent %q not found", name)
@@ -243,7 +286,37 @@ func (r *AgentRegistry) RemoveForTenant(name, tenantID string) error {
 	if len(byName) == 0 {
 		delete(r.agents, tenantID)
 	}
+	if sb := r.sources[tenantID]; sb != nil {
+		delete(sb, name)
+		if len(sb) == 0 {
+			delete(r.sources, tenantID)
+		}
+	}
 	r.rebuildModelBucket(def.Spec.Model)
+	return nil
+}
+
+// Source returns the on-disk file backing the (tenantID, name) agent, or "" if
+// the source is unknown (created in memory only, or never registered with one).
+func (r *AgentRegistry) Source(name, tenantID string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if b := r.sources[tenantID]; b != nil {
+		return b[name]
+	}
+	return ""
+}
+
+// GetOwnedForTenant returns the agent named `name` owned by tenantID ITSELF,
+// with NO global fallback — unlike GetForTenant. The write API uses it so
+// create-vs-replace, the 409 conflict check, the HTTP status, and the audit
+// kind reflect the caller's own bucket rather than a shadowed global (FB04-03).
+func (r *AgentRegistry) GetOwnedForTenant(name, tenantID string) *types.AgentDefinition {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if b := r.agents[tenantID]; b != nil {
+		return b[name]
+	}
 	return nil
 }
 

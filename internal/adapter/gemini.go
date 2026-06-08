@@ -160,8 +160,8 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 			meta.Error = err.Error()
 		}
 		if ce := engine.AsChaosError(err); ce != nil {
-			if ce.RetryAfter > 0 {
-				w.Header().Set("Retry-After", fmt.Sprintf("%d", int(ce.RetryAfter.Seconds())))
+			if ra, ok := chaosRetryAfter(ce); ok {
+				w.Header().Set("Retry-After", ra)
 			}
 			writeGeminiError(w, ce.StatusCode, geminiStatusFor(ce.StatusCode), ce.Message)
 			return
@@ -184,6 +184,8 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 		meta.ScenarioName = resp.ScenarioName
 		meta.ToolCallsCount = len(resp.ToolCalls)
 	}
+
+	setHallucinationHeader(w, resp)
 
 	// Count prompt tokens off the already-flattened inbound.Messages (the system
 	// instruction is prepended there) rather than re-extracting req.Contents
@@ -274,16 +276,28 @@ func formatGeminiResponse(resp *engine.Response, model string, promptTokens, can
 	if resp.Content != "" {
 		parts = append(parts, GeminiPart{Text: resp.Content})
 	}
+	// Refusal surfaces as a text part (Gemini has no structured refusal field).
+	if resp.Refusal != "" {
+		parts = append(parts, GeminiPart{Text: resp.Refusal})
+	}
 	for _, tc := range resp.ToolCalls {
 		parts = append(parts, GeminiPart{
 			FunctionCall: &GeminiFunctionCall{Name: tc.Name, Args: tc.Arguments},
 		})
 	}
 
+	// Scenario-forced finish reason (e.g. "length" -> MAX_TOKENS) wins (FB-03).
+	finishReason := "STOP"
+	if resp.FinishReason != "" {
+		finishReason = streaming.GeminiFinishReason(resp.FinishReason)
+	} else if resp.Refusal != "" {
+		finishReason = "SAFETY"
+	}
+
 	return &GeminiResponse{
 		Candidates: []GeminiCandidate{{
 			Content:      GeminiContent{Role: "model", Parts: parts},
-			FinishReason: "STOP",
+			FinishReason: finishReason,
 			Index:        0,
 		}},
 		UsageMetadata: GeminiUsageMetadata{
@@ -323,6 +337,10 @@ func geminiStatusFor(code int) string {
 		return "NOT_FOUND"
 	case http.StatusTooManyRequests:
 		return "RESOURCE_EXHAUSTED"
+	case http.StatusServiceUnavailable:
+		return "UNAVAILABLE"
+	case http.StatusGatewayTimeout:
+		return "DEADLINE_EXCEEDED"
 	default:
 		return "INTERNAL"
 	}

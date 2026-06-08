@@ -61,6 +61,9 @@ type ChaosInjector struct {
 	// that is bounded by the number of configured agents (a fixed, small
 	// set), not by request volume, so unbounded growth is not a concern.
 	buckets map[string]*rateBucket
+	// errorCounts holds the cumulative request count per agent for the
+	// FailFirst stateful trigger. Bounded by the agent set, same as buckets.
+	errorCounts map[string]int
 }
 
 // NewChaosInjector returns an injector that uses the real wall clock and a
@@ -68,9 +71,10 @@ type ChaosInjector struct {
 // sleep path is used; tests may set Sleep to a deterministic recorder.
 func NewChaosInjector() *ChaosInjector {
 	return &ChaosInjector{
-		Now:     time.Now,
-		RandSrc: rand.New(rand.NewSource(time.Now().UnixNano())),
-		buckets: make(map[string]*rateBucket),
+		Now:         time.Now,
+		RandSrc:     rand.New(rand.NewSource(time.Now().UnixNano())),
+		buckets:     make(map[string]*rateBucket),
+		errorCounts: make(map[string]int),
 	}
 }
 
@@ -114,8 +118,8 @@ func (c *ChaosInjector) Before(ctx context.Context, agent *types.AgentDefinition
 			return err
 		}
 	}
-	if cfg.Errors != nil && cfg.Errors.Rate > 0 {
-		if err := c.maybeInjectError(ctx, cfg.Errors); err != nil {
+	if cfg.Errors != nil && (cfg.Errors.Rate > 0 || cfg.Errors.FailFirst > 0) {
+		if err := c.maybeInjectError(ctx, agent.Metadata.Name, cfg.Errors); err != nil {
 			return err
 		}
 	}
@@ -223,16 +227,33 @@ func (c *ChaosInjector) sampleLatency(l *types.ChaosLatencyConfig) time.Duration
 // full TimeoutMs before returning the 504 (F-CH-007) — this is a real sleep
 // on the request's critical path, not a deadline annotation. It is cut short
 // only if ctx is cancelled (e.g. the client disconnects).
-func (c *ChaosInjector) maybeInjectError(ctx context.Context, e *types.ChaosErrorConfig) error {
-	// Clamp Rate to [0,1] (F-CH-004): an out-of-range rate otherwise
-	// silently means "always" (>1) or "never" (<0). Since draw is in
-	// [0,1), a clamped rate of 1 always injects and 0 never does.
-	rate := clampUnitInterval(e.Rate)
-	c.mu.Lock()
-	draw := c.RandSrc.Float64()
-	c.mu.Unlock()
-	if draw >= rate {
-		return nil
+func (c *ChaosInjector) maybeInjectError(ctx context.Context, agentName string, e *types.ChaosErrorConfig) error {
+	if e.FailFirst > 0 {
+		// Deterministic stateful trigger: fail the first N requests, then
+		// recover. Takes precedence over Rate so the retry-until-success
+		// fixture is exact. The count is bumped once per request here.
+		c.mu.Lock()
+		if c.errorCounts == nil {
+			c.errorCounts = make(map[string]int)
+		}
+		c.errorCounts[agentName]++
+		n := c.errorCounts[agentName]
+		c.mu.Unlock()
+		if n > e.FailFirst {
+			return nil // recovered
+		}
+		// fall through to inject deterministically (no probability draw)
+	} else {
+		// Clamp Rate to [0,1] (F-CH-004): an out-of-range rate otherwise
+		// silently means "always" (>1) or "never" (<0). Since draw is in
+		// [0,1), a clamped rate of 1 always injects and 0 never does.
+		rate := clampUnitInterval(e.Rate)
+		c.mu.Lock()
+		draw := c.RandSrc.Float64()
+		c.mu.Unlock()
+		if draw >= rate {
+			return nil
+		}
 	}
 
 	if e.Timeout {

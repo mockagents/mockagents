@@ -96,7 +96,7 @@ scenarios:
       content_regex: "..."      # Regex pattern. Named groups available in templates.
       turn_number: 1            # Match on conversation turn (1-indexed).
     response:                   # Required.
-      content: "Hello!"         # Required. Response text (supports templates).
+      content: "Hello!"         # One of content / refusal / tool_calls (supports templates).
       tool_calls:               # Optional. Tool calls to simulate.
         - name: search
           arguments: { q: "test" }
@@ -167,6 +167,95 @@ chaos:
     rate: 0.1          # 10% of requests return errors
     status_code: 500
 ```
+
+Injected errors are rendered in each provider's **own** error envelope, so a
+client SDK reacts as it would against the real API:
+
+| status | OpenAI (`error.type` / `code`) | Anthropic (`error.type`) | Gemini (`error.status`) |
+|---|---|---|---|
+| 401 | `invalid_request_error` / `invalid_api_key` | `authentication_error` | `UNAUTHENTICATED` |
+| 403 | `invalid_request_error` | `permission_error` | `PERMISSION_DENIED` |
+| 429 | `requests` / `rate_limit_exceeded` | `rate_limit_error` | `RESOURCE_EXHAUSTED` |
+| 503 | `server_error` | `overloaded_error` | `UNAVAILABLE` |
+
+Any injected **429 carries a `Retry-After` header** (the configured rate-limit
+hint, or a 1s default) so retry/backoff code has something to read.
+
+### Named presets
+
+`chaos.preset` is a one-line shorthand for a common failure mode — it expands at
+load time into the concrete sub-sections, and any sub-section you set explicitly
+overrides the preset:
+
+```yaml
+chaos:
+  preset: rate-limited   # every request -> 429 + Retry-After
+```
+
+| preset | effect |
+|---|---|
+| `server-down` | every request → 503 (overloaded) |
+| `rate-limited` | every request → 429 (+ `Retry-After`) |
+| `access-denied` | every request → 403 (permission denied) |
+| `unauthorized` | every request → 401 (bad credentials) |
+| `flaky` | fail the first 2 requests (503), then recover |
+| `slow` | add 2–5s of latency to every response |
+
+See [`examples/access-denied-agent.yaml`](https://github.com/mockagents/mockagents/blob/main/examples/access-denied-agent.yaml).
+
+### Stateful "flaky then healthy" trigger (`fail_first`)
+
+For testing client **retry / backoff / circuit-breaker** logic, fail the first N
+requests deterministically and then recover — instead of a random `rate`:
+
+```yaml
+chaos:
+  errors:
+    fail_first: 2      # requests 1 and 2 fail; request 3+ succeeds
+    status_code: 503   # overloaded_error — the #1 production retry case
+    message: "temporarily overloaded, please retry"
+```
+
+`fail_first` takes precedence over `rate` (the first N always fail), composes
+with `timeout: true` (the first N time out, then recover), and the per-agent
+counter resets when the server restarts. See
+[`examples/flaky-then-healthy-agent.yaml`](https://github.com/mockagents/mockagents/blob/main/examples/flaky-then-healthy-agent.yaml).
+
+## Semantic error modes
+
+Beyond HTTP/chaos faults, a **scenario response** can plant a *well-formed but
+wrong* output — where real agent code actually breaks (FB-03):
+
+```yaml
+scenarios:
+  - name: truncated
+    match: { content_contains: "summary" }
+    response:
+      content: "The answer got cut o"
+      finish_reason: length            # OpenAI finish_reason / Anthropic max_tokens / Gemini MAX_TOKENS
+
+  - name: refusal
+    match: { content_contains: "hack" }
+    response:
+      refusal: "I can't help with that."   # OpenAI message.refusal; refusal-as-content elsewhere
+
+  - name: bad-tool-args
+    match: { content_contains: "weather" }
+    response:
+      content: "Looking that up."
+      tool_calls:
+        - name: get_weather
+          raw_arguments: '{"city":'     # emitted verbatim — malformed JSON to break your parser
+```
+
+- `finish_reason` — override the emitted finish/stop reason; use `length` to
+  simulate a truncated response, `content_filter` for a filtered one.
+- `refusal` — emit an assistant refusal instead of content.
+- `raw_arguments` — emit a tool call's arguments string verbatim (malformed or
+  schema-violating), instead of marshaling `arguments`. OpenAI only.
+
+A response is valid with **any** of `content`, `refusal`, or `tool_calls`. See
+[`examples/semantic-errors-agent.yaml`](https://github.com/mockagents/mockagents/blob/main/examples/semantic-errors-agent.yaml).
 
 ## JSON Schema
 

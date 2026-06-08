@@ -24,4 +24,8 @@ func ApplyDefaults(def *types.AgentDefinition) {
 			s.ChunkDelayMs = defaultChunkDelayMs
 		}
 	}
+
+	// Expand a named chaos preset into its concrete sub-sections so the engine
+	// and validators see an ordinary chaos block (FB-03).
+	expandChaosPreset(def.Spec.Behavior.Chaos)
 }

@@ -112,3 +112,28 @@ func TestE2E_DropInRecipeRoutes(t *testing.T) {
 		})
 	}
 }
+
+// FB-02: the X-Mockagents-Hallucination header survives the full server mux +
+// middleware chain (catches a middleware stripping/overwriting custom headers).
+func TestE2E_HallucinationHeader(t *testing.T) {
+	agent := &types.AgentDefinition{
+		APIVersion: "mockagents/v1", Kind: "Agent",
+		Metadata: types.Metadata{Name: "hallucinator"},
+		Spec: types.AgentSpec{Protocol: "openai-chat-completions", Model: "gpt-4o-halluc",
+			Behavior: types.BehaviorConfig{Scenarios: []types.Scenario{
+				{Name: "bad", Match: &types.MatchRule{ContentContains: "fact"},
+					Response: types.ScenarioResponse{Content: "Sydney is the capital of Australia.",
+						Hallucination: &types.HallucinationSpec{Type: "fabricated_fact"}}},
+				{Name: "default", Response: types.ScenarioResponse{Content: "ok"}},
+			}}}}
+	_, addr := setupTestServer(t, agent)
+
+	body := `{"model":"gpt-4o-halluc","messages":[{"role":"user","content":"give me a fact"}]}`
+	req, _ := http.NewRequest("POST", addr+"/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "fabricated_fact", resp.Header.Get("X-Mockagents-Hallucination"))
+}

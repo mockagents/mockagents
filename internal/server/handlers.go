@@ -47,6 +47,11 @@ type Handlers struct {
 	Version   string
 	Logger    *slog.Logger
 	Recorder  *audit.Recorder // optional; nil = audit disabled
+
+	// agentWriteMu serializes the conflict-check → persist → register sequence
+	// of the agent write API (FB-04) so concurrent POST/PUT/DELETE on the same
+	// name can't interleave into a torn registry/disk state.
+	agentWriteMu sync.Mutex
 }
 
 // HealthCheck returns server health status.
@@ -155,7 +160,7 @@ func (h *Handlers) ReloadAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		h.Engine.Registry.Register(result.Definition)
+		h.Engine.Registry.RegisterWithSource(result.Definition, result.FilePath)
 		h.Logger.Info("agent reloaded",
 			"agent", name,
 			"file", filepath.Base(result.FilePath),

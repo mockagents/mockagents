@@ -137,6 +137,43 @@ mockagents validate --format json
 
 ---
 
+## `mockagents add` / `mockagents rm`
+
+Manage agents on a **running** server over its write API (FB-04) — no restart.
+`add` sends an agent definition file (`POST /api/v1/agents`); `--replace` upserts
+it instead (`PUT /api/v1/agents/{name}`). `rm` deletes by name.
+
+```
+mockagents add <file> [--replace] [--server URL] [--api-key KEY]
+mockagents rm  <name>  [--server URL] [--api-key KEY]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--server`  | `$MOCKAGENTS_SERVER` or `http://localhost:8080` | Base URL of the running server |
+| `--api-key` | `$MOCKAGENTS_API_KEY` | API key (editor+) for multi-tenant servers |
+| `--replace` | `false` | Upsert via PUT instead of failing on a name conflict (`add` only) |
+
+```bash
+# Hot-add a new agent (fails if it already exists)
+mockagents add agents/my-agent.yaml
+
+# Create-or-replace
+mockagents add agents/my-agent.yaml --replace
+
+# Against a remote, authenticated server
+mockagents add agents/my-agent.yaml --server https://mock.example.com --api-key mas_...
+
+# Delete it again
+mockagents rm my-agent
+```
+
+The file is validated server-side with the same rules as `mockagents validate`;
+a rejected write prints the server's error and exits non-zero. The agent is owned
+by the API key's tenant.
+
+---
+
 ## `mockagents logs`
 
 Query interaction logs.

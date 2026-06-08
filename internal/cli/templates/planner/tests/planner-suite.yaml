@@ -1,0 +1,56 @@
+# Exercises the multi-step planner.
+#   mockagents test --agents-dir agents tests/planner-suite.yaml
+apiVersion: mockagents/v1
+kind: TestSuite
+metadata:
+  name: planner-suite
+  description: Asserts the plan is produced and steps are driven via run_step.
+
+spec:
+  target:
+    agent: planner-agent
+  cases:
+    - name: plan-decomposes-goal
+      steps:
+        - role: user
+          content: "make a plan to ship the feature"
+      assertions:
+        - type: response_contains
+          value: "Gather requirements"
+        - type: tool_call
+          tool: run_step
+          arguments: { step: "Gather requirements" }
+        - type: scenario_matched
+          value: make-plan
+
+    - name: next-advances-step
+      steps:
+        - role: user
+          content: "do the next step"
+      assertions:
+        - type: tool_call
+          tool: run_step
+          arguments: { step: "Draft the design" }
+        - type: scenario_matched
+          value: next-step
+
+    # Regression: an advance request that also says "plan" must advance the
+    # plan (next-step), not restart it (make-plan).
+    - name: next-in-plan-advances
+      steps:
+        - role: user
+          content: "what's the next step in the plan?"
+      assertions:
+        - type: tool_call
+          tool: run_step
+          arguments: { step: "Draft the design" }
+        - type: scenario_matched
+          value: next-step
+
+    - name: default-prompts-for-goal
+      steps:
+        - role: user
+          content: "hi"
+      assertions:
+        - type: scenario_matched
+          value: default

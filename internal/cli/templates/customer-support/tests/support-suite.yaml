@@ -1,0 +1,66 @@
+# Exercises the customer-support deflection flow.
+#   mockagents test --agents-dir agents tests/support-suite.yaml
+apiVersion: mockagents/v1
+kind: TestSuite
+metadata:
+  name: support-suite
+  description: Asserts greeting, order lookup, refund policy, and escalation routing.
+
+spec:
+  target:
+    agent: support-agent
+  cases:
+    - name: greeting-welcomes
+      steps:
+        - role: user
+          content: "hello there"
+      assertions:
+        - type: scenario_matched
+          value: greeting
+
+    - name: order-calls-lookup
+      steps:
+        - role: user
+          content: "where is my order?"
+      assertions:
+        - type: tool_call
+          tool: lookup_order
+          arguments: { order_id: "ORD-1001" }
+        - type: scenario_matched
+          value: order-status
+
+    - name: refund-explains-policy
+      steps:
+        - role: user
+          content: "how do refunds work?"
+      assertions:
+        - type: response_contains
+          value: "30 days"
+        - type: scenario_matched
+          value: refund-policy
+
+    - name: escalation-to-human
+      steps:
+        - role: user
+          content: "I want to talk to a human"
+      assertions:
+        - type: scenario_matched
+          value: escalate
+
+    # Regression: a multi-intent message (refund + human) must deflect to a
+    # human (escalate is ordered ahead of refund-policy/order-status).
+    - name: multi-intent-escalates
+      steps:
+        - role: user
+          content: "I want a refund, let me talk to a human"
+      assertions:
+        - type: scenario_matched
+          value: escalate
+
+    - name: fallback
+      steps:
+        - role: user
+          content: "asdf qwerty"
+      assertions:
+        - type: scenario_matched
+          value: default

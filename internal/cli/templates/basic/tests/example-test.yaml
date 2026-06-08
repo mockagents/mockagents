@@ -1,0 +1,41 @@
+# Example test suite — run with:
+#   mockagents test --agents-dir agents tests/example-test.yaml
+apiVersion: mockagents/v1
+kind: TestSuite
+metadata:
+  name: example-tests
+  description: Basic tests for the example agent
+
+spec:
+  target:
+    agent: example-agent
+  cases:
+    - name: greeting-welcomes
+      steps:
+        - role: user
+          content: "hello"
+      assertions:
+        - type: response_contains
+          value: "Hello"
+        - type: scenario_matched
+          value: greeting
+
+    - name: info-calls-tool
+      steps:
+        - role: user
+          content: "give me some info"
+      assertions:
+        - type: tool_call
+          tool: get_info
+        - type: scenario_matched
+          value: info-request
+
+    - name: default-fallback
+      steps:
+        - role: user
+          content: "something unrelated"
+      assertions:
+        - type: response_contains
+          value: "mock agent"
+        - type: scenario_matched
+          value: default

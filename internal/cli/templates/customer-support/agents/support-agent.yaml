@@ -1,0 +1,70 @@
+# Customer-support deflection pack (FB-01).
+#
+# A realistic first-line support flow: greet, look up an order via a tool,
+# explain the refund policy, and escalate to a human — each deterministic so
+# you can assert the exact routing in CI.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: support-agent
+  description: First-line customer-support flow — greeting, order lookup, refunds, escalation.
+  tags: [pack, customer-support]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-4o
+  systemPrompt: |
+    You are a friendly customer-support assistant for an online store.
+    Help with orders, refunds, and escalate to a human when asked.
+
+  tools:
+    - name: lookup_order
+      description: Look up an order by its id.
+      parameters:
+        type: object
+        properties:
+          order_id: { type: string }
+        required: [order_id]
+      responses:
+        - match: { order_id: "ORD-1001" }
+          response: { value: { status: "shipped", eta: "2 days", carrier: "UPS" } }
+        - default: true
+          response: { value: { status: "processing", eta: "unknown" } }
+
+  behavior:
+    # Scenarios are evaluated top-to-bottom; the FIRST whose match substring is
+    # present wins, so order encodes priority. escalate is listed ahead of
+    # order-status/refund-policy so a multi-intent message like "I want a refund,
+    # let me talk to a human" deflects to a human rather than answering inline.
+    scenarios:
+      - name: greeting
+        match: { content_contains: "hello" }
+        response:
+          content: "Hi! I can help with orders, refunds, and account questions. What do you need?"
+
+      - name: escalate
+        match: { content_contains: "human" }
+        response:
+          content: "I'm connecting you to a human support agent now. Ticket #4821 created."
+
+      - name: order-status
+        match: { content_contains: "order" }
+        response:
+          content: "Let me pull up that order for you."
+          tool_calls:
+            - name: lookup_order
+              arguments: { order_id: "ORD-1001" }
+
+      - name: refund-policy
+        match: { content_contains: "refund" }
+        response:
+          content: "Our policy allows returns within 30 days for store credit. Want me to start one?"
+
+      - name: default
+        response:
+          content: "I can help with orders, refunds, or escalating to a human. Which would you like?"
+
+    streaming:
+      enabled: true
+      chunk_size: 6
+      chunk_delay_ms: 30

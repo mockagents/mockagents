@@ -11,6 +11,28 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **Scenario-pack templates** (FB-01) — `mockagents init --template <name>` /
+  `--list-templates` scaffold a runnable project (agent + a matching TestSuite +
+  README) from five curated, embedded packs: `basic`, `customer-support`, `rag`,
+  `coding-agent`, `planner`. A docs gallery catalogs every example pack.
+- **Hallucination fixtures** (FB-02) — a `hallucination` block on a scenario
+  response (typed fault + ground truth) advertised via the
+  `X-Mockagents-Hallucination` header, for testing a client's grounding guardrails.
+- **Runtime agent write API** (FB-04) — `POST /api/v1/agents` (create),
+  `PUT /api/v1/agents/{name}` (replace), `DELETE /api/v1/agents/{name}`: create,
+  edit, and remove agents at runtime with no restart (YAML or JSON, validated,
+  editor-gated, audited as `agent.created`/`agent.updated`/`agent.deleted`). Plus
+  `mockagents add`/`rm` CLI and **Save/Delete in the GUI console** (FB-06) —
+  completing the YAML + CLI + API + GUI quadfecta.
+- **Failure / error catalog** (FB-03) — `chaos.errors.fail_first` (fail the first
+  N requests then recover, for retry/backoff testing); **provider-accurate**
+  injected error bodies + `Retry-After` for OpenAI/Anthropic/Gemini; named chaos
+  **presets** (`server-down`, `rate-limited`, `access-denied`, `unauthorized`,
+  `flaky`, `slow`); and **semantic** response faults (`finish_reason` override,
+  `refusal`, malformed tool-call `raw_arguments`) — honored on streaming too.
+- **Load-test target** (FB-05) — distribution-based stream timing
+  (`ttft_p50_ms`/`ttft_p95_ms`/`itl_p50_ms`/`itl_p95_ms`, lognormal-sampled per
+  request) plus k6 + Locust recipes and a "load-test your LLM app for free" guide.
 - **GUI console redesign** — the Next.js web console was restyled end-to-end to
   the "MockAgents Console" design system: a `--sr-*` design-token foundation
   with a light/dark theme toggle (SSR-safe, no flash), a new grouped sidebar

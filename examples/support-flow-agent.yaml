@@ -1,0 +1,70 @@
+# Scenario pack: a customer-support flow (FB-01) — happy paths, a tool call, and
+# a planted hallucination (FB-02) all in one agent, so you can test the whole
+# flow including the guardrail that should catch the ungrounded answer.
+#
+# Run:  mockagents start --agents-dir examples
+#       (then point your app at http://localhost:8080/v1)
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: support-flow
+  description: Customer-support agent — greeting, order lookup (tool), and an ungrounded-answer hallucination fixture.
+  tags: [pack, customer-support, hallucination]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-4o
+  systemPrompt: |
+    You are a customer-support assistant. Use tools for order lookups and only
+    answer policy questions from the provided knowledge base.
+
+  tools:
+    - name: lookup_order
+      description: Look up an order by id.
+      parameters:
+        type: object
+        properties:
+          order_id: { type: string }
+        required: [order_id]
+      responses:
+        - match: { order_id: "ORD-123" }
+          response: { value: { status: shipped, carrier: UPS, tracking: "1Z999" } }
+        - default: true
+          response: { value: { status: processing } }
+
+  behavior:
+    scenarios:
+      # Happy path: greeting.
+      - name: greeting
+        match: { content_contains: "hello" }
+        response:
+          content: "Hi! I can check an order or answer a policy question. How can I help?"
+
+      # Happy path: order lookup via a tool call.
+      - name: order-lookup
+        match: { content_contains: "order" }
+        response:
+          content: "Let me look that up."
+          tool_calls:
+            - name: lookup_order
+              arguments: { order_id: "ORD-123" }
+
+      # Failure path: an UNGROUNDED policy answer (planted hallucination). Your
+      # app's grounding/guardrail check should flag this; the mock advertises it
+      # via the X-Mockagents-Hallucination header.
+      - name: refund-policy-ungrounded
+        match: { content_contains: "refund" }
+        response:
+          content: "Sure — you can return anything within 90 days for a full cash refund, shipping included."
+          hallucination:
+            type: ungrounded
+            ground_truth: "KB says 30 days, store credit only, excluding shipping."
+            note: "Contradicts the knowledge base — should be caught by a grounding guardrail."
+
+      - name: default
+        response:
+          content: "I can help with an 'order' or the 'refund' policy. What do you need?"
+
+    # To layer in transport failures (429/503/timeouts), add a `chaos:` block —
+    # see examples/chaos-agent.yaml. To inject SSE faults, see
+    # examples/stream-faults-agent.yaml.

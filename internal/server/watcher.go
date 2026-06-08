@@ -242,7 +242,7 @@ func (w *AgentDirWatcher) reloadFile(path string) {
 		)
 		return
 	}
-	w.Engine.Registry.Register(result.Definition)
+	w.Engine.Registry.RegisterWithSource(result.Definition, path)
 	w.rememberFile(path, result.Definition.Metadata.Name)
 	w.Logger.Info("watcher: agent reloaded",
 		"agent", result.Definition.Metadata.Name,

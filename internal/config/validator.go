@@ -92,6 +92,8 @@ func (v *Validator) Validate(def *types.AgentDefinition, filePath string, node *
 	v.validateScenarios(ctx, def)
 	v.validateTools(ctx, def)
 	v.validateCrossReferences(ctx, def)
+	v.validateChaos(ctx, def)
+	v.validateStreaming(ctx, def)
 
 	if len(ctx.errors) == 0 {
 		return nil
@@ -182,14 +184,79 @@ func (v *Validator) validateScenarios(ctx *validationContext, def *types.AgentDe
 			names[sc.Name] = true
 		}
 
-		if sc.Response.Content == "" {
+		// A response must carry SOMETHING: content, a refusal, or tool calls.
+		// (Refusal-only and tool-call-only responses are valid — FB-03.)
+		if sc.Response.Content == "" && sc.Response.Refusal == "" && len(sc.Response.ToolCalls) == 0 {
 			ctx.addError(field+".response.content", "response content is required",
-				"Add content text for this scenario's response.")
+				"Add content text (or a refusal / tool_calls) for this scenario's response.")
+		}
+
+		for j, tc := range sc.Response.ToolCalls {
+			if tc.Name == "" {
+				ctx.addError(fmt.Sprintf("%s.response.tool_calls.%d.name", field, j),
+					"tool_call name is required",
+					"Add the snake_case name of the tool to call.")
+			}
 		}
 
 		if sc.Match != nil {
 			v.validateMatchRule(ctx, sc.Match, field+".match")
 		}
+
+		if h := sc.Response.Hallucination; h != nil && h.Type != "" {
+			valid := false
+			for _, t := range types.HallucinationTypes {
+				if h.Type == t {
+					valid = true
+					break
+				}
+			}
+			if !valid {
+				ctx.addError(field+".response.hallucination.type",
+					fmt.Sprintf("invalid hallucination type %q", h.Type),
+					fmt.Sprintf("Use one of: %s", strings.Join(types.HallucinationTypes, ", ")))
+			}
+		}
+	}
+}
+
+func (v *Validator) validateStreaming(ctx *validationContext, def *types.AgentDefinition) {
+	s := def.Spec.Behavior.Streaming
+	if s == nil {
+		return
+	}
+	// Distribution percentiles must be configured in pairs, p95 >= p50 (FB-05).
+	// A lone percentile silently disables the distribution or collapses it to a
+	// constant, so reject it rather than mislead a load-test author.
+	checkPair := func(p50, p95 int, p50Field, p95Field string) {
+		switch {
+		case (p50 > 0) != (p95 > 0):
+			set, missing := p50Field, p95Field
+			if p95 > 0 {
+				set, missing = p95Field, p50Field
+			}
+			ctx.addError("spec.behavior.streaming."+set,
+				fmt.Sprintf("%s requires %s to also be set", set, missing),
+				fmt.Sprintf("Set both %s and %s for distribution-based timing, or neither.", p50Field, p95Field))
+		case p50 > 0 && p95 < p50:
+			ctx.addError("spec.behavior.streaming."+p95Field,
+				fmt.Sprintf("%s (%d) must be >= %s (%d)", p95Field, p95, p50Field, p50),
+				"The 95th percentile must be at least the median.")
+		}
+	}
+	checkPair(s.TTFTP50Ms, s.TTFTP95Ms, "ttft_p50_ms", "ttft_p95_ms")
+	checkPair(s.ITLP50Ms, s.ITLP95Ms, "itl_p50_ms", "itl_p95_ms")
+}
+
+func (v *Validator) validateChaos(ctx *validationContext, def *types.AgentDefinition) {
+	c := def.Spec.Behavior.Chaos
+	if c == nil || c.Preset == "" {
+		return
+	}
+	if !isChaosPreset(c.Preset) {
+		ctx.addError("spec.behavior.chaos.preset",
+			fmt.Sprintf("unknown chaos preset %q", c.Preset),
+			fmt.Sprintf("Use one of: %s", strings.Join(types.ChaosPresets, ", ")))
 	}
 }
 

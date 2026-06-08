@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
 
 import type { AgentSummary } from "@/lib/api";
 import { Icon } from "@/lib/icons";
+
+export type DeleteAction = (name: string) => Promise<{ ok: boolean; message: string }>;
 
 /** Short, human protocol label (the wire values are long). */
 export function protoShort(p: string): string {
@@ -17,7 +19,13 @@ export function protoShort(p: string): string {
 // rendered as the design's catalog cards. No fabricated telemetry — only the
 // fields the management API actually returns (name, model, protocol,
 // scenario_count, tool_count, tags).
-export function AgentCatalog({ agents }: { agents: AgentSummary[] }) {
+export function AgentCatalog({
+  agents,
+  deleteAction,
+}: {
+  agents: AgentSummary[];
+  deleteAction: DeleteAction;
+}) {
   const [q, setQ] = useState("");
   const [proto, setProto] = useState("all");
 
@@ -68,7 +76,7 @@ export function AgentCatalog({ agents }: { agents: AgentSummary[] }) {
       ) : (
         <div className="catalog">
           {filtered.map((a) => (
-            <AgentCard key={a.name} a={a} />
+            <AgentCard key={a.name} a={a} deleteAction={deleteAction} />
           ))}
         </div>
       )}
@@ -76,20 +84,54 @@ export function AgentCatalog({ agents }: { agents: AgentSummary[] }) {
   );
 }
 
-function AgentCard({ a }: { a: AgentSummary }) {
+function AgentCard({ a, deleteAction }: { a: AgentSummary; deleteAction: DeleteAction }) {
+  const [pending, startTransition] = useTransition();
+  const [err, setErr] = useState<string | null>(null);
+
+  function onDelete() {
+    if (!window.confirm(`Delete agent "${a.name}"? It stops serving immediately.`)) return;
+    setErr(null); // clear any prior failure before retrying
+    startTransition(async () => {
+      // deleteAction revalidates "/" on success, so the deleted card unmounts
+      // automatically — no client router.refresh() needed.
+      const r = await deleteAction(a.name);
+      if (!r.ok) setErr(r.message);
+    });
+  }
+
   return (
-    <Link href={`/agents/${encodeURIComponent(a.name)}`} className="agent-card">
+    <div className="agent-card">
       <div className="ac-top">
         <div className="agent-icon">
           <Icon name="bot" size={18} />
         </div>
         <div className="grow">
-          <h3>{a.name}</h3>
+          {/* Stretched link: covers the whole card but is not an ancestor of the button. */}
+          <h3>
+            <Link href={`/agents/${encodeURIComponent(a.name)}`} className="ac-link">
+              {a.name}
+            </Link>
+          </h3>
           <div className="ac-proto">
             {a.model || "—"} · {protoShort(a.protocol)}
           </div>
         </div>
+        <button
+          type="button"
+          className="btn btn-outline btn-sm ac-del"
+          title={`Delete ${a.name}`}
+          aria-label={`Delete ${a.name}`}
+          disabled={pending}
+          onClick={onDelete}
+        >
+          <Icon name="trash" size={14} />
+        </button>
       </div>
+      {err && (
+        <p className="ac-desc" style={{ color: "var(--sr-danger-fg)" }}>
+          {err}
+        </p>
+      )}
       {a.description && <p className="ac-desc">{a.description}</p>}
       <div className="ac-stats">
         <div className="ac-stat">
@@ -110,6 +152,6 @@ function AgentCard({ a }: { a: AgentSummary }) {
           ))}
         </div>
       )}
-    </Link>
+    </div>
   );
 }

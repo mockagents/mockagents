@@ -1,0 +1,76 @@
+# Coding-assistant pack (FB-01).
+#
+# A coding agent that uses tools in multiple steps: it reads a file, then edits
+# it — two tool calls in a single deterministic response — so you can assert a
+# multi-step tool-use trajectory in CI without a live model.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: coding-agent
+  description: Coding assistant with multi-step tool use (read then edit a file).
+  tags: [pack, coding, tools]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-4o
+  systemPrompt: |
+    You are a coding assistant. Read files before editing them and explain your changes.
+
+  tools:
+    - name: read_file
+      description: Read a source file.
+      parameters:
+        type: object
+        properties:
+          path: { type: string }
+        required: [path]
+      responses:
+        - default: true
+          response: { value: { content: "def add(a, b):\n    return a - b  # bug" } }
+
+    - name: edit_file
+      description: Apply a unified-diff patch to a source file.
+      parameters:
+        type: object
+        properties:
+          path: { type: string }
+          patch: { type: string }
+        required: [path, patch]
+      responses:
+        - default: true
+          response: { value: { applied: true } }
+
+  behavior:
+    # Scenarios are evaluated top-to-bottom; the FIRST whose match substring is
+    # present wins. The more specific "fix the bug" rule is listed before the
+    # broad "explain" rule so a request like "fix the bug and explain it" still
+    # routes to fix-bug (read + edit) rather than the read-only explain path.
+    scenarios:
+      - name: fix-bug
+        match: { content_contains: "fix the bug" }
+        response:
+          content: "I'll read the file, then apply the fix."
+          tool_calls:
+            - name: read_file
+              arguments: { path: "src/app.py" }
+            - name: edit_file
+              arguments:
+                path: "src/app.py"
+                patch: "-    return a - b  # bug\n+    return a + b"
+
+      - name: explain-code
+        match: { content_contains: "explain" }
+        response:
+          content: "Let me read the file first."
+          tool_calls:
+            - name: read_file
+              arguments: { path: "src/app.py" }
+
+      - name: default
+        response:
+          content: "Ask me to 'explain' a file or to 'fix the bug' in it."
+
+    streaming:
+      enabled: true
+      chunk_size: 6
+      chunk_delay_ms: 30
