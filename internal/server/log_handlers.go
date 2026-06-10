@@ -545,13 +545,11 @@ func skipJSONValue(dec *json.Decoder) error {
 const maxCaptureBodyBytes = 1 << 20
 
 func isLoggablePath(path string) bool {
-	return path == "/v1/chat/completions" ||
-		path == "/v1/messages" ||
-		path == "/v1/engines/process" ||
-		// Gemini: /v1beta/models/{model}:generateContent and :streamGenerateContent.
-		// Without this the Gemini surface is never logged, so it drops out of the
-		// cost dashboard and per-tenant spend accrual.
-		strings.HasPrefix(path, "/v1beta/models/")
+	// The model-provider surfaces (OpenAI/Anthropic/Gemini) share one classifier
+	// with the quota middleware (isLLMProviderPath) so logging and quota never
+	// disagree about which routes count. /v1/engines/process is an internal engine
+	// endpoint that isn't a public provider surface but is still logged.
+	return path == "/v1/engines/process" || isLLMProviderPath(path)
 }
 
 // captureWriter wraps ResponseWriter to capture the status code and,

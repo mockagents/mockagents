@@ -9,16 +9,28 @@ import (
 	"github.com/mockagents/mockagents/internal/quota"
 )
 
-// isQuotaPath reports whether a request path is an LLM endpoint subject to
-// per-tenant quotas. Management/health routes are never quota-limited. All three
-// provider surfaces count: OpenAI (/v1/chat/completions), Anthropic
-// (/v1/messages), and Gemini (/v1beta/models/{model}:generateContent and
-// :streamGenerateContent) — otherwise Gemini traffic would bypass the cap.
-func isQuotaPath(path string) bool {
-	return path == "/v1/chat/completions" ||
-		path == "/v1/messages" ||
-		strings.HasPrefix(path, "/v1beta/models/")
+// isLLMProviderPath reports whether a request path is a model-provider LLM
+// endpoint: OpenAI (/v1/chat/completions), Anthropic (/v1/messages), or Gemini
+// (/v1beta/models/{model}:generateContent and :streamGenerateContent). It is the
+// single source of truth for "this is quota-able/billable LLM traffic", shared by
+// the quota and interaction-logging middleware so the two can never disagree
+// about which routes count. The Gemini match is the two generate methods only —
+// not any /v1beta/models/... method (e.g. a future :countTokens is excluded).
+func isLLMProviderPath(path string) bool {
+	switch path {
+	case "/v1/chat/completions", "/v1/messages":
+		return true
+	}
+	if strings.HasPrefix(path, "/v1beta/models/") {
+		return strings.HasSuffix(path, ":generateContent") ||
+			strings.HasSuffix(path, ":streamGenerateContent")
+	}
+	return false
 }
+
+// isQuotaPath reports whether a request path is an LLM endpoint subject to
+// per-tenant quotas. Management/health routes are never quota-limited.
+func isQuotaPath(path string) bool { return isLLMProviderPath(path) }
 
 // QuotaEnforce rejects requests that exceed a tenant's request-rate (429) or
 // monthly-spend (402) cap (REF-08 slice C). It must run after the principal's
