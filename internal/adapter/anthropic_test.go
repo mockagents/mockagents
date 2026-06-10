@@ -246,6 +246,64 @@ func TestAnthropic_ToolResultMessage(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+// TestAnthropic_SystemAsArray covers `system` sent as an array of content blocks
+// (not just a string). Real clients — the Anthropic SDK and the Claude CLI /
+// Agent SDK — send the array form; before the fix this failed to decode with
+// "cannot unmarshal array into ... system of type string" (400).
+func TestAnthropic_SystemAsArray(t *testing.T) {
+	h := &AnthropicHandler{Engine: testEngine(testAnthropicAgent())}
+	body := `{
+		"model":"claude-3-opus",
+		"system":[{"type":"text","text":"You are a helpful assistant."}],
+		"messages":[{"role":"user","content":"hello"}],
+		"max_tokens":1024
+	}`
+	httpReq := httptest.NewRequest("POST", "/v1/messages", bytes.NewReader([]byte(body)))
+	httpReq.Header.Set("X-Api-Key", "test")
+	rec := httptest.NewRecorder()
+	h.HandleMessages(rec, httpReq)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestAnthropic_ToolResultArrayContent covers a tool_result whose `content` is an
+// array of content blocks (the form the Claude CLI / Agent SDK sends) rather than
+// a plain string. Before the fix this flattened to "" and the engine rejected the
+// turn as an empty user message (400); the fix recurses into the block array.
+func TestAnthropic_ToolResultArrayContent(t *testing.T) {
+	h := &AnthropicHandler{Engine: testEngine(testAnthropicAgent())}
+	body := `{
+		"model":"claude-3-opus",
+		"messages":[
+			{"role":"user","content":"search for something"},
+			{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"search","input":{"q":"x"}}]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"RESULT ok"}]}]}
+		],
+		"max_tokens":1024
+	}`
+	httpReq := httptest.NewRequest("POST", "/v1/messages", bytes.NewReader([]byte(body)))
+	httpReq.Header.Set("X-Api-Key", "test")
+	rec := httptest.NewRecorder()
+	h.HandleMessages(rec, httpReq)
+
+	// Must be 200 — not 400 "empty user message" (which is what an unflattened
+	// array tool_result would produce).
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestExtractAnthropicContent_ToolResultArray unit-tests the flattening helper
+// directly for the array-content tool_result form.
+func TestExtractAnthropicContent_ToolResultArray(t *testing.T) {
+	content := []any{
+		map[string]any{
+			"type":        "tool_result",
+			"tool_use_id": "toolu_1",
+			"content":     []any{map[string]any{"type": "text", "text": "MARKER123"}},
+		},
+	}
+	assert.Equal(t, "MARKER123", extractAnthropicContent(content))
+}
+
 // FB-02: the Anthropic adapter also advertises hallucination fixtures.
 func TestAnthropic_HallucinationHeader(t *testing.T) {
 	h := &AnthropicHandler{Engine: testEngine(halluAgent("anthropic-messages", "claude-3"))}

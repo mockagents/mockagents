@@ -14,12 +14,16 @@ import (
 
 // AnthropicRequest represents an Anthropic Messages API request.
 type AnthropicRequest struct {
-	Model     string             `json:"model"`
-	Messages  []AnthropicMessage `json:"messages"`
-	System    string             `json:"system,omitempty"`
-	Tools     []AnthropicTool    `json:"tools,omitempty"`
-	MaxTokens int                `json:"max_tokens,omitempty"`
-	Stream    bool               `json:"stream,omitempty"`
+	Model    string             `json:"model"`
+	Messages []AnthropicMessage `json:"messages"`
+	// System is a string OR an array of content blocks. The Anthropic Messages
+	// API accepts both forms, and real clients (the Anthropic SDK, the Claude
+	// CLI / Agent SDK) send the array form, so it must be decoded as `any` and
+	// flattened to text via extractAnthropicContent rather than typed as string.
+	System    any             `json:"system,omitempty"`
+	Tools     []AnthropicTool `json:"tools,omitempty"`
+	MaxTokens int             `json:"max_tokens,omitempty"`
+	Stream    bool            `json:"stream,omitempty"`
 }
 
 // AnthropicMessage represents a message in an Anthropic request.
@@ -197,17 +201,19 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 
 // --- Conversion Helpers ---
 
-func convertAnthropicMessages(msgs []AnthropicMessage, system string) []engine.RequestMessage {
+func convertAnthropicMessages(msgs []AnthropicMessage, system any) []engine.RequestMessage {
 	// Pre-size for the worst case (every message + an optional system prepend) so
 	// the append loop never grows the slice (PERF-15; the OpenAI twin already
 	// pre-sizes).
 	result := make([]engine.RequestMessage, 0, len(msgs)+1)
 
-	// Prepend system message if provided.
-	if system != "" {
+	// Prepend system message if provided. `system` may be a string or an array
+	// of content blocks (both are valid per the Messages API); flatten either to
+	// text the same way request message content is flattened.
+	if sys := extractAnthropicContent(system); sys != "" {
 		result = append(result, engine.RequestMessage{
 			Role:    "system",
-			Content: system,
+			Content: sys,
 		})
 	}
 
@@ -236,8 +242,21 @@ func extractAnthropicContent(content any) string {
 						parts = append(parts, text)
 					}
 				case "tool_result":
-					if c, ok := m["content"].(string); ok {
-						parts = append(parts, c)
+					// tool_result content is a string OR an array of content
+					// blocks (both valid per the Messages API). Real clients (the
+					// Anthropic SDK, the Claude CLI / Agent SDK) send the array
+					// form, so recurse to flatten it rather than only handling the
+					// string form — otherwise the tool-result turn flattens to ""
+					// and the engine rejects it as an empty user message.
+					switch c := m["content"].(type) {
+					case string:
+						if c != "" {
+							parts = append(parts, c)
+						}
+					case []any:
+						if s := extractAnthropicContent(c); s != "" {
+							parts = append(parts, s)
+						}
 					}
 				}
 			}
