@@ -1,0 +1,39 @@
+# Runs the Claude demo app as a Kubernetes Job against the in-cluster MockAgents
+# service. Build + load the image first (see TESTING.md):
+#
+#   docker build -t acme-claude-support-demo:latest .
+#   kind load docker-image acme-claude-support-demo:latest      # kind
+#   # or: minikube image load acme-claude-support-demo:latest
+#
+#   kubectl apply -f k8s/demo-job.yaml -n acme-claude
+#   kubectl logs -f job/acme-claude-demo -n acme-claude
+#
+# Service name "acme-mockagents" assumes `helm install acme ...`.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: acme-claude-demo
+  labels:
+    app.kubernetes.io/name: acme-claude-support-demo
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: acme-claude-support-demo
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: demo
+          image: acme-claude-support-demo:latest
+          imagePullPolicy: IfNotPresent
+          # Override to run a different scenario, e.g.
+          #   ["python","-m","app.deterministic_smoke"]
+          command: ["python", "-m", "app.triage_demo"]
+          env:
+            # Server ROOT (no /v1) — the Claude CLI / Anthropic SDK append the path.
+            - name: MOCKAGENTS_BASE_URL
+              value: "http://acme-mockagents:8080"
+            - name: MOCKAGENTS_API_KEY
+              value: "mock-key"

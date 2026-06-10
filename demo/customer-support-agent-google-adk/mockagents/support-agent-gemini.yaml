@@ -1,0 +1,124 @@
+# Acme Corp customer-support TRIAGE agent — Google Gemini API edition.
+# Driven by Google ADK (which uses the google-genai client against this mock's
+# native Gemini endpoint, /v1beta/models/<model>:generateContent).
+#
+# Demonstrates: scenario matching + simulated function calls + SSE streaming.
+#
+# How the agent loop terminates (ADK / Gemini specifics)
+# ------------------------------------------------------
+# ADK is a library (not a CLI subprocess), so the user message is clean and the
+# google-genai client sends no X-Session-Id — MockAgents' turn counter stays 1,
+# so we match on CONTENT, not turn_number. In the Gemini protocol the tool result
+# comes back as a functionResponse on the next turn; MockAgents surfaces the
+# function name + the response JSON into that turn's content. Each tool returns a
+# unique MARKER (ORDER_RESULT / REFUND_RESULT / ESCALATION_RESULT); the
+# "*-resolved" scenarios match those markers and emit the final answer. They're
+# listed BEFORE the keyword scenarios so a marker resolves instead of re-firing
+# the tool — that ordering is what stops the loop.
+#
+# Function names are PLAIN (lookup_order, ...) — Gemini function calls are not
+# namespaced (unlike the Claude MCP demo). They must match the Python tool
+# functions the ADK agent registers.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: acme-support-gemini
+  description: Acme tier-1 support triage agent (Gemini; functions + scenarios + streaming).
+  tags: [demo, customer-support, gemini, tools, streaming]
+
+spec:
+  protocol: google-gemini
+  # Real, priced Gemini model name as the routing key: makes the drop-in story
+  # concrete (point your Gemini/ADK app here) AND lets the cost table attribute
+  # spend so the dashboard + quota cap work.
+  model: gemini-2.0-flash
+  systemPrompt: |
+    You are Acme Corp's friendly tier-1 customer-support triage agent.
+
+  tools:
+    - name: lookup_order
+      description: Look up the status of an order by its ID.
+      parameters:
+        type: object
+        properties:
+          order_id: { type: string }
+        required: [order_id]
+      responses:
+        - default: true
+          response: { ok: true }
+    - name: issue_refund
+      description: Issue a refund against an order.
+      parameters:
+        type: object
+        properties:
+          order_id: { type: string }
+          amount: { type: number }
+        required: [order_id, amount]
+      responses:
+        - default: true
+          response: { ok: true }
+    - name: escalate_to_human
+      description: Open a ticket and hand off to a human specialist.
+      parameters:
+        type: object
+        properties:
+          reason: { type: string }
+        required: [reason]
+      responses:
+        - default: true
+          response: { ok: true }
+
+  behavior:
+    scenarios:
+      # --- Resolution scenarios (match the tool-result MARKER), listed FIRST.
+      - name: order-resolved
+        match: { content_contains: "ORDER_RESULT" }
+        response:
+          content: "Good news — order ORD-12345 shipped via UPS (tracking 1Z999AA10123456784) and should arrive by 2026-04-10. Anything else?"
+      - name: refund-resolved
+        match: { content_contains: "REFUND_RESULT" }
+        response:
+          content: "Done — refund RF-88231 for $49.99 is approved and will post to your original payment method within 5 business days."
+      - name: escalate-resolved
+        match: { content_contains: "ESCALATION_RESULT" }
+        response:
+          content: "You're all set — I've opened ticket SUP-1042 and a tier-2 specialist will reach out within the hour. Anything else?"
+
+      # --- Greeting: no tool, ends in one turn.
+      - name: greeting
+        match: { content_contains: "hello" }
+        response:
+          content: "Hi! I'm Acme's support assistant. I can check an order, start a refund, or connect you with a human. What do you need?"
+
+      # --- Intent -> function call (turn 1). The marker returns on turn 2.
+      - name: order
+        match: { content_contains: "order" }
+        response:
+          content: "Let me pull that order up for you."
+          tool_calls:
+            - name: lookup_order
+              arguments: { order_id: "ORD-12345" }
+      - name: refund
+        match: { content_contains: "refund" }
+        response:
+          content: "I can take care of that refund for you."
+          tool_calls:
+            - name: issue_refund
+              arguments: { order_id: "ORD-12345", amount: 49.99 }
+      - name: escalate
+        match: { content_contains: "human" }
+        response:
+          content: "Of course — let me get a specialist involved."
+          tool_calls:
+            - name: escalate_to_human
+              arguments: { reason: "Customer requested a human agent" }
+
+      - name: default
+        response:
+          content: "Thanks for contacting Acme support! Could you share your order ID, or tell me whether you need an order status, a refund, or a human agent?"
+
+    # ADK can stream (streamGenerateContent?alt=sse); enable it.
+    streaming:
+      enabled: true
+      chunk_size: 6
+      chunk_delay_ms: 15

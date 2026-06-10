@@ -1,0 +1,37 @@
+# Helm values for deploying MockAgents (chart at deploy/helm/mockagents) with the
+# ADK demo's agents (3 Gemini + 1 OpenAI/LiteLLM bridge fixture) + feature env.
+#
+# Agent definitions come from a ConfigMap built from the demo's mockagents/ dir:
+#
+#   kubectl create namespace acme-adk
+#   kubectl create configmap acme-adk-agents --from-file=../mockagents/ -n acme-adk
+#
+# Then install (run from demo/customer-support-agent-google-adk/k8s/):
+#
+#   helm install acme ../../../deploy/helm/mockagents \
+#     -n acme-adk -f mockagents-values.yaml \
+#     --set image.repository=mockagents/mockagents --set image.tag=demo
+
+agents:
+  existingConfigMap: acme-adk-agents
+
+service:
+  type: NodePort
+  port: 8080
+  nodePort: 30082
+
+logLevel: debug
+
+# emptyDir at /data for the SQLite interaction log (powers /costs).
+persistence:
+  enabled: true
+
+# --- Feature toggles. Uncomment to enable multi-tenancy + quotas, then read the
+#     bootstrap platform key:
+#       kubectl -n acme-adk logs deploy/acme-mockagents | grep "Bootstrap admin key"
+env: {}
+# env:
+#   MOCKAGENTS_MULTI_TENANT: "1"
+#   MOCKAGENTS_DEFAULT_RATE_PER_SEC: "2"
+#   MOCKAGENTS_DEFAULT_RATE_BURST: "3"
+#   MOCKAGENTS_DEFAULT_MONTHLY_SPEND_USD: "0.00003"

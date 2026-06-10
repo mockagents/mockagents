@@ -1,0 +1,34 @@
+# Realistic LOAD-TEST TARGET for the Gemini surface.
+#
+# Demonstrates: streaming with a realistic, long-tailed latency distribution
+# (lognormal fit to the percentiles below). Point k6/Locust at
+# /v1beta/models/gemini-1.5-flash:streamGenerateContent?alt=sse to load-test your
+# Gemini client for free — no tokens, no rate limits, no bill.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: acme-load-target-gemini
+  description: Streaming Gemini agent with realistic latency percentiles — a free load-test target.
+  tags: [demo, gemini, load, streaming]
+
+spec:
+  protocol: google-gemini
+  model: gemini-1.5-flash   # distinct + priced routing key
+  behavior:
+    scenarios:
+      - name: default
+        response:
+          content: >
+            Thanks for reaching out to Acme support. I can help you track an
+            order, start a refund, or escalate to a human specialist. This is a
+            representative streamed reply long enough to exercise inter-token
+            pacing across many chunks, so your load test observes realistic
+            time-to-first-token and inter-token latency rather than an instant
+            mock response.
+    streaming:
+      enabled: true
+      chunk_size: 1
+      ttft_p50_ms: 350
+      ttft_p95_ms: 1400
+      itl_p50_ms: 20
+      itl_p95_ms: 60

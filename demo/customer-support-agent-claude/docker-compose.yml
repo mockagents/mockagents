@@ -1,0 +1,54 @@
+# Runs MockAgents + the Claude demo app together.
+#
+#   docker compose up --build -d mockagents      # start the mock server
+#   docker compose run --rm demo                 # triage demo (default)
+#   docker compose run --rm demo python -m app.deterministic_smoke
+#   docker compose run --rm demo python -m app.streaming_demo
+#   docker compose run --rm demo python -m app.resilience_demo
+#
+# MockAgents is built from the repository root (three levels up); the demo app
+# (Python + Node + the claude CLI) from this directory.
+services:
+  mockagents:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: acme-claude-mockagents
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./mockagents:/agents:ro
+      - mockagents-data:/data
+    environment:
+      MOCKAGENTS_HOST: 0.0.0.0
+      MOCKAGENTS_LOG_LEVEL: debug
+      # --- Uncomment to exercise multi-tenancy / quota / cost.
+      #     Grab the bootstrap key:
+      #       docker compose logs mockagents | grep "Bootstrap admin key"
+      # MOCKAGENTS_MULTI_TENANT: "1"
+      # MOCKAGENTS_DEFAULT_RATE_PER_SEC: "1"
+      # MOCKAGENTS_DEFAULT_RATE_BURST: "2"
+      # MOCKAGENTS_DEFAULT_MONTHLY_SPEND_USD: "0.001"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/v1/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    restart: unless-stopped
+
+  demo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: acme-claude-demo
+    depends_on:
+      mockagents:
+        condition: service_healthy
+    environment:
+      MOCKAGENTS_BASE_URL: http://mockagents:8080
+      MOCKAGENTS_API_KEY: mock-key
+    profiles: ["demo"]
+
+volumes:
+  mockagents-data:

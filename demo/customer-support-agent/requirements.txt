@@ -1,0 +1,5 @@
+# OpenAI Agents SDK (the agent framework) + the OpenAI client it builds on.
+# openai-agents pulls in a compatible openai version, but we pin a floor on both
+# so `extra_headers` / `set_default_openai_api` are available.
+openai-agents>=0.2.0
+openai>=1.50.0

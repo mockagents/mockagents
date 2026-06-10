@@ -1,0 +1,39 @@
+# Helm values for deploying MockAgents (chart at deploy/helm/mockagents) with the
+# Claude demo's Anthropic agents + feature env.
+#
+# Agent definitions come from a ConfigMap you create from the demo's mockagents/
+# directory:
+#
+#   kubectl create namespace acme-claude
+#   kubectl create configmap acme-claude-agents \
+#     --from-file=../mockagents/ -n acme-claude
+#
+# Then install (run from demo/customer-support-agent-claude/k8s/):
+#
+#   helm install acme ../../../deploy/helm/mockagents \
+#     -n acme-claude -f mockagents-values.yaml \
+#     --set image.repository=mockagents/mockagents --set image.tag=demo
+
+agents:
+  existingConfigMap: acme-claude-agents
+
+service:
+  type: NodePort
+  port: 8080
+  nodePort: 30081
+
+logLevel: debug
+
+# emptyDir at /data for the SQLite interaction log (powers /costs).
+persistence:
+  enabled: true
+
+# --- Feature toggles. Uncomment to enable multi-tenancy + quotas, then read the
+#     bootstrap platform key from the logs:
+#       kubectl -n acme-claude logs deploy/acme-mockagents | grep "Bootstrap admin key"
+env: {}
+# env:
+#   MOCKAGENTS_MULTI_TENANT: "1"
+#   MOCKAGENTS_DEFAULT_RATE_PER_SEC: "1"
+#   MOCKAGENTS_DEFAULT_RATE_BURST: "2"
+#   MOCKAGENTS_DEFAULT_MONTHLY_SPEND_USD: "0.001"

@@ -1,0 +1,32 @@
+# Flaky twin of the support agent (Anthropic) — for the RESILIENCE demo.
+#
+# Demonstrates: chaos / fault injection. First 2 requests 503 (overloaded), then
+# recover. Point a client with retry/backoff at model "claude-3-opus-20240229"
+# to prove its retry logic recovers — impossible to reproduce against the real
+# Anthropic API on demand. The fail-first counter resets when the server restarts.
+# Model is a distinct, currently-priced name (not the support model) so routing
+# is unambiguous and the cost table attributes spend.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: acme-support-flaky-claude
+  description: Anthropic support agent that 503s its first 2 requests then recovers.
+  tags: [demo, anthropic, chaos, retry]
+
+spec:
+  protocol: anthropic-messages
+  model: claude-3-5-sonnet-20241022   # distinct + priced + current routing key
+  behavior:
+    chaos:
+      errors:
+        fail_first: 2
+        status_code: 503
+        message: "the server is temporarily overloaded, please retry"
+    scenarios:
+      - name: default
+        response:
+          content: "Recovered — Acme support is healthy again. How can I help?"
+    streaming:
+      enabled: true
+      chunk_size: 8
+      chunk_delay_ms: 10

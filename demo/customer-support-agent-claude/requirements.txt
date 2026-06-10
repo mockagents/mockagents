@@ -1,0 +1,4 @@
+# Claude Agent SDK (drives the `claude` CLI) + the Anthropic client used by the
+# framework-free scripts (smoke / streaming / resilience).
+claude-agent-sdk>=0.2.0
+anthropic>=0.40.0

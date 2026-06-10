@@ -1,0 +1,125 @@
+# Acme Corp customer-support TRIAGE agent — Anthropic Messages API edition.
+# Driven by the Claude Agent SDK (which runs the `claude` CLI against this mock).
+#
+# Demonstrates: scenario matching + simulated tool calls + SSE streaming.
+#
+# How the agent loop terminates (Claude CLI specifics)
+# ----------------------------------------------------
+# The `claude` CLI sends NO X-Session-Id header, so MockAgents' turn counter is
+# always 1 — we cannot gate on `turn_number` (unlike the OpenAI demo). Instead we
+# match on CONTENT: in the Anthropic protocol the tool *result* comes back as the
+# next user message, so turn 2's "latest user message" is the tool's return
+# value. Each tool returns a unique MARKER (ORDER_RESULT / REFUND_RESULT /
+# ESCALATION_RESULT); the "*-resolved" scenarios match those markers and emit the
+# final answer. They're listed BEFORE the keyword scenarios so a marker (e.g.
+# "ORDER_RESULT", which contains "order") resolves instead of re-triggering the
+# tool — that ordering is what stops the loop.
+#
+# Tool names MUST be the SDK's in-process MCP names: mcp__<server>__<tool>. The
+# demo registers an MCP server "acme", so the tools are mcp__acme__lookup_order,
+# mcp__acme__issue_refund, mcp__acme__escalate_to_human.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: acme-support-claude
+  description: Acme tier-1 support triage agent (Anthropic Messages; tools + scenarios + streaming).
+  tags: [demo, customer-support, anthropic, tools, streaming]
+
+spec:
+  protocol: anthropic-messages
+  # Real, priced Anthropic model name as the routing key: makes the drop-in
+  # story concrete (point your Claude app here) AND lets the cost table attribute
+  # non-zero cost so the dashboard + spend cap work. The Agent SDK is told to use
+  # this model (ClaudeAgentOptions.model).
+  model: claude-3-5-sonnet-latest
+  systemPrompt: |
+    You are Acme Corp's friendly tier-1 customer-support triage agent.
+
+  tools:
+    - name: mcp__acme__lookup_order
+      description: Look up the status of an order by its ID.
+      parameters:
+        type: object
+        properties:
+          order_id: { type: string }
+        required: [order_id]
+      responses:
+        - default: true
+          response: { ok: true }
+    - name: mcp__acme__issue_refund
+      description: Issue a refund against an order.
+      parameters:
+        type: object
+        properties:
+          order_id: { type: string }
+          amount: { type: number }
+        required: [order_id, amount]
+      responses:
+        - default: true
+          response: { ok: true }
+    - name: mcp__acme__escalate_to_human
+      description: Open a ticket and hand off to a human specialist.
+      parameters:
+        type: object
+        properties:
+          reason: { type: string }
+        required: [reason]
+      responses:
+        - default: true
+          response: { ok: true }
+
+  behavior:
+    scenarios:
+      # --- Resolution scenarios (match the tool-result MARKER). Listed FIRST so a
+      #     marker resolves to a final answer instead of re-triggering the tool.
+      - name: order-resolved
+        match: { content_contains: "ORDER_RESULT" }
+        response:
+          content: "Good news — order ORD-12345 shipped via UPS (tracking 1Z999AA10123456784) and should arrive by 2026-04-10. Anything else?"
+      - name: refund-resolved
+        match: { content_contains: "REFUND_RESULT" }
+        response:
+          content: "Done — refund RF-88231 for $49.99 is approved and will post to your original payment method within 5 business days."
+      - name: escalate-resolved
+        match: { content_contains: "ESCALATION_RESULT" }
+        response:
+          content: "You're all set — I've opened ticket SUP-1042 and a tier-2 specialist will reach out within the hour. Anything else?"
+
+      # --- Greeting: no tool, ends in a single turn.
+      - name: greeting
+        match: { content_contains: "hello" }
+        response:
+          content: "Hi! I'm Acme's support assistant. I can check an order, start a refund, or connect you with a human. What do you need?"
+
+      # --- Intent -> tool call (turn 1). The marker comes back on turn 2.
+      - name: order
+        match: { content_contains: "order" }
+        response:
+          content: "Let me pull that order up for you."
+          tool_calls:
+            - name: mcp__acme__lookup_order
+              arguments: { order_id: "ORD-12345" }
+      - name: refund
+        match: { content_contains: "refund" }
+        response:
+          content: "I can take care of that refund for you."
+          tool_calls:
+            - name: mcp__acme__issue_refund
+              arguments: { order_id: "ORD-12345", amount: 49.99 }
+      - name: escalate
+        match: { content_contains: "human" }
+        response:
+          content: "Of course — let me get a specialist involved."
+          tool_calls:
+            - name: mcp__acme__escalate_to_human
+              arguments: { reason: "Customer requested a human agent" }
+
+      - name: default
+        response:
+          content: "Thanks for contacting Acme support! Could you share your order ID, or tell me whether you need an order status, a refund, or a human agent?"
+
+    # The Claude CLI always streams, so streaming must be enabled.
+    streaming:
+      enabled: true
+      chunk_size: 6
+      chunk_delay_ms: 15

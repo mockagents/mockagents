@@ -1,0 +1,29 @@
+# A "flaky then healthy" twin of the support agent — for the RESILIENCE demo.
+#
+# Demonstrates: chaos / fault injection. The first 2 requests deterministically
+# fail with HTTP 503 (overloaded), then every request after recovers. Point a
+# client (with retry/backoff) at model "gpt-4o-mini" to prove its
+# retry logic actually recovers — a scenario impossible to reproduce reliably
+# against a live provider.
+#
+# The fail-first counter is per-agent and resets when the server restarts.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: acme-support-flaky
+  description: Support agent that 503s its first 2 requests then recovers (retry fixture).
+  tags: [demo, chaos, retry]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-4o-mini      # routing key for the flaky twin (distinct from gpt-4o)
+  behavior:
+    chaos:
+      errors:
+        fail_first: 2          # first 2 requests 503, then heal
+        status_code: 503       # overloaded_error — the #1 production retry case
+        message: "the server is temporarily overloaded, please retry"
+    scenarios:
+      - name: default
+        response:
+          content: "Recovered — Acme support is healthy again. How can I help?"

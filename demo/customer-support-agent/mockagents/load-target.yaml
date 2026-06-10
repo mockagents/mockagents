@@ -1,0 +1,38 @@
+# A realistic LOAD-TEST TARGET for the support app.
+#
+# Demonstrates: SSE streaming with a realistic, long-tailed latency
+# distribution (lognormal fit to the percentiles below). Point k6/Locust at
+# model "gpt-3.5-turbo" to load-test your LLM client for free — no tokens,
+# no rate limits, no bill — while the client still sees production-like
+# time-to-first-token and inter-token latency.
+#
+#   k6 run scripts/k6-loadtest.js
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: acme-load-target
+  description: Streaming agent with realistic latency percentiles — a free LLM load-test target.
+  tags: [demo, load, streaming]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-3.5-turbo    # routing key for the load target (distinct + priced)
+  behavior:
+    scenarios:
+      - name: default
+        response:
+          content: >
+            Thanks for reaching out to Acme support. I can help you track an
+            order, start a refund, or escalate to a human specialist. This is a
+            representative streamed reply long enough to exercise inter-token
+            pacing across many chunks, so your load test observes realistic
+            time-to-first-token and inter-token latency rather than an instant
+            mock response.
+    streaming:
+      enabled: true
+      chunk_size: 1
+      # Distribution-based timing (lognormal fit to these percentiles):
+      ttft_p50_ms: 350      # median time-to-first-token
+      ttft_p95_ms: 1400     # p95 TTFT (long tail)
+      itl_p50_ms: 20        # median inter-token latency
+      itl_p95_ms: 60        # p95 inter-token latency

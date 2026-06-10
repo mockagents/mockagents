@@ -1,0 +1,35 @@
+# Realistic LOAD-TEST TARGET for the Anthropic surface.
+#
+# Demonstrates: SSE streaming with a realistic, long-tailed latency distribution
+# (lognormal fit to the percentiles below). Point k6/Locust at the /v1/messages
+# endpoint with model "claude-3-sonnet-20240229" to load-test your Claude client
+# for free — no tokens, no rate limits, no bill — while still seeing
+# production-like time-to-first-token and inter-token latency.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: acme-load-target-claude
+  description: Streaming Anthropic agent with realistic latency percentiles — a free load-test target.
+  tags: [demo, anthropic, load, streaming]
+
+spec:
+  protocol: anthropic-messages
+  model: claude-3-sonnet-20240229   # distinct + priced routing key
+  behavior:
+    scenarios:
+      - name: default
+        response:
+          content: >
+            Thanks for reaching out to Acme support. I can help you track an
+            order, start a refund, or escalate to a human specialist. This is a
+            representative streamed reply long enough to exercise inter-token
+            pacing across many chunks, so your load test observes realistic
+            time-to-first-token and inter-token latency rather than an instant
+            mock response.
+    streaming:
+      enabled: true
+      chunk_size: 1
+      ttft_p50_ms: 350
+      ttft_p95_ms: 1400
+      itl_p50_ms: 20
+      itl_p95_ms: 60
