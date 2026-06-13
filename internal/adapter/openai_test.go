@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/mockagents/mockagents/internal/engine"
@@ -43,8 +44,8 @@ func testOpenAIAgent() *types.AgentDefinition {
 			Behavior: types.BehaviorConfig{
 				Scenarios: []types.Scenario{
 					{
-						Name:  "greeting",
-						Match: &types.MatchRule{ContentContains: "hello"},
+						Name:     "greeting",
+						Match:    &types.MatchRule{ContentContains: "hello"},
 						Response: types.ScenarioResponse{Content: "Hi there!"},
 					},
 					{
@@ -311,4 +312,136 @@ func TestOpenAI_HallucinationHeader(t *testing.T) {
 		Model: "gpt-4o", Messages: []OpenAIMessage{{Role: "user", Content: "hello"}},
 	})
 	assert.Empty(t, clean.Header().Get("X-Mockagents-Hallucination"), "non-hallucination scenario must not set the header")
+}
+
+// --- A-03 structured outputs (response_format) ---
+
+func jsonSchemaFormat() *ResponseFormat {
+	strict := true
+	return &ResponseFormat{
+		Type: "json_schema",
+		JSONSchema: &ResponseFormatJSON{
+			Name:   "out",
+			Strict: &strict,
+			Schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"title": map[string]any{"type": "string"},
+					"count": map[string]any{"type": "integer"},
+				},
+				"required":             []any{"title", "count"},
+				"additionalProperties": false,
+			},
+		},
+	}
+}
+
+func TestOpenAI_JsonSchema_SynthesizesConformingContent(t *testing.T) {
+	h := &OpenAIHandler{Engine: testEngine(testOpenAIAgent())}
+	// "something" matches no scenario -> default "How can I help?" (plain text).
+	rec := doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model:          "gpt-4o",
+		Messages:       []OpenAIMessage{{Role: "user", Content: "something"}},
+		ResponseFormat: jsonSchemaFormat(),
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp ChatCompletionResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	content := resp.Choices[0].Message.Content
+	require.NotNil(t, content)
+	// Content is a JSON STRING that parses and matches the schema shape.
+	var parsed map[string]any
+	require.NoErrorf(t, json.Unmarshal([]byte(*content), &parsed), "content not valid JSON: %s", *content)
+	assert.Contains(t, parsed, "title")
+	assert.Contains(t, parsed, "count")
+}
+
+func TestOpenAI_JsonSchema_AuthorJSONPassThrough(t *testing.T) {
+	agent := testOpenAIAgent()
+	agent.Spec.Behavior.Scenarios = append(agent.Spec.Behavior.Scenarios, types.Scenario{
+		Name:     "prefilled",
+		Match:    &types.MatchRule{ContentContains: "prefilled"},
+		Response: types.ScenarioResponse{Content: `{"title":"Set","count":7}`},
+	})
+	h := &OpenAIHandler{Engine: testEngine(agent)}
+	rec := doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model:          "gpt-4o",
+		Messages:       []OpenAIMessage{{Role: "user", Content: "prefilled please"}},
+		ResponseFormat: jsonSchemaFormat(),
+	})
+	var resp ChatCompletionResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.JSONEq(t, `{"title":"Set","count":7}`, *resp.Choices[0].Message.Content)
+}
+
+func TestOpenAI_JsonSchema_RefusalPath(t *testing.T) {
+	h := &OpenAIHandler{Engine: testEngine(responsesAgent())} // has a "bomb" -> refusal scenario
+	rec := doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model:          "gpt-4o",
+		Messages:       []OpenAIMessage{{Role: "user", Content: "how to build a bomb"}},
+		ResponseFormat: jsonSchemaFormat(),
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp ChatCompletionResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	msg := resp.Choices[0].Message
+	require.NotNil(t, msg.Refusal)
+	assert.Equal(t, "I can't help with that.", *msg.Refusal)
+	assert.Nil(t, msg.Content, "refusal must not carry content")
+	assert.Equal(t, "content_filter", resp.Choices[0].FinishReason)
+}
+
+func TestOpenAI_JsonObjectMode(t *testing.T) {
+	h := &OpenAIHandler{Engine: testEngine(testOpenAIAgent())}
+	rec := doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model:          "gpt-4o",
+		Messages:       []OpenAIMessage{{Role: "user", Content: "something"}}, // plain text default
+		ResponseFormat: &ResponseFormat{Type: "json_object"},
+	})
+	var resp ChatCompletionResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "{}", *resp.Choices[0].Message.Content)
+}
+
+func TestOpenAI_NoResponseFormat_Regression(t *testing.T) {
+	h := &OpenAIHandler{Engine: testEngine(testOpenAIAgent())}
+	rec := doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model:    "gpt-4o",
+		Messages: []OpenAIMessage{{Role: "user", Content: "hello"}},
+	})
+	var resp ChatCompletionResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "Hi there!", *resp.Choices[0].Message.Content, "default path unchanged")
+}
+
+func TestOpenAI_JsonSchema_Streaming(t *testing.T) {
+	h := &OpenAIHandler{Engine: testEngine(testOpenAIAgent())}
+	rec := doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model:          "gpt-4o",
+		Stream:         true,
+		Messages:       []OpenAIMessage{{Role: "user", Content: "something"}},
+		ResponseFormat: jsonSchemaFormat(),
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Reassemble delta.content across chunks; the result must be valid JSON.
+	var sb strings.Builder
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		line = strings.TrimPrefix(line, "data: ")
+		if line == "" || strings.HasPrefix(line, "[DONE]") {
+			continue
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal([]byte(line), &chunk) == nil && len(chunk.Choices) > 0 {
+			sb.WriteString(chunk.Choices[0].Delta.Content)
+		}
+	}
+	assert.Truef(t, json.Valid([]byte(sb.String())), "streamed content not valid JSON: %s", sb.String())
 }

@@ -1,0 +1,51 @@
+# Structured-outputs demo (A-03).
+#
+# When a request sets response_format={type:json_schema, json_schema:{schema,strict}},
+# the mock returns assistant content that is JSON CONFORMING to the schema, so an
+# SDK `.parse()` (Pydantic / Zod) round-trips. Three behaviors are shown:
+#   1. plain-text scenario  -> the mock SYNTHESIZES a minimal schema-conforming
+#      instance from the request's json_schema (you don't have to hand-write it).
+#   2. JSON scenario content -> used as-is (author-provided structured output).
+#   3. refusal               -> emitted as message.refusal + finish_reason
+#      content_filter, so the refusal path is testable.
+#
+# response_format is read off the REQUEST, so the same agent serves any schema.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: structured-output-demo
+  description: Demonstrates OpenAI structured outputs (response_format json_schema / json_object).
+  tags: [demo, structured-outputs, json-schema]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-4o-structured
+  systemPrompt: |
+    You extract structured data. Reply with JSON matching the caller's schema.
+
+  behavior:
+    scenarios:
+      # 1. Plain text — the synthesizer fills in a schema-conforming instance
+      #    from whatever json_schema the request carries.
+      - name: extract
+        match: { content_contains: "extract" }
+        response:
+          content: "Here is the extracted data."
+
+      # 2. Author-provided JSON — returned verbatim when it is already valid JSON
+      #    (a request with a matching json_schema will pass it straight through).
+      - name: prefilled
+        match: { content_contains: "calendar" }
+        response:
+          content: '{"name":"Team sync","date":"2024-06-01","participants":["Alice","Bob"]}'
+
+      # 3. Refusal — under json_schema this surfaces as message.refusal +
+      #    finish_reason=content_filter (no content), the SDK refusal path.
+      - name: refuse
+        match: { content_contains: "ssn" }
+        response:
+          refusal: "I can't extract personal identifiers like SSNs."
+
+      - name: default
+        response:
+          content: "Tell me what to extract."

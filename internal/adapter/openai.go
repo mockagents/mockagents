@@ -19,13 +19,14 @@ import (
 
 // ChatCompletionRequest represents an OpenAI Chat Completions API request.
 type ChatCompletionRequest struct {
-	Model       string          `json:"model"`
-	Messages    []OpenAIMessage `json:"messages"`
-	Tools       []OpenAITool    `json:"tools,omitempty"`
-	ToolChoice  any             `json:"tool_choice,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	MaxTokens   *int            `json:"max_tokens,omitempty"`
+	Model          string          `json:"model"`
+	Messages       []OpenAIMessage `json:"messages"`
+	Tools          []OpenAITool    `json:"tools,omitempty"`
+	ToolChoice     any             `json:"tool_choice,omitempty"`
+	Stream         bool            `json:"stream,omitempty"`
+	Temperature    *float64        `json:"temperature,omitempty"`
+	MaxTokens      *int            `json:"max_tokens,omitempty"`
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 }
 
 // OpenAIMessage represents a message in an OpenAI request/response.
@@ -197,6 +198,11 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 
 	setHallucinationHeader(w, resp)
+
+	// Enforce response_format (structured outputs / JSON mode) on the engine
+	// result before formatting, so streaming and non-streaming both emit the
+	// adjusted content (A-03).
+	applyResponseFormat(req.ResponseFormat, resp)
 
 	// Stream or JSON response.
 	if req.Stream {

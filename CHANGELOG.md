@@ -11,6 +11,17 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **OpenAI structured outputs / `response_format`** (A-03) — Chat Completions
+  now honors `response_format`. With `{type:"json_schema", json_schema:{schema,
+  strict}}` the mock returns assistant `content` that is a JSON string
+  **conforming to the supplied schema** (so an SDK `.parse()` — Pydantic / Zod —
+  round-trips), synthesized deterministically from the schema when the scenario
+  doesn't already supply valid JSON. Handles nested objects, arrays, `$ref`/
+  `$defs` (incl. recursive), `anyOf`/`oneOf`/`allOf`, `enum`/`const`, nullable
+  type arrays, and string `format`s, with depth + array + total-node budgets so
+  a hostile/recursive schema can't blow up. `{type:"json_object"}` guarantees a
+  JSON object. A planted refusal surfaces as `message.refusal` +
+  `finish_reason:"content_filter"`. Example: `examples/structured-output-agent.yaml`.
 - **OpenAI Embeddings API** (A-02) — a new `POST /v1/embeddings` surface
   returning **deterministic, L2-normalized vectors** seeded from a hash of
   (input, model, dimensions), so the same request always yields identical

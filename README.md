@@ -63,6 +63,9 @@ mockagents start                              # prints your base URL + a ready-t
 - **OpenAI Embeddings** (`/v1/embeddings`) — deterministic, unit-normalized
   vectors (stable across runs), configurable `dimensions`, `float`/`base64`
   encoding, and usage tokens — zero-config, no agent definition needed.
+- **Structured outputs** (`response_format`) — `json_schema` strict mode returns
+  schema-conforming JSON your SDK `.parse()` (Pydantic/Zod) round-trips,
+  synthesized from the request schema; `json_object` mode + a refusal path too.
 - **Mocks MCP servers too** — test agents that call Model Context Protocol
   servers, deterministically (JSON-RPC 2.0 + bidirectional SSE).
 - **Scenario matching** — route by message content, regex, or turn number;
