@@ -72,6 +72,10 @@ mockagents start                              # prints your base URL + a ready-t
 - **Azure OpenAI URLs** — point an `AzureOpenAI()` client at the mock unchanged:
   the `/openai/deployments/{deployment}/…` and `/openai/v1/…` surfaces route to
   the OpenAI handlers (deployment name → model; `api-version` ignored).
+- **Anthropic depth** — `/v1/messages/count_tokens`, prompt-caching usage
+  (`cache_creation`/`cache_read`, driven by `cache_control`), and
+  extended-thinking blocks — to test cost-cache and thinking-trace handling
+  offline.
 - **Mocks MCP servers too** — test agents that call Model Context Protocol
   servers, deterministically (JSON-RPC 2.0 + bidirectional SSE).
 - **Scenario matching** — route by message content, regex, or turn number;

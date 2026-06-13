@@ -11,6 +11,17 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **Anthropic depth** (A-04) — three Messages-API additions for offline testing
+  of cost-cache and thinking-trace handling: **`POST /v1/messages/count_tokens`**
+  (returns `{"input_tokens":N}`, engine-free); **prompt-caching usage fields**
+  `cache_creation_input_tokens` / `cache_read_input_tokens`, driven by
+  `cache_control` markers — a first request bills creation and an identical
+  repeat bills read (the fields are omitted when no marker is present, matching
+  the SDK's Optional shape); and **extended-thinking blocks** — when thinking is
+  enabled (the `thinking` param or an `anthropic-beta: …thinking…` header) the
+  response leads with a deterministic `{"type":"thinking",…}` block and the
+  thinking tokens count toward output. Non-streaming; the streaming variants are
+  a noted follow-on.
 - **Azure OpenAI URL routing** (A-06) — an `AzureOpenAI()` SDK client now runs
   unchanged against the mock. Adds the classic deployment surface
   (`POST /openai/deployments/{deployment}/chat/completions` and `/embeddings`,

@@ -615,6 +615,7 @@ func skipAuth(r *http.Request) bool {
 	case "/api/v1/health",
 		"/v1/chat/completions",
 		"/v1/messages",
+		"/v1/messages/count_tokens",
 		"/v1/models",
 		"/v1/engines/process",
 		// SSO endpoints start/clear a session, so they precede authentication

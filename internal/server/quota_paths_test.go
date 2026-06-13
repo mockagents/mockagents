@@ -25,10 +25,18 @@ func TestIsLLMProviderPath_Azure(t *testing.T) {
 		"/openai/v1/models",
 		"/openai/health",
 		"/openai/deployments/",
+		// count_tokens is free on the real API — must be neither quota-counted
+		// nor logged (A-04).
+		"/v1/messages/count_tokens",
 	}
 	for _, p := range notBillable {
 		if isLLMProviderPath(p) {
 			t.Errorf("isLLMProviderPath(%q) = true, want false", p)
 		}
+	}
+
+	// count_tokens is also excluded from logging (free endpoint).
+	if isLoggablePath("/v1/messages/count_tokens") {
+		t.Error("isLoggablePath(/v1/messages/count_tokens) = true, want false")
 	}
 }
