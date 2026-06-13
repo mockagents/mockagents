@@ -1,0 +1,49 @@
+# examples/connection-fault-agent.yaml
+# FB-03 slice 5 — CONNECTION-LAYER faults. The server hijacks the TCP connection
+# and faults it below the HTTP layer (no status code), exercising client retry
+# and transport-error handling that an HTTP error body cannot reach.
+#
+#   mode: reset   -> TCP RST ("connection reset by peer")
+#   mode: empty   -> close with no bytes ("empty reply from server")
+#   mode: random  -> garbage bytes then close (malformed response)
+#
+# Triggered by `rate` (probability) or `fail_first` (the first N requests, then
+# recover). On HTTP/2 (no hijack) the server falls back to a 502.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: connection-fault-demo
+  description: Resets the TCP connection on every request.
+  tags: [chaos, connection, demo]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-4o
+  behavior:
+    scenarios:
+      - name: default
+        response:
+          content: "You will not see this — the connection is reset first."
+
+    chaos:
+      connection:
+        mode: reset
+        rate: 1.0
+
+# Variations (swap the chaos block above):
+#
+#   # Empty reply on 25% of requests:
+#   chaos:
+#     connection:
+#       mode: empty
+#       rate: 0.25
+#
+#   # Garbage bytes on the first 2 requests, then recover (retry fixture):
+#   chaos:
+#     connection:
+#       mode: random
+#       fail_first: 2
+#
+#   # Shorthand preset (every request RST):
+#   chaos:
+#     preset: connection-reset

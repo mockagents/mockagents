@@ -1,7 +1,9 @@
 package adapter
 
 import (
+	"crypto/tls"
 	"math"
+	"net"
 	"net/http"
 	"strconv"
 
@@ -10,6 +12,63 @@ import (
 
 // statusCodeOverloaded is Anthropic's non-standard "overloaded" HTTP status.
 const statusCodeOverloaded = 529
+
+// chaosGarbagePayload is the deterministic non-HTTP byte sequence written for a
+// "random" connection fault: it starts like an HTTP status line then breaks the
+// grammar with control bytes so a client's HTTP parser errors.
+var chaosGarbagePayload = []byte("HTTP/1.1 \x00\xff garbage\r\n\x00not-a-valid-response")
+
+// connectionFault delivers a connection-LAYER fault (FB-03 slice 5) by hijacking
+// the TCP connection and either resetting it, closing it empty, or writing
+// garbage then closing. It returns true when the fault was delivered and false
+// when the connection could not be hijacked (e.g. HTTP/2), so the caller can
+// fall back to a normal HTTP error. mode accepts the canonical names plus their
+// aliases.
+//
+// It uses http.NewResponseController so the hijack traverses the server's
+// statusWriter Unwrap chain (a direct w.(http.Hijacker) assertion on the wrapped
+// writer would fail).
+func connectionFault(w http.ResponseWriter, mode string) bool {
+	conn, _, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+
+	switch mode {
+	case "reset", "peer-reset":
+		// SetLinger(0) makes Close send a TCP RST instead of a graceful FIN.
+		// Under TLS the hijacked conn is a *tls.Conn, so reach the underlying
+		// TCP conn via NetConn() to still force an RST; a non-TCP conn (e.g. a
+		// pipe in tests) just gets an abrupt close.
+		if tcp := underlyingTCP(conn); tcp != nil {
+			_ = tcp.SetLinger(0)
+		}
+	case "random", "random-then-close", "garbage":
+		// A short write still corrupts the framing — that is the intent, so the
+		// error is intentionally ignored.
+		_, _ = conn.Write(chaosGarbagePayload)
+	case "empty":
+		// No bytes written; the deferred Close yields an empty reply.
+	default:
+		// Unknown mode: treat as empty (close with no bytes) rather than hang.
+	}
+	return true
+}
+
+// underlyingTCP returns the *net.TCPConn backing conn, unwrapping a *tls.Conn,
+// or nil when conn is not TCP-backed.
+func underlyingTCP(conn net.Conn) *net.TCPConn {
+	switch c := conn.(type) {
+	case *net.TCPConn:
+		return c
+	case *tls.Conn:
+		if tcp, ok := c.NetConn().(*net.TCPConn); ok {
+			return tcp
+		}
+	}
+	return nil
+}
 
 // anthropicChaosErrorType maps an injected chaos status to Anthropic's
 // documented error `type` (the values the real API returns), so an injected

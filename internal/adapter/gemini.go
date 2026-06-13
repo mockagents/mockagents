@@ -18,10 +18,10 @@ import (
 // The model and method live in the URL path
 // (`/v1beta/models/{model}:generateContent`), not the body.
 type GeminiRequest struct {
-	Contents          []GeminiContent           `json:"contents"`
-	SystemInstruction *GeminiContent            `json:"systemInstruction,omitempty"`
-	Tools             []GeminiToolDeclaration   `json:"tools,omitempty"`
-	GenerationConfig  map[string]any            `json:"generationConfig,omitempty"`
+	Contents          []GeminiContent         `json:"contents"`
+	SystemInstruction *GeminiContent          `json:"systemInstruction,omitempty"`
+	Tools             []GeminiToolDeclaration `json:"tools,omitempty"`
+	GenerationConfig  map[string]any          `json:"generationConfig,omitempty"`
 }
 
 // GeminiContent is one turn ("user" / "model") or the system instruction,
@@ -69,9 +69,9 @@ type GeminiFunctionCall struct {
 
 // GeminiResponse represents a Gemini generateContent response.
 type GeminiResponse struct {
-	Candidates    []GeminiCandidate    `json:"candidates"`
-	UsageMetadata GeminiUsageMetadata  `json:"usageMetadata"`
-	ModelVersion  string               `json:"modelVersion,omitempty"`
+	Candidates    []GeminiCandidate   `json:"candidates"`
+	UsageMetadata GeminiUsageMetadata `json:"usageMetadata"`
+	ModelVersion  string              `json:"modelVersion,omitempty"`
 }
 
 // GeminiCandidate is a single generation candidate.
@@ -166,6 +166,12 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 			meta.Error = err.Error()
 		}
 		if ce := engine.AsChaosError(err); ce != nil {
+			if ce.Connection != "" {
+				if !connectionFault(w, ce.Connection) {
+					writeGeminiError(w, http.StatusBadGateway, "UNAVAILABLE", "connection fault could not be delivered")
+				}
+				return
+			}
 			if ra, ok := chaosRetryAfter(ce); ok {
 				w.Header().Set("Retry-After", ra)
 			}

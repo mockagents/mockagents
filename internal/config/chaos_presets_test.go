@@ -32,7 +32,7 @@ func TestExpandChaosPreset_AllExpandAndEnable(t *testing.T) {
 		if !c.Enabled {
 			t.Errorf("preset %q: chaos not enabled after expansion", name)
 		}
-		if c.Errors == nil && c.Latency == nil && c.RateLimit == nil {
+		if c.Errors == nil && c.Latency == nil && c.RateLimit == nil && c.Connection == nil {
 			t.Errorf("preset %q: nothing was expanded", name)
 		}
 	}

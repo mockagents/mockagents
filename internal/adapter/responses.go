@@ -285,6 +285,12 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 			meta.Error = err.Error()
 		}
 		if ce := engine.AsChaosError(err); ce != nil {
+			if ce.Connection != "" {
+				if !connectionFault(w, ce.Connection) {
+					writeError(w, http.StatusBadGateway, "server_error", "connection fault could not be delivered")
+				}
+				return
+			}
 			if ra, ok := chaosRetryAfter(ce); ok {
 				w.Header().Set("Retry-After", ra)
 			}

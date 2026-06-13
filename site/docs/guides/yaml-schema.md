@@ -200,6 +200,7 @@ chaos:
 | `unauthorized` | every request → 401 (bad credentials) |
 | `flaky` | fail the first 2 requests (503), then recover |
 | `slow` | add 2–5s of latency to every response |
+| `connection-reset` | every request resets the TCP connection (RST) |
 
 See [`examples/access-denied-agent.yaml`](https://github.com/mockagents/mockagents/blob/main/examples/access-denied-agent.yaml).
 
@@ -220,6 +221,31 @@ chaos:
 with `timeout: true` (the first N time out, then recover), and the per-agent
 counter resets when the server restarts. See
 [`examples/flaky-then-healthy-agent.yaml`](https://github.com/mockagents/mockagents/blob/main/examples/flaky-then-healthy-agent.yaml).
+
+### Connection-layer faults (`chaos.connection`)
+
+HTTP-status errors return a well-formed error *response*. To exercise client
+**transport-error** handling — the cases an error body can't reach — fault the
+TCP connection itself, before any HTTP response is written:
+
+```yaml
+chaos:
+  connection:
+    mode: reset      # reset | empty | random
+    rate: 1.0        # or fail_first: N
+```
+
+| `mode` | What the client sees | Simulates |
+|---|---|---|
+| `reset` (alias `peer-reset`) | "connection reset by peer" (TCP RST) | a server/LB dropping the connection |
+| `empty` | empty reply / unexpected EOF | a half-open connection closed with no response |
+| `random` (aliases `random-then-close`, `garbage`) | a malformed/unparseable response | a corrupt proxy or protocol downgrade |
+
+Triggered by `rate` or `fail_first` exactly like `chaos.errors`. The server
+hijacks the connection to deliver the fault; over HTTP/2 (where hijacking isn't
+available) it falls back to a `502`. The `connection-reset` preset is shorthand
+for `{mode: reset, rate: 1.0}`. See
+[`examples/connection-fault-agent.yaml`](https://github.com/mockagents/mockagents/blob/main/examples/connection-fault-agent.yaml).
 
 ## Semantic error modes
 

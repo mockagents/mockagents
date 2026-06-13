@@ -1,6 +1,10 @@
 package config
 
-import "github.com/mockagents/mockagents/internal/types"
+import (
+	"sort"
+
+	"github.com/mockagents/mockagents/internal/types"
+)
 
 // chaosPresets maps a preset name to a function that fills a ChaosConfig's
 // sub-sections. Each only sets a section that the agent left nil, so an author
@@ -46,6 +50,31 @@ var chaosPresets = map[string]func(*types.ChaosConfig){
 			c.Latency = &types.ChaosLatencyConfig{Distribution: "uniform", MinMs: 2000, MaxMs: 5000}
 		}
 	},
+	// connection-reset: every request resets the TCP connection (peer-reset).
+	"connection-reset": func(c *types.ChaosConfig) {
+		if c.Connection == nil {
+			c.Connection = &types.ChaosConnectionConfig{Mode: "reset", Rate: 1}
+		}
+	},
+}
+
+// connectionModes is the set of accepted ChaosConnectionConfig.Mode values
+// (canonical names plus aliases). Shared by the validator.
+var connectionModes = map[string]bool{
+	"reset": true, "peer-reset": true,
+	"empty":  true,
+	"random": true, "random-then-close": true, "garbage": true,
+}
+
+// connectionModeNames returns the accepted modes sorted, so a validation hint
+// can never drift from connectionModes.
+func connectionModeNames() []string {
+	names := make([]string, 0, len(connectionModes))
+	for m := range connectionModes {
+		names = append(names, m)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // isChaosPreset reports whether name is a recognized preset.

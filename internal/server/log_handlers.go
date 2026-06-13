@@ -581,6 +581,14 @@ func (w *captureWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap exposes the wrapped writer so http.ResponseController can reach the
+// underlying net.Conn for optional interfaces (Hijacker — used by the chaos
+// connection-fault path, FB-03 slice 5 — plus ReaderFrom/SetWriteDeadline).
+// Without it this wrapper would terminate the Unwrap chain and break Hijack.
+func (w *captureWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 func (w *captureWriter) Write(p []byte) (int, error) {
 	// A handler that writes without an explicit WriteHeader implies 200;
 	// sniff here too so SSE started that way is still recognized before

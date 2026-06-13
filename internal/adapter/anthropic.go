@@ -214,6 +214,12 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 			meta.Error = err.Error()
 		}
 		if ce := engine.AsChaosError(err); ce != nil {
+			if ce.Connection != "" {
+				if !connectionFault(w, ce.Connection) {
+					writeAnthropicError(w, http.StatusBadGateway, "api_error", "connection fault could not be delivered")
+				}
+				return
+			}
 			if ra, ok := chaosRetryAfter(ce); ok {
 				w.Header().Set("Retry-After", ra)
 			}

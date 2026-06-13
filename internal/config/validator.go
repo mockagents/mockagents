@@ -10,9 +10,9 @@ import (
 )
 
 var (
-	validProtocols  = []string{"openai-chat-completions", "anthropic-messages", "google-gemini"}
-	metadataNameRe  = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
-	toolNameRe      = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+	validProtocols = []string{"openai-chat-completions", "anthropic-messages", "google-gemini"}
+	metadataNameRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+	toolNameRe     = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 )
 
 // ValidationError represents a single validation problem with location context.
@@ -250,13 +250,33 @@ func (v *Validator) validateStreaming(ctx *validationContext, def *types.AgentDe
 
 func (v *Validator) validateChaos(ctx *validationContext, def *types.AgentDefinition) {
 	c := def.Spec.Behavior.Chaos
-	if c == nil || c.Preset == "" {
+	if c == nil {
 		return
 	}
-	if !isChaosPreset(c.Preset) {
+	if c.Preset != "" && !isChaosPreset(c.Preset) {
 		ctx.addError("spec.behavior.chaos.preset",
 			fmt.Sprintf("unknown chaos preset %q", c.Preset),
 			fmt.Sprintf("Use one of: %s", strings.Join(types.ChaosPresets, ", ")))
+	}
+	if cc := c.Connection; cc != nil {
+		if !connectionModes[cc.Mode] {
+			ctx.addError("spec.behavior.chaos.connection.mode",
+				fmt.Sprintf("unknown connection mode %q", cc.Mode),
+				fmt.Sprintf("Use one of: %s.", strings.Join(connectionModeNames(), ", ")))
+		}
+		if cc.Rate < 0 || cc.Rate > 1 {
+			ctx.addError("spec.behavior.chaos.connection.rate",
+				"rate must be in [0.0, 1.0]", "")
+		}
+		if cc.FailFirst < 0 {
+			ctx.addError("spec.behavior.chaos.connection.fail_first",
+				"fail_first must be >= 0", "")
+		}
+		if cc.Rate == 0 && cc.FailFirst == 0 {
+			ctx.addError("spec.behavior.chaos.connection",
+				"connection fault has no trigger: set rate or fail_first",
+				"Without a trigger the fault never fires.")
+		}
 	}
 }
 

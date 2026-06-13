@@ -26,10 +26,18 @@ type ChaosError struct {
 	Message    string
 	RetryAfter time.Duration
 	Timeout    bool
+	// Connection, when non-empty, marks a connection-LAYER fault (FB-03 slice 5)
+	// rather than an HTTP-status fault: the adapter hijacks the TCP connection and
+	// performs the named mode ("reset"|"empty"|"random", plus aliases) instead of
+	// writing an HTTP response.
+	Connection string
 }
 
 // Error satisfies the error interface.
 func (e *ChaosError) Error() string {
+	if e.Connection != "" {
+		return fmt.Sprintf("chaos: connection fault %q", e.Connection)
+	}
 	if e.Timeout {
 		return fmt.Sprintf("chaos: timeout after %s", e.RetryAfter)
 	}
@@ -64,6 +72,10 @@ type ChaosInjector struct {
 	// errorCounts holds the cumulative request count per agent for the
 	// FailFirst stateful trigger. Bounded by the agent set, same as buckets.
 	errorCounts map[string]int
+	// connCounts is the FailFirst counter for connection-layer faults, kept
+	// SEPARATE from errorCounts so an agent configuring both errors.fail_first
+	// and connection.fail_first gets independent per-fault counts.
+	connCounts map[string]int
 }
 
 // NewChaosInjector returns an injector that uses the real wall clock and a
@@ -75,7 +87,45 @@ func NewChaosInjector() *ChaosInjector {
 		RandSrc:     rand.New(rand.NewSource(time.Now().UnixNano())),
 		buckets:     make(map[string]*rateBucket),
 		errorCounts: make(map[string]int),
+		connCounts:  make(map[string]int),
 	}
+}
+
+// ensureMaps lazily initializes the per-agent counter maps so a
+// directly-constructed ChaosInjector{...} (tests) is usable without setting
+// every map. Cheap and idempotent.
+func (c *ChaosInjector) ensureMaps() {
+	c.mu.Lock()
+	if c.buckets == nil {
+		c.buckets = make(map[string]*rateBucket)
+	}
+	if c.errorCounts == nil {
+		c.errorCounts = make(map[string]int)
+	}
+	if c.connCounts == nil {
+		c.connCounts = make(map[string]int)
+	}
+	c.mu.Unlock()
+}
+
+// shouldTrigger decides whether a fault fires this request, applying the shared
+// FailFirst-then-recover / Rate-probability semantics. FailFirst takes
+// precedence: the first N requests fault deterministically (bumping counter),
+// then it recovers. Otherwise it draws against the clamped rate. Caller must
+// have run ensureMaps so counter is non-nil.
+func (c *ChaosInjector) shouldTrigger(agentName string, rate float64, failFirst int, counter map[string]int) bool {
+	if failFirst > 0 {
+		c.mu.Lock()
+		counter[agentName]++
+		n := counter[agentName]
+		c.mu.Unlock()
+		return n <= failFirst
+	}
+	r := clampUnitInterval(rate)
+	c.mu.Lock()
+	draw := c.RandSrc.Float64()
+	c.mu.Unlock()
+	return draw < r
 }
 
 // sleep blocks for d, but returns early if ctx is cancelled. When a Sleep
@@ -113,6 +163,7 @@ func (c *ChaosInjector) Before(ctx context.Context, agent *types.AgentDefinition
 	if cfg == nil {
 		return nil
 	}
+	c.ensureMaps()
 	if cfg.RateLimit != nil && cfg.RateLimit.Requests > 0 {
 		if err := c.checkRateLimit(agent.Metadata.Name, cfg.RateLimit); err != nil {
 			return err
@@ -123,7 +174,31 @@ func (c *ChaosInjector) Before(ctx context.Context, agent *types.AgentDefinition
 			return err
 		}
 	}
+	// Connection-layer fault (FB-03 slice 5): evaluated last — a low-level test
+	// fixture below the HTTP-status faults above.
+	if cfg.Connection != nil && (cfg.Connection.Rate > 0 || cfg.Connection.FailFirst > 0) {
+		if err := c.maybeInjectConnectionFault(agent.Metadata.Name, cfg.Connection); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// maybeInjectConnectionFault returns a *ChaosError carrying the connection mode
+// when this request should be faulted (by Rate or FailFirst), else nil.
+func (c *ChaosInjector) maybeInjectConnectionFault(agentName string, cc *types.ChaosConnectionConfig) error {
+	if !c.shouldTrigger(agentName, cc.Rate, cc.FailFirst, c.connCounts) {
+		return nil
+	}
+	// Defense in depth: a blank Mode (e.g. from a caller that skipped the config
+	// validator) defaults to "empty" so the ChaosError still marks a connection
+	// fault — otherwise an empty Connection would fall through to the HTTP-status
+	// path with StatusCode 0 (an invalid WriteHeader).
+	mode := cc.Mode
+	if mode == "" {
+		mode = "empty"
+	}
+	return &ChaosError{Connection: mode}
 }
 
 // After sleeps for the configured latency distribution. Called once response
@@ -156,7 +231,7 @@ func chaosFor(agent *types.AgentDefinition) *types.ChaosConfig {
 }
 
 func hasAnyChaosSection(cfg *types.ChaosConfig) bool {
-	return cfg.Latency != nil || cfg.Errors != nil || cfg.RateLimit != nil
+	return cfg.Latency != nil || cfg.Errors != nil || cfg.RateLimit != nil || cfg.Connection != nil
 }
 
 // clampUnitInterval bounds a probability to [0,1] so an out-of-range
@@ -228,32 +303,10 @@ func (c *ChaosInjector) sampleLatency(l *types.ChaosLatencyConfig) time.Duration
 // on the request's critical path, not a deadline annotation. It is cut short
 // only if ctx is cancelled (e.g. the client disconnects).
 func (c *ChaosInjector) maybeInjectError(ctx context.Context, agentName string, e *types.ChaosErrorConfig) error {
-	if e.FailFirst > 0 {
-		// Deterministic stateful trigger: fail the first N requests, then
-		// recover. Takes precedence over Rate so the retry-until-success
-		// fixture is exact. The count is bumped once per request here.
-		c.mu.Lock()
-		if c.errorCounts == nil {
-			c.errorCounts = make(map[string]int)
-		}
-		c.errorCounts[agentName]++
-		n := c.errorCounts[agentName]
-		c.mu.Unlock()
-		if n > e.FailFirst {
-			return nil // recovered
-		}
-		// fall through to inject deterministically (no probability draw)
-	} else {
-		// Clamp Rate to [0,1] (F-CH-004): an out-of-range rate otherwise
-		// silently means "always" (>1) or "never" (<0). Since draw is in
-		// [0,1), a clamped rate of 1 always injects and 0 never does.
-		rate := clampUnitInterval(e.Rate)
-		c.mu.Lock()
-		draw := c.RandSrc.Float64()
-		c.mu.Unlock()
-		if draw >= rate {
-			return nil
-		}
+	// FailFirst-then-recover / Rate-probability trigger (shared with the
+	// connection-fault path). Rate is clamped to [0,1] inside shouldTrigger.
+	if !c.shouldTrigger(agentName, e.Rate, e.FailFirst, c.errorCounts) {
+		return nil
 	}
 
 	if e.Timeout {

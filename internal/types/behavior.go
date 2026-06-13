@@ -131,15 +131,16 @@ type ChaosConfig struct {
 	// "access-denied") that expands at load time into the concrete sub-sections
 	// below. Explicitly-set sub-sections take precedence over the preset's
 	// values. See ChaosPresets for the recognized names.
-	Preset    string                `yaml:"preset,omitempty" json:"preset,omitempty"`
-	Latency   *ChaosLatencyConfig   `yaml:"latency,omitempty" json:"latency,omitempty"`
-	Errors    *ChaosErrorConfig     `yaml:"errors,omitempty" json:"errors,omitempty"`
-	RateLimit *ChaosRateLimitConfig `yaml:"rate_limit,omitempty" json:"rate_limit,omitempty"`
+	Preset     string                 `yaml:"preset,omitempty" json:"preset,omitempty"`
+	Latency    *ChaosLatencyConfig    `yaml:"latency,omitempty" json:"latency,omitempty"`
+	Errors     *ChaosErrorConfig      `yaml:"errors,omitempty" json:"errors,omitempty"`
+	RateLimit  *ChaosRateLimitConfig  `yaml:"rate_limit,omitempty" json:"rate_limit,omitempty"`
+	Connection *ChaosConnectionConfig `yaml:"connection,omitempty" json:"connection,omitempty"`
 }
 
 // ChaosPresets are the recognized ChaosConfig.Preset names. Kept here so the
 // validator, the schema, and docs share one source of truth.
-var ChaosPresets = []string{"server-down", "rate-limited", "access-denied", "unauthorized", "flaky", "slow"}
+var ChaosPresets = []string{"server-down", "rate-limited", "access-denied", "unauthorized", "flaky", "slow", "connection-reset"}
 
 // ChaosLatencyConfig controls how artificial delay is added to responses.
 // Supported distributions: "fixed" (uses MinMs), "uniform" (MinMs..MaxMs),
@@ -182,4 +183,27 @@ type ChaosErrorConfig struct {
 type ChaosRateLimitConfig struct {
 	Requests int `yaml:"requests" json:"requests"`
 	WindowMs int `yaml:"window_ms" json:"window_ms"`
+}
+
+// ChaosConnectionConfig injects a CONNECTION-layer fault before any HTTP
+// response is written (FB-03 slice 5) — the transport-level complement to the
+// HTTP-status faults in ChaosErrorConfig and the mid-stream faults in
+// StreamingConfig. The server hijacks the TCP connection and:
+//
+//   - "reset"  (alias "peer-reset")              — sends a TCP RST (client sees
+//     "connection reset by peer").
+//   - "empty"                                    — closes with no bytes (client
+//     sees an empty reply / unexpected EOF).
+//   - "random" (aliases "random-then-close",     — writes a few non-HTTP garbage
+//     "garbage")                                   bytes then closes (client sees
+//     a malformed/unparseable response).
+//
+// Rate and FailFirst trigger it with the same semantics as ChaosErrorConfig
+// (FailFirst takes precedence over Rate; the per-agent count is independent of
+// the error FailFirst counter). On HTTP/2 (no Hijacker) the server falls back to
+// a 502.
+type ChaosConnectionConfig struct {
+	Mode      string  `yaml:"mode" json:"mode"`
+	Rate      float64 `yaml:"rate,omitempty" json:"rate,omitempty"`
+	FailFirst int     `yaml:"fail_first,omitempty" json:"fail_first,omitempty"`
 }

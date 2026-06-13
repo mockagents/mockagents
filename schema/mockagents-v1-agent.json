@@ -365,7 +365,7 @@
         },
         "preset": {
           "type": "string",
-          "enum": ["server-down", "rate-limited", "access-denied", "unauthorized", "flaky", "slow"],
+          "enum": ["server-down", "rate-limited", "access-denied", "unauthorized", "flaky", "slow", "connection-reset"],
           "description": "Named shorthand that expands into the concrete chaos sub-sections at load time. Explicit sub-sections override the preset."
         },
         "latency": {
@@ -438,6 +438,30 @@
               "type": "integer",
               "minimum": 1,
               "description": "Rolling window size in milliseconds."
+            }
+          }
+        },
+        "connection": {
+          "type": "object",
+          "required": ["mode"],
+          "additionalProperties": false,
+          "description": "Connection-LAYER fault injected before any HTTP response (FB-03 slice 5). The server hijacks the TCP connection; on HTTP/2 it falls back to a 502.",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["reset", "peer-reset", "empty", "random", "random-then-close", "garbage"],
+              "description": "reset/peer-reset: TCP RST; empty: close with no bytes; random/random-then-close/garbage: write garbage bytes then close."
+            },
+            "rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Probability of injecting the fault per request (0.0 to 1.0)."
+            },
+            "fail_first": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Stateful trigger: fault the first N requests to this agent, then recover. Takes precedence over rate."
             }
           }
         }

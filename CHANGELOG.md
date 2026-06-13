@@ -11,6 +11,25 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **Connection-layer fault injection** (FB-03 slice 5, completing the FB-03
+  failure-injection catalog) — a new `chaos.connection` block faults the request
+  at the TRANSPORT layer, before any HTTP response is written, by hijacking the
+  TCP connection:
+  - `mode: reset` (alias `peer-reset`) — sends a TCP RST (client sees "connection
+    reset by peer").
+  - `mode: empty` — closes with no bytes (client sees an empty reply / EOF).
+  - `mode: random` (aliases `random-then-close`, `garbage`) — writes non-HTTP
+    garbage bytes then closes (client sees a malformed response).
+
+  Triggered by `rate` (probability) or `fail_first` (the first N requests, then
+  recover) with the same semantics as `chaos.errors`; on HTTP/2 (no hijack) the
+  server falls back to a 502. Adds the `connection-reset` preset and
+  `examples/connection-fault-agent.yaml`. This is the transport-level complement
+  to the existing HTTP-status faults (`chaos.errors`) and mid-stream faults
+  (`streaming.truncate_after_chunks` / `malformed`). (Also fixes the
+  InteractionCapture `captureWriter` to implement `Unwrap` so
+  `http.ResponseController` can reach the connection through the full middleware
+  chain.)
 - **Cassette importers** (R-05, completing record/replay v2) — convert existing
   recordings into a MockAgents cassette that `mockagents replay` serves:
   - `mockagents import vcr <cassette.yaml>` — import a vcrpy (Python) YAML
