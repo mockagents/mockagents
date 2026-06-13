@@ -148,7 +148,7 @@ spec:
 # stdio (clients that spawn the server as a subprocess)
 mockagents mcp --transport stdio --agents-dir examples --server weather-mcp
 
-# or HTTP (POST JSON-RPC to /mcp)
+# or HTTP — Streamable HTTP transport on a single /mcp endpoint
 mockagents mcp --transport http --port 8081 --agents-dir examples
 ```
 
@@ -164,15 +164,24 @@ $ printf '%s\n' \
     '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_forecast","arguments":{"city":"tokyo"}}}' \
   | mockagents mcp --transport stdio --agents-dir examples --server weather-mcp
 
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","serverInfo":{"name":"weather-mcp","version":"mock"},"capabilities":{"prompts":{},"resources":{},"tools":{}}}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","serverInfo":{"name":"weather-mcp","version":"mock"},"capabilities":{"prompts":{},"resources":{},"tools":{}}}}
 {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"get_forecast","description":"Return a canned weather forecast for a city.","inputSchema":{"properties":{"city":{"type":"string"}},"required":["city"],"type":"object"}}]}}
 {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"Tokyo: sunny, 22C"}]}}
 ```
 
-Over HTTP, `POST` the same JSON-RPC bodies to `http://localhost:8081/mcp`. The
-Python/TypeScript/Go SDKs ship an `McpClient` for the bidirectional flow
-(`sampling/createMessage`, `roots/list`) over the `GET /mcp/events` +
-`POST /mcp/response` SSE channel.
+Over HTTP, the `/mcp` endpoint speaks the current MCP **Streamable HTTP**
+transport: `POST` your JSON-RPC bodies to `http://localhost:8081/mcp` (the
+server returns `application/json`, or an SSE stream when you send
+`Accept: application/json, text/event-stream`), open a `GET` on the same URL for
+the resumable server→client event stream (`Last-Event-ID` replays missed
+events), and `DELETE` it to end the session. The first `initialize` response
+carries an `Mcp-Session-Id` header that subsequent requests must echo; the
+`Origin` and `MCP-Protocol-Version` headers are validated. A plain
+POST-JSON-only transport (no sessions) also remains at `/mcp/rpc`.
+
+The Python/TypeScript/Go SDKs additionally ship an `McpClient` for the v0.3
+bidirectional flow (`sampling/createMessage`, `roots/list`) over the
+`GET /mcp/events` + `POST /mcp/response` SSE channel.
 
 ---
 

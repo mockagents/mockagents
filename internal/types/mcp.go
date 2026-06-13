@@ -4,8 +4,10 @@ const (
 	MCPServerKind = "MCPServer"
 
 	// DefaultMCPProtocolVersion is the version reported in `initialize`
-	// responses when the agent definition does not override it.
-	DefaultMCPProtocolVersion = "2024-11-05"
+	// responses when the agent definition does not override it. Bumped to the
+	// current Streamable HTTP revision; the older revisions remain accepted in
+	// the MCP-Protocol-Version request header (see mcp.SupportedProtocolVersions).
+	DefaultMCPProtocolVersion = "2025-11-25"
 )
 
 // MCPServerDefinition is a declarative mock MCP server.

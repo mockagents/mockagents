@@ -266,10 +266,11 @@ Merge Request UI automatically.
 ## Mock MCP Server
 
 MockAgents ships a JSON-RPC 2.0 Model Context Protocol mock with two transports
-— HTTP (`POST /mcp`) and stdio (line-delimited JSON) — so you can develop and
-test MCP clients without standing up a real server. A `kind: MCPServer`
-definition declaratively lists tools, resources, and prompts; tool calls resolve
-via the same match/default pattern used by LLM agents.
+— the current **Streamable HTTP** transport (a single `/mcp` endpoint answering
+POST/GET/DELETE) and stdio (line-delimited JSON) — so you can develop and test
+MCP clients without standing up a real server. A `kind: MCPServer` definition
+declaratively lists tools, resources, and prompts; tool calls resolve via the
+same match/default pattern used by LLM agents.
 
 ```bash
 # HTTP transport
@@ -278,6 +279,15 @@ mockagents mcp --transport http --port 8081 --agents-dir examples
 # stdio transport (for clients that spawn the server as a subprocess)
 mockagents mcp --transport stdio --agents-dir examples --server weather-mcp
 ```
+
+Over HTTP the `/mcp` endpoint implements the MCP **Streamable HTTP** transport
+(protocol revision `2025-11-25`): `POST` a JSON-RPC message (the server replies
+with `application/json`, or an SSE stream when the client sends
+`Accept: …text/event-stream`), open a `GET` for the resumable server→client SSE
+stream (`Last-Event-ID` replays missed events), and `DELETE` to end the session.
+The `initialize` response mints an `Mcp-Session-Id` the client must echo on
+later requests; the `Origin` and `MCP-Protocol-Version` headers are validated. A
+plain POST-JSON transport (no sessions) remains at `/mcp/rpc`.
 
 Supported methods (v0.3): `initialize`, `tools/list`, `tools/call`,
 `resources/list`, `resources/read`, `prompts/list`, `prompts/get`,

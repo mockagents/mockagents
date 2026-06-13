@@ -20,7 +20,11 @@ var mcpCmd = &cobra.Command{
 	Use:   "mcp",
 	Short: "Run a mock Model Context Protocol (MCP) server",
 	Long: `Load one or more kind: MCPServer definitions from --agents-dir and
-serve them over either HTTP (POST /mcp) or stdio (line-delimited JSON).
+serve them over either HTTP (Streamable HTTP at /mcp) or stdio (line-delimited
+JSON). The HTTP transport implements the current MCP Streamable HTTP revision:
+a single /mcp endpoint answering POST (JSON or SSE), GET (resumable server→client
+SSE stream), and DELETE (session termination), with Mcp-Session-Id session
+tracking and Origin / MCP-Protocol-Version validation.
 
 Examples:
   mockagents mcp --transport http --port 8081 --agents-dir ./agents
@@ -91,7 +95,15 @@ func runMCP(cmd *cobra.Command, args []string) error {
 
 func serveMCPHTTP(server *mcp.Server, port int) error {
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcp.NewHTTPHandler(server))
+	// `/mcp` speaks the current Streamable HTTP transport (single endpoint:
+	// POST/GET/DELETE, Mcp-Session-Id lifecycle, SSE-on-POST, GET resumability).
+	// The legacy POST-only JSON transport is still available at `/mcp/rpc` for
+	// older clients, and `/mcp/notify` pushes a server notification onto every
+	// live streamable session's GET stream.
+	streamable := mcp.NewStreamableHTTPHandler(server)
+	mux.Handle("/mcp", streamable)
+	mux.Handle("/mcp/rpc", mcp.NewHTTPHandler(server))
+	mux.Handle("/mcp/notify", mcp.NewStreamableNotifyHandler(streamable))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})

@@ -11,6 +11,34 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **Streamable HTTP MCP transport** (M-01) — `mockagents mcp --transport http`
+  now serves the current MCP Streamable HTTP revision on a single `/mcp`
+  endpoint instead of the legacy POST-only JSON handler:
+  - **POST** — send one JSON-RPC message. A request is answered either with a
+    single `application/json` body or, when the client sends
+    `Accept: …text/event-stream`, as a short SSE stream carrying the response as
+    a `message` event before closing. A notification or response (no `id`) is
+    acknowledged with `202 Accepted` and no body.
+  - **GET** — opens a resumable server→client SSE stream. Every event carries a
+    monotonic `id:`; a reconnecting client replays only the events it missed by
+    sending `Last-Event-ID`.
+  - **DELETE** — terminates the session.
+  - **Sessions** — the server mints an `Mcp-Session-Id` on `initialize` and
+    returns it on that response; later requests must echo it (an absent header
+    is `400`, an unknown/expired id is `404` so the client reinitializes).
+  - **Hardening** — `Origin` is validated to defend against DNS rebinding
+    (disallowed origin → `403`; loopback always allowed), the
+    `MCP-Protocol-Version` header is validated on post-init requests
+    (unsupported → `400`), POST bodies are size-capped, the session table and
+    per-session event log are bounded, and concurrent GET streams per session
+    are capped (excess → `429`).
+  - The default advertised protocol version is bumped to **`2025-11-25`**, with
+    `2025-06-18` / `2025-03-26` / `2024-11-05` still accepted in the
+    `MCP-Protocol-Version` header. A new `/mcp/notify` admin endpoint pushes a
+    server notification onto every live session's GET stream. The legacy
+    POST-only JSON transport remains available at **`/mcp/rpc`**. (Server-
+    initiated `sampling`/`roots` over the streamable stream and JSON-RPC
+    batching are documented follow-ons.)
 - **OpenAI Files + Batch API** (A-08) — the asynchronous, file-driven sibling of
   the per-request endpoints, so a client can run the full
   upload → create → poll → download flow against the mock:
