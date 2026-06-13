@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -134,6 +135,11 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	var req GeminiRequest
 	if err := decodeJSONBody(r, &req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeGeminiError(w, http.StatusRequestEntityTooLarge, "INVALID_ARGUMENT", "request body too large")
+			return
+		}
 		writeGeminiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", fmt.Sprintf("invalid JSON: %s", err))
 		return
 	}

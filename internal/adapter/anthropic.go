@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -102,6 +103,11 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 
 	var req AnthropicRequest
 	if err := decodeJSONBody(r, &req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "request body too large")
+			return
+		}
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("invalid JSON: %s", err))
 		return
 	}

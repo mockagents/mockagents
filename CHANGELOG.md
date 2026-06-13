@@ -55,6 +55,19 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   the CLI-only-MVP baseline to the current control-plane architecture, and
   `README.md` RBAC table corrected for the `platform` role.
 
+### Security
+- **Bounded request-body decoding** — the OpenAI/Anthropic/Gemini adapter routes
+  now cap each decoded request body at 10 MiB (`http.MaxBytesReader`) instead of
+  draining it into an unbounded pooled-buffer allocation. An oversized body is
+  rejected with `413 Request Entity Too Large` in the provider's own error
+  envelope. Closes an unbounded-allocation DoS on every adapter route.
+
+### Fixed
+- **License detection** — `LICENSE` now carries the full verbatim Apache-2.0
+  text (the previous truncated header with an embedded copyright line made
+  GitHub report `NOASSERTION`); the project copyright notice moved to a new
+  `NOTICE` file.
+
 ---
 
 ## [v0.3.0] — Control plane, MCP duplex, SDK parity

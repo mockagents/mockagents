@@ -3,6 +3,7 @@ package adapter
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -85,6 +86,46 @@ func TestDecodeJSONBody_MalformedReturnsError(t *testing.T) {
 	var got ChatCompletionRequest
 	if err := decodeJSONBody(req, &got); err == nil {
 		t.Error("expected error on malformed JSON, got nil")
+	}
+}
+
+// TestDecodeJSONBody_OversizedReturnsMaxBytesError verifies the body
+// size cap: a body larger than maxDecodeBodyBytes is rejected with a
+// *http.MaxBytesError (which the adapter handlers map to a 413)
+// instead of being drained into an unbounded allocation.
+func TestDecodeJSONBody_OversizedReturnsMaxBytesError(t *testing.T) {
+	// A valid-JSON string literal padded well past the cap, so the
+	// rejection is driven by size and not by a parse error.
+	huge := `{"model":"` + strings.Repeat("a", maxDecodeBodyBytes+1024) + `"}`
+	req, _ := http.NewRequest("POST", "/", io.NopCloser(strings.NewReader(huge)))
+	var got ChatCompletionRequest
+	err := decodeJSONBody(req, &got)
+	if err == nil {
+		t.Fatal("expected error on oversized body, got nil")
+	}
+	var maxErr *http.MaxBytesError
+	if !errors.As(err, &maxErr) {
+		t.Fatalf("expected *http.MaxBytesError, got %T: %v", err, err)
+	}
+}
+
+// TestDecodeJSONBody_AtLimitSucceeds checks that a body at the upper
+// boundary still decodes — the cap rejects only what exceeds it.
+func TestDecodeJSONBody_AtLimitSucceeds(t *testing.T) {
+	// Build a valid request whose total length is comfortably under
+	// the cap but large (a long content string).
+	pad := strings.Repeat("x", maxDecodeBodyBytes/2)
+	body := `{"model":"m","messages":[{"role":"user","content":"` + pad + `"}]}`
+	if len(body) > maxDecodeBodyBytes {
+		t.Fatalf("test body %d exceeds cap %d", len(body), maxDecodeBodyBytes)
+	}
+	req, _ := http.NewRequest("POST", "/", io.NopCloser(strings.NewReader(body)))
+	var got ChatCompletionRequest
+	if err := decodeJSONBody(req, &got); err != nil {
+		t.Fatalf("decodeJSONBody at limit: %v", err)
+	}
+	if got.Model != "m" || len(got.Messages) != 1 {
+		t.Fatalf("decoded request mismatch: %+v", got)
 	}
 }
 
