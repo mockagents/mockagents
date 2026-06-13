@@ -56,6 +56,7 @@ func (r *Registry) Adapters() []Adapter {
 func DefaultRegistry(eng *engine.Engine) *Registry {
 	return NewRegistry(
 		&OpenAIHandler{Engine: eng},
+		NewResponsesHandler(eng),
 		&AnthropicHandler{Engine: eng},
 		&GeminiHandler{Engine: eng},
 	)

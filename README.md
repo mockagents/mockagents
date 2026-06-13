@@ -57,6 +57,9 @@ mockagents start                              # prints your base URL + a ready-t
   any CI in seconds (pure-Go, no cgo).
 - **OpenAI + Anthropic + Gemini parity** — real response shapes, `tool_calls` /
   `tool_use` / `functionCall`, `usage` token counts, and SSE streaming.
+- **OpenAI Responses API** (`/v1/responses`) — the default OpenAI Agents SDK
+  transport: typed output items, the full `response.*` streaming-event ladder,
+  and stateful `previous_response_id` multi-turn loops.
 - **Mocks MCP servers too** — test agents that call Model Context Protocol
   servers, deterministically (JSON-RPC 2.0 + bidirectional SSE).
 - **Scenario matching** — route by message content, regex, or turn number;

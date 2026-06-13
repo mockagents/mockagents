@@ -11,6 +11,20 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **OpenAI Responses API** (A-01) — a new `POST /v1/responses` surface, the
+  default transport of the OpenAI Agents SDK. Supports the polymorphic `input`
+  (bare string or typed item array incl. `function_call_output`), `instructions`,
+  typed output items (`message` with `output_text`/`refusal` parts and
+  `function_call` items), Responses-shaped `usage`, and request-setting echo
+  (tools, tool_choice, text, reasoning, temperature, …). **Streaming** emits the
+  full named-event ladder (`response.created` → `in_progress` →
+  `output_item.added` → `content_part.added` → `output_text.delta`/`.done` →
+  `content_part.done` → `output_item.done` → `completed`, plus
+  `function_call_arguments.delta`/`.done`) with monotonic `sequence_number`.
+  **Stateful** `previous_response_id` replays prior turns from a bounded
+  in-memory store, so Agents-SDK tool loops work. Built-in tools
+  (`web_search`/`file_search`/…) are accepted as stubs. Chaos errors render in
+  the OpenAI error envelope; bodies are size-capped like the other adapters.
 - **Scenario-pack templates** (FB-01) — `mockagents init --template <name>` /
   `--list-templates` scaffold a runnable project (agent + a matching TestSuite +
   README) from five curated, embedded packs: `basic`, `customer-support`, `rag`,
