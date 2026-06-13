@@ -83,6 +83,10 @@ var defaultPrices = []Price{
 	{Model: "gpt-4o-mini", PromptPer1KUSD: 0.00015, CompletionPer1KUSD: 0.00060},
 	{Model: "gpt-4-turbo", PromptPer1KUSD: 0.010, CompletionPer1KUSD: 0.030},
 	{Model: "gpt-3.5-turbo", PromptPer1KUSD: 0.0005, CompletionPer1KUSD: 0.0015},
+	// OpenAI embeddings (input-only; no completion tokens).
+	{Model: "text-embedding-3-small", PromptPer1KUSD: 0.00002, CompletionPer1KUSD: 0},
+	{Model: "text-embedding-3-large", PromptPer1KUSD: 0.00013, CompletionPer1KUSD: 0},
+	{Model: "text-embedding-ada-002", PromptPer1KUSD: 0.00010, CompletionPer1KUSD: 0},
 	// Anthropic
 	{Model: "claude-3-5-sonnet-latest", PromptPer1KUSD: 0.003, CompletionPer1KUSD: 0.015},
 	{Model: "claude-3-5-sonnet-20241022", PromptPer1KUSD: 0.003, CompletionPer1KUSD: 0.015},

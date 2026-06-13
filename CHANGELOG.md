@@ -11,6 +11,18 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **OpenAI Embeddings API** (A-02) — a new `POST /v1/embeddings` surface
+  returning **deterministic, L2-normalized vectors** seeded from a hash of
+  (input, model, dimensions), so the same request always yields identical
+  vectors offline. Matches the real wire shape (`object:"list"`,
+  `data[].object:"embedding"`, input-only `usage`), supports `input` as a
+  string / string array / token-id array(s), configurable `dimensions`
+  (reduce-only cap to the model's native width), and `encoding_format`
+  `float` (default) or `base64`. Zero-config — any embedding model name works
+  without an agent definition. Also adds the three `text-embedding-*` models to
+  the cost table and wires `/v1/embeddings` (and, fixing an A-01 gap,
+  `/v1/responses`) into the billable-path classifier so both are logged and
+  quota-counted.
 - **OpenAI Responses API** (A-01) — a new `POST /v1/responses` surface, the
   default transport of the OpenAI Agents SDK. Supports the polymorphic `input`
   (bare string or typed item array incl. `function_call_output`), `instructions`,

@@ -60,6 +60,9 @@ mockagents start                              # prints your base URL + a ready-t
 - **OpenAI Responses API** (`/v1/responses`) — the default OpenAI Agents SDK
   transport: typed output items, the full `response.*` streaming-event ladder,
   and stateful `previous_response_id` multi-turn loops.
+- **OpenAI Embeddings** (`/v1/embeddings`) — deterministic, unit-normalized
+  vectors (stable across runs), configurable `dimensions`, `float`/`base64`
+  encoding, and usage tokens — zero-config, no agent definition needed.
 - **Mocks MCP servers too** — test agents that call Model Context Protocol
   servers, deterministically (JSON-RPC 2.0 + bidirectional SSE).
 - **Scenario matching** — route by message content, regex, or turn number;

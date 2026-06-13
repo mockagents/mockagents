@@ -57,6 +57,7 @@ func DefaultRegistry(eng *engine.Engine) *Registry {
 	return NewRegistry(
 		&OpenAIHandler{Engine: eng},
 		NewResponsesHandler(eng),
+		&EmbeddingsHandler{},
 		&AnthropicHandler{Engine: eng},
 		&GeminiHandler{Engine: eng},
 	)

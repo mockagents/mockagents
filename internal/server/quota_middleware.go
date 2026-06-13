@@ -10,15 +10,16 @@ import (
 )
 
 // isLLMProviderPath reports whether a request path is a model-provider LLM
-// endpoint: OpenAI (/v1/chat/completions), Anthropic (/v1/messages), or Gemini
-// (/v1beta/models/{model}:generateContent and :streamGenerateContent). It is the
-// single source of truth for "this is quota-able/billable LLM traffic", shared by
-// the quota and interaction-logging middleware so the two can never disagree
-// about which routes count. The Gemini match is the two generate methods only —
-// not any /v1beta/models/... method (e.g. a future :countTokens is excluded).
+// endpoint: OpenAI (/v1/chat/completions, /v1/responses, /v1/embeddings),
+// Anthropic (/v1/messages), or Gemini (/v1beta/models/{model}:generateContent
+// and :streamGenerateContent). It is the single source of truth for "this is
+// quota-able/billable LLM traffic", shared by the quota and interaction-logging
+// middleware so the two can never disagree about which routes count. The Gemini
+// match is the two generate methods only — not any /v1beta/models/... method
+// (e.g. a future :countTokens is excluded).
 func isLLMProviderPath(path string) bool {
 	switch path {
-	case "/v1/chat/completions", "/v1/messages":
+	case "/v1/chat/completions", "/v1/responses", "/v1/embeddings", "/v1/messages":
 		return true
 	}
 	if strings.HasPrefix(path, "/v1beta/models/") {
