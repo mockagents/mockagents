@@ -11,6 +11,17 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **Per-framework "Testing with MockAgents" guide** (DOC-01) — a new
+  [Testing with Agent Frameworks](site/docs/guides/framework-testing.md) guide
+  with copy-pasteable, demo-grounded recipes for the agent frameworks that have
+  no official mock story: OpenAI Agents SDK (Responses + Chat Completions),
+  Anthropic Claude Agent SDK (CLI subprocess + MCP-namespaced tools), Google ADK
+  (native Gemini + LiteLLM bridge), CrewAI (`crewai_mock_llm` adapter), and
+  LangChain/LangGraph (`chat_openai`/`chat_anthropic`/`patched_env` adapters).
+  Covers the per-framework redirect mechanism, the `/v1`-suffix-vs-root gotcha,
+  loop-termination via `X-Session-Id` (or content markers), and how to assert
+  (TestSuite, the `mockagents` pytest fixture, the interaction log). Linked from
+  the README docs index and the mkdocs nav.
 - **Connection-layer fault injection** (FB-03 slice 5, completing the FB-03
   failure-injection catalog) — a new `chaos.connection` block faults the request
   at the TRANSPORT layer, before any HTTP response is written, by hijacking the

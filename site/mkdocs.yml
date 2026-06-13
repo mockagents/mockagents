@@ -35,6 +35,7 @@ nav:
     - Installation: getting-started/installation.md
   - Guides:
     - Testing AI Agents: guides/testing-agents.md
+    - Testing with Agent Frameworks: guides/framework-testing.md
     - Scenario Packs: guides/scenario-packs.md
     - Hallucination Testing: guides/hallucination-testing.md
     - Load Testing: guides/load-testing.md

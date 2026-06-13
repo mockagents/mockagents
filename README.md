@@ -443,6 +443,7 @@ of it. **See the [Multi-Tenant & Control-Plane guide](docs/guides/multi-tenant.m
 - [Quickstart Guide](site/docs/getting-started/quickstart.md)
 - [Drop-in Recipes (OpenAI/Anthropic/Gemini SDKs, Vercel AI, LangChain, LlamaIndex)](site/docs/guides/drop-in-recipes.md)
 - [Testing AI Agents (tool-calls + MCP)](site/docs/guides/testing-agents.md)
+- [Testing with Agent Frameworks (OpenAI Agents/Claude SDK/Google ADK/CrewAI/LangChain)](site/docs/guides/framework-testing.md)
 - [Scenario Packs](site/docs/guides/scenario-packs.md) · [Hallucination Testing](site/docs/guides/hallucination-testing.md)
 - [Record & Replay](site/docs/guides/record-replay.md)
 - [CLI Reference](site/docs/guides/cli-reference.md)
