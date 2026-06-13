@@ -21,7 +21,7 @@ func TestMatchWithCaptures_NamedGroups(t *testing.T) {
 		{Name: "default", Response: types.ScenarioResponse{Content: "default"}},
 	}
 
-	result := m.MatchWithCaptures(scenarios, "What's the weather in NYC?", 1)
+	result := m.MatchWithCaptures(scenarios, "What's the weather in NYC?", 1, 0)
 	require.NotNil(t, result)
 	assert.Equal(t, "weather", result.Scenario.Name)
 	assert.Equal(t, "NYC", result.Captures["city"])
@@ -37,7 +37,7 @@ func TestMatchWithCaptures_MultipleGroups(t *testing.T) {
 		},
 	}
 
-	result := m.MatchWithCaptures(scenarios, "Check order ORD-12345 for Alice", 1)
+	result := m.MatchWithCaptures(scenarios, "Check order ORD-12345 for Alice", 1, 0)
 	require.NotNil(t, result)
 	assert.Equal(t, "ORD-12345", result.Captures["order_id"])
 	assert.Equal(t, "Alice", result.Captures["customer"])
@@ -53,7 +53,7 @@ func TestMatchWithCaptures_NoGroups(t *testing.T) {
 		},
 	}
 
-	result := m.MatchWithCaptures(scenarios, "hello", 1)
+	result := m.MatchWithCaptures(scenarios, "hello", 1, 0)
 	require.NotNil(t, result)
 	assert.Empty(t, result.Captures)
 }
@@ -64,7 +64,7 @@ func TestMatchWithCaptures_Default(t *testing.T) {
 		{Name: "default", Response: types.ScenarioResponse{Content: "fallback"}},
 	}
 
-	result := m.MatchWithCaptures(scenarios, "anything", 1)
+	result := m.MatchWithCaptures(scenarios, "anything", 1, 0)
 	require.NotNil(t, result)
 	assert.Equal(t, "default", result.Scenario.Name)
 	assert.Nil(t, result.Captures)
@@ -80,7 +80,7 @@ func TestMatchWithCaptures_NoMatch(t *testing.T) {
 		},
 	}
 
-	result := m.MatchWithCaptures(scenarios, "hello", 1)
+	result := m.MatchWithCaptures(scenarios, "hello", 1, 0)
 	assert.Nil(t, result)
 }
 
@@ -98,12 +98,12 @@ func TestRegexCaching(t *testing.T) {
 	}
 
 	// First call — compiles and caches.
-	result1 := m.MatchWithCaptures(scenarios, "order 123", 1)
+	result1 := m.MatchWithCaptures(scenarios, "order 123", 1, 0)
 	require.NotNil(t, result1)
 	assert.Equal(t, "pattern", result1.Scenario.Name)
 
 	// Second call — uses cached regex.
-	result2 := m.MatchWithCaptures(scenarios, "item 456", 1)
+	result2 := m.MatchWithCaptures(scenarios, "item 456", 1, 0)
 	require.NotNil(t, result2)
 	assert.Equal(t, "pattern", result2.Scenario.Name)
 }
@@ -119,7 +119,7 @@ func TestRegexCaching_InvalidRegex(t *testing.T) {
 		{Name: "default", Response: types.ScenarioResponse{Content: "default"}},
 	}
 
-	result := m.MatchWithCaptures(scenarios, "test", 1)
+	result := m.MatchWithCaptures(scenarios, "test", 1, 0)
 	require.NotNil(t, result)
 	assert.Equal(t, "default", result.Scenario.Name)
 }

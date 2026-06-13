@@ -153,10 +153,11 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 
 	// Convert to engine request.
+	convertedMsgs, imageCount := convertOpenAIMessages(req.Messages)
 	inbound := &engine.InboundRequest{
 		Model:     req.Model,
 		SessionID: extractSessionID(r),
-		Messages:  convertOpenAIMessages(req.Messages),
+		Messages:  convertedMsgs,
 		Stream:    req.Stream,
 	}
 	if meta != nil {
@@ -198,6 +199,7 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 
 	setHallucinationHeader(w, resp)
+	setImageCountHeader(w, imageCount)
 
 	// Enforce response_format (structured outputs / JSON mode) on the engine
 	// result before formatting, so streaming and non-streaming both emit the
@@ -254,16 +256,51 @@ func (h *OpenAIHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
 
 // --- Conversion Helpers ---
 
-func convertOpenAIMessages(msgs []OpenAIMessage) []engine.RequestMessage {
+// convertOpenAIMessages flattens the wire messages to engine messages and
+// returns the total number of image parts across them (A-05). The per-message
+// image count is carried out-of-band on RequestMessage.ImageCount — the
+// flattened text stays pure (no markers) so regex matching, templates, and
+// token counts are unaffected. An image-only turn keeps a non-zero ImageCount
+// so the engine doesn't reject it as empty.
+func convertOpenAIMessages(msgs []OpenAIMessage) ([]engine.RequestMessage, int) {
 	result := make([]engine.RequestMessage, 0, len(msgs))
+	totalImages := 0
 	for _, m := range msgs {
-		content := extractStringContent(m.Content)
+		content, imgCount := extractStringContentWithImages(m.Content)
+		totalImages += imgCount
 		result = append(result, engine.RequestMessage{
-			Role:    m.Role,
-			Content: content,
+			Role:       m.Role,
+			Content:    content,
+			ImageCount: imgCount,
 		})
 	}
-	return result
+	return result, totalImages
+}
+
+// extractStringContentWithImages flattens content to text and counts image_url
+// parts. The text is marker-free; the count is returned separately.
+func extractStringContentWithImages(content any) (string, int) {
+	blocks, ok := content.([]any)
+	if !ok {
+		return extractStringContent(content), 0
+	}
+	var parts []string
+	images := 0
+	for _, item := range blocks {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch m["type"] {
+		case "text":
+			if t, ok := m["text"].(string); ok {
+				parts = append(parts, t)
+			}
+		case "image_url":
+			images++
+		}
+	}
+	return strings.Join(parts, " "), images
 }
 
 func extractStringContent(content any) string {

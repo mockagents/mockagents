@@ -76,6 +76,9 @@ mockagents start                              # prints your base URL + a ready-t
   (`cache_creation`/`cache_read`, driven by `cache_control`), and
   extended-thinking blocks — to test cost-cache and thinking-trace handling
   offline.
+- **Vision input** — OpenAI `image_url` (incl. `data:` URLs) and Anthropic
+  base64/url image parts are parsed; match on image presence via the `has_image`
+  scenario rule and read the count from the `X-Mockagents-Image-Count` header.
 - **Mocks MCP servers too** — test agents that call Model Context Protocol
   servers, deterministically (JSON-RPC 2.0 + bidirectional SSE).
 - **Scenario matching** — route by message content, regex, or turn number;

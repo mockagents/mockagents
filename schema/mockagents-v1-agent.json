@@ -209,6 +209,10 @@
           "type": "integer",
           "minimum": 0,
           "description": "Conversation turn number to match."
+        },
+        "has_image": {
+          "type": "boolean",
+          "description": "Match only when the latest user turn carries at least one image part (true) or none (false)."
         }
       }
     },

@@ -197,10 +197,11 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 	}
 
 	// Convert to engine request.
+	convertedMsgs, imageCount := convertAnthropicMessages(req.Messages, req.System)
 	inbound := &engine.InboundRequest{
 		Model:     req.Model,
 		SessionID: extractSessionID(r),
-		Messages:  convertAnthropicMessages(req.Messages, req.System),
+		Messages:  convertedMsgs,
 		Stream:    req.Stream,
 	}
 	if meta != nil {
@@ -240,6 +241,7 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 	}
 
 	setHallucinationHeader(w, resp)
+	setImageCountHeader(w, imageCount)
 
 	// Stream or JSON.
 	if req.Stream {
@@ -297,7 +299,11 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 
 // --- Conversion Helpers ---
 
-func convertAnthropicMessages(msgs []AnthropicMessage, system any) []engine.RequestMessage {
+// convertAnthropicMessages flattens the wire messages (and optional system) to
+// engine messages and returns the total number of image parts across the user
+// messages (A-05). Image-bearing messages get a "[image]" marker appended so
+// image-only turns aren't empty and scenarios can match via content_contains.
+func convertAnthropicMessages(msgs []AnthropicMessage, system any) ([]engine.RequestMessage, int) {
 	// Pre-size for the worst case (every message + an optional system prepend) so
 	// the append loop never grows the slice (PERF-15; the OpenAI twin already
 	// pre-sizes).
@@ -313,14 +319,55 @@ func convertAnthropicMessages(msgs []AnthropicMessage, system any) []engine.Requ
 		})
 	}
 
+	totalImages := 0
 	for _, m := range msgs {
-		content := extractAnthropicContent(m.Content)
+		content, imgCount := extractAnthropicContentWithImages(m.Content)
+		totalImages += imgCount
 		result = append(result, engine.RequestMessage{
-			Role:    m.Role,
-			Content: content,
+			Role:       m.Role,
+			Content:    content,
+			ImageCount: imgCount,
 		})
 	}
-	return result
+	return result, totalImages
+}
+
+// extractAnthropicContentWithImages flattens content to text (preserving the
+// text + tool_result handling of extractAnthropicContent) and counts image
+// blocks. The text is marker-free; the count is carried out-of-band.
+func extractAnthropicContentWithImages(content any) (string, int) {
+	blocks, ok := content.([]any)
+	if !ok {
+		return extractAnthropicContent(content), 0
+	}
+	var parts []string
+	images := 0
+	for _, block := range blocks {
+		m, ok := block.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch m["type"] {
+		case "text":
+			if text, ok := m["text"].(string); ok {
+				parts = append(parts, text)
+			}
+		case "image":
+			images++
+		case "tool_result":
+			switch c := m["content"].(type) {
+			case string:
+				if c != "" {
+					parts = append(parts, c)
+				}
+			case []any:
+				if s := extractAnthropicContent(c); s != "" {
+					parts = append(parts, s)
+				}
+			}
+		}
+	}
+	return strings.Join(parts, " "), images
 }
 
 func extractAnthropicContent(content any) string {
@@ -462,7 +509,8 @@ func (h *AnthropicHandler) HandleCountTokens(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	n := sumMessageTokens(convertAnthropicMessages(req.Messages, req.System))
+	converted, _ := convertAnthropicMessages(req.Messages, req.System)
+	n := sumMessageTokens(converted)
 	writeJSON(w, http.StatusOK, map[string]int{"input_tokens": n})
 }
 

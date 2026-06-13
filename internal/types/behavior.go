@@ -19,6 +19,11 @@ type MatchRule struct {
 	ContentContains string `yaml:"content_contains,omitempty" json:"content_contains,omitempty"`
 	ContentRegex    string `yaml:"content_regex,omitempty" json:"content_regex,omitempty"`
 	TurnNumber      *int   `yaml:"turn_number,omitempty" json:"turn_number,omitempty"`
+	// HasImage, when set, matches only when the latest user turn carries at
+	// least one image content part (true) or none (false) — A-05 vision matching.
+	// The image signal is out-of-band (the flattened user text stays pure, so
+	// content_regex/templates are unaffected).
+	HasImage *bool `yaml:"has_image,omitempty" json:"has_image,omitempty"`
 }
 
 // ScenarioResponse is the response produced when a scenario matches.

@@ -63,8 +63,8 @@ func (m *ScenarioMatcher) logger() *slog.Logger {
 // Match evaluates scenarios in definition order and returns the first match.
 // If no explicit match is found, returns the default scenario (Match == nil).
 // Returns ErrNoMatchingScenario if no scenario matches.
-func (m *ScenarioMatcher) Match(scenarios []types.Scenario, userMessage string, turnNumber int) (*types.Scenario, error) {
-	result := m.MatchWithCaptures(scenarios, userMessage, turnNumber)
+func (m *ScenarioMatcher) Match(scenarios []types.Scenario, userMessage string, turnNumber, imageCount int) (*types.Scenario, error) {
+	result := m.MatchWithCaptures(scenarios, userMessage, turnNumber, imageCount)
 	if result != nil {
 		return result.Scenario, nil
 	}
@@ -72,8 +72,9 @@ func (m *ScenarioMatcher) Match(scenarios []types.Scenario, userMessage string, 
 }
 
 // MatchWithCaptures evaluates scenarios and returns the match result
-// including any regex named capture groups.
-func (m *ScenarioMatcher) MatchWithCaptures(scenarios []types.Scenario, userMessage string, turnNumber int) *MatchResult {
+// including any regex named capture groups. imageCount is the latest user
+// turn's image-part count, used by a has_image rule (A-05).
+func (m *ScenarioMatcher) MatchWithCaptures(scenarios []types.Scenario, userMessage string, turnNumber, imageCount int) *MatchResult {
 	var defaultScenario *types.Scenario
 
 	// Lower-case the user message once for the whole scenario sweep. Every
@@ -90,7 +91,7 @@ func (m *ScenarioMatcher) MatchWithCaptures(scenarios []types.Scenario, userMess
 			continue
 		}
 
-		captures := m.evaluate(sc.Match, userMessage, lowerMessage, turnNumber)
+		captures := m.evaluate(sc.Match, userMessage, lowerMessage, turnNumber, imageCount)
 		if captures != nil {
 			return &MatchResult{Scenario: sc, Captures: captures}
 		}
@@ -119,7 +120,13 @@ var matchedSentinel = map[string]string{}
 // lowerMessage is userMessage pre-lowered by the caller for the
 // case-insensitive content_contains compare; userMessage stays in its
 // original case for regex matching and capture extraction.
-func (m *ScenarioMatcher) evaluate(rule *types.MatchRule, userMessage, lowerMessage string, turnNumber int) map[string]string {
+func (m *ScenarioMatcher) evaluate(rule *types.MatchRule, userMessage, lowerMessage string, turnNumber, imageCount int) map[string]string {
+	if rule.HasImage != nil {
+		if (imageCount > 0) != *rule.HasImage {
+			return nil
+		}
+	}
+
 	if rule.ContentContains != "" {
 		if !strings.Contains(lowerMessage, m.lowerContains(rule.ContentContains)) {
 			return nil

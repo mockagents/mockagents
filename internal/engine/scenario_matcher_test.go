@@ -19,7 +19,7 @@ func TestScenarioMatcher_ContentContains(t *testing.T) {
 		{Name: "default", Response: types.ScenarioResponse{Content: "default response"}},
 	}
 
-	sc, err := m.Match(scenarios, "What is my order status?", 1)
+	sc, err := m.Match(scenarios, "What is my order status?", 1, 0)
 	require.NoError(t, err)
 	assert.Equal(t, "order", sc.Name)
 }
@@ -31,7 +31,7 @@ func TestScenarioMatcher_ContentContainsCaseInsensitive(t *testing.T) {
 		{Name: "default", Response: types.ScenarioResponse{Content: "default"}},
 	}
 
-	sc, err := m.Match(scenarios, "HELLO there!", 1)
+	sc, err := m.Match(scenarios, "HELLO there!", 1, 0)
 	require.NoError(t, err)
 	assert.Equal(t, "greeting", sc.Name)
 }
@@ -43,7 +43,7 @@ func TestScenarioMatcher_ContentRegex(t *testing.T) {
 		{Name: "default", Response: types.ScenarioResponse{Content: "default"}},
 	}
 
-	sc, err := m.Match(scenarios, "my email is test@example.com", 1)
+	sc, err := m.Match(scenarios, "my email is test@example.com", 1, 0)
 	require.NoError(t, err)
 	assert.Equal(t, "email", sc.Name)
 }
@@ -56,15 +56,15 @@ func TestScenarioMatcher_TurnNumber(t *testing.T) {
 		{Name: "default", Response: types.ScenarioResponse{Content: "default"}},
 	}
 
-	sc, err := m.Match(scenarios, "hi", 1)
+	sc, err := m.Match(scenarios, "hi", 1, 0)
 	require.NoError(t, err)
 	assert.Equal(t, "first-turn", sc.Name)
 
-	sc, err = m.Match(scenarios, "hi", 3)
+	sc, err = m.Match(scenarios, "hi", 3, 0)
 	require.NoError(t, err)
 	assert.Equal(t, "third-turn", sc.Name)
 
-	sc, err = m.Match(scenarios, "hi", 5)
+	sc, err = m.Match(scenarios, "hi", 5, 0)
 	require.NoError(t, err)
 	assert.Equal(t, "default", sc.Name)
 }
@@ -84,12 +84,12 @@ func TestScenarioMatcher_MultipleConditionsAND(t *testing.T) {
 	}
 
 	// Both conditions met.
-	sc, err := m.Match(scenarios, "I need help", 2)
+	sc, err := m.Match(scenarios, "I need help", 2, 0)
 	require.NoError(t, err)
 	assert.Equal(t, "specific", sc.Name)
 
 	// Only content matches, not turn.
-	sc, err = m.Match(scenarios, "I need help", 1)
+	sc, err = m.Match(scenarios, "I need help", 1, 0)
 	require.NoError(t, err)
 	assert.Equal(t, "default", sc.Name)
 }
@@ -101,7 +101,7 @@ func TestScenarioMatcher_DefaultScenario(t *testing.T) {
 		{Name: "default", Response: types.ScenarioResponse{Content: "default"}},
 	}
 
-	sc, err := m.Match(scenarios, "hello", 1)
+	sc, err := m.Match(scenarios, "hello", 1, 0)
 	require.NoError(t, err)
 	assert.Equal(t, "default", sc.Name)
 }
@@ -112,7 +112,7 @@ func TestScenarioMatcher_NoMatch(t *testing.T) {
 		{Name: "specific", Match: &types.MatchRule{ContentContains: "xyz"}, Response: types.ScenarioResponse{Content: "specific"}},
 	}
 
-	_, err := m.Match(scenarios, "hello", 1)
+	_, err := m.Match(scenarios, "hello", 1, 0)
 	assert.ErrorIs(t, err, ErrNoMatchingScenario)
 }
 
@@ -124,14 +124,14 @@ func TestScenarioMatcher_FirstMatchWins(t *testing.T) {
 		{Name: "default", Response: types.ScenarioResponse{Content: "default"}},
 	}
 
-	sc, err := m.Match(scenarios, "hello world", 1)
+	sc, err := m.Match(scenarios, "hello world", 1, 0)
 	require.NoError(t, err)
 	assert.Equal(t, "first", sc.Name)
 }
 
 func TestScenarioMatcher_EmptyScenarios(t *testing.T) {
 	m := NewScenarioMatcher()
-	_, err := m.Match(nil, "hello", 1)
+	_, err := m.Match(nil, "hello", 1, 0)
 	assert.ErrorIs(t, err, ErrNoMatchingScenario)
 }
 
@@ -142,7 +142,7 @@ func TestScenarioMatcher_InvalidRegexNoMatch(t *testing.T) {
 		{Name: "default", Response: types.ScenarioResponse{Content: "default"}},
 	}
 
-	sc, err := m.Match(scenarios, "test", 1)
+	sc, err := m.Match(scenarios, "test", 1, 0)
 	require.NoError(t, err)
 	assert.Equal(t, "default", sc.Name)
 }
@@ -159,14 +159,14 @@ func TestScenarioMatcher_BadRegexIsLogged(t *testing.T) {
 	}
 
 	// First evaluation: non-match (no default scenario) plus a logged warning.
-	assert.Nil(t, m.MatchWithCaptures(scenarios, "anything", 1))
+	assert.Nil(t, m.MatchWithCaptures(scenarios, "anything", 1, 0))
 	assert.Contains(t, buf.String(), "failed to compile")
 	assert.Contains(t, buf.String(), "[invalid")
 
 	// Second evaluation: still a non-match, but the bad pattern is cached so it
 	// is neither recompiled nor re-logged.
 	sizeAfterFirst := buf.Len()
-	assert.Nil(t, m.MatchWithCaptures(scenarios, "anything", 1))
+	assert.Nil(t, m.MatchWithCaptures(scenarios, "anything", 1, 0))
 	assert.Equal(t, sizeAfterFirst, buf.Len(), "bad pattern should log once, not per request")
 }
 

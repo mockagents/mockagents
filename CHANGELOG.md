@@ -11,6 +11,16 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **Vision input parsing** (A-05) — the OpenAI Chat Completions and Anthropic
+  Messages adapters now recognize image content parts (OpenAI `image_url`,
+  including `data:` URLs; Anthropic `{type:image, source: base64|url}`). The
+  image count is carried **out-of-band**, so an image-only turn is no longer
+  rejected as an empty message and the flattened user text stays pure (regex
+  matching, templates, and token counts are unaffected). A new `has_image`
+  scenario match rule fires on image presence, and the request's image count is
+  returned in the `X-Mockagents-Image-Count` response header for assertions.
+  Example: `examples/vision-agent.yaml`. (Responses-API `input_image` and Gemini
+  `inline_data` are noted follow-ons.)
 - **Anthropic depth** (A-04) — three Messages-API additions for offline testing
   of cost-cache and thinking-trace handling: **`POST /v1/messages/count_tokens`**
   (returns `{"input_tokens":N}`, engine-free); **prompt-caching usage fields**

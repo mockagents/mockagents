@@ -170,7 +170,7 @@ func BenchmarkScenarioMatcher_ContentContains(b *testing.B) {
 	scenarios := benchmarkAgent().Spec.Behavior.Scenarios
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m.Match(scenarios, "hello world", 1)
+		m.Match(scenarios, "hello world", 1, 0)
 	}
 }
 
@@ -179,7 +179,7 @@ func BenchmarkScenarioMatcher_Regex(b *testing.B) {
 	scenarios := benchmarkAgent().Spec.Behavior.Scenarios
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m.Match(scenarios, "check order ORD-99999", 1)
+		m.Match(scenarios, "check order ORD-99999", 1, 0)
 	}
 }
 
@@ -188,7 +188,7 @@ func BenchmarkScenarioMatcher_Default(b *testing.B) {
 	scenarios := benchmarkAgent().Spec.Behavior.Scenarios
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m.Match(scenarios, "no match at all", 1)
+		m.Match(scenarios, "no match at all", 1, 0)
 	}
 }
 
@@ -210,7 +210,7 @@ func BenchmarkScenarioMatcher_MixedCaseManyScenarios(b *testing.B) {
 	const msg = "Please Look For The SPECIAL Item In The CATALOG Today"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m.Match(scenarios, msg, 1)
+		m.Match(scenarios, msg, 1, 0)
 	}
 }
 

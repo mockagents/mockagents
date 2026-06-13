@@ -1,0 +1,31 @@
+# Vision demo (A-05).
+#
+# When a request carries image content parts (OpenAI image_url / data-URL, or
+# Anthropic image source.base64/url), the mock counts them out-of-band: an
+# image-only turn is no longer rejected as empty, scenarios can match on image
+# presence via the `has_image` match rule, and the exact image count is returned
+# in the X-Mockagents-Image-Count response header.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: vision-agent
+  description: Matches on image presence; demonstrates multimodal request handling.
+  tags: [demo, vision, multimodal]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-4o-vision
+  systemPrompt: |
+    You describe images the user sends.
+
+  behavior:
+    scenarios:
+      # Fires whenever the latest user turn includes at least one image part.
+      - name: image-present
+        match: { has_image: true }
+        response:
+          content: "I can see the image you sent. It looks like a photo."
+
+      - name: default
+        response:
+          content: "Send me an image and I'll describe it."

@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/mockagents/mockagents/internal/engine"
 )
@@ -23,4 +24,19 @@ func setHallucinationHeader(w http.ResponseWriter, resp *engine.Response) {
 		t = "true"
 	}
 	w.Header().Set(HeaderHallucination, t)
+}
+
+// HeaderImageCount advertises how many image content parts a vision request
+// carried (A-05), so a vision test can assert on multimodal handling without
+// parsing the request echo.
+const HeaderImageCount = "X-Mockagents-Image-Count"
+
+// setImageCountHeader sets HeaderImageCount when the request carried images.
+// No-op (header absent) for text-only requests. Must be called before the body
+// is written (works for JSON and SSE).
+func setImageCountHeader(w http.ResponseWriter, imageCount int) {
+	if imageCount <= 0 {
+		return
+	}
+	w.Header().Set(HeaderImageCount, strconv.Itoa(imageCount))
 }

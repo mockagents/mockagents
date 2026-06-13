@@ -30,6 +30,10 @@ type InboundRequest struct {
 type RequestMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+	// ImageCount is the number of image content parts the message carried
+	// (A-05). It is carried out-of-band so the flattened Content text stays pure
+	// (no markers leaking into regex matching, templates, or token counts).
+	ImageCount int `json:"image_count,omitempty"`
 }
 
 // Engine orchestrates the mock agent request processing pipeline.
@@ -122,9 +126,11 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 		}
 	}
 
-	// 2. Extract latest user message.
+	// 2. Extract latest user message. An image-only turn (A-05) has empty text
+	// but a non-zero image count, so it must NOT be rejected as empty.
 	userMsg := latestUserMessage(req.Messages)
-	if userMsg == "" {
+	imageCount := latestUserImageCount(req.Messages)
+	if userMsg == "" && imageCount == 0 {
 		if traceOn {
 			observability.RecordError(span, ErrEmptyMessage)
 		}
@@ -140,7 +146,7 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 	var resp *Response
 	if err := session.ApplyTurn(userMsg, func(turnCount int, variables map[string]any) (string, []state.ToolCallMsg, error) {
 		// 4. Match scenario.
-		matchResult := e.Matcher.MatchWithCaptures(agent.Spec.Behavior.Scenarios, userMsg, turnCount)
+		matchResult := e.Matcher.MatchWithCaptures(agent.Spec.Behavior.Scenarios, userMsg, turnCount, imageCount)
 
 		var scenario *types.Scenario
 		var captures map[string]string
@@ -304,6 +310,18 @@ func latestUserMessage(messages []RequestMessage) string {
 		}
 	}
 	return ""
+}
+
+// latestUserImageCount returns the image-part count of the latest user message
+// (A-05), so the matcher can evaluate a has_image rule against the same turn the
+// matched text comes from.
+func latestUserImageCount(messages []RequestMessage) int {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].ImageCount
+		}
+	}
+	return 0
 }
 
 func truncate(s string, maxLen int) string {
