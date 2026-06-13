@@ -1,0 +1,53 @@
+name: Bug report
+description: Something isn't working as expected
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: "Thanks for taking the time to report a bug. A minimal agent YAML + the exact command that triggers it helps us reproduce fast."
+  - type: input
+    id: version
+    attributes:
+      label: MockAgents version
+      description: "`mockagents --version` output, or the commit SHA"
+      placeholder: "v0.1.0 / abc1234"
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider / adapter
+      options:
+        - OpenAI
+        - Anthropic
+        - Gemini
+        - MCP
+        - Other / not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: "Minimal agent YAML + the command/request that triggers the bug."
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: "Include log output and/or the response body."
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / runtime
+      placeholder: "macOS 15 arm64 / Ubuntu 24.04 x86_64 / Docker"

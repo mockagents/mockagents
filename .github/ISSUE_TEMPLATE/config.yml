@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions, ideas & show-and-tell
+    url: https://github.com/mockagents/mockagents/discussions
+    about: For questions, design discussions, and feature ideas, please use Discussions rather than Issues.
+  - name: Documentation
+    url: https://github.com/mockagents/mockagents/tree/main/site/docs
+    about: Check the docs before filing a bug — the answer may already be there.
+  - name: Report a security vulnerability
+    url: https://github.com/mockagents/mockagents/security/advisories/new
+    about: Please report security issues privately, not as public issues.

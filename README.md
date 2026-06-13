@@ -101,6 +101,41 @@ mockagents start                              # prints your base URL + a ready-t
 - **Batteries included** — CLI, web console, Docker image, Helm chart, and
   GitHub Actions / GitLab CI templates.
 
+## How it compares
+
+> Best-effort comparison as of mid-2026 — these projects move fast. A cell that's
+> wrong or stale? [Open a PR](CONTRIBUTING.md) and we'll fix it.
+
+| | MockAgents | [CopilotKit/aimock](https://github.com/CopilotKit/aimock) | [WireMock](https://wiremock.org) (OSS) | [mockllm](https://github.com/StacklokLabs/mockllm) | [ai-mocks](https://github.com/mokksy/ai-mocks) |
+|---|---|---|---|---|---|
+| **Language / requires** | Go binary, no runtime | Node.js | JVM 17+ | Python 3.10+ | JVM 17+ (Kotlin/Ktor) |
+| **LLM-API-specific** | Yes | Yes | No — general HTTP mock | Yes | Yes |
+| **Providers** | OpenAI, Anthropic, Gemini (+ Azure, Responses, Embeddings, Moderations) | 14 incl. OpenAI, Anthropic, Gemini, Bedrock, Vertex, Ollama | Any HTTP API via stubs (LLM templates exist) | OpenAI, Anthropic | OpenAI, Anthropic, Gemini, Ollama |
+| **SSE streaming** | Per-token pacing + TTFT/ITL physics + stream faults | Yes (approx. timing) | Limited¹ | Yes (char-level) | Yes — headline feature |
+| **Tool-call simulation** | Canned `tool_calls`/`tool_use`/`functionCall` | Replayed tool rounds (fixtures) + MCP | No | No | No |
+| **Scenario matching** | Declarative YAML: content, regex, turn, `has_image` | JSON fixtures | Handlebars templating | YAML prompt→response | Kotlin DSL matchers (content/param) |
+| **MCP mocking** | JSON-RPC 2.0 + bidirectional SSE | Yes (+ A2A) | No | No | A2A protocol |
+| **Chaos / fault injection** | Latency dists, HTTP errors, rate-limit, connection-layer faults, stream truncation | Errors, disconnects, malformed | Delays + bad-response faults (OSS); more in Cloud | Latency only | Delays, errors, malformed, timeouts |
+| **Record & replay** | SSE cassettes, redaction, record-on-miss, importers (vcrpy / OpenAI stored) | Timing-aware fixtures, drift detection | No | No | No |
+| **Contract testing** | Extract + diff in CI | No | No | No | No |
+| **Multi-agent pipelines** | Sequential / parallel / graph | No | No | No | No |
+| **Run model** | Standalone server + Go in-process SDK | Standalone (npx / Docker) | Standalone or embedded in JUnit | Standalone server | Embedded in Gradle tests |
+| **License** | Apache-2.0 | MIT | Apache-2.0 | Apache-2.0 | Apache-2.0 |
+| **Open-core / paid tier** | **No** — fully OSS, no account | No | Yes — WireMock Cloud (paid SaaS) | No | No |
+
+¹ WireMock's genuine strength is being the most battle-tested *general-purpose* HTTP
+mock available — if your stack isn't LLM-specific, it's an excellent choice.
+
+**MockAgents isn't always the right tool.** Need a general HTTP mock for non-LLM
+APIs? Use **WireMock**. Mocking inside a **JVM/Kotlin** test suite? **ai-mocks**
+fits cleanly in-process. Want the **widest provider count** (Bedrock, Ollama,
+ElevenLabs, vector DBs)? **aimock** covers more surface. What MockAgents commits to:
+a single static Go binary, real LLM wire-protocol fidelity, and **Apache-2.0 with no
+account, no open-core, no paid tier** — ever. When
+[LocalStack moved its free tier behind an account and non-commercial-only terms in 2026](https://blog.localstack.cloud/the-road-ahead-for-localstack/),
+teams that relied on it had to migrate or pay. MockAgents is committed to never
+putting you in that position.
+
 ## Define an agent (YAML)
 
 ```yaml
