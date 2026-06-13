@@ -240,7 +240,18 @@ mockagents replay --cassette fixtures/gpt4o.jsonl
 # Ignore replay-time sampling fields when matching (repeatable)
 mockagents replay --cassette fixtures/gpt4o.jsonl \
   --match-ignore temperature --match-ignore seed
+
+# Record on miss: replay what's recorded, fetch+record anything new
+mockagents replay --cassette fixtures/gpt4o.jsonl \
+  --record-mode new_episodes --upstream https://api.openai.com \
+  --api-key "$OPENAI_API_KEY" --redact
 ```
+
+`--record-mode` is one of `none` (default, replay only), `new_episodes` (record
+on miss), `once` (record only if the cassette is empty/new, else replay), or
+`all` (always forward + record). The recording modes require `--upstream` and
+reuse `--api-key` / `--redact` / `--redact-pattern` from `mockagents record`.
+Record-on-miss never caches a 4xx/5xx or a broken stream.
 
 `--match-ignore <field>` makes matching ignore the named top-level request-body
 fields (replay-time only; the cassette is unchanged). A replay miss returns a

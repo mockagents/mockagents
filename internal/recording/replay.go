@@ -39,8 +39,11 @@ type Replay struct {
 
 	// byMatchKey is the secondary index used when Matcher is active: match key
 	// → interactions in insertion order (same semantics as Cassette.byHash).
-	// Built once by matchOnce from a static cassette, then read-only.
-	matchOnce  sync.Once
+	// Guarded by indexMu. builtLen records the cassette size the index was last
+	// built at; it is rebuilt when the cassette grows (record-on-miss, R-01)
+	// rather than only once, so newly-recorded interactions become matchable.
+	indexMu    sync.Mutex
+	builtLen   int
 	byMatchKey map[string][]*Interaction
 }
 
@@ -58,11 +61,17 @@ func (rp *Replay) next(hash string) *Interaction {
 }
 
 // nextFromMatchIndex is the matcher-active counterpart of next: it looks the
-// request up by match key in the lazily-built secondary index, advancing the
-// per-key cursor with the same sequence/repeat-last semantics.
+// request up by match key in the secondary index (rebuilt when the cassette has
+// grown), advancing the per-key cursor with the same sequence/repeat-last
+// semantics.
 func (rp *Replay) nextFromMatchIndex(key string) *Interaction {
-	rp.matchOnce.Do(rp.buildMatchIndex)
-	return rp.advance(key, rp.byMatchKey[key])
+	rp.indexMu.Lock()
+	if rp.byMatchKey == nil || rp.Cassette.Len() > rp.builtLen {
+		rp.extendMatchIndex()
+	}
+	seq := rp.byMatchKey[key]
+	rp.indexMu.Unlock()
+	return rp.advance(key, seq)
 }
 
 // advance applies the shared R-04 cursor logic to a resolved sequence.
@@ -86,16 +95,22 @@ func (rp *Replay) advance(key string, seq []*Interaction) *Interaction {
 	return seq[idx]
 }
 
-// buildMatchIndex populates byMatchKey from the (static) cassette, keying each
-// interaction by its match key so ignored-field-only differences collapse to the
-// same key. Insertion order is preserved so R-04 sequencing still works. Run
-// once via matchOnce.
-func (rp *Replay) buildMatchIndex() {
-	rp.byMatchKey = make(map[string][]*Interaction)
-	for _, it := range rp.Cassette.All() {
+// extendMatchIndex incrementally keys the interactions appended since the last
+// build into byMatchKey (only the [builtLen:] suffix), so record-on-miss growth
+// costs O(delta) rather than O(n) per miss. Because Cassette.All() is
+// insertion-ordered, this is a pure suffix-append to each key's sequence — the
+// per-key cursor stays valid and a newly-seen key starts at 0. Caller holds
+// indexMu.
+func (rp *Replay) extendMatchIndex() {
+	all := rp.Cassette.All()
+	if rp.byMatchKey == nil {
+		rp.byMatchKey = make(map[string][]*Interaction, len(all))
+	}
+	for _, it := range all[rp.builtLen:] {
 		key := rp.Matcher.Key(it.Method, it.Path, it.RequestBody)
 		rp.byMatchKey[key] = append(rp.byMatchKey[key], it)
 	}
+	rp.builtLen = len(all)
 }
 
 // ServeHTTP looks up the incoming request in the cassette and, on a hit,

@@ -11,6 +11,30 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **Replay record modes** (R-01) — `mockagents replay --record-mode=<mode>
+  --upstream <url>` turns the replay server into a record/replay hybrid by
+  wiring the upstream into the existing `Replay.Fallback` seam:
+  - `none` (default) — replay only; a miss returns the 404 diagnostics
+    (byte-for-byte unchanged from before).
+  - `new_episodes` — replay recorded interactions; on a miss, forward to
+    `--upstream`, serve the client, and record the new interaction so it replays
+    next time.
+  - `once` — like `new_episodes` when the cassette holds nothing yet (records),
+    like `none` when it is already populated (replay only). Resolved against the
+    recorded count, so a leftover empty cassette still records.
+  - `all` — never replay; forward + record every request (faithful re-record /
+    passthrough, errors included).
+
+  Record-on-miss reuses the record command's `--api-key` / `--redact` /
+  `--redact-pattern` wiring and never caches a transient failure as canonical: a
+  4xx/5xx upstream response (and a 200 SSE stream that breaks mid-flight) is
+  served to the client but not written to the cassette. With `--match-ignore`
+  active, the match index now extends incrementally as the cassette grows so
+  newly-recorded interactions become matchable without a restart.
+  (`internal/recording/mode.go`, `Proxy.SkipRecordOnError`; CLI flags on
+  `replay`.) Known follow-ons: the cassette is rewritten in full on every record
+  (fine for `none`/short sessions, O(n²) for a long-lived `all` session) and
+  `all` does not de-duplicate repeated requests.
 - **Configurable replay matchers + miss diagnostics** (R-02) — two independent
   improvements to `mockagents replay`:
   - **`--match-ignore <field>`** (repeatable) makes matching ignore the named

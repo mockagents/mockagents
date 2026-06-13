@@ -42,6 +42,12 @@ type Proxy struct {
 	// it is appended to the cassette (R-03). It never touches the response
 	// forwarded to the client.
 	Redactor *Redactor
+	// SkipRecordOnError, when true, suppresses Cassette.Append for upstream
+	// responses with status >= 400 (the client still receives the error). This
+	// keeps a record-on-miss fallback (R-01) from caching a transient 429/500 as
+	// the canonical recorded response. The standalone `record` command leaves it
+	// false so an explicitly-recorded session captures errors too.
+	SkipRecordOnError bool
 }
 
 // isSSE reports whether a Content-Type value indicates a Server-Sent
@@ -129,18 +135,27 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Compute the hash from the ORIGINAL request body before any redaction, so
 	// replay (which sees the un-redacted request) still matches (R-03).
 	it.Hash = HashRequest(it.Method, it.Path, it.RequestBody)
-	if p.Redactor != nil {
-		p.Redactor.Apply(it)
-	}
-	if err := p.Cassette.Append(it); err != nil {
-		// Log via http.Error would overwrite headers; write the response
-		// first and surface the cassette error as a trailing header.
-		w.Header().Set("X-Mockagents-Record-Error", err.Error())
+	if !p.skipRecording(it.ResponseStatus) {
+		if p.Redactor != nil {
+			p.Redactor.Apply(it)
+		}
+		if err := p.Cassette.Append(it); err != nil {
+			// Log via http.Error would overwrite headers; write the response
+			// first and surface the cassette error as a trailing header.
+			w.Header().Set("X-Mockagents-Record-Error", err.Error())
+		}
 	}
 
 	copyHeaders(w.Header(), upstreamResp.Header)
 	w.WriteHeader(upstreamResp.StatusCode)
 	_, _ = w.Write(respBody)
+}
+
+// skipRecording reports whether an upstream response with the given status must
+// not be appended to the cassette (R-01 record-on-miss must not cache a
+// transient 4xx/5xx as the canonical recorded response).
+func (p *Proxy) skipRecording(status int) bool {
+	return p.SkipRecordOnError && status >= 400
 }
 
 // serveStreaming copies SSE chunks from upstreamResp to the client and
@@ -158,6 +173,7 @@ func (p *Proxy) serveStreaming(w http.ResponseWriter, r *http.Request, reqBody [
 	}
 
 	var events []StreamEvent
+	var upstreamErrored bool
 	start := time.Now()
 	buf := make([]byte, 4096)
 	for {
@@ -190,6 +206,7 @@ func (p *Proxy) serveStreaming(w http.ResponseWriter, r *http.Request, reqBody [
 			// the cassette entry; the client has already seen whatever
 			// bytes we managed to forward.
 			w.Header().Set("X-Mockagents-Upstream-Error", rerr.Error())
+			upstreamErrored = true
 			break
 		}
 	}
@@ -205,11 +222,17 @@ func (p *Proxy) serveStreaming(w http.ResponseWriter, r *http.Request, reqBody [
 		StreamEvents:    events,
 	}
 	it.Hash = HashRequest(it.Method, it.Path, it.RequestBody)
-	if p.Redactor != nil {
-		p.Redactor.Apply(it)
-	}
-	if err := p.Cassette.Append(it); err != nil {
-		w.Header().Set("X-Mockagents-Record-Error", err.Error())
+	// A stream that broke mid-flight (upstream reset/crash) is a transient
+	// failure, not a canonical response — on the record-on-miss path, skipping
+	// it avoids permanently caching a truncated, [DONE]-less stream. The status
+	// is 200 here, so skipRecording (status-only) can't catch it.
+	if !p.skipRecording(it.ResponseStatus) && !(p.SkipRecordOnError && upstreamErrored) {
+		if p.Redactor != nil {
+			p.Redactor.Apply(it)
+		}
+		if err := p.Cassette.Append(it); err != nil {
+			w.Header().Set("X-Mockagents-Record-Error", err.Error())
+		}
 	}
 }
 

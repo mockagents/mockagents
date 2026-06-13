@@ -107,6 +107,38 @@ hash are unchanged, and exact-hash matching stays the default when no
 `--match-ignore` is given. Sequenced playback (the Nth request → the Nth recorded
 response) is preserved across ignored-field differences.
 
+### Record on miss: `--record-mode`
+
+`replay` can fall through to a real upstream and record what it didn't have,
+turning it into a record/replay hybrid — pass `--upstream` plus `--record-mode`:
+
+```bash
+# Replay what's recorded; record anything new from the real API on a miss
+mockagents replay \
+  --cassette fixtures/checkout-flow.jsonl \
+  --record-mode new_episodes \
+  --upstream https://api.openai.com \
+  --api-key "$OPENAI_API_KEY" \
+  --redact
+```
+
+| Mode | On a hit | On a miss | Use it to |
+|---|---|---|---|
+| `none` *(default)* | replay | 404 with diff | run fully offline |
+| `new_episodes` | replay | forward + record | grow a cassette as new requests appear |
+| `once` | replay | forward + record **only if the cassette is empty/new** | record a flow the first time, replay forever after |
+| `all` | — (never replays) | forward + record every request | re-record a whole session / use as a recording proxy |
+
+Record-on-miss reuses the same `--api-key`, `--redact`, and `--redact-pattern`
+flags as `mockagents record`, and never caches a transient failure: a 4xx/5xx
+response — or a stream that breaks mid-flight — is returned to your client but
+**not** written to the cassette (so a flake can't poison your fixtures). `all`
+mode, being a faithful re-record, *does* capture error responses.
+
+> `all` rewrites the whole cassette file on each record and does not de-duplicate
+> repeated requests — keep `all` sessions short, or use `new_episodes` for a
+> long-lived hybrid server.
+
 ## 3. Graduate to YAML for what you can't record
 
 Record/replay is perfect for "make my real flow deterministic." For cases that
