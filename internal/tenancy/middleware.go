@@ -96,13 +96,17 @@ func ParseBearerToken(authHeader string) (string, bool) {
 	return token, true
 }
 
-// ExtractAPIKey pulls a bearer token from the Authorization header or
-// X-Api-Key header, in that order. Empty on miss.
+// ExtractAPIKey pulls a bearer token from the Authorization header, the
+// X-Api-Key header, or the Azure `api-key` header, in that order. Empty on miss.
 func ExtractAPIKey(r *http.Request) string {
 	if token, ok := ParseBearerToken(r.Header.Get("Authorization")); ok {
 		return token
 	}
-	return strings.TrimSpace(r.Header.Get("X-Api-Key"))
+	if v := strings.TrimSpace(r.Header.Get("X-Api-Key")); v != "" {
+		return v
+	}
+	// Azure OpenAI SDKs (AzureOpenAI(api_key=...)) send the key as `api-key`.
+	return strings.TrimSpace(r.Header.Get("api-key"))
 }
 
 // SessionCookieName is the browser cookie carrying an opaque SSO session token

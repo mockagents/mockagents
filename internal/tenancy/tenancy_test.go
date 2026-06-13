@@ -215,6 +215,15 @@ func TestAuthMiddlewareAcceptsBearerAndXApiKey(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("X-Api-Key auth failed: %d %s", rec.Code, rec.Body.String())
 	}
+
+	// api-key (Azure OpenAI SDK header) resolves to the same principal.
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/tenants", nil)
+	req.Header.Set("api-key", key)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("api-key (Azure) auth failed: %d %s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestAuthMiddlewareSkipPredicate(t *testing.T) {

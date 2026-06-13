@@ -621,8 +621,18 @@ func skipAuth(r *http.Request) bool {
 		// (REF-08 slice D). They are not under /api/v1 and do their own checks.
 		"/auth/login",
 		"/auth/callback",
-		"/auth/logout":
+		"/auth/logout",
+		// Azure unified surface delegates to the open OpenAI chat/embeddings
+		// handlers, so it carries the same open status (A-06).
+		"/openai/v1/chat/completions",
+		"/openai/v1/embeddings":
 		return true
+	}
+	// Azure classic deployment surface ({deployment} is variable, so it can't be
+	// an exact case) — same open status as the OpenAI routes it delegates to.
+	if strings.HasPrefix(r.URL.Path, "/openai/deployments/") {
+		return strings.HasSuffix(r.URL.Path, "/chat/completions") ||
+			strings.HasSuffix(r.URL.Path, "/embeddings")
 	}
 	return false
 }

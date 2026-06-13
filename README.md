@@ -69,6 +69,9 @@ mockagents start                              # prints your base URL + a ready-t
 - **Moderations** (`/v1/moderations`) — deterministic omni-moderation responses
   (`flagged` + 13 category scores) for testing guardrail pipelines offline:
   known-harmful phrases flag the right category, benign text stays clean.
+- **Azure OpenAI URLs** — point an `AzureOpenAI()` client at the mock unchanged:
+  the `/openai/deployments/{deployment}/…` and `/openai/v1/…` surfaces route to
+  the OpenAI handlers (deployment name → model; `api-version` ignored).
 - **Mocks MCP servers too** — test agents that call Model Context Protocol
   servers, deterministically (JSON-RPC 2.0 + bidirectional SSE).
 - **Scenario matching** — route by message content, regex, or turn number;

@@ -11,6 +11,17 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **Azure OpenAI URL routing** (A-06) — an `AzureOpenAI()` SDK client now runs
+  unchanged against the mock. Adds the classic deployment surface
+  (`POST /openai/deployments/{deployment}/chat/completions` and `/embeddings`,
+  where the `{deployment}` path segment becomes the model when the body omits
+  it) and the new unified surface (`/openai/v1/chat/completions`,
+  `/openai/v1/embeddings`), both delegating to the existing OpenAI handlers. The
+  `api-version` query parameter is accepted and ignored. Azure paths are wired
+  into the billable/loggable classifier (logged + quota-counted like `/v1/*`),
+  exempted in the auth-skip allowlist like the OpenAI routes they delegate to,
+  and the tenancy layer now also reads the Azure `api-key` header — so an
+  `AzureOpenAI()` client works in both single- and multi-tenant mode.
 - **OpenAI Moderations API** (A-07) — a new `POST /v1/moderations` surface
   (omni-moderation shape) for testing guardrail pipelines offline. Returns
   `flagged` + the full set of 13 category booleans, `category_scores`, and

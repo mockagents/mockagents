@@ -20,6 +20,11 @@ func TestSkipAuth_ExactMatchOnly(t *testing.T) {
 		"/v1/messages",
 		"/v1/models",
 		"/v1/engines/process",
+		// Azure surface delegates to the open OpenAI handlers (A-06).
+		"/openai/v1/chat/completions",
+		"/openai/v1/embeddings",
+		"/openai/deployments/gpt-4o/chat/completions",
+		"/openai/deployments/text-embedding-3-small/embeddings",
 	}
 	for _, p := range exempt {
 		if !skipAuth(httptest.NewRequest(http.MethodGet, p, nil)) {
@@ -36,6 +41,9 @@ func TestSkipAuth_ExactMatchOnly(t *testing.T) {
 		"/api/v1/healthz",
 		"/api/v1/agents",
 		"/api/v1/tenants",
+		// the Azure prefix must NOT auto-exempt non-LLM Azure paths
+		"/openai/deployments/gpt-4o/models",
+		"/openai/v1/models",
 	}
 	for _, p := range notExempt {
 		if skipAuth(httptest.NewRequest(http.MethodGet, p, nil)) {

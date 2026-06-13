@@ -54,12 +54,16 @@ func (r *Registry) Adapters() []Adapter {
 // the server mounts whatever the registry returns, so no route wiring in
 // the server package changes (REF-05).
 func DefaultRegistry(eng *engine.Engine) *Registry {
+	oai := &OpenAIHandler{Engine: eng}
+	emb := &EmbeddingsHandler{}
 	return NewRegistry(
-		&OpenAIHandler{Engine: eng},
+		oai,
 		NewResponsesHandler(eng),
-		&EmbeddingsHandler{},
+		emb,
 		&ModerationsHandler{},
 		&AnthropicHandler{Engine: eng},
 		&GeminiHandler{Engine: eng},
+		// Azure OpenAI URL surface, delegating to the OpenAI handlers above.
+		&AzureHandler{Chat: oai, Embeddings: emb},
 	)
 }
