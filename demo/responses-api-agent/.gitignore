@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+# MockAgents runtime artifacts (if you run the server from this dir)
+.mockagents*.db

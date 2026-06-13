@@ -1,0 +1,123 @@
+# Acme support agent driven over the OpenAI **Responses API** (/v1/responses).
+#
+# This is the fixture for the openai-agents-SDK demo. The SDK's DEFAULT
+# transport is the Responses API, so — unlike demo/customer-support-agent which
+# forces chat_completions — this demo exercises the /v1/responses surface that
+# MockAgents added in A-01.
+#
+# A note on `protocol`
+# --------------------
+# The agent-spec `protocol` enum is the agent's declared semantics; MockAgents
+# routes a request to an agent by MODEL NAME, independently of which wire
+# surface it arrived on. So "gpt-4o" handles both /v1/chat/completions and
+# /v1/responses traffic, and this value stays `openai-chat-completions` (the
+# schema's OpenAI value) even though the demo drives it via Responses.
+#
+# How the tool loop terminates deterministically
+# ----------------------------------------------
+# MockAgents matches on the *latest user message* and keys turn state off the
+# `X-Session-Id` header. An agent framework's tool loop keeps the user message
+# identical across turns (the tool result returns with role "tool"/as a
+# function_call_output, not "user"), so we gate the tool-call scenarios on
+# `turn_number: 1` and let turn 2 fall through to a resolution scenario. The
+# demo app sends a stable X-Session-Id per conversation (see app/mock_setup.py)
+# so the turn counter advances; without it every request is turn 1 and the loop
+# would never end.
+#
+# Tool names + argument keys MUST match the @function_tool definitions the demo
+# app registers (lookup_order / issue_refund) so the SDK can execute the call.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: acme-responses
+  description: Acme support agent exercised over the OpenAI Responses API (tools + scenarios + streaming).
+  tags: [demo, responses-api, agents-sdk, tools, streaming]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-4o
+  systemPrompt: |
+    You are Acme Corp's friendly tier-1 customer-support agent.
+    Use tools to look up orders or issue refunds. Be concise.
+
+  tools:
+    - name: lookup_order
+      description: Look up the status of an order by its ID.
+      parameters:
+        type: object
+        properties:
+          order_id: { type: string }
+        required: [order_id]
+      responses:
+        - match: { order_id: "ORD-12345" }
+          response:
+            status: shipped
+            carrier: UPS
+            tracking: "1Z999AA10123456784"
+            eta: "2026-04-10"
+        - default: true
+          response:
+            status: processing
+            eta: "2026-04-13"
+
+    - name: issue_refund
+      description: Issue a refund against an order.
+      parameters:
+        type: object
+        properties:
+          order_id: { type: string }
+          amount: { type: number }
+        required: [order_id, amount]
+      responses:
+        - default: true
+          response:
+            refund_id: "RF-88231"
+            state: approved
+            posts_in_days: 5
+
+  behavior:
+    scenarios:
+      # --- Single-turn: a greeting needs no tool, so the loop ends in one turn.
+      - name: greeting
+        match: { content_contains: "hello" }
+        response:
+          content: "Hi! I'm Acme's support assistant. I can check an order or start a refund. What do you need?"
+
+      # --- Order-status flow (turn 1 = tool call, turn 2 = resolution).
+      - name: order-lookup
+        match: { content_contains: "order", turn_number: 1 }
+        response:
+          content: "Let me pull that order up for you."
+          tool_calls:
+            - name: lookup_order
+              arguments: { order_id: "ORD-12345" }
+      - name: order-resolved
+        match: { content_contains: "order", turn_number: 2 }
+        response:
+          content: "Good news — order ORD-12345 shipped via UPS (tracking 1Z999AA10123456784) and should arrive by 2026-04-10. Anything else?"
+
+      # --- Refund flow (turn 1 = tool call, turn 2 = resolution).
+      - name: refund
+        match: { content_contains: "refund", turn_number: 1 }
+        response:
+          content: "I can take care of that refund for you."
+          tool_calls:
+            - name: issue_refund
+              arguments: { order_id: "ORD-12345", amount: 49.99 }
+      - name: refund-resolved
+        match: { content_contains: "refund", turn_number: 2 }
+        response:
+          content: "Done — refund RF-88231 for $49.99 is approved and will post within 5 business days."
+
+      # --- Fallback: also catches the 2nd turn of any flow without an explicit
+      #     resolution scenario, so the agent loop always terminates cleanly.
+      - name: default
+        response:
+          content: "Thanks for contacting Acme support! Share your order ID, or tell me whether you need an order status or a refund."
+
+    # SSE streaming so Runner.run_streamed (and the response.* event ladder)
+    # emit token deltas.
+    streaming:
+      enabled: true
+      chunk_size: 4
+      chunk_delay_ms: 30

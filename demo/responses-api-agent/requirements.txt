@@ -1,0 +1,6 @@
+# OpenAI Agents SDK (the agent framework) + the OpenAI client it builds on.
+# The Agents SDK talks the Responses API (/v1/responses) by default, which is
+# exactly the surface this demo exercises. Pin floors so set_default_openai_api
+# / extra_headers / client.responses are available.
+openai-agents>=0.2.0
+openai>=1.50.0
