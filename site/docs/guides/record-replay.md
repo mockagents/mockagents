@@ -139,6 +139,34 @@ mode, being a faithful re-record, *does* capture error responses.
 > repeated requests — keep `all` sessions short, or use `new_episodes` for a
 > long-lived hybrid server.
 
+### Import an existing cassette
+
+Already have recordings from another tool? Convert them instead of re-recording:
+
+```bash
+# A vcrpy (Python) YAML cassette
+mockagents import vcr fixtures/openai.yaml -o cassette.jsonl
+
+# An OpenAI stored-completions JSONL export
+mockagents import openai-stored-completions export.jsonl -o cassette.jsonl
+
+# Then serve it like any cassette
+mockagents replay --cassette cassette.jsonl
+```
+
+`import vcr` understands vcrpy's body shapes (plain string, `base64_string`,
+gzip'd) **and** parsed-JSON request bodies (vcrpy's JSON serializer). By default
+it keeps only POSTs to the LLM endpoints (pass `--all` for everything), drops
+credential-bearing headers, and skips anything it can't import with a printed
+reason. `import openai-stored-completions` accepts either an envelope
+(`{"request":…,"response":…}`) or a flat stored completion and reconstructs the
+request; this format is a MockAgents-defined contract, so a raw export may need a
+small pre-massage.
+
+> Secrets inside request/response **bodies** are not redacted on import — review
+> the cassette before committing, or re-record through
+> [`mockagents record --redact`](#redact-secrets-before-they-hit-the-cassette).
+
 ## 3. Graduate to YAML for what you can't record
 
 Record/replay is perfect for "make my real flow deterministic." For cases that

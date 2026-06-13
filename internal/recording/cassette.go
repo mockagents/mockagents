@@ -67,6 +67,12 @@ type Cassette struct {
 	byHash map[string][]*Interaction
 }
 
+// MaxCassetteLine bounds a single serialized interaction line on both the read
+// side (Load's scanner) and the import write side (the VCR decompression cap and
+// the OpenAI JSONL line buffer), so an importer can never produce a line larger
+// than Load can read back.
+const MaxCassetteLine = 32 << 20 // 32 MiB
+
 // New creates an empty in-memory cassette. Path may be empty if the
 // cassette is only used for unit tests.
 func New(path string) *Cassette {
@@ -91,7 +97,7 @@ func Load(path string) (*Cassette, error) {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), MaxCassetteLine)
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
@@ -130,6 +136,32 @@ func (c *Cassette) Append(it *Interaction) error {
 	c.mu.Lock()
 	c.interactions = append(c.interactions, it)
 	c.byHash[it.Hash] = append(c.byHash[it.Hash], it)
+	snapshot := append([]*Interaction(nil), c.interactions...)
+	c.mu.Unlock()
+
+	if c.Path == "" {
+		return nil
+	}
+	return writeCassette(c.Path, snapshot)
+}
+
+// AppendAll adds many interactions and writes the cassette to disk ONCE. Hashes
+// and timestamps are assigned exactly as Append does. This is the path bulk
+// imports must use — calling Append N times would rewrite the whole file N times
+// (O(n^2)). With an empty Path the interactions are only indexed in memory.
+func (c *Cassette) AppendAll(interactions []*Interaction) error {
+	now := time.Now().UTC()
+	c.mu.Lock()
+	for _, it := range interactions {
+		if it.Hash == "" {
+			it.Hash = HashRequest(it.Method, it.Path, it.RequestBody)
+		}
+		if it.RecordedAt.IsZero() {
+			it.RecordedAt = now
+		}
+		c.interactions = append(c.interactions, it)
+		c.byHash[it.Hash] = append(c.byHash[it.Hash], it)
+	}
 	snapshot := append([]*Interaction(nil), c.interactions...)
 	c.mu.Unlock()
 

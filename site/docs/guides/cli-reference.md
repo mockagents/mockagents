@@ -270,6 +270,31 @@ the cassette or replay matching — see the [record/replay guide](record-replay.
 
 ---
 
+## `mockagents import`
+
+Convert recordings from other tools into a MockAgents cassette.
+
+```bash
+# vcrpy YAML cassette → MockAgents cassette
+mockagents import vcr fixtures/openai.yaml -o cassette.jsonl
+mockagents import vcr fixtures/openai.yaml --all   # include non-LLM interactions
+
+# OpenAI stored-completions JSONL → MockAgents cassette
+mockagents import openai-stored-completions export.jsonl -o cassette.jsonl
+```
+
+| Flag | Default | Applies to | Description |
+|------|---------|-----------|-------------|
+| `--cassette` / `-o` | `cassette.jsonl` | both | Output cassette path |
+| `--all` | `false` | `vcr` | Import every interaction, not just POSTs to known LLM paths |
+
+`import vcr` decodes base64/gzip bodies and parsed-JSON request bodies, drops
+credential-bearing headers, and skips anything it can't import with a printed
+reason. Secrets embedded in request/response **bodies** are not redacted — review
+before committing.
+
+---
+
 ## `mockagents mcp`
 
 Serve a `kind: MCPServer` definition over HTTP or stdio.

@@ -11,6 +11,29 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **Cassette importers** (R-05, completing record/replay v2) — convert existing
+  recordings into a MockAgents cassette that `mockagents replay` serves:
+  - `mockagents import vcr <cassette.yaml>` — import a vcrpy (Python) YAML
+    cassette. Handles vcrpy's body shapes (scalar string, `{string: ...}`,
+    `{base64_string: ...}` including gzip'd, capped at 32 MiB against
+    decompression bombs) **and parsed-JSON request bodies** (vcrpy's JSON
+    serializer renders the body as a YAML mapping — re-encoded to JSON so it
+    imports and hash-matches). By default only POSTs to known LLM paths are kept
+    (`--all` imports everything); credential-bearing headers (Authorization,
+    Cookie, `x-api-key`, `x-goog-api-key`, bearer/token/secret/auth headers) are
+    dropped; non-importable interactions are skipped with a reason rather than
+    failing the whole file.
+  - `mockagents import openai-stored-completions <export.jsonl>` — import an
+    OpenAI stored-completions JSONL export. Accepts an envelope
+    (`{"request":..,"response":..}`) or a flat stored completion (reconstructs
+    the request from `model` + `messages`→`/v1/chat/completions` or
+    `input`→`/v1/responses`, plus sampling params). Unrecognized lines are
+    skipped with a reason.
+  - `Cassette.AppendAll` writes an imported batch to disk in a single pass.
+
+  Note: secrets embedded in request/response **bodies** are not redacted on
+  import — review before committing, or re-record through
+  `mockagents record --redact`.
 - **Replay record modes** (R-01) — `mockagents replay --record-mode=<mode>
   --upstream <url>` turns the replay server into a record/replay hybrid by
   wiring the upstream into the existing `Replay.Fallback` seam:
