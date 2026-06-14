@@ -1,0 +1,62 @@
+{
+  "name": "@mockagents/vitest",
+  "version": "0.1.0",
+  "description": "Auto-spawn MockAgents and redirect the OpenAI / Anthropic / Gemini SDKs in your Vitest (and Jest) tests.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./jest": {
+      "types": "./dist/jest.d.ts",
+      "import": "./dist/jest.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "clean": "rimraf dist"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "vitest",
+    "jest",
+    "mock",
+    "llm",
+    "openai",
+    "anthropic",
+    "gemini",
+    "testing",
+    "ai",
+    "agents"
+  ],
+  "license": "Apache-2.0",
+  "peerDependencies": {
+    "@mockagents/sdk": "^0.4.0",
+    "vitest": ">=1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "vitest": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@mockagents/sdk": "file:../typescript",
+    "@types/node": "^22.0.0",
+    "rimraf": "^6.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

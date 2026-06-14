@@ -44,6 +44,10 @@ AI SDK — anything that talks these APIs over HTTP.
 **SDKs** (client libraries, not the server): `pip install mockagents` (Python),
 `npm install @mockagents/sdk` (TypeScript), `go get github.com/mockagents/mockagents/sdk/go/mockagents` (Go).
 
+**Test-runner helpers** (auto-spawn the server + redirect the provider SDKs):
+`@mockagents/vitest` for [Vitest/Jest](sdk/vitest/README.md), and the bundled
+`pytest` plugin in the Python SDK.
+
 ```bash
 mockagents init my-project && cd my-project   # scaffold an example agent
 # ...or start from a curated pack:

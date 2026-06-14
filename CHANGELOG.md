@@ -11,6 +11,24 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **`@mockagents/vitest` test-runner helper** (E-02) — a new package
+  (`sdk/vitest`) that auto-spawns the MockAgents server once per test file and
+  redirects the OpenAI / Anthropic / Gemini SDK base-URL (and dummy key)
+  environment variables at it, mirroring the Python `pytest` plugin's
+  zero-change ergonomics:
+  - `setupMockAgents(options)` registers a `beforeAll` that starts the server on
+    an auto-selected free port and patches the provider env, and an `afterAll`
+    that restores the env and stops the server. The returned handle exposes
+    `.url` / `.server` / `.client`.
+  - A `mockagentsFixture(handle)` helper layers idiomatic Vitest fixtures
+    (`mockagents`, `mockagentsClient`) on top for fixture-injection style.
+  - A `@mockagents/vitest/jest` subpath provides the same `setupMockAgents`
+    wired to Jest's global hooks (importing it pulls in no Vitest dependency).
+  - Options extend `MockAgentServerOptions` with `patchEnv` (default `true`),
+    extra `env` (merged after, and overriding, the provider patch; restored
+    afterwards), and `startTimeoutMs`. Reuses the SDK's `MockAgentServer` /
+    `MockAgentClient` rather than reimplementing process spawn/health logic.
+    (npm publish under the `@mockagents` scope is a follow-on release step.)
 - **Streamable HTTP MCP transport** (M-01) — `mockagents mcp --transport http`
   now serves the current MCP Streamable HTTP revision on a single `/mcp`
   endpoint instead of the legacy POST-only JSON handler:

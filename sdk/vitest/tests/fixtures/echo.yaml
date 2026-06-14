@@ -1,0 +1,17 @@
+# Fixture agent for the @mockagents/vitest e2e test. A distinct model name
+# (`vitest-echo-model`) routes requests here unambiguously, and the single
+# default scenario returns a deterministic body the test asserts on.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: vitest-echo
+  description: Deterministic echo agent used by the @mockagents/vitest e2e test.
+  tags: [test, fixture]
+spec:
+  protocol: openai-chat-completions
+  model: vitest-echo-model
+  behavior:
+    scenarios:
+      - name: default
+        response:
+          content: "pong from mockagents"
