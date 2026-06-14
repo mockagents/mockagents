@@ -1,0 +1,81 @@
+name: Actions Self-Test
+
+# Exercises the two composite actions shipped under deploy/actions/ end-to-end
+# against this repo's own examples, so a change that breaks the install/start/
+# test wiring fails CI instead of breaking every downstream consumer. Uses
+# `source-path` to build the CLI from the checked-out tree — the published
+# `go install …@latest` path needs a release tag (D-02) that does not exist yet.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/actions/**"
+      - "cmd/mockagents/**"
+      - ".github/workflows/actions-selftest.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "deploy/actions/**"
+      - "cmd/mockagents/**"
+      - ".github/workflows/actions-selftest.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  setup-mockagents:
+    name: setup-mockagents (server + exported env)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start MockAgents from source
+        uses: ./deploy/actions/setup-mockagents
+        with:
+          source-path: ${{ github.workspace }}
+          agents-dir: ./examples
+
+      - name: Assert exported base URLs reach the mock
+        run: |
+          set -euo pipefail
+          # setup-mockagents exported these to GITHUB_ENV in the step above.
+          test -n "${MOCKAGENTS_BASE_URL:?not exported}"
+          test "${OPENAI_BASE_URL:?not exported}" = "${MOCKAGENTS_BASE_URL}/v1"
+          curl -fsS "${MOCKAGENTS_BASE_URL}/api/v1/health" | grep -q '"status":"ok"'
+          # A real OpenAI-shaped request must round-trip through the loaded examples.
+          curl -fsS "${OPENAI_BASE_URL}/chat/completions" \
+            -H 'content-type: application/json' \
+            -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}' \
+            | grep -q '"object":"chat.completion"'
+
+  mockagents-test:
+    name: mockagents-test (validate + JUnit suite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run a TestSuite from source
+        id: ma
+        uses: ./deploy/actions/mockagents-test
+        with:
+          source-path: ${{ github.workspace }}
+          agents-dir: ./examples
+          suites: ./examples/tool-routing-suite.yaml
+          junit-output: mockagents-junit.xml
+
+      - name: Assert JUnit report was produced
+        run: |
+          set -euo pipefail
+          report="${{ steps.ma.outputs.junit-report }}"
+          test -f "$report"
+          grep -q '<testsuites' "$report"
+          grep -q 'failures="0"' "$report"
+
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mockagents-junit
+          path: mockagents-junit.xml
+          if-no-files-found: ignore

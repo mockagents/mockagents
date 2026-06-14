@@ -243,10 +243,11 @@ project ships ready-to-use wrappers for the two most common CI hosts.
 
 **GitHub Actions** — two composite actions under `deploy/actions/`:
 
-- [`setup-mockagents`](deploy/actions/setup-mockagents) installs the CLI, starts
-  the mock as a background service, and exports `OPENAI_BASE_URL` /
+- [`setup-mockagents`](deploy/actions/setup-mockagents/README.md) installs the
+  CLI, starts the mock as a background service, and exports `OPENAI_BASE_URL` /
   `ANTHROPIC_BASE_URL` for the rest of the job — point your existing test suite
-  at it with no code changes.
+  at it with no code changes. Pass `source-path: ${{ github.workspace }}` to
+  build the CLI from a checkout instead of a published release.
 - [`mockagents-test`](deploy/actions/mockagents-test) installs the CLI, validates
   agents, runs a TestSuite, and exposes the JUnit path as a step output:
 

@@ -15,8 +15,18 @@ inputs:
       mockagents binary version to install. Defaults to "latest" which
       resolves to the most recent tagged release via `go install`.
       Pin to a specific tag (e.g. v0.1.0) for reproducible CI runs.
+      Ignored when 'source-path' is set.
     required: false
     default: "latest"
+
+  source-path:
+    description: >-
+      Build the CLI from a local checkout instead of installing a published
+      release (runs 'go build ./cmd/mockagents' from this path). Use
+      ${{ github.workspace }} to test your working tree, or the repo's own CI
+      before a release is published. Takes precedence over 'version'.
+    required: false
+    default: ""
 
   agents-dir:
     description: "Directory containing kind:Agent YAML files."
@@ -64,19 +74,29 @@ runs:
 
     - name: Install mockagents CLI
       shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        SOURCE_PATH: ${{ inputs.source-path }}
       run: |
         set -euo pipefail
-        if [[ "${{ inputs.version }}" == "latest" ]]; then
+        gobin="$(go env GOPATH)/bin"
+        if [[ -n "$SOURCE_PATH" ]]; then
+          echo "Building mockagents from source at $SOURCE_PATH"
+          mkdir -p "$gobin"  # go build -o won't create the target dir; go install would
+          ( cd "$SOURCE_PATH" && go build -o "$gobin/mockagents" ./cmd/mockagents )
+        elif [[ "$VERSION" == "latest" ]]; then
           go install github.com/mockagents/mockagents/cmd/mockagents@latest
         else
-          go install "github.com/mockagents/mockagents/cmd/mockagents@${{ inputs.version }}"
+          go install "github.com/mockagents/mockagents/cmd/mockagents@${VERSION}"
         fi
-        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        echo "$gobin" >> "$GITHUB_PATH"
 
     - name: Validate agent definitions
       if: inputs.skip-validate != 'true'
       shell: bash
-      run: mockagents validate "${{ inputs.agents-dir }}"
+      env:
+        AGENTS_DIR: ${{ inputs.agents-dir }}
+      run: mockagents validate "$AGENTS_DIR"
 
     - name: Run mockagents test
       id: run

@@ -11,6 +11,19 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **`setup-mockagents` GitHub Action — source builds + self-test** (E-03) —
+  the `deploy/actions/setup-mockagents` and `deploy/actions/mockagents-test`
+  composite actions gain a `source-path` input that builds the CLI from a local
+  checkout (`go build ./cmd/mockagents`) instead of `go install …@latest`. This
+  lets a workflow test its own working tree (`source-path: ${{ github.workspace }}`)
+  and unblocks CI before a release tag exists. A new `actions-selftest.yml`
+  workflow exercises both actions end-to-end against the repo's `examples/`
+  (start → exported `OPENAI_BASE_URL` round-trips a chat completion; validate →
+  `kind:TestSuite` → JUnit report), so a regression in the action wiring fails
+  CI instead of every downstream consumer. Added a `README.md` for
+  `setup-mockagents` and hardened both install steps to pass inputs via `env:`
+  rather than inline `${{ }}` interpolation. (Marketplace publishing remains a
+  release-time step.)
 - **`@mockagents/vitest` test-runner helper** (E-02) — a new package
   (`sdk/vitest`) that auto-spawns the MockAgents server once per test file and
   redirects the OpenAI / Anthropic / Gemini SDK base-URL (and dummy key)

@@ -13,9 +13,17 @@ inputs:
   version:
     description: >-
       mockagents binary version to install ("latest" or a tag like v0.4.0).
-      Pin a tag for reproducible CI.
+      Pin a tag for reproducible CI. Ignored when 'source-path' is set.
     required: false
     default: "latest"
+  source-path:
+    description: >-
+      Build the CLI from a local checkout instead of installing a published
+      release. When set, the action runs 'go build ./cmd/mockagents' from this
+      path (use ${{ github.workspace }} to test your working tree, or the repo's
+      own CI before a release is published). Takes precedence over 'version'.
+    required: false
+    default: ""
   agents-dir:
     description: "Directory containing kind:Agent YAML files."
     required: false
@@ -56,14 +64,22 @@ runs:
 
     - name: Install mockagents CLI
       shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        SOURCE_PATH: ${{ inputs.source-path }}
       run: |
         set -euo pipefail
-        if [[ "${{ inputs.version }}" == "latest" ]]; then
+        gobin="$(go env GOPATH)/bin"
+        if [[ -n "$SOURCE_PATH" ]]; then
+          echo "Building mockagents from source at $SOURCE_PATH"
+          mkdir -p "$gobin"  # go build -o won't create the target dir; go install would
+          ( cd "$SOURCE_PATH" && go build -o "$gobin/mockagents" ./cmd/mockagents )
+        elif [[ "$VERSION" == "latest" ]]; then
           go install github.com/mockagents/mockagents/cmd/mockagents@latest
         else
-          go install "github.com/mockagents/mockagents/cmd/mockagents@${{ inputs.version }}"
+          go install "github.com/mockagents/mockagents/cmd/mockagents@${VERSION}"
         fi
-        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        echo "$gobin" >> "$GITHUB_PATH"
 
     - name: Start mock server
       id: start
