@@ -11,6 +11,21 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **Anthropic Message Batches API** (A-08) — the asynchronous, inline sibling of
+  `/v1/messages`, completing the Batch surface alongside the OpenAI Files+Batch
+  API. `POST /v1/messages/batches` takes its requests inline
+  (`{"requests":[{"custom_id","params"}, …]}` — no Files prerequisite), processes
+  the whole batch eagerly and deterministically by replaying each request's
+  `params` through the live `/v1/messages` handler (so a batched request is
+  byte-for-byte the same as the synchronous one), and exposes `GET`/list/cancel/
+  delete plus `GET /v1/messages/batches/{id}/results` (JSONL). `processing_status`
+  (`in_progress` → `ended`, or `canceling` → `ended` after a cancel) is derived
+  from elapsed time vs. an optional `X-Mockagents-Batch-Delay-Ms` so a poll loop
+  observes the lifecycle without any background goroutine; `request_counts`
+  tallies succeeded/errored (and canceled on cancel). The whole batch is validated
+  up front (non-empty, ≤100k requests, unique non-empty `custom_id`s, params
+  present), and the store is per-tenant bounded-FIFO. Streaming is forced off on
+  batched requests so it can't corrupt the JSONL framing.
 - **MCP conformance badge + CI** (M-02) — a new `mcp-conformance` workflow runs
   the official [`@modelcontextprotocol/conformance`](https://www.npmjs.com/package/@modelcontextprotocol/conformance)
   server suite against the mock's Streamable-HTTP `/mcp` endpoint on every change
