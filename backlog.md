@@ -8,14 +8,16 @@ Companion to `2026-06-10-mockagents-pmf-research.md`. Ordered by leverage for **
 
 ## P0 — Distribution & launch (nothing else matters until these ship) 🔴
 
-> **Decision locked (2026-06-11):** keep the **`mockagents`** brand everywhere — do **not** rename code/paths to `anandtopu`. The `go.mod`-vs-repo mismatch is resolved by **registering the `mockagents` org + namespaces** (option A), not by a code rewrite. `go.mod` stays `github.com/mockagents/mockagents`; the only correct `anandtopu/mock-agents` references are the git-**remote** checks in `hooks/pre-push`. **D-00 below is the prerequisite for D-01/D-03/D-04/D-05** — claim the namespaces first.
+> **Decision locked (2026-06-11):** keep the **`mockagents`** brand everywhere — do **not** rename code/paths to `anandtopu`. The `go.mod`-vs-repo mismatch is resolved by **registering the `mockagents` org + namespaces** (option A), not by a code rewrite. `go.mod` stays `github.com/mockagents/mockagents`.
+>
+> **UPDATE (2026-06-14): the org + canonical repo are LIVE.** The project was migrated to **`github.com/mockagents/mockagents`** (now the canonical `origin`, default branch `main`; still **Private** pending the public flip). `hooks/pre-push` now guards the **`mockagents/mockagents`** URL. The old `anandtopu/mock-agents` is kept as-is (local remote `legacy`) — there are no longer any `anandtopu` references anywhere except that legacy mirror. **D-00 below is the prerequisite for D-01/D-03/D-04/D-05** — claim the remaining namespaces (Docker/PyPI/npm), then make the repo Public.
 
 ### D-00 — Org & namespace registration checklist (prerequisite; external account actions) 🔑
 
 These are account/registration actions (not code). Until they're done, the existing paths/badges don't resolve and `go install` fails — but **no code change is needed once they exist.** Claim every namespace as **`mockagents`** to keep the brand consistent.
 
-- [ ] **GitHub org `mockagents`** — register the org at `github.com/mockagents`. *(Unblocks the `go.mod` module path, `go install`, CI/Go-Report badges, Releases links, and the Homebrew tap in one stroke.)*
-- [ ] **Repo `mockagents/mockagents`** — host the canonical repo under the org (move, or push a mirror and set it as the module's home). Keep `anandtopu/mock-agents` as a remote/mirror only — the `hooks/pre-push` remote check already expects that and stays as-is.
+- [x] **GitHub org `mockagents`** — ✅ registered (2026-06-14). *(Unblocks the `go.mod` module path, `go install`, CI/Go-Report badges, Releases links, and the Homebrew tap in one stroke.)*
+- [x] **Repo `mockagents/mockagents`** — ✅ migrated (2026-06-14): `main` + `autobuild/state` pushed, default branch `main`, now the canonical `origin`. Still **Private** (flip to Public when ready). Old `anandtopu/mock-agents` kept as-is (local remote `legacy`); `hooks/pre-push` now guards `mockagents/mockagents`.
 - [ ] **Enable GitHub Pages / CI under the org** so the badge URLs (`github.com/mockagents/mockagents/actions/...`) and `goreportcard.com/report/github.com/mockagents/mockagents` light up.
 - [ ] **Docker Hub org `mockagents`** + repo `mockagents/mockagents` — claim it so `docker run mockagents/mockagents` and the Helm/k8s `image:` refs resolve. *(If the org name is taken, fall back to GHCR `ghcr.io/mockagents/mockagents` and update the README `docker run` line + Helm `values.yaml` — still under the `mockagents` name.)*
 - [ ] **PyPI project `mockagents`** — register/own the project name (reserve early; squatting is common).

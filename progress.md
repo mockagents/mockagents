@@ -2,8 +2,17 @@
 
 Cross-firing state for the hourly SDLC autobuild loop. The cron reads this FIRST
 (to see what's done / in-flight / blocked) and appends a row LAST each firing.
-Protocol: `sdlc-autobuild-runbook.md`. Backlog source:
-`git show release/roadmap_docs:docs/research/2026-06-10-enhancement-backlog.md`.
+Protocol: `sdlc-autobuild-runbook.md`. Backlog: read `backlog.md` on THIS
+`autobuild/state` branch (the cloud-firing source of truth; the old
+`release/roadmap_docs` archive path is local-only and not in the cloud).
+
+> **🔀 REPO MIGRATION (2026-06-14):** the canonical repo moved from
+> `anandtopu/mock-agents` to **`github.com/mockagents/mockagents`** (org now live;
+> default branch `main`; still **Private**). The cloud routine
+> `trig_01CjxW1q4PDKWcLzEvp3KiGw` source URL + prompt were repointed to the new
+> repo. Ship PRs against `mockagents/mockagents`; the old repo is kept as-is. No
+> code/import changes were needed (`go.mod` was already
+> `github.com/mockagents/mockagents`); only `hooks/pre-push` was repointed.
 
 ## Codeable item status (skip P0 D-00..D-08 — need user/registration)
 
