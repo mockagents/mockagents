@@ -282,3 +282,89 @@ spec:
 		t.Errorf("no mimeType error: %v", errs)
 	}
 }
+
+func TestValidateMCPServer_AudioBlockMissingFields(t *testing.T) {
+	def, node := decodeMCPServerYAML(t, `apiVersion: mockagents/v1
+kind: MCPServer
+metadata:
+  name: x
+spec:
+  tools:
+    - name: get
+      responses:
+        - default: true
+          content:
+            - type: audio
+`)
+	errs := ValidateMCPServer(def, "", node)
+	if errs == nil {
+		t.Fatal("expected audio-block errors")
+	}
+	if !containsMessage(errs, "empty data") {
+		t.Errorf("no empty-data error: %v", errs)
+	}
+	if !containsMessage(errs, "no mimeType") {
+		t.Errorf("no mimeType error: %v", errs)
+	}
+}
+
+func TestValidateMCPServer_EmbeddedResourceBlock(t *testing.T) {
+	// Valid: uri + exactly one of text/blob.
+	def, node := decodeMCPServerYAML(t, `apiVersion: mockagents/v1
+kind: MCPServer
+metadata:
+  name: x
+spec:
+  tools:
+    - name: get
+      responses:
+        - default: true
+          content:
+            - type: resource
+              uri: "test://r"
+              text: "hello"
+`)
+	if errs := ValidateMCPServer(def, "", node); errs != nil {
+		t.Errorf("unexpected errors for valid embedded resource: %v", errs.Error())
+	}
+
+	// Missing both text and blob.
+	def, node = decodeMCPServerYAML(t, `apiVersion: mockagents/v1
+kind: MCPServer
+metadata:
+  name: x
+spec:
+  tools:
+    - name: get
+      responses:
+        - default: true
+          content:
+            - type: resource
+              uri: "test://r"
+`)
+	errs := ValidateMCPServer(def, "", node)
+	if errs == nil || !containsMessage(errs, "no inline text or blob") {
+		t.Errorf("expected missing text/blob error: %v", errs)
+	}
+
+	// Both text and blob set (must be XOR).
+	def, node = decodeMCPServerYAML(t, `apiVersion: mockagents/v1
+kind: MCPServer
+metadata:
+  name: x
+spec:
+  tools:
+    - name: get
+      responses:
+        - default: true
+          content:
+            - type: resource
+              uri: "test://r"
+              text: "hello"
+              blob: "QUJD"
+`)
+	errs = ValidateMCPServer(def, "", node)
+	if errs == nil || !containsMessage(errs, "both text and blob") {
+		t.Errorf("expected text-XOR-blob error: %v", errs)
+	}
+}

@@ -9,7 +9,7 @@ import (
 
 // validMCPContentTypes lists the content block types the mock MCP
 // server understands. Keep in sync with internal/mcp/server.go.
-var validMCPContentTypes = []string{"text", "image", "resource"}
+var validMCPContentTypes = []string{"text", "image", "audio", "resource"}
 
 // ValidateMCPServer runs rule-based validation against an
 // MCPServerDefinition. Mirrors the shape of ValidatePipeline and
@@ -185,7 +185,7 @@ func validateMCPPrompts(ctx *validationContext, def *types.MCPServerDefinition) 
 func validateMCPContentBlock(ctx *validationContext, field string, block *types.MCPContentBlock) {
 	if block.Type == "" {
 		ctx.addError(field+".type", "required field missing",
-			"Set type to one of: text, image, resource.")
+			"Set type to one of: text, image, audio, resource.")
 		return
 	}
 	var known bool
@@ -198,7 +198,7 @@ func validateMCPContentBlock(ctx *validationContext, field string, block *types.
 	if !known {
 		ctx.addError(field+".type",
 			fmt.Sprintf("unknown content type %q", block.Type),
-			"Supported types: text, image, resource.")
+			"Supported types: text, image, audio, resource.")
 		return
 	}
 	switch block.Type {
@@ -216,10 +216,31 @@ func validateMCPContentBlock(ctx *validationContext, field string, block *types.
 			ctx.addError(field+".mimeType", "image content block has no mimeType",
 				"Set block.mimeType to e.g. image/png.")
 		}
+	case "audio":
+		if block.Data == "" {
+			ctx.addError(field+".data", "audio content block has empty data",
+				"Set block.data to the base64-encoded audio bytes.")
+		}
+		if block.MimeType == "" {
+			ctx.addError(field+".mimeType", "audio content block has no mimeType",
+				"Set block.mimeType to e.g. audio/wav.")
+		}
 	case "resource":
+		// An embedded resource (`{type:resource, resource:{...}}`) needs
+		// a URI plus its inline payload. Per the MCP spec the inner
+		// contents are TextResourceContents XOR BlobResourceContents,
+		// so exactly one of text/blob must be set.
 		if block.URI == "" {
 			ctx.addError(field+".uri", "resource content block has no URI",
 				"Set block.uri to the referenced resource's URI.")
+		}
+		switch {
+		case block.Text == "" && block.Blob == "":
+			ctx.addError(field+".text", "resource content block has no inline text or blob",
+				"Set block.text (or block.blob) to the embedded resource's contents.")
+		case block.Text != "" && block.Blob != "":
+			ctx.addError(field+".text", "resource content block sets both text and blob",
+				"Set exactly one of block.text or block.blob (text XOR blob).")
 		}
 	}
 }

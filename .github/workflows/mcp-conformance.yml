@@ -1,0 +1,93 @@
+name: MCP Conformance
+
+# Runs the official MCP conformance suite
+# (@modelcontextprotocol/conformance) against the mock MCP server built
+# from this tree, serving the conformance/ fixture. The run is gated by
+# conformance/expected-failures.yml: a NEW failure (regression) or a
+# baselined scenario that starts PASSING (stale entry) fails the job.
+#
+# Keep CONFORMANCE_VERSION pinned so a suite release can't silently
+# change the pass/fail set out from under the baseline.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "internal/mcp/**"
+      - "internal/types/mcp.go"
+      - "internal/config/mcpserver_validator.go"
+      - "cmd/mockagents/**"
+      - "conformance/**"
+      - ".github/workflows/mcp-conformance.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "internal/mcp/**"
+      - "internal/types/mcp.go"
+      - "internal/config/mcpserver_validator.go"
+      - "cmd/mockagents/**"
+      - "conformance/**"
+      - ".github/workflows/mcp-conformance.yml"
+
+permissions:
+  contents: read
+
+env:
+  CONFORMANCE_VERSION: "0.1.16"
+
+jobs:
+  conformance:
+    name: MCP Streamable-HTTP conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build mockagents
+        run: go build -o mockagents ./cmd/mockagents/
+
+      - name: Validate conformance fixture
+        run: ./mockagents validate conformance/server
+
+      - name: Start mock MCP server
+        run: |
+          set -euo pipefail
+          ./mockagents mcp --transport http --port 8088 --agents-dir conformance/server \
+            > mcp-server.log 2>&1 &
+          echo "MCP_PID=$!" >> "$GITHUB_ENV"
+          # Wait for the server to accept connections.
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8088/healthz >/dev/null 2>&1; then
+              echo "server up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "server did not become healthy"; cat mcp-server.log; exit 1
+
+      - name: Run MCP conformance suite
+        run: |
+          npx -y "@modelcontextprotocol/conformance@${CONFORMANCE_VERSION}" server \
+            --url http://127.0.0.1:8088/mcp \
+            --expected-failures conformance/expected-failures.yml
+
+      - name: Stop mock MCP server
+        if: always()
+        run: |
+          if [ -n "${MCP_PID:-}" ]; then kill "${MCP_PID}" 2>/dev/null || true; fi
+
+      - name: Upload server log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-server-log
+          path: mcp-server.log
+          if-no-files-found: ignore

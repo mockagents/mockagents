@@ -164,7 +164,7 @@ $ printf '%s\n' \
     '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_forecast","arguments":{"city":"tokyo"}}}' \
   | mockagents mcp --transport stdio --agents-dir examples --server weather-mcp
 
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","serverInfo":{"name":"weather-mcp","version":"mock"},"capabilities":{"prompts":{},"resources":{},"tools":{}}}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","serverInfo":{"name":"weather-mcp","version":"mock"},"capabilities":{"prompts":{},"resources":{"subscribe":true},"tools":{}}}}
 {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"get_forecast","description":"Return a canned weather forecast for a city.","inputSchema":{"properties":{"city":{"type":"string"}},"required":["city"],"type":"object"}}]}}
 {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"Tokyo: sunny, 22C"}]}}
 ```

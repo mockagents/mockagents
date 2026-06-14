@@ -23,10 +23,11 @@ import (
 type Server struct {
 	def *types.MCPServerDefinition
 
-	mu      sync.RWMutex
-	inited  bool
-	logLvl  string
-	pending []*Notification
+	mu         sync.RWMutex
+	inited     bool
+	logLvl     string
+	pending    []*Notification
+	subscribed map[string]bool
 
 	// bi drives the v0.3 bidirectional transport: SSE subscribers,
 	// server-initiated requests (sampling/roots), and their response
@@ -44,7 +45,7 @@ type Notification struct {
 
 // NewServer creates a Server bound to a single MCPServerDefinition.
 func NewServer(def *types.MCPServerDefinition) *Server {
-	return &Server{def: def, bi: newBidirectional()}
+	return &Server{def: def, bi: newBidirectional(), subscribed: map[string]bool{}}
 }
 
 // EmitNotification enqueues a server-initiated JSON-RPC notification
@@ -120,6 +121,10 @@ func (s *Server) Handle(req *Request) *Response {
 		return s.handleResourcesList(req)
 	case "resources/read":
 		return s.handleResourcesRead(req)
+	case "resources/subscribe":
+		return s.handleResourcesSubscribe(req)
+	case "resources/unsubscribe":
+		return s.handleResourcesUnsubscribe(req)
 	case "prompts/list":
 		return s.handlePromptsList(req)
 	case "prompts/get":
@@ -181,7 +186,9 @@ func (s *Server) handleInitialize(req *Request) *Response {
 		caps["tools"] = map[string]any{}
 	}
 	if s.def.Spec.Capabilities.Resources || len(s.def.Spec.Resources) > 0 {
-		caps["resources"] = map[string]any{}
+		// The mock accepts resources/subscribe + resources/unsubscribe
+		// (tracking the URI set), so advertise the subscribe capability.
+		caps["resources"] = map[string]any{"subscribe": true}
 	}
 	if s.def.Spec.Capabilities.Prompts || len(s.def.Spec.Prompts) > 0 {
 		caps["prompts"] = map[string]any{}
@@ -357,6 +364,56 @@ func (s *Server) handleResourcesRead(req *Request) *Response {
 		map[string]any{"available": s.resourceURIs()})
 }
 
+type resourceSubscribeParams struct {
+	URI string `json:"uri"`
+}
+
+// handleResourcesSubscribe records a client's interest in a resource
+// URI and returns an empty result. The mock tracks the subscribed set
+// so tests can assert the server observed the subscription; it does
+// not push resources/updated notifications on its own (use
+// EmitNotification / POST /mcp/notify to drive that side).
+func (s *Server) handleResourcesSubscribe(req *Request) *Response {
+	var params resourceSubscribeParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return newError(req.ID, ErrInvalidParams, "invalid params for resources/subscribe", err.Error())
+	}
+	if params.URI == "" {
+		return newError(req.ID, ErrInvalidParams, "uri is required", nil)
+	}
+	s.mu.Lock()
+	s.subscribed[params.URI] = true
+	s.mu.Unlock()
+	return newResult(req.ID, map[string]any{})
+}
+
+// handleResourcesUnsubscribe clears a previously recorded subscription
+// and returns an empty result. Unsubscribing a URI that was never
+// subscribed is a no-op (idempotent), matching how a real server
+// tolerates redundant unsubscribes.
+func (s *Server) handleResourcesUnsubscribe(req *Request) *Response {
+	var params resourceSubscribeParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return newError(req.ID, ErrInvalidParams, "invalid params for resources/unsubscribe", err.Error())
+	}
+	if params.URI == "" {
+		return newError(req.ID, ErrInvalidParams, "uri is required", nil)
+	}
+	s.mu.Lock()
+	delete(s.subscribed, params.URI)
+	s.mu.Unlock()
+	return newResult(req.ID, map[string]any{})
+}
+
+// Subscribed reports whether a resource URI currently has an active
+// subscription. Exposed for tests that assert subscribe/unsubscribe
+// bookkeeping.
+func (s *Server) Subscribed(uri string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.subscribed[uri]
+}
+
 func (s *Server) resourceURIs() []string {
 	out := make([]string, len(s.def.Spec.Resources))
 	for i, r := range s.def.Spec.Resources {
@@ -397,13 +454,15 @@ func (s *Server) handlePromptsGet(req *Request) *Response {
 		if p.Name != params.Name {
 			continue
 		}
-		// Expand {{arg}} placeholders inside each text content block.
+		// Expand {{arg}} placeholders inside each content block. Text
+		// blocks interpolate their text; embedded-resource blocks
+		// interpolate the URI (and any inline text) so a prompt can
+		// embed a resource whose URI is supplied as an argument.
 		messages := make([]types.MCPPromptMessage, 0, len(p.Messages))
 		for _, m := range p.Messages {
 			expanded := m
-			if expanded.Content.Type == "text" {
-				expanded.Content.Text = expandArgs(expanded.Content.Text, params.Arguments)
-			}
+			expanded.Content.Text = expandArgs(expanded.Content.Text, params.Arguments)
+			expanded.Content.URI = expandArgs(expanded.Content.URI, params.Arguments)
 			messages = append(messages, expanded)
 		}
 		return newResult(req.ID, map[string]any{

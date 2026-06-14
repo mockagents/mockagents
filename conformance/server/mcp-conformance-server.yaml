@@ -1,0 +1,199 @@
+# conformance/server/mcp-conformance-server.yaml
+#
+# A mock MCP server whose tools, resources, and prompts are named and
+# shaped to satisfy the static-content scenarios of the official MCP
+# conformance suite (@modelcontextprotocol/conformance). It is the
+# fixture the `mcp-conformance` CI workflow serves and tests against.
+# It lives in its own directory so the conformance baseline
+# (../expected-failures.yml) is not loaded as an agent document.
+#
+# Serve it:
+#   mockagents mcp --transport http --port 8081 --agents-dir conformance/server
+# Test it:
+#   npx @modelcontextprotocol/conformance server \
+#     --url http://127.0.0.1:8081/mcp \
+#     --expected-failures conformance/expected-failures.yml
+#
+# Scenarios that require server-INITIATED behaviour (sampling,
+# elicitation, progress/log notifications mid-call) or stateful URI
+# templates are listed in expected-failures.yml — a static declarative
+# mock does not model those flows.
+apiVersion: mockagents/v1
+kind: MCPServer
+metadata:
+  name: mcp-conformance
+  description: Fixture server exercised by the MCP conformance suite.
+  tags: [mcp, conformance]
+
+spec:
+  # 2025-11-25 is the default; the conformance suite targets the
+  # 2025-06-18 / 2025-11-25 revisions and negotiates via the header.
+  capabilities:
+    tools: true
+    resources: true
+    prompts: true
+    logging: true
+
+  tools:
+    # tools-call-simple-text
+    - name: test_simple_text
+      description: Returns a simple text content block.
+      inputSchema:
+        type: object
+        properties: {}
+      responses:
+        - default: true
+          content:
+            - type: text
+              text: "This is a simple text response for testing."
+
+    # tools-call-image (1x1 red PNG)
+    - name: test_image_content
+      description: Returns an image content block.
+      inputSchema:
+        type: object
+        properties: {}
+      responses:
+        - default: true
+          content:
+            - type: image
+              mimeType: image/png
+              data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+    # tools-call-audio (minimal WAV header)
+    - name: test_audio_content
+      description: Returns an audio content block.
+      inputSchema:
+        type: object
+        properties: {}
+      responses:
+        - default: true
+          content:
+            - type: audio
+              mimeType: audio/wav
+              data: "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA="
+
+    # tools-call-embedded-resource
+    - name: test_embedded_resource
+      description: Returns an embedded resource content block.
+      inputSchema:
+        type: object
+        properties: {}
+      responses:
+        - default: true
+          content:
+            - type: resource
+              uri: "test://embedded-resource"
+              mimeType: text/plain
+              text: "This is an embedded resource content."
+
+    # tools-call-mixed-content
+    - name: test_multiple_content_types
+      description: Returns text, image, and embedded-resource blocks.
+      inputSchema:
+        type: object
+        properties: {}
+      responses:
+        - default: true
+          content:
+            - type: text
+              text: "Multiple content types test:"
+            - type: image
+              mimeType: image/png
+              data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+            - type: resource
+              uri: "test://mixed-content-resource"
+              mimeType: application/json
+              text: '{"test":"data","value":123}'
+
+    # tools-call-error
+    - name: test_error_handling
+      description: Always returns an error result.
+      inputSchema:
+        type: object
+        properties: {}
+      responses:
+        - default: true
+          isError: true
+          content:
+            - type: text
+              text: "This tool intentionally returns an error for testing"
+
+  resources:
+    # resources-read-text
+    - uri: "test://static-text"
+      name: Static Text Resource
+      mimeType: text/plain
+      text: "This is the content of the static text resource."
+
+    # resources-read-binary (1x1 red PNG as blob)
+    - uri: "test://static-binary"
+      name: Static Binary Resource
+      mimeType: image/png
+      blob: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+  prompts:
+    # prompts-get-simple
+    - name: test_simple_prompt
+      description: A simple prompt with no arguments.
+      messages:
+        - role: user
+          content:
+            type: text
+            text: "This is a simple prompt for testing."
+
+    # prompts-get-with-args (also the ref/prompt target of completion-complete)
+    - name: test_prompt_with_arguments
+      description: A prompt that interpolates two arguments.
+      arguments:
+        - name: arg1
+          description: First test argument
+          required: true
+        - name: arg2
+          description: Second test argument
+          required: true
+      messages:
+        - role: user
+          content:
+            type: text
+            text: "Prompt with arguments: arg1='{{arg1}}', arg2='{{arg2}}'"
+
+    # prompts-get-with-image
+    - name: test_prompt_with_image
+      description: A prompt that returns an image then a text instruction.
+      messages:
+        - role: user
+          content:
+            type: image
+            mimeType: image/png
+            data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        - role: user
+          content:
+            type: text
+            text: "Please analyze the image above."
+
+    # prompts-get-embedded-resource (uri comes from the resourceUri arg)
+    - name: test_prompt_with_embedded_resource
+      description: A prompt whose message embeds a resource by URI argument.
+      arguments:
+        - name: resourceUri
+          description: URI of the resource to embed
+          required: true
+      messages:
+        - role: user
+          content:
+            type: resource
+            uri: "{{resourceUri}}"
+            mimeType: text/plain
+            text: "Embedded resource content for testing."
+        - role: user
+          content:
+            type: text
+            text: "Please process the embedded resource above."
+
+  completions:
+    # completion-complete (ref/prompt test_prompt_with_arguments, arg1)
+    - refType: ref/prompt
+      refName: test_prompt_with_arguments
+      argName: arg1
+      values: [paris, park, party]

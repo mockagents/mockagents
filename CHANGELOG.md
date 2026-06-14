@@ -11,6 +11,27 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **MCP conformance badge + CI** (M-02) — a new `mcp-conformance` workflow runs
+  the official [`@modelcontextprotocol/conformance`](https://www.npmjs.com/package/@modelcontextprotocol/conformance)
+  server suite against the mock's Streamable-HTTP `/mcp` endpoint on every change
+  to the MCP code or fixture. It serves `conformance/server/` and gates the run
+  with `conformance/expected-failures.yml`, so a new regression — or a baselined
+  scenario that starts passing (stale entry) — fails CI. All static-content
+  scenarios pass; the baseline holds only the flows a static declarative mock
+  can't model (server-initiated sampling / elicitation / progress / log
+  notifications mid-call, and stateful URI templates). A `conformance-validated`
+  badge links the workflow. To reach that bar the MCP server gained:
+  - **embedded-resource content blocks** — a `type: resource` tool/prompt block
+    now serializes to the spec's `{type:"resource", resource:{uri,mimeType,text,blob}}`
+    EmbeddedResource shape (previously the fields were emitted flat on the block);
+  - **`audio` content blocks** — `{type:"audio", data, mimeType}` is now a valid
+    content type alongside `text`/`image`/`resource`;
+  - **`resources/subscribe` + `resources/unsubscribe`** — the server tracks the
+    subscribed URI set and returns `{}`, and advertises `resources.subscribe` in
+    `initialize`;
+  - **prompt argument interpolation in resource URIs** — `{{arg}}` placeholders
+    are now expanded in a content block's `uri` (not only in `text`), so a prompt
+    can embed a resource whose URI is supplied as an argument.
 - **`setup-mockagents` GitHub Action — source builds + self-test** (E-03) —
   the `deploy/actions/setup-mockagents` and `deploy/actions/mockagents-test`
   composite actions gain a `source-path` input that builds the CLI from a local

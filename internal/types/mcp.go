@@ -1,5 +1,7 @@
 package types
 
+import "encoding/json"
+
 const (
 	MCPServerKind = "MCPServer"
 
@@ -57,13 +59,51 @@ type MCPToolResponse struct {
 }
 
 // MCPContentBlock is one entry in a tool or prompt response.
-// Supported types: "text", "image", "resource".
+// Supported types: "text", "image", "audio", "resource".
+//
+// For authoring, the embedded-resource fields (uri/mimeType/text/blob)
+// are kept flat on the block; MarshalJSON re-nests them under a
+// "resource" object when Type=="resource" so the wire shape matches the
+// MCP spec's EmbeddedResource (`{type:"resource", resource:{...}}`).
 type MCPContentBlock struct {
 	Type     string `yaml:"type" json:"type"`
 	Text     string `yaml:"text,omitempty" json:"text,omitempty"`
 	Data     string `yaml:"data,omitempty" json:"data,omitempty"`
 	MimeType string `yaml:"mimeType,omitempty" json:"mimeType,omitempty"`
 	URI      string `yaml:"uri,omitempty" json:"uri,omitempty"`
+	Blob     string `yaml:"blob,omitempty" json:"blob,omitempty"`
+}
+
+// MarshalJSON renders a content block in its MCP wire shape. Text,
+// image, and audio blocks marshal their scalar fields directly; a
+// "resource" block is emitted as an EmbeddedResource — its
+// uri/mimeType/text/blob are nested under a "resource" object per the
+// spec, rather than left flat on the content block.
+func (b MCPContentBlock) MarshalJSON() ([]byte, error) {
+	if b.Type == "resource" {
+		res := map[string]any{}
+		if b.URI != "" {
+			res["uri"] = b.URI
+		}
+		if b.MimeType != "" {
+			res["mimeType"] = b.MimeType
+		}
+		if b.Text != "" {
+			res["text"] = b.Text
+		}
+		if b.Blob != "" {
+			res["blob"] = b.Blob
+		}
+		return json.Marshal(map[string]any{
+			"type":     "resource",
+			"resource": res,
+		})
+	}
+	// text/image/audio (and any future scalar block): marshal the
+	// struct fields directly. The alias type drops the custom
+	// MarshalJSON to avoid infinite recursion.
+	type alias MCPContentBlock
+	return json.Marshal(alias(b))
 }
 
 // MCPResource is a static resource served by the mock.

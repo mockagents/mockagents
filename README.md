@@ -6,6 +6,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/mockagents/mockagents)](https://goreportcard.com/report/github.com/mockagents/mockagents)
 [![PyPI](https://img.shields.io/pypi/v/mockagents)](https://pypi.org/project/mockagents/)
 [![Docker](https://img.shields.io/docker/v/mockagents/mockagents?label=docker)](https://hub.docker.com/r/mockagents/mockagents)
+[![MCP Conformance](https://github.com/mockagents/mockagents/actions/workflows/mcp-conformance.yml/badge.svg)](https://github.com/mockagents/mockagents/actions/workflows/mcp-conformance.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 MockAgents is a single pure-Go binary that's a **drop-in replacement** for the
@@ -295,13 +296,38 @@ later requests; the `Origin` and `MCP-Protocol-Version` headers are validated. A
 plain POST-JSON transport (no sessions) remains at `/mcp/rpc`.
 
 Supported methods (v0.3): `initialize`, `tools/list`, `tools/call`,
-`resources/list`, `resources/read`, `prompts/list`, `prompts/get`,
-`completion/complete`, `logging/setLevel`, `ping`, and
-`notifications/initialized`. Server-initiated calls (`sampling/createMessage`,
-`roots/list`) flow through a bidirectional SSE transport: clients subscribe to
-`GET /mcp/events`, read incoming JSON-RPC requests, and POST their responses to
-`POST /mcp/response`. Test harnesses can drive the outbound side directly via
-`POST /mcp/sample` or `POST /mcp/roots`. See `examples/weather-mcp.yaml`.
+`resources/list`, `resources/read`, `resources/subscribe`,
+`resources/unsubscribe`, `prompts/list`, `prompts/get`, `completion/complete`,
+`logging/setLevel`, `ping`, and `notifications/initialized`. Tool and prompt
+content blocks may be `text`, `image`, `audio`, or an embedded `resource`
+(emitted as the spec's `{type:"resource", resource:{…}}` shape). Server-initiated
+calls (`sampling/createMessage`, `roots/list`) flow through a bidirectional SSE
+transport: clients subscribe to `GET /mcp/events`, read incoming JSON-RPC
+requests, and POST their responses to `POST /mcp/response`. Test harnesses can
+drive the outbound side directly via `POST /mcp/sample` or `POST /mcp/roots`. See
+`examples/weather-mcp.yaml`.
+
+### Conformance-validated
+
+The Streamable-HTTP server is exercised in CI by the official
+[MCP conformance suite](https://www.npmjs.com/package/@modelcontextprotocol/conformance)
+(`mcp-conformance` workflow): it serves the `conformance/server/` fixture and
+runs `@modelcontextprotocol/conformance server` against `/mcp`, gated by
+`conformance/expected-failures.yml`. All static-content scenarios pass —
+initialize, ping, `tools/list` + `tools/call` (text / image / audio / embedded
+resource / mixed / error), `resources/{list,read,subscribe,unsubscribe}`,
+`prompts/{list,get}`, `completion/complete`, multi-stream SSE, and DNS-rebind
+protection. The baseline lists the scenarios a *static* declarative mock can't
+model (server-initiated sampling / elicitation / progress / log notifications
+mid-call, and stateful URI templates); a new regression — or a baselined
+scenario that starts passing — fails the build. Run it locally:
+
+```bash
+mockagents mcp --transport http --port 8081 --agents-dir conformance/server &
+npx @modelcontextprotocol/conformance server \
+  --url http://127.0.0.1:8081/mcp \
+  --expected-failures conformance/expected-failures.yml
+```
 
 ## Framework Adapters (Python)
 
