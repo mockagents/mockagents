@@ -20,7 +20,7 @@ url="$2"
 
 # Only guard the public origin. If this isn't `origin` and the URL isn't the
 # public repo, allow the push untouched (covers private dev remotes).
-if [ "$remote" != "origin" ] && ! printf '%s' "$url" | grep -Eq 'anandtopu/mock-agents(\.git)?$'; then
+if [ "$remote" != "origin" ] && ! printf '%s' "$url" | grep -Eq 'mockagents/mockagents(\.git)?$'; then
   exit 0
 fi
 
@@ -37,7 +37,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "" >&2
     echo "pre-push BLOCKED: refusing to push '$remote_ref' to the public repo." >&2
     echo "" >&2
-    echo "  Only 'main' may be pushed to origin (anandtopu/mock-agents)." >&2
+    echo "  Only 'main' may be pushed to origin (mockagents/mockagents)." >&2
     echo "  Feature branches stay local in this repo's branch model." >&2
     echo "" >&2
     echo "  To push a feature branch to a PRIVATE remote instead:" >&2
