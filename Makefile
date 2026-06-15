@@ -3,7 +3,7 @@
        gui-dev gui-build \
        helm-lint helm-template helm-package \
        bench bench-report \
-       release run setup hooks help
+       release changelog-finalize run setup hooks help
 
 BINARY    := mockagents
 GO        := go
@@ -95,6 +95,10 @@ bench-report:                   ## Run benchmarks and refresh docs/benchmarks/la
 ## Release
 release:                        ## Build release binaries with GoReleaser (dry run)
 	goreleaser release --snapshot --clean
+
+changelog-finalize:             ## Promote CHANGELOG [Unreleased] -> [VERSION] (e.g. make changelog-finalize VERSION=0.4.0)
+	@test "$(VERSION)" != "dev" || { echo "set VERSION, e.g. make changelog-finalize VERSION=0.4.0"; exit 1; }
+	sh scripts/finalize-changelog.sh $(VERSION)
 
 ## Development
 run: build                      ## Build and run with example agents

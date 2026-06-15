@@ -47,6 +47,10 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PAT with write access to mockagents/homebrew-tap. When unset the
+          # value is empty and the Homebrew cask upload auto-skips (see
+          # .goreleaser.yml).
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
   release-docker:
     name: Release Docker Image
@@ -125,9 +129,66 @@ jobs:
         with:
           packages-dir: sdk/python/dist/
 
+  release-npm:
+    name: Release npm packages
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      # The npx launcher and the SDK wrappers download the GitHub release binary
+      # whose version equals their own package.json version, so a mismatch
+      # between the tag and a package version would publish a wrapper that 404s.
+      # Guard every publish on tag == package version.
+      - name: Verify package versions match the tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          for pkg in sdk/npx sdk/typescript sdk/vitest; do
+            ver=$(node -p "require('./$pkg/package.json').version")
+            if [ "$ver" != "$TAG" ]; then
+              echo "::error::$pkg version $ver does not match release tag $TAG"
+              exit 1
+            fi
+          done
+          echo "all package versions == $TAG"
+
+      # @mockagents/sdk (TypeScript SDK) — build then publish (scoped → public).
+      - name: Publish @mockagents/sdk
+        working-directory: sdk/typescript
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+          npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # @mockagents/vitest (test-runner helper) — resolves @mockagents/sdk via a
+      # local file: link at build time, so it does not need the SDK on npm yet.
+      - name: Publish @mockagents/vitest
+        working-directory: sdk/vitest
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+          npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # mockagents (npx launcher) — no build step; ships bin/lib only.
+      - name: Publish mockagents (npx launcher)
+        working-directory: sdk/npx
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
   smoke-test:
     name: Post-Release Smoke Test
-    needs: [release-binaries, release-docker]
+    needs: [release-binaries, release-docker, release-npm]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
