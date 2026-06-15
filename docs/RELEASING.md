@@ -82,10 +82,15 @@ manually-created secret.
 
 Once the one-time setup is in place:
 
-1. **Land everything** you want in the release on `main` (merge open PRs first).
-2. **Finalize the changelog.** In `CHANGELOG.md`, rename the `## [Unreleased]`
-   heading to `## [0.4.0] - YYYY-MM-DD` and add a fresh empty `## [Unreleased]`
-   above it. Commit to `main`.
+1. **Land everything** you want in the release on `main` (merge open PRs first) —
+   do this **before** the next step so the changelog captures exactly what ships.
+2. **Finalize the changelog.** Promote the accumulated `## [Unreleased]` section
+   to the release version (renames it to `## [0.4.0] - <today>` and opens a fresh
+   empty `## [Unreleased]`), then commit:
+   ```bash
+   make changelog-finalize VERSION=0.4.0     # or: sh scripts/finalize-changelog.sh 0.4.0
+   git add CHANGELOG.md && git commit -m "docs(changelog): release 0.4.0"
+   ```
 3. **Confirm versions are aligned** to the tag you're about to push (see the
    version-coupling note above) — all should read `0.4.0`.
 4. **Tag and push:**
