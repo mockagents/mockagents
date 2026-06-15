@@ -92,6 +92,10 @@ mockagents start                              # prints your base URL + a ready-t
   scenario rule and read the count from the `X-Mockagents-Image-Count` header.
 - **Mocks MCP servers too** — test agents that call Model Context Protocol
   servers, deterministically (JSON-RPC 2.0 + bidirectional SSE).
+- **Manage agents over MCP** — `mockagents mcp --manage` exposes the agent write
+  API as MCP tools (`list_agents`, `get_agent`, `validate_agent`, `create_agent`,
+  `put_agent`, `delete_agent`), so an MCP client can create, inspect, and edit
+  your mock fixtures conversationally.
 - **Scenario matching** — route by message content, regex, or turn number;
   assert *which* path fired, not just the text.
 - **Tool-call simulation** — return canned tool calls and tool results; test your

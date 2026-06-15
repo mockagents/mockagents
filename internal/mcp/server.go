@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -28,6 +29,13 @@ type Server struct {
 	logLvl     string
 	pending    []*Notification
 	subscribed map[string]bool
+
+	// toolHandlers backs programmatically-registered tools (MCP-03): tools
+	// whose tools/call is served by Go code instead of declarative canned
+	// responses. toolOrder preserves registration order for a stable
+	// tools/list. Both are populated via RegisterTool (see tool_handler.go).
+	toolHandlers map[string]registeredTool
+	toolOrder    []string
 
 	// bi drives the v0.3 bidirectional transport: SSE subscribers,
 	// server-initiated requests (sampling/roots), and their response
@@ -182,7 +190,7 @@ func (s *Server) handleInitialize(req *Request) *Response {
 		pv = types.DefaultMCPProtocolVersion
 	}
 	caps := map[string]any{}
-	if s.def.Spec.Capabilities.Tools || len(s.def.Spec.Tools) > 0 {
+	if s.def.Spec.Capabilities.Tools || len(s.def.Spec.Tools) > 0 || s.hasToolHandlers() {
 		caps["tools"] = map[string]any{}
 	}
 	if s.def.Spec.Capabilities.Resources || len(s.def.Spec.Resources) > 0 {
@@ -207,18 +215,33 @@ func (s *Server) handleInitialize(req *Request) *Response {
 }
 
 type toolListEntry struct {
-	Name        string                `json:"name"`
-	Description string                `json:"description,omitempty"`
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
 	InputSchema types.JSONSchemaObject `json:"inputSchema,omitempty"`
 }
 
 func (s *Server) handleToolsList(req *Request) *Response {
-	tools := make([]toolListEntry, 0, len(s.def.Spec.Tools))
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	tools := make([]toolListEntry, 0, len(s.def.Spec.Tools)+len(s.toolOrder))
 	for _, t := range s.def.Spec.Tools {
+		// A programmatic tool of the same name overrides (and replaces) the
+		// declarative one, so skip the declarative entry here.
+		if _, overridden := s.toolHandlers[t.Name]; overridden {
+			continue
+		}
 		tools = append(tools, toolListEntry{
 			Name:        t.Name,
 			Description: t.Description,
 			InputSchema: t.InputSchema,
+		})
+	}
+	for _, name := range s.toolOrder {
+		rt := s.toolHandlers[name]
+		tools = append(tools, toolListEntry{
+			Name:        rt.spec.Name,
+			Description: rt.spec.Description,
+			InputSchema: rt.spec.InputSchema,
 		})
 	}
 	return newResult(req.ID, map[string]any{"tools": tools})
@@ -241,6 +264,18 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 	}
 	if params.Name == "" {
 		return newError(req.ID, ErrInvalidParams, "tool name is required", nil)
+	}
+
+	// A programmatically-registered tool (MCP-03) takes precedence over a
+	// declarative one of the same name. Its handler runs Go code; a domain
+	// failure comes back as a result with IsError=true, while a Go error is an
+	// unexpected internal fault mapped to a JSON-RPC error.
+	if rt, ok := s.lookupToolHandler(params.Name); ok {
+		res, err := rt.handler(context.Background(), params.Arguments)
+		if err != nil {
+			return newError(req.ID, ErrInternal, err.Error(), nil)
+		}
+		return newResult(req.ID, toolCallResult{Content: res.Content, IsError: res.IsError})
 	}
 
 	tool := s.findTool(params.Name)
@@ -303,9 +338,18 @@ func (s *Server) findTool(name string) *types.MCPTool {
 }
 
 func (s *Server) toolNames() []string {
-	names := make([]string, len(s.def.Spec.Tools))
-	for i, t := range s.def.Spec.Tools {
-		names[i] = t.Name
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	names := make([]string, 0, len(s.def.Spec.Tools)+len(s.toolOrder))
+	seen := make(map[string]bool, len(s.toolOrder))
+	for _, t := range s.def.Spec.Tools {
+		names = append(names, t.Name)
+		seen[t.Name] = true
+	}
+	for _, name := range s.toolOrder {
+		if !seen[name] {
+			names = append(names, name)
+		}
 	}
 	return names
 }
