@@ -57,6 +57,7 @@ func DefaultRegistry(eng *engine.Engine) *Registry {
 	oai := &OpenAIHandler{Engine: eng}
 	emb := &EmbeddingsHandler{}
 	resp := NewResponsesHandler(eng)
+	anthropic := &AnthropicHandler{Engine: eng}
 	// Files + Batch share one in-memory file store: a client uploads a request
 	// JSONL via /v1/files, the batch processor reads it and writes its
 	// output/error files back through the same store (A-08).
@@ -66,17 +67,23 @@ func DefaultRegistry(eng *engine.Engine) *Registry {
 		"/v1/embeddings":       emb.HandleEmbeddings,
 		"/v1/responses":        resp.HandleResponses,
 	})
+	// Anthropic Message Batches replay each inline request through the live
+	// /v1/messages handler (A-08; the inline, file-free sibling of the OpenAI
+	// Batch API).
+	anthropicBatches := NewAnthropicBatchesHandler(anthropic.HandleMessages)
 	return NewRegistry(
 		oai,
 		resp,
 		emb,
 		&ModerationsHandler{},
-		&AnthropicHandler{Engine: eng},
+		anthropic,
 		&GeminiHandler{Engine: eng},
 		// Azure OpenAI URL surface, delegating to the OpenAI handlers above.
 		&AzureHandler{Chat: oai, Embeddings: emb},
 		// OpenAI Files + Batch API (A-08).
 		NewFilesHandler(files),
 		batches,
+		// Anthropic Message Batches (A-08).
+		anthropicBatches,
 	)
 }
