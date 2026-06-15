@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/mockagents/mockagents/internal/config"
+	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/mcp"
+	"github.com/mockagents/mockagents/internal/mcpadmin"
 	"github.com/mockagents/mockagents/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -32,7 +34,17 @@ Examples:
 
 When multiple MCPServer definitions are present, --server selects which
 one to expose; for HTTP transport a single server can also be served
-unambiguously by name when only one is loaded.`,
+unambiguously by name when only one is loaded.
+
+With --manage, the server also exposes built-in agent-management tools
+(list_agents, get_agent, validate_agent, create_agent, put_agent,
+delete_agent) backed by the MockAgents write API, so an MCP client can
+manage the agents loaded from --agents-dir over MCP. --manage works even
+when no kind:MCPServer document exists (it serves a synthetic admin server).
+
+Examples:
+  mockagents mcp --manage --agents-dir ./agents               # admin tools only
+  mockagents mcp --manage --server weather-mcp --agents-dir ./agents`,
 	RunE: runMCP,
 }
 
@@ -40,14 +52,20 @@ var (
 	mcpTransport  string
 	mcpPort       int
 	mcpServerName string
+	mcpManage     bool
 )
 
 func init() {
 	mcpCmd.Flags().StringVar(&mcpTransport, "transport", "http", "Transport: http or stdio")
 	mcpCmd.Flags().IntVarP(&mcpPort, "port", "p", 8081, "HTTP port when --transport=http")
 	mcpCmd.Flags().StringVar(&mcpServerName, "server", "", "Name of the MCPServer to serve (required when multiple are loaded)")
+	mcpCmd.Flags().BoolVar(&mcpManage, "manage", false, "Also expose built-in agent-management tools backed by the write API")
 	rootCmd.AddCommand(mcpCmd)
 }
+
+// adminServerName is the synthetic MCPServer name used when --manage runs
+// without any kind:MCPServer document of its own.
+const adminServerName = "mockagents-admin"
 
 func runMCP(cmd *cobra.Command, args []string) error {
 	agentsDir, _ := cmd.Flags().GetString("agents-dir")
@@ -55,33 +73,23 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	for _, e := range loadErrs {
 		fmt.Fprintln(os.Stderr, "load error:", e)
 	}
-	if len(docs.MCPServers) == 0 {
-		return fmt.Errorf("no kind:%s definitions found in %q", types.MCPServerKind, agentsDir)
-	}
 
-	var def *types.MCPServerDefinition
-	switch {
-	case mcpServerName != "":
-		for _, r := range docs.MCPServers {
-			if r.Definition.Metadata.Name == mcpServerName {
-				def = r.Definition
-				break
-			}
-		}
-		if def == nil {
-			return fmt.Errorf("mcp server %q not found in %q", mcpServerName, agentsDir)
-		}
-	case len(docs.MCPServers) == 1:
-		def = docs.MCPServers[0].Definition
-	default:
-		names := make([]string, 0, len(docs.MCPServers))
-		for _, r := range docs.MCPServers {
-			names = append(names, r.Definition.Metadata.Name)
-		}
-		return fmt.Errorf("multiple MCPServer definitions loaded; pick one with --server (%v)", names)
+	def, err := selectMCPServer(docs, agentsDir)
+	if err != nil {
+		return err
 	}
 
 	server := mcp.NewServer(def)
+
+	// --manage attaches the built-in agent-management tools, backed by a registry
+	// loaded from --agents-dir. It composes with a declarative server (the admin
+	// tools are added alongside the def's own tools).
+	if mcpManage {
+		registry := buildManageRegistry(docs)
+		mcpadmin.NewManager(registry, agentsDir, "").Register(server)
+		fmt.Printf("mockagents mcp: agent-management tools enabled (%d agents loaded from %q)\n",
+			len(registry.ListForTenant("")), agentsDir)
+	}
 
 	switch mcpTransport {
 	case "http":
@@ -91,6 +99,59 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	default:
 		return fmt.Errorf("unknown transport %q (valid: http, stdio)", mcpTransport)
 	}
+}
+
+// selectMCPServer picks the MCPServer definition to expose. With --server it
+// selects by name; with exactly one loaded it uses that; with several it errors
+// asking for --server. When none are loaded it errors UNLESS --manage is set, in
+// which case it returns a synthetic admin server so the management tools can be
+// served without any kind:MCPServer document.
+func selectMCPServer(docs *config.Documents, agentsDir string) (*types.MCPServerDefinition, error) {
+	if len(docs.MCPServers) == 0 {
+		if mcpManage {
+			return &types.MCPServerDefinition{
+				Kind:     types.MCPServerKind,
+				Metadata: types.Metadata{Name: adminServerName},
+				Spec:     types.MCPServerSpec{Capabilities: types.MCPCapabilities{Tools: true}},
+			}, nil
+		}
+		return nil, fmt.Errorf("no kind:%s definitions found in %q (pass --manage to serve the built-in agent-management tools without one)", types.MCPServerKind, agentsDir)
+	}
+
+	switch {
+	case mcpServerName != "":
+		for _, r := range docs.MCPServers {
+			if r.Definition.Metadata.Name == mcpServerName {
+				return r.Definition, nil
+			}
+		}
+		return nil, fmt.Errorf("mcp server %q not found in %q", mcpServerName, agentsDir)
+	case len(docs.MCPServers) == 1:
+		return docs.MCPServers[0].Definition, nil
+	default:
+		names := make([]string, 0, len(docs.MCPServers))
+		for _, r := range docs.MCPServers {
+			names = append(names, r.Definition.Metadata.Name)
+		}
+		return nil, fmt.Errorf("multiple MCPServer definitions loaded; pick one with --server (%v)", names)
+	}
+}
+
+// buildManageRegistry builds an agent registry from the loaded Agent documents,
+// mirroring start.go: apply defaults, validate, and register the valid ones with
+// their source path so the management tools update/delete the exact backing file.
+func buildManageRegistry(docs *config.Documents) *engine.AgentRegistry {
+	registry := engine.NewAgentRegistry()
+	validator := &config.Validator{}
+	for _, result := range docs.Agents {
+		config.ApplyDefaults(result.Definition)
+		if errList := validator.Validate(result.Definition, result.FilePath, result.Node); errList != nil {
+			fmt.Fprintf(os.Stderr, "skipping invalid agent %q: %v\n", result.FilePath, errList.Error())
+			continue
+		}
+		registry.RegisterWithSource(result.Definition, result.FilePath)
+	}
+	return registry
 }
 
 func serveMCPHTTP(server *mcp.Server, port int) error {

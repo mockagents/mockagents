@@ -11,6 +11,27 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **Manage MockAgents agents over MCP** (MCP-03) — `mockagents mcp --manage` now
+  exposes the agent write API as built-in MCP tools, so an MCP client (e.g. an AI
+  coding agent) can manage your mock fixtures over the Model Context Protocol:
+  - **`list_agents`** — name, model, protocol, and scenario count of every served
+    agent;
+  - **`get_agent`** — an agent's canonical YAML by name;
+  - **`validate_agent`** — validate a definition (YAML or JSON) without persisting
+    it, returning the same report the CLI/editor use;
+  - **`create_agent`** — create a new agent (conflict-checked); it serves
+    immediately and persists to `--agents-dir`;
+  - **`put_agent`** — create-or-replace;
+  - **`delete_agent`** — stop serving and remove the persisted file.
+  The tools reuse the write API's validation, canonicalization, path-safety, and
+  persist-in-place semantics. `--manage` works even with no `kind: MCPServer`
+  document (it serves a synthetic `mockagents-admin` server), and composes with a
+  declarative server's own tools when one is selected. Under the hood the MCP
+  server gained a generic `RegisterTool(spec, handler)` hook so a tool's
+  `tools/call` can be backed by Go code (a domain failure returns an `isError`
+  result; an unexpected fault maps to a JSON-RPC error) instead of only the
+  declarative canned responses. MCP-side authentication/tenancy (managed agents
+  are owned by the single-tenant namespace today) is a documented follow-on.
 - **Anthropic Message Batches API** (A-08) — the asynchronous, inline sibling of
   `/v1/messages`, completing the Batch surface alongside the OpenAI Files+Batch
   API. `POST /v1/messages/batches` takes its requests inline
