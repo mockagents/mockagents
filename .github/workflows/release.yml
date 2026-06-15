@@ -43,15 +43,13 @@ jobs:
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
-          # Pin to v2.x: the `brews:` block is deprecated in favor of
-          # `homebrew_casks` and will be removed in goreleaser v3, so do not
-          # float to `latest`. Migrate to homebrew_casks before bumping to v3.
-          version: "~> v2"
+          version: latest
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # PAT with write access to mockagents/homebrew-tap. When unset the
-          # value is empty and the brews upload auto-skips (see .goreleaser.yml).
+          # value is empty and the Homebrew cask upload auto-skips (see
+          # .goreleaser.yml).
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
   release-docker:

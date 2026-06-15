@@ -45,9 +45,11 @@ setups** must be done first, or individual publish jobs will fail.
 - [ ] **npm** — the unscoped package `mockagents` and the `@mockagents` org/scope
       (for `@mockagents/sdk` and `@mockagents/vitest`). Create the `@mockagents`
       org on npmjs.com.
-- [ ] **Homebrew tap** (optional) — create the repo
-      `github.com/mockagents/homebrew-tap`. Without it, the Homebrew step
-      auto-skips and the rest of the release still succeeds.
+- [ ] **Homebrew tap** (optional, macOS) — create the repo
+      `github.com/mockagents/homebrew-tap`. The release publishes a Homebrew
+      **cask** (the modern path for prebuilt binaries; macOS only — Linux users
+      use the binary / `go install` / Docker / npx / pipx). Without the tap the
+      Homebrew step auto-skips and the rest of the release still succeeds.
 
 ### 2. Repository secrets (`Settings → Secrets and variables → Actions`)
 
@@ -135,7 +137,6 @@ above is done.
 
 ## Maintenance note
 
-The Homebrew formula uses GoReleaser's `brews:` block, which is deprecated in
-favor of `homebrew_casks` and will be removed in GoReleaser v3. The
-`goreleaser-action` is therefore pinned to `~> v2` in `release.yml`. Migrate the
-`brews:` block to `homebrew_casks:` before moving to v3.
+Homebrew distribution uses GoReleaser's `homebrew_casks:` block (a cask, not the
+deprecated `brews:` formula), so `goreleaser-action` floats to `latest`. The cask
+is **macOS-only** — there is no Linux Homebrew path by design.

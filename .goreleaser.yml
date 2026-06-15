@@ -52,27 +52,25 @@ release:
   prerelease: auto
   name_template: "MockAgents {{ .Version }}"
 
-# Homebrew tap formula (so `brew install mockagents/tap/mockagents` works).
-# Pushing the formula needs a PAT with write access to the tap repo, passed as
-# HOMEBREW_TAP_TOKEN. The upload auto-SKIPS when that secret is absent, so a
-# release never fails just because the tap isn't set up yet — set the secret
-# (and create github.com/mockagents/homebrew-tap) to start publishing the
-# formula. See docs/RELEASING.md.
-brews:
+# Homebrew tap cask (so `brew install mockagents/tap/mockagents` works on macOS).
+# Casks distribute the prebuilt binary — the modern Homebrew path for release
+# artifacts, and the successor to the deprecated `brews:` formula block. NOTE:
+# casks are macOS-only; Linux users install via the binary, `go install`, Docker,
+# or the npx/pipx launchers. Pushing the cask needs a PAT with write access to
+# the tap repo (HOMEBREW_TAP_TOKEN); the upload auto-SKIPS when that secret is
+# absent, so a release never fails just because the tap isn't set up yet — set
+# the secret (and create github.com/mockagents/homebrew-tap) to start publishing.
+# See docs/RELEASING.md.
+homebrew_casks:
   - name: mockagents
     repository:
       owner: mockagents
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Formula
+    directory: Casks
     homepage: "https://github.com/mockagents/mockagents"
     description: "Mock the OpenAI, Anthropic & Gemini APIs for testing AI agents — zero LLM calls"
-    license: "Apache-2.0"
     skip_upload: '{{ if eq .Env.HOMEBREW_TAP_TOKEN "" }}true{{ else }}false{{ end }}'
-    install: |
-      bin.install "mockagents"
-    test: |
-      system "#{bin}/mockagents", "--version"
 
 changelog:
   sort: asc
