@@ -42,10 +42,15 @@ type ResponsesRequest struct {
 	MaxOutputTokens    *int              `json:"max_output_tokens,omitempty"`
 	Metadata           map[string]any    `json:"metadata,omitempty"`
 	Store              *bool             `json:"store,omitempty"`
-	ParallelToolCalls  *bool             `json:"parallel_tool_calls,omitempty"`
-	Text               json.RawMessage   `json:"text,omitempty"`
-	Reasoning          json.RawMessage   `json:"reasoning,omitempty"`
-	User               *string           `json:"user,omitempty"`
+	// Conversation references an OpenAI Conversation (NF-02): a string id or an
+	// object {"id": "..."}. Its stored Items are replayed as prior turns, and
+	// (when store != false) this turn's input + output are appended to it. It is
+	// mutually exclusive with previous_response_id.
+	Conversation      json.RawMessage `json:"conversation,omitempty"`
+	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
+	Text              json.RawMessage `json:"text,omitempty"`
+	Reasoning         json.RawMessage `json:"reasoning,omitempty"`
+	User              *string         `json:"user,omitempty"`
 }
 
 // responsesInputItem is one element of the `input` array. The Responses API
@@ -198,13 +203,19 @@ func (s *responseStore) put(id string, msgs []engine.RequestMessage) {
 type ResponsesHandler struct {
 	Engine *engine.Engine
 	store  *responseStore
+	// convStore backs the Responses `conversation` param (NF-02). It is shared
+	// with ConversationsHandler so a conversation created via /v1/conversations
+	// can be read and extended here. May be nil (conversation param then 404s).
+	convStore *conversationStore
 }
 
 // NewResponsesHandler builds a ResponsesHandler with an initialized response
 // store. The store must outlive individual requests (it backs
 // previous_response_id), so it is created once here rather than per request.
-func NewResponsesHandler(eng *engine.Engine) *ResponsesHandler {
-	return &ResponsesHandler{Engine: eng, store: newResponseStore()}
+// conv is the shared conversation store (NF-02); pass nil to disable the
+// conversation param.
+func NewResponsesHandler(eng *engine.Engine, conv *conversationStore) *ResponsesHandler {
+	return &ResponsesHandler{Engine: eng, store: newResponseStore(), convStore: conv}
 }
 
 // Name identifies this adapter in logs and diagnostics.
@@ -248,10 +259,46 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Assemble the conversation: prior turns (via previous_response_id) or a
-	// fresh `instructions` system message, then this request's input.
+	tenant := engine.TenantIDFromContext(r.Context())
+
+	// Resolve an optional conversation reference (NF-02). It is mutually
+	// exclusive with previous_response_id, matching the real API.
+	convID, err := resolveConversationID(req.Conversation)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if convID != "" && req.PreviousResponseID != nil && *req.PreviousResponseID != "" {
+		writeError(w, http.StatusBadRequest, "invalid_request_error",
+			"conversation and previous_response_id cannot both be set")
+		return
+	}
+	var conv *conversationState
+	if convID != "" {
+		if h.convStore == nil {
+			writeConversationNotFound(w, convID)
+			return
+		}
+		c, ok := h.convStore.get(tenant, convID)
+		if !ok {
+			writeConversationNotFound(w, convID)
+			return
+		}
+		conv = c
+	}
+
+	// Assemble the conversation: prior turns (a conversation's items, or a
+	// previous_response_id), or a fresh `instructions` system message, then this
+	// request's input.
 	var messages []engine.RequestMessage
-	if req.PreviousResponseID != nil && *req.PreviousResponseID != "" {
+	switch {
+	case conv != nil:
+		prior := conv.messages()
+		if len(prior) == 0 && req.Instructions != nil && *req.Instructions != "" {
+			messages = append(messages, engine.RequestMessage{Role: "system", Content: *req.Instructions})
+		}
+		messages = append(messages, prior...)
+	case req.PreviousResponseID != nil && *req.PreviousResponseID != "":
 		prior, ok := h.store.get(*req.PreviousResponseID)
 		if !ok {
 			writeError(w, http.StatusNotFound, "invalid_request_error",
@@ -259,8 +306,10 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		messages = append(messages, prior...)
-	} else if req.Instructions != nil && *req.Instructions != "" {
-		messages = append(messages, engine.RequestMessage{Role: "system", Content: *req.Instructions})
+	default:
+		if req.Instructions != nil && *req.Instructions != "" {
+			messages = append(messages, engine.RequestMessage{Role: "system", Content: *req.Instructions})
+		}
 	}
 	messages = append(messages, inputMsgs...)
 
@@ -325,6 +374,18 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 	}
 	h.store.put(respID, stored)
 
+	// When this turn referenced a conversation and storage is on (the default),
+	// append the new input + the assistant output to it so the next turn replays
+	// them (the thread-replacement behavior).
+	if conv != nil && boolOr(req.Store, true) {
+		appended := make([]conversationItem, 0, len(inputMsgs)+1)
+		for _, m := range inputMsgs {
+			appended = append(appended, userMessageItem(m.Role, m.Content))
+		}
+		appended = append(appended, assistantItemsFromResponse(resp)...)
+		conv.appendItems(appended)
+	}
+
 	inputTokens := sumMessageTokens(messages)
 	out := buildResponsesResponse(respID, &req, resp, inputTokens)
 
@@ -385,31 +446,36 @@ func parseResponsesInput(raw json.RawMessage) ([]engine.RequestMessage, error) {
 
 	msgs := make([]engine.RequestMessage, 0, len(items))
 	for _, it := range items {
-		switch it.Type {
-		case "function_call_output":
-			// A tool result fed back in. Map to a "tool" role so it joins the
-			// history; its text never becomes the matched user message.
-			msgs = append(msgs, engine.RequestMessage{
-				Role:    "tool",
-				Content: rawToString(it.Output),
-			})
-		case "function_call":
-			// An echoed prior tool call. Keep it in history as an assistant
-			// turn; it carries no user-visible text to match on.
-			msgs = append(msgs, engine.RequestMessage{Role: "assistant", Content: ""})
-		default:
-			// "message" or a role-only object.
-			role := it.Role
-			if role == "" {
-				role = "user"
-			}
-			msgs = append(msgs, engine.RequestMessage{
-				Role:    role,
-				Content: extractStringContent(decodeContent(it.Content)),
-			})
-		}
+		msgs = append(msgs, responsesItemToMessage(it.Type, it.Role, it.Content, it.Output))
 	}
 	return msgs, nil
+}
+
+// responsesItemToMessage maps a single Responses/Conversations Item to a flat
+// engine message. It is the ONE owner of this mapping, shared by
+// parseResponsesInput (inline /v1/responses input) and conversations.go's
+// conversationItemsToMessages (replayed conversation items) so the two can never
+// drift — sending items inline and replaying them from a conversation must
+// produce identical history (review finding X-001). The discriminator is the
+// item type (plus role for plain messages); content/output are the raw JSON
+// payloads each kind carries.
+func responsesItemToMessage(itemType, role string, content, output json.RawMessage) engine.RequestMessage {
+	switch itemType {
+	case "function_call_output":
+		// A tool result fed back in. Map to a "tool" role so it joins the
+		// history; its text never becomes the matched user message.
+		return engine.RequestMessage{Role: "tool", Content: rawToString(output)}
+	case "function_call":
+		// An echoed prior tool call. Keep it in history as an assistant turn; it
+		// carries no user-visible text to match on.
+		return engine.RequestMessage{Role: "assistant", Content: ""}
+	default:
+		// "message" or a role-only object.
+		if role == "" {
+			role = "user"
+		}
+		return engine.RequestMessage{Role: role, Content: extractStringContent(decodeContent(content))}
+	}
 }
 
 // decodeContent unmarshals an input item's `content` (a string or an array of

@@ -65,6 +65,10 @@ mockagents start                              # prints your base URL + a ready-t
 - **OpenAI Responses API** (`/v1/responses`) — the default OpenAI Agents SDK
   transport: typed output items, the full `response.*` streaming-event ladder,
   and stateful `previous_response_id` multi-turn loops.
+- **OpenAI Conversations API** (`/v1/conversations` + `/items`) — the stateful
+  companion to Responses and the Assistants-Threads replacement: create a
+  conversation, then drive a multi-turn loop by passing its id on each
+  `/v1/responses` call (prior items replay as context; each turn appends back).
 - **OpenAI Embeddings** (`/v1/embeddings`) — deterministic, unit-normalized
   vectors (stable across runs), configurable `dimensions`, `float`/`base64`
   encoding, and usage tokens — zero-config, no agent definition needed.

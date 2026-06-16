@@ -11,6 +11,18 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **OpenAI Conversations API** (NF-02) — the stateful companion to the Responses
+  API and the replacement for Assistants Threads (the Assistants API sunsets
+  2026-08-26). `POST/GET/POST(update)/DELETE /v1/conversations` plus the
+  `/v1/conversations/{id}/items` list/create/get/delete sub-resource, backed by a
+  per-tenant bounded-FIFO store. The Responses API gains a `conversation` param (a
+  string id or `{"id": …}`): the conversation's stored Items are replayed as prior
+  turns, and — when `store` is not false — each turn's input and output are
+  appended back to it, so a multi-turn loop carries state by passing a conversation
+  id instead of chaining `previous_response_id` (the two are mutually exclusive).
+  The item→message mapping is shared with the inline Responses input parser, so
+  replaying a conversation and sending the same items inline produce identical
+  history.
 - **Manage MockAgents agents over MCP** (MCP-03) — `mockagents mcp --manage` now
   exposes the agent write API as built-in MCP tools, so an MCP client (e.g. an AI
   coding agent) can manage your mock fixtures over the Model Context Protocol:
