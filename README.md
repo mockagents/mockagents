@@ -69,6 +69,11 @@ mockagents start                              # prints your base URL + a ready-t
   companion to Responses and the Assistants-Threads replacement: create a
   conversation, then drive a multi-turn loop by passing its id on each
   `/v1/responses` call (prior items replay as context; each turn appends back).
+- **OpenAI Realtime API over WebSocket** (`/v1/realtime`) — test **voice agents**
+  offline: connect over a WebSocket, send the Realtime events, and get back the
+  full streamed response ladder with a deterministic transcript (from your
+  scenarios) and synthesized audio deltas — no TTS, no audio model, fully
+  reproducible.
 - **OpenAI Embeddings** (`/v1/embeddings`) — deterministic, unit-normalized
   vectors (stable across runs), configurable `dimensions`, `float`/`base64`
   encoding, and usage tokens — zero-config, no agent definition needed.
