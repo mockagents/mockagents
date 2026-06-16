@@ -191,3 +191,148 @@ func TestRunSuitePipelineTarget(t *testing.T) {
 		t.Fatalf("expected 0 failures, got %d: %+v", res.Failed, res.Cases[0].Failures)
 	}
 }
+
+func intPtr(n int) *int { return &n }
+
+// multiToolAgent emits two ordered tool calls (alpha then beta) so the
+// trajectory assertions have something to check.
+func multiToolAgent() *types.AgentDefinition {
+	return &types.AgentDefinition{
+		APIVersion: types.AgentAPIVersion, Kind: types.AgentKind,
+		Metadata: types.Metadata{Name: "planner"},
+		Spec: types.AgentSpec{
+			Protocol: "openai-chat-completions",
+			Tools: []types.ToolDefinition{
+				{Name: "alpha", Parameters: types.JSONSchemaObject{"type": "object"}},
+				{Name: "beta", Parameters: types.JSONSchemaObject{"type": "object"}},
+			},
+			Behavior: types.BehaviorConfig{
+				Scenarios: []types.Scenario{{
+					Name: "plan",
+					Response: types.ScenarioResponse{
+						Content: "planning",
+						ToolCalls: []types.ToolCallSpec{
+							{Name: "alpha", Arguments: map[string]any{"step": 1}},
+							{Name: "beta", Arguments: map[string]any{"step": 2}},
+						},
+					},
+				}},
+			},
+		},
+	}
+}
+
+func TestRunSuite_ToolCallCountAndSequence(t *testing.T) {
+	r := New(newEngineWithAgent(t, multiToolAgent()), nil)
+	suite := &types.TestSuiteDefinition{
+		Metadata: types.Metadata{Name: "trajectory"},
+		Spec: types.TestSuiteSpec{
+			Target: types.TestTarget{Agent: "planner"},
+			Cases: []types.TestCase{
+				{
+					Name:  "pass",
+					Steps: []types.TestStep{{Role: "user", Content: "go"}},
+					Assertions: []types.TestAssertion{
+						{Type: types.AssertToolCallCount, Count: intPtr(2)},
+						{Type: types.AssertToolCallSequence, Sequence: []string{"alpha", "beta"}},
+					},
+				},
+				{
+					Name:  "fail",
+					Steps: []types.TestStep{{Role: "user", Content: "go"}},
+					Assertions: []types.TestAssertion{
+						{Type: types.AssertToolCallCount, Count: intPtr(1)},              // got 2
+						{Type: types.AssertToolCallSequence, Sequence: []string{"beta"}}, // wrong order/len
+						{Type: types.AssertToolCallCount},                                // missing count
+					},
+				},
+			},
+		},
+	}
+	res, err := r.RunSuite(suite)
+	if err != nil {
+		t.Fatalf("RunSuite error: %v", err)
+	}
+	if res.Passed != 1 || res.Failed != 1 {
+		t.Fatalf("expected 1 pass / 1 fail, got %d / %d", res.Passed, res.Failed)
+	}
+	if got := len(res.Cases[1].Failures); got != 3 {
+		t.Errorf("expected 3 assertion failures in the fail case, got %d: %v", got, res.Cases[1].Failures)
+	}
+}
+
+func TestRunSuite_NodeSequence(t *testing.T) {
+	reg := engine.NewAgentRegistry()
+	for _, name := range []string{"researcher", "summarizer"} {
+		reg.Register(&types.AgentDefinition{
+			APIVersion: types.AgentAPIVersion, Kind: types.AgentKind,
+			Metadata: types.Metadata{Name: name},
+			Spec: types.AgentSpec{
+				Protocol: "openai-chat-completions",
+				Behavior: types.BehaviorConfig{
+					Scenarios: []types.Scenario{{Name: "s", Response: types.ScenarioResponse{Content: name + " done"}}},
+				},
+			},
+		})
+	}
+	eng := engine.NewEngine(reg, state.NewMemoryStore(state.DefaultSessionTTL),
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	pipeReg := engine.NewPipelineRegistry()
+	pipeReg.Register(&types.PipelineDefinition{
+		APIVersion: types.AgentAPIVersion, Kind: types.PipelineKind,
+		Metadata: types.Metadata{Name: "flow"},
+		Spec: types.PipelineSpec{
+			Topology: types.TopologySequential,
+			Agents:   []types.PipelineAgent{{ID: "r", Ref: "researcher"}, {ID: "s", Ref: "summarizer"}},
+		},
+	})
+	r := New(eng, pipeReg)
+
+	suite := &types.TestSuiteDefinition{
+		Metadata: types.Metadata{Name: "node-seq"},
+		Spec: types.TestSuiteSpec{
+			Target: types.TestTarget{Pipeline: "flow"},
+			Cases: []types.TestCase{
+				{
+					Name:       "right-order",
+					Steps:      []types.TestStep{{Role: "user", Content: "x"}},
+					Assertions: []types.TestAssertion{{Type: types.AssertNodeSequence, Sequence: []string{"r", "s"}}},
+				},
+				{
+					Name:       "wrong-order",
+					Steps:      []types.TestStep{{Role: "user", Content: "x"}},
+					Assertions: []types.TestAssertion{{Type: types.AssertNodeSequence, Sequence: []string{"s", "r"}}},
+				},
+			},
+		},
+	}
+	res, err := r.RunSuite(suite)
+	if err != nil {
+		t.Fatalf("RunSuite error: %v", err)
+	}
+	if res.Passed != 1 || res.Failed != 1 {
+		t.Fatalf("expected 1 pass / 1 fail, got %d / %d", res.Passed, res.Failed)
+	}
+}
+
+func TestRunSuite_NodeSequenceRequiresPipeline(t *testing.T) {
+	r := New(newEngineWithAgent(t, multiToolAgent()), nil)
+	suite := &types.TestSuiteDefinition{
+		Metadata: types.Metadata{Name: "misuse"},
+		Spec: types.TestSuiteSpec{
+			Target: types.TestTarget{Agent: "planner"},
+			Cases: []types.TestCase{{
+				Name:       "agent-target",
+				Steps:      []types.TestStep{{Role: "user", Content: "go"}},
+				Assertions: []types.TestAssertion{{Type: types.AssertNodeSequence, Sequence: []string{"r"}}},
+			}},
+		},
+	}
+	res, err := r.RunSuite(suite)
+	if err != nil {
+		t.Fatalf("RunSuite error: %v", err)
+	}
+	if res.Failed != 1 {
+		t.Errorf("node_sequence on an agent target should fail, got %d failures", res.Failed)
+	}
+}

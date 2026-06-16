@@ -11,6 +11,17 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **Agent-trajectory test assertions** (NF-03) — the `mockagents test` runner
+  gains three assertions that target the most common 2026 agent bugs (wrong tool,
+  wrong count, wrong order):
+  - `tool_call_count` — the exact number of tool calls in the response
+    (`count:`; a pointer so `count: 0` asserts "no tool calls");
+  - `tool_call_sequence` — the ordered list of tool-call names (`sequence:`);
+  - `node_sequence` — the ordered pipeline node ids that ran, for `target:
+    pipeline:` suites (`sequence:`) — a multi-agent planning/trajectory check.
+  (The existing `tool_call` assertion already does subset/partial argument
+  matching.) Pure additions to the runner + TestSuite schema; existing suites
+  are unaffected.
 - **OpenAI Conversations API** (NF-02) — the stateful companion to the Responses
   API and the replacement for Assistants Threads (the Assistants API sunsets
   2026-08-26). `POST/GET/POST(update)/DELETE /v1/conversations` plus the

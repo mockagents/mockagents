@@ -194,10 +194,70 @@ func evaluateAssertion(a types.TestAssertion, resp *engine.Response, pr *engine.
 		if ms >= a.MaxMs {
 			return fmt.Sprintf("latency_ms_lt: latency %dms >= max %dms", ms, a.MaxMs)
 		}
+	case types.AssertToolCallCount:
+		if target == nil {
+			return "tool_call_count: no response produced"
+		}
+		if a.Count == nil {
+			return "tool_call_count: count is required"
+		}
+		if got := len(target.ToolCalls); got != *a.Count {
+			return fmt.Sprintf("tool_call_count: expected %d tool call(s), got %d %v",
+				*a.Count, got, toolCallNames(target.ToolCalls))
+		}
+	case types.AssertToolCallSequence:
+		if target == nil {
+			return "tool_call_sequence: no response produced"
+		}
+		got := toolCallNames(target.ToolCalls)
+		if !equalStrings(got, a.Sequence) {
+			return fmt.Sprintf("tool_call_sequence: expected %v, got %v", a.Sequence, got)
+		}
+	case types.AssertNodeSequence:
+		// A pipeline-trajectory check: the ordered node ids that actually ran.
+		// It reads the whole run, so it ignores node_id retargeting.
+		if pr == nil {
+			return "node_sequence: assertion requires a pipeline target"
+		}
+		got := nodeIDsInOrder(pr)
+		if !equalStrings(got, a.Sequence) {
+			return fmt.Sprintf("node_sequence: expected %v, got %v", a.Sequence, got)
+		}
 	default:
 		return fmt.Sprintf("unknown assertion type %q", a.Type)
 	}
 	return ""
+}
+
+// toolCallNames returns the tool-call names in invocation order.
+func toolCallNames(calls []types.ToolCallSpec) []string {
+	out := make([]string, len(calls))
+	for i, c := range calls {
+		out[i] = c.Name
+	}
+	return out
+}
+
+// nodeIDsInOrder returns the pipeline's node ids in execution order.
+func nodeIDsInOrder(pr *engine.PipelineResult) []string {
+	out := make([]string, len(pr.Nodes))
+	for i, n := range pr.Nodes {
+		out[i] = n.NodeID
+	}
+	return out
+}
+
+// equalStrings reports whether two string slices are equal element-wise.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func hasToolCall(calls []types.ToolCallSpec, name string, wantArgs map[string]any) bool {
