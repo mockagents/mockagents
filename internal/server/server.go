@@ -618,6 +618,13 @@ func skipAuth(r *http.Request) bool {
 		"/v1/messages/count_tokens",
 		"/v1/models",
 		"/v1/engines/process",
+		// Realtime API (NF-01): the WebSocket + its ephemeral-token mint are open
+		// like the other LLM endpoints — clients send a provider/ephemeral key the
+		// mock ignores. The session token is a stub, so gating the socket on it
+		// would only block clients without changing what the mock returns.
+		"/v1/realtime",
+		"/v1/realtime/client_secrets",
+		"/v1/realtime/sessions",
 		// SSO endpoints start/clear a session, so they precede authentication
 		// (REF-08 slice D). They are not under /api/v1 and do their own checks.
 		"/auth/login",

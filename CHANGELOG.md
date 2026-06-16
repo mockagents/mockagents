@@ -11,6 +11,22 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **OpenAI Realtime API over WebSocket** (NF-01) — the first WebSocket transport
+  in the mock, for testing **voice agents** deterministically and offline.
+  `GET /v1/realtime` upgrades to a WebSocket speaking the Realtime event protocol,
+  and `POST /v1/realtime/client_secrets` (and the legacy `/v1/realtime/sessions`)
+  mints an ephemeral session token. On connect the server emits `session.created`;
+  it handles `session.update`, `conversation.item.create` (text input),
+  `input_audio_buffer.append`/`commit`/`clear`, and `response.create`. A
+  `response.create` runs the agent's scenario engine on the accumulated
+  conversation and streams the full response event ladder (`response.created` →
+  `output_item.added` → `content_part.added` → `audio_transcript.delta` +
+  `audio.delta` … → `response.done`). Audio is **synthesized deterministically**
+  (a mock has no TTS — stable base64 PCM16 derived from the transcript), and the
+  transcript is whatever the matched scenario produces, so a voice-agent test is
+  fast, free, and reproducible. Built on `github.com/coder/websocket` (pure-Go,
+  zero transitive deps). Mid-session tool calls, barge-in/interruption, and
+  WebSocket fault injection are documented follow-ons.
 - **Agent-trajectory test assertions** (NF-03) — the `mockagents test` runner
   gains three assertions that target the most common 2026 agent bugs (wrong tool,
   wrong count, wrong order):

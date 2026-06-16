@@ -91,5 +91,7 @@ func DefaultRegistry(eng *engine.Engine) *Registry {
 		anthropicBatches,
 		// OpenAI Conversations API (NF-02; stateful companion to Responses).
 		NewConversationsHandler(conversations),
+		// OpenAI Realtime API over WebSocket (NF-01).
+		&RealtimeHandler{Engine: eng},
 	)
 }
