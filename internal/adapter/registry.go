@@ -56,7 +56,11 @@ func (r *Registry) Adapters() []Adapter {
 func DefaultRegistry(eng *engine.Engine) *Registry {
 	oai := &OpenAIHandler{Engine: eng}
 	emb := &EmbeddingsHandler{}
-	resp := NewResponsesHandler(eng)
+	// Responses + Conversations share one store: a client creates a conversation
+	// via /v1/conversations, then drives a multi-turn loop by passing its id on
+	// each /v1/responses call (NF-02; the post-Assistants stateful stack).
+	conversations := newConversationStore()
+	resp := NewResponsesHandler(eng, conversations)
 	anthropic := &AnthropicHandler{Engine: eng}
 	// Files + Batch share one in-memory file store: a client uploads a request
 	// JSONL via /v1/files, the batch processor reads it and writes its
@@ -85,5 +89,7 @@ func DefaultRegistry(eng *engine.Engine) *Registry {
 		batches,
 		// Anthropic Message Batches (A-08).
 		anthropicBatches,
+		// OpenAI Conversations API (NF-02; stateful companion to Responses).
+		NewConversationsHandler(conversations),
 	)
 }

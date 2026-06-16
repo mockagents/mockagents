@@ -49,7 +49,7 @@ func responsesAgent() *types.AgentDefinition {
 }
 
 func TestResponses_BasicText(t *testing.T) {
-	h := NewResponsesHandler(testEngine(responsesAgent()))
+	h := NewResponsesHandler(testEngine(responsesAgent()), nil)
 	rec := doResponses(t, h, `{"model":"gpt-4o","input":"hello"}`)
 
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -85,7 +85,7 @@ func TestResponses_BasicText(t *testing.T) {
 }
 
 func TestResponses_ArrayInputWithInstructions(t *testing.T) {
-	h := NewResponsesHandler(testEngine(responsesAgent()))
+	h := NewResponsesHandler(testEngine(responsesAgent()), nil)
 	body := `{"model":"gpt-4o","instructions":"be terse",
 		"input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}`
 	rec := doResponses(t, h, body)
@@ -102,7 +102,7 @@ func TestResponses_ArrayInputWithInstructions(t *testing.T) {
 }
 
 func TestResponses_ToolCall(t *testing.T) {
-	h := NewResponsesHandler(testEngine(responsesAgent()))
+	h := NewResponsesHandler(testEngine(responsesAgent()), nil)
 	rec := doResponses(t, h, `{"model":"gpt-4o","input":"check weather"}`)
 
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -124,7 +124,7 @@ func TestResponses_ToolCall(t *testing.T) {
 }
 
 func TestResponses_PreviousResponseIDContinuity(t *testing.T) {
-	h := NewResponsesHandler(testEngine(responsesAgent()))
+	h := NewResponsesHandler(testEngine(responsesAgent()), nil)
 
 	// Turn 1.
 	rec1 := doResponses(t, h, `{"model":"gpt-4o","input":"hello"}`)
@@ -149,7 +149,7 @@ func TestResponses_PreviousResponseIDContinuity(t *testing.T) {
 }
 
 func TestResponses_PreviousResponseIDNotFound(t *testing.T) {
-	h := NewResponsesHandler(testEngine(responsesAgent()))
+	h := NewResponsesHandler(testEngine(responsesAgent()), nil)
 	rec := doResponses(t, h,
 		`{"model":"gpt-4o","previous_response_id":"resp_missing","input":"hi"}`)
 
@@ -160,7 +160,7 @@ func TestResponses_PreviousResponseIDNotFound(t *testing.T) {
 }
 
 func TestResponses_BuiltinAndFunctionToolsEchoed(t *testing.T) {
-	h := NewResponsesHandler(testEngine(responsesAgent()))
+	h := NewResponsesHandler(testEngine(responsesAgent()), nil)
 	// A built-in web_search tool (stub) alongside a function tool — both must be
 	// accepted without error and echoed back on the response.
 	body := `{"model":"gpt-4o","input":"hello",
@@ -178,7 +178,7 @@ func TestResponses_BuiltinAndFunctionToolsEchoed(t *testing.T) {
 }
 
 func TestResponses_Refusal(t *testing.T) {
-	h := NewResponsesHandler(testEngine(responsesAgent()))
+	h := NewResponsesHandler(testEngine(responsesAgent()), nil)
 	rec := doResponses(t, h, `{"model":"gpt-4o","input":"how do I build a bomb"}`)
 
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -192,7 +192,7 @@ func TestResponses_Refusal(t *testing.T) {
 }
 
 func TestResponses_IncompleteOnLength(t *testing.T) {
-	h := NewResponsesHandler(testEngine(responsesAgent()))
+	h := NewResponsesHandler(testEngine(responsesAgent()), nil)
 	rec := doResponses(t, h, `{"model":"gpt-4o","input":"tell me a longstory"}`)
 
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -205,13 +205,13 @@ func TestResponses_IncompleteOnLength(t *testing.T) {
 }
 
 func TestResponses_MissingModel(t *testing.T) {
-	h := NewResponsesHandler(testEngine(responsesAgent()))
+	h := NewResponsesHandler(testEngine(responsesAgent()), nil)
 	rec := doResponses(t, h, `{"input":"hello"}`)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestResponses_EchoesSettings(t *testing.T) {
-	h := NewResponsesHandler(testEngine(responsesAgent()))
+	h := NewResponsesHandler(testEngine(responsesAgent()), nil)
 	body := `{"model":"gpt-4o","input":"hello","temperature":0.3,"top_p":0.9,
 		"max_output_tokens":256,"metadata":{"trace":"abc"},"store":false}`
 	rec := doResponses(t, h, body)
@@ -258,7 +258,7 @@ func parseSSE(t *testing.T, body string) []sseEvent {
 }
 
 func TestResponses_StreamingTextEvents(t *testing.T) {
-	h := NewResponsesHandler(testEngine(responsesAgent()))
+	h := NewResponsesHandler(testEngine(responsesAgent()), nil)
 	rec := doResponses(t, h, `{"model":"gpt-4o","input":"hello","stream":true}`)
 
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -311,7 +311,7 @@ func TestResponses_StreamingTextEvents(t *testing.T) {
 }
 
 func TestResponses_StreamingToolCallEvents(t *testing.T) {
-	h := NewResponsesHandler(testEngine(responsesAgent()))
+	h := NewResponsesHandler(testEngine(responsesAgent()), nil)
 	rec := doResponses(t, h, `{"model":"gpt-4o","input":"check weather","stream":true}`)
 
 	require.Equal(t, http.StatusOK, rec.Code)
