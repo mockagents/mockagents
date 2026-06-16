@@ -110,6 +110,11 @@ mockagents start                              # prints your base URL + a ready-t
   assert *which* path fired, not just the text.
 - **Tool-call simulation** — return canned tool calls and tool results; test your
   agent's routing and argument handling without a live model.
+- **Agent-trajectory assertions** (`mockagents test`) — assert the *shape* of an
+  agent's behavior, not just its text: `tool_call` (name + partial args),
+  `tool_call_count`, `tool_call_sequence` (ordered tool names), and `node_sequence`
+  (the ordered pipeline nodes that ran) — deterministic checks for the wrong-tool
+  / wrong-count / wrong-order bugs that belong on every PR.
 - **Multi-agent pipelines** (`kind: Pipeline`) — sequential, parallel, and graph
   topologies with conditional edges.
 - **Chaos & fault injection** — inject latency, errors, and rate limits per agent

@@ -7,6 +7,12 @@ const (
 	AssertResponseContains = "response_contains"
 	AssertScenarioMatched  = "scenario_matched"
 	AssertLatencyMsLT      = "latency_ms_lt"
+	// Agent-trajectory assertions (NF-03): deeper tool-call / planning checks
+	// that catch the most common 2026 agent bugs (wrong tool, wrong count, wrong
+	// order). tool_call already does subset/partial argument matching.
+	AssertToolCallCount    = "tool_call_count"    // exact number of tool calls in the response
+	AssertToolCallSequence = "tool_call_sequence" // ordered tool-call names in the response
+	AssertNodeSequence     = "node_sequence"      // ordered pipeline node ids that ran (pipeline targets)
 )
 
 // TestSuiteDefinition is a declarative collection of test cases that run
@@ -47,10 +53,16 @@ type TestStep struct {
 // TestAssertion is a declarative check against the test case result.
 // The Type field selects which other fields are meaningful.
 type TestAssertion struct {
-	Type     string         `yaml:"type" json:"type"`
-	Tool     string         `yaml:"tool,omitempty" json:"tool,omitempty"`
-	Args     map[string]any `yaml:"arguments,omitempty" json:"arguments,omitempty"`
-	Value    string         `yaml:"value,omitempty" json:"value,omitempty"`
-	MaxMs    int64          `yaml:"max_ms,omitempty" json:"max_ms,omitempty"`
-	NodeID   string         `yaml:"node_id,omitempty" json:"node_id,omitempty"`
+	Type  string         `yaml:"type" json:"type"`
+	Tool  string         `yaml:"tool,omitempty" json:"tool,omitempty"`
+	Args  map[string]any `yaml:"arguments,omitempty" json:"arguments,omitempty"`
+	Value string         `yaml:"value,omitempty" json:"value,omitempty"`
+	MaxMs int64          `yaml:"max_ms,omitempty" json:"max_ms,omitempty"`
+	// Count is the expected number of tool calls for tool_call_count (a pointer
+	// so an omitted count is distinguishable from an explicit 0 = "no tool calls").
+	Count *int `yaml:"count,omitempty" json:"count,omitempty"`
+	// Sequence is the expected ordered list for tool_call_sequence (tool-call
+	// names in the response) or node_sequence (pipeline node ids that ran).
+	Sequence []string `yaml:"sequence,omitempty" json:"sequence,omitempty"`
+	NodeID   string   `yaml:"node_id,omitempty" json:"node_id,omitempty"`
 }
