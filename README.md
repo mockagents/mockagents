@@ -111,6 +111,10 @@ mockagents start                              # prints your base URL + a ready-t
   API as MCP tools (`list_agents`, `get_agent`, `validate_agent`, `create_agent`,
   `put_agent`, `delete_agent`), so an MCP client can create, inspect, and edit
   your mock fixtures conversationally.
+- **Mocks A2A servers too** (`kind: A2AServer`, `mockagents a2a`) — test
+  multi-agent systems that speak Google's Agent2Agent protocol: serves the Agent
+  Card at `/.well-known/agent-card.json` and answers `message/send` / `tasks/get`
+  / `tasks/cancel` with canned, match-based task responses.
 - **Scenario matching** — route by message content, regex, or turn number;
   assert *which* path fired, not just the text.
 - **Tool-call simulation** — return canned tool calls and tool results; test your

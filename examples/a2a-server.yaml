@@ -1,0 +1,28 @@
+apiVersion: mockagents/v1
+kind: A2AServer
+metadata:
+  name: weather-a2a
+spec:
+  # The public Agent Card, served at /.well-known/agent-card.json. Run it with:
+  #   mockagents a2a --agents-dir examples --server weather-a2a
+  card:
+    name: Weather Agent
+    description: A mock A2A agent that answers weather questions.
+    version: 1.0.0
+    defaultInputModes: [text/plain]
+    defaultOutputModes: [text/plain]
+    skills:
+      - id: forecast
+        name: Get forecast
+        description: Returns a canned weather forecast.
+        tags: [weather]
+        examples: ["What's the weather in Paris?"]
+  # Canned, match-based replies to message/send (first substring match wins,
+  # else the default). Each becomes the task's artifact + status message.
+  responses:
+    - match: weather
+      text: "It's sunny and 22°C."
+    - match: rain
+      text: "Light rain is expected this afternoon."
+    - default: true
+      text: "I can only help with the weather."

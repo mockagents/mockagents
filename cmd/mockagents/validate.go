@@ -47,6 +47,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	var allPipelineResults []*config.PipelineLoadResult
 	var allTestSuiteResults []*config.TestSuiteLoadResult
 	var allMCPServerResults []*config.MCPServerLoadResult
+	var allA2AServerResults []*config.A2AServerLoadResult
 	var allLoadErrors []error
 
 	for _, p := range paths {
@@ -72,6 +73,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 				allPipelineResults = append(allPipelineResults, docs.Pipelines...)
 				allTestSuiteResults = append(allTestSuiteResults, docs.TestSuites...)
 				allMCPServerResults = append(allMCPServerResults, docs.MCPServers...)
+				allA2AServerResults = append(allA2AServerResults, docs.A2AServers...)
 			}
 			allLoadErrors = append(allLoadErrors, errs...)
 		} else {
@@ -94,6 +96,10 @@ func runValidate(cmd *cobra.Command, args []string) error {
 			}
 			if mcpResult, merr := config.LoadMCPServerFile(absPath); merr == nil {
 				allMCPServerResults = append(allMCPServerResults, mcpResult)
+				continue
+			}
+			if a2aResult, aerr := config.LoadA2AServerFile(absPath); aerr == nil {
+				allA2AServerResults = append(allA2AServerResults, a2aResult)
 				continue
 			}
 			allLoadErrors = append(allLoadErrors, err)
@@ -124,6 +130,11 @@ func runValidate(cmd *cobra.Command, args []string) error {
 			allValidationErrors = append(allValidationErrors, errList.Errors...)
 		}
 	}
+	for _, result := range allA2AServerResults {
+		if errList := config.ValidateA2AServer(result.Definition, result.FilePath, result.Node); errList != nil {
+			allValidationErrors = append(allValidationErrors, errList.Errors...)
+		}
+	}
 
 	// Cross-document reference checks: every pipeline's agent refs
 	// and every testsuite's target must resolve against the other
@@ -136,6 +147,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 			Pipelines:  allPipelineResults,
 			TestSuites: allTestSuiteResults,
 			MCPServers: allMCPServerResults,
+			A2AServers: allA2AServerResults,
 		}
 		if errList := config.ValidateDocuments(crossDocs); errList != nil {
 			allValidationErrors = append(allValidationErrors, errList.Errors...)
@@ -152,7 +164,8 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	}
 
 	totalFiles := len(allAgentResults) + len(allPipelineResults) +
-		len(allTestSuiteResults) + len(allMCPServerResults) + len(allLoadErrors)
+		len(allTestSuiteResults) + len(allMCPServerResults) +
+		len(allA2AServerResults) + len(allLoadErrors)
 	hasErrors := len(allLoadErrors) > 0 || len(allValidationErrors) > 0
 
 	// Print load errors.
