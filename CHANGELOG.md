@@ -10,6 +10,8 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-16
+
 ### Added
 - **Mock A2A (Agent2Agent) servers** (NF-04) — a new `kind: A2AServer` document
   and a `mockagents a2a` command that serve Google's agent-to-agent protocol
