@@ -1,6 +1,6 @@
 {
   "name": "@mockagents/vitest",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "description": "Auto-spawn MockAgents and redirect the OpenAI / Anthropic / Gemini SDKs in your Vitest (and Jest) tests.",
   "type": "module",
   "main": "./dist/index.js",
