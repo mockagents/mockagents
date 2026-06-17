@@ -117,6 +117,22 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The PyPI wheel bootstraps the GitHub release binary whose version equals
+      # the package version, so both pyproject.toml and the package __version__
+      # must match the tag (mirrors the release-npm guard).
+      - name: Verify package version matches the tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PYPROJECT=$(grep -m1 '^version' sdk/python/pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          INIT=$(grep -m1 '__version__' sdk/python/mockagents/__init__.py | sed -E 's/.*"([^"]+)".*/\1/')
+          for v in "$PYPROJECT" "$INIT"; do
+            if [ "$v" != "$TAG" ]; then
+              echo "::error::sdk/python version $v does not match release tag $TAG"
+              exit 1
+            fi
+          done
+          echo "sdk/python versions == $TAG"
+
       - name: Install build tools
         run: pip install build
 
