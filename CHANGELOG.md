@@ -11,6 +11,18 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Added
+- **Mock A2A (Agent2Agent) servers** (NF-04) — a new `kind: A2AServer` document
+  and a `mockagents a2a` command that serve Google's agent-to-agent protocol
+  (now Linux-Foundation-governed), mirroring how `kind: MCPServer` mocks MCP. The
+  server publishes the declared **Agent Card** at `/.well-known/agent-card.json`
+  (URL/protocolVersion/modes filled in at serve time) and answers the JSON-RPC
+  surface at `POST /`: `message/send` runs the document's canned, match-based
+  responses and returns a `Task` (status + artifact + history), `tasks/get`
+  retrieves it, and `tasks/cancel` cancels a non-terminal task (terminal tasks
+  return the A2A `TaskNotCancelable` error). Loader + validator + single-file
+  `validate` dispatch were extended for the new kind; an `examples/a2a-server.yaml`
+  shows a weather agent. Streaming (`message/stream`), push notifications, and
+  signed cards are documented follow-ons.
 - **OpenAI Realtime API over WebSocket** (NF-01) — the first WebSocket transport
   in the mock, for testing **voice agents** deterministically and offline.
   `GET /v1/realtime` upgrades to a WebSocket speaking the Realtime event protocol,

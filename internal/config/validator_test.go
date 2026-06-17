@@ -3,6 +3,7 @@ package config
 import (
 	"testing"
 
+	"github.com/mockagents/mockagents/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -10,11 +11,16 @@ import (
 func loadAndValidate(t *testing.T, yaml string) *ValidationErrorList {
 	t.Helper()
 	path := writeTestFile(t, "test.yaml", yaml)
-	result, err := LoadFile(path)
+	// Decode directly into an AgentDefinition (not via LoadFile, which gates on
+	// kind) so the Agent VALIDATOR can be exercised against any kind — including
+	// the wrong-kind cases these tests assert on.
+	_, doc, err := readAndParse(path)
 	require.NoError(t, err)
-	ApplyDefaults(result.Definition)
+	var def types.AgentDefinition
+	require.NoError(t, doc.Decode(&def))
+	ApplyDefaults(&def)
 	v := &Validator{}
-	return v.Validate(result.Definition, result.FilePath, result.Node)
+	return v.Validate(&def, path, doc)
 }
 
 func assertHasError(t *testing.T, errs *ValidationErrorList, field, msgSubstr string) {

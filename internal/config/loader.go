@@ -46,6 +46,14 @@ type Documents struct {
 	Pipelines  []*PipelineLoadResult
 	TestSuites []*TestSuiteLoadResult
 	MCPServers []*MCPServerLoadResult
+	A2AServers []*A2AServerLoadResult
+}
+
+// A2AServerLoadResult is a parsed kind:A2AServer document (NF-04).
+type A2AServerLoadResult struct {
+	Definition *types.A2AServerDefinition
+	Node       *yaml.Node
+	FilePath   string
 }
 
 // readAndParse reads a file from disk and produces a yaml.Node tree,
@@ -98,6 +106,13 @@ func LoadFile(path string) (*LoadResult, error) {
 		return nil, err
 	}
 
+	// LoadFile accepts only Agent documents (kind: Agent or unset). Reject other
+	// known kinds so single-file callers (e.g. `validate`) can fall through to the
+	// matching loader instead of mis-parsing, say, an A2AServer as an Agent.
+	if k := peekKind(doc); k != "" && k != types.AgentKind {
+		return nil, fmt.Errorf("%s: kind %q is not an Agent", path, k)
+	}
+
 	var def types.AgentDefinition
 	if err := doc.Decode(&def); err != nil {
 		return nil, &ParseError{File: path, Err: err}
@@ -116,6 +131,9 @@ func LoadPipelineFile(path string) (*PipelineLoadResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	if k := peekKind(doc); k != types.PipelineKind {
+		return nil, fmt.Errorf("%s: kind %q is not %s", path, k, types.PipelineKind)
+	}
 	var def types.PipelineDefinition
 	if err := doc.Decode(&def); err != nil {
 		return nil, &ParseError{File: path, Err: err}
@@ -128,6 +146,9 @@ func LoadTestSuiteFile(path string) (*TestSuiteLoadResult, error) {
 	_, doc, err := readAndParse(path)
 	if err != nil {
 		return nil, err
+	}
+	if k := peekKind(doc); k != types.TestSuiteKind {
+		return nil, fmt.Errorf("%s: kind %q is not %s", path, k, types.TestSuiteKind)
 	}
 	var def types.TestSuiteDefinition
 	if err := doc.Decode(&def); err != nil {
@@ -142,11 +163,30 @@ func LoadMCPServerFile(path string) (*MCPServerLoadResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	if k := peekKind(doc); k != types.MCPServerKind {
+		return nil, fmt.Errorf("%s: kind %q is not %s", path, k, types.MCPServerKind)
+	}
 	var def types.MCPServerDefinition
 	if err := doc.Decode(&def); err != nil {
 		return nil, &ParseError{File: path, Err: err}
 	}
 	return &MCPServerLoadResult{Definition: &def, Node: doc, FilePath: path}, nil
+}
+
+// LoadA2AServerFile parses a mock A2A server definition file (NF-04).
+func LoadA2AServerFile(path string) (*A2AServerLoadResult, error) {
+	_, doc, err := readAndParse(path)
+	if err != nil {
+		return nil, err
+	}
+	if k := peekKind(doc); k != types.A2AServerKind {
+		return nil, fmt.Errorf("%s: kind %q is not %s", path, k, types.A2AServerKind)
+	}
+	var def types.A2AServerDefinition
+	if err := doc.Decode(&def); err != nil {
+		return nil, &ParseError{File: path, Err: err}
+	}
+	return &A2AServerLoadResult{Definition: &def, Node: doc, FilePath: path}, nil
 }
 
 // LoadDir scans a directory for agent definition files (.yaml, .yml, .json)
@@ -230,6 +270,13 @@ func LoadAllDocuments(dir string) (*Documents, []error) {
 				continue
 			}
 			docs.MCPServers = append(docs.MCPServers, &MCPServerLoadResult{Definition: &def, Node: doc, FilePath: path})
+		case types.A2AServerKind:
+			var def types.A2AServerDefinition
+			if err := doc.Decode(&def); err != nil {
+				errs = append(errs, &ParseError{File: path, Err: err})
+				continue
+			}
+			docs.A2AServers = append(docs.A2AServers, &A2AServerLoadResult{Definition: &def, Node: doc, FilePath: path})
 		default:
 			errs = append(errs, fmt.Errorf("%s: unrecognized kind %q", path, peekKind(doc)))
 		}
