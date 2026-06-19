@@ -4,9 +4,10 @@
 #
 # This repo follows a "local-only branches" model: only `main` is ever public.
 # Feature branches live on developer machines and are never pushed to the public
-# GitHub repo. This hook refuses to push any ref other than `main` to `origin`
+# GitHub repo. This hook refuses to push any BRANCH other than `main` to `origin`
 # (or to the public repo's URL), so an accidental `git push` can't leak a
-# feature branch.
+# feature branch. Version TAGS (refs/tags/*) are allowed — pushing a tag is how
+# releases are cut (see docs/RELEASING.md: `git push origin vX.Y.Z`).
 #
 # Pushes to ANY OTHER remote (e.g. a private dev repo) are NOT restricted.
 # To override this guard once, on purpose: `git push --no-verify`.
@@ -33,20 +34,25 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     *)      continue ;;  # all zeroes -> deletion, allow
   esac
 
-  if [ "$remote_ref" != "refs/heads/main" ]; then
-    echo "" >&2
-    echo "pre-push BLOCKED: refusing to push '$remote_ref' to the public repo." >&2
-    echo "" >&2
-    echo "  Only 'main' may be pushed to origin (mockagents/mockagents)." >&2
-    echo "  Feature branches stay local in this repo's branch model." >&2
-    echo "" >&2
-    echo "  To push a feature branch to a PRIVATE remote instead:" >&2
-    echo "      git push <private-remote> $local_ref" >&2
-    echo "  To override this guard once, on purpose:" >&2
-    echo "      git push --no-verify origin ..." >&2
-    echo "" >&2
-    exit 1
-  fi
+  # Allow `main` and any version tag; block every other branch.
+  case "$remote_ref" in
+    refs/heads/main) ;;  # the one public branch
+    refs/tags/*)     ;;  # release tags (cut a release by pushing a tag)
+    *)
+      echo "" >&2
+      echo "pre-push BLOCKED: refusing to push '$remote_ref' to the public repo." >&2
+      echo "" >&2
+      echo "  Only 'main' (and version tags) may be pushed to origin (mockagents/mockagents)." >&2
+      echo "  Feature branches stay local in this repo's branch model." >&2
+      echo "" >&2
+      echo "  To push a feature branch to a PRIVATE remote instead:" >&2
+      echo "      git push <private-remote> $local_ref" >&2
+      echo "  To override this guard once, on purpose:" >&2
+      echo "      git push --no-verify origin ..." >&2
+      echo "" >&2
+      exit 1
+      ;;
+  esac
 done
 
 exit 0
