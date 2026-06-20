@@ -78,6 +78,88 @@ manually-created secret.
         --add-topic chaos-engineering
       ```
 
+### 4. Channel setup — step by step
+
+The `release-binaries` job (binaries + the GitHub Release + the Homebrew cask)
+needs nothing but the automatic `GITHUB_TOKEN`. The other publish jobs each need
+one prerequisite below; set up whichever channels you want — they are independent,
+and a missing one only fails its own job.
+
+#### Docker Hub → `release-docker`
+The job pushes to **both** `mockagents/mockagents` (Docker Hub) and
+`ghcr.io/mockagents/mockagents` (GHCR). It logs in to Docker Hub first, so a
+missing Docker Hub credential blocks the GHCR push too.
+
+1. Create the Docker Hub org **`mockagents`**, then a public repo **`mockagents`**.
+2. Docker Hub → **Account Settings → Personal access tokens → Generate** (Read & Write). Copy it.
+3. Set the secrets:
+   ```bash
+   gh secret set DOCKERHUB_USERNAME --repo mockagents/mockagents --body "<dockerhub-username>"
+   gh secret set DOCKERHUB_TOKEN    --repo mockagents/mockagents   # paste at the prompt
+   ```
+
+> **GHCR-only fallback** (skip Docker Hub): in `release.yml`, remove the
+> `mockagents/mockagents` line from the `docker/metadata-action` `images:` and
+> delete the "Login to Docker Hub" step. GHCR needs no external account.
+
+#### npm → `release-npm`
+Publishes `mockagents` (the unscoped npx launcher), `@mockagents/sdk`, and
+`@mockagents/vitest`.
+
+1. On npmjs.com create the **`@mockagents`** org (Add Organization). Ensure the
+   unscoped **`mockagents`** name is free (it is claimed on first publish).
+2. npmjs.com → **Access Tokens → Generate New Token → Automation** (CI-safe; bypasses 2FA). Copy it.
+3. ```bash
+   gh secret set NPM_TOKEN --repo mockagents/mockagents   # paste the automation token
+   ```
+
+#### PyPI → `release-python` (Trusted Publishing — no token)
+Uses OIDC, so there is no API token to store — register a **trusted publisher**:
+
+1. pypi.org → account → **Publishing → Add a new pending publisher** (works before
+   the project exists):
+   - **PyPI Project Name:** `mockagents`
+   - **Owner:** `mockagents` · **Repository:** `mockagents`
+   - **Workflow name:** `release.yml`
+   - **Environment name:** `pypi`  ← must match `release.yml`'s `environment: pypi`
+2. Nothing else: the job already sets `permissions: id-token: write`, and the
+   `pypi` GitHub environment auto-creates on first run (no protection rules needed).
+
+#### Homebrew (optional) → the GoReleaser cask
+Auto-skips when `HOMEBREW_TAP_TOKEN` is unset, so the release succeeds without it.
+
+1. Create the public repo **`github.com/mockagents/homebrew-tap`** (empty).
+2. Create a GitHub **PAT** (classic with `repo`, or fine-grained with Contents:write on `homebrew-tap`).
+3. ```bash
+   gh secret set HOMEBREW_TAP_TOKEN --repo mockagents/mockagents   # paste the PAT
+   ```
+
+---
+
+## Recovering a partial release
+
+If a tag was pushed before some channel's prerequisite was ready, the binaries +
+GitHub Release still publish, while the unconfigured channels' jobs fail at their
+login/auth step — **before** uploading anything. So once you add the missing
+secret/namespace, **re-run only the failed jobs on the same run; no new tag is
+needed:**
+
+```bash
+RUN=$(gh run list --repo mockagents/mockagents --workflow=release.yml --limit 1 --json databaseId -q '.[0].databaseId')
+gh run rerun "$RUN" --failed --repo mockagents/mockagents
+gh run watch "$RUN" --exit-status --repo mockagents/mockagents
+```
+
+`--failed` re-runs only the failed jobs (+ their dependents, e.g. `smoke-test`);
+the already-succeeded `release-binaries` is left intact, so the live GitHub Release
+is untouched.
+
+> **The one case that needs a new version:** if a job *did* publish to npm or PyPI
+> before failing (those versions are **immutable** and cannot be re-uploaded), bump
+> to the next patch (`v0.4.1`) instead of re-running. Confirm what published with
+> `npm view <pkg> version` and `https://pypi.org/pypi/mockagents/json` (404 = not
+> published → safe to re-run).
+
 ---
 
 ## Cutting a release
