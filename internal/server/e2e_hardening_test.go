@@ -85,7 +85,11 @@ func postChat(t *testing.T, base, apiKey string) *http.Response {
 }
 
 func TestE2E_QuotaRateLimitUsesAuthenticatedTenant(t *testing.T) {
-	env := newQuotaE2EServer(t, quota.Config{RatePerSec: 1, RateBurst: 1}, pricing.NewDefaultTable())
+	// RatePerSec is deliberately tiny (not 1): the bucket refills at
+	// elapsed*RatePerSec, so a slow run — notably under `-race`, where seconds
+	// can elapse between the two requests — must not refill a whole token and
+	// let the second request through. Burst 1 still allows exactly one request.
+	env := newQuotaE2EServer(t, quota.Config{RatePerSec: 0.001, RateBurst: 1}, pricing.NewDefaultTable())
 	defer env.shutdown()
 
 	first := postChat(t, env.base, env.apiKey)
