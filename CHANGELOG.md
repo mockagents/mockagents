@@ -20,6 +20,16 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   `response.output_audio_transcript.delta`, their `.done` counterparts, and the
   `output_audio` content-part type — and emits the standard `rate_limits.updated`
   event at the start of each response.
+- **Conversations API fidelity** — three bugs that broke the OpenAI SDK's stateful
+  thread flow. (1) The Responses object now echoes `conversation: {"id": …}` so an
+  SDK can read `response.conversation.id` to continue a thread (it was omitted
+  entirely). (2) `GET /v1/conversations/{id}/items` now honors `limit`,
+  `order` (defaulting to `desc`, newest-first, like the real API), and the `after`
+  cursor, and reports an accurate `has_more` (it previously returned every item in
+  insertion order with `has_more` hardcoded `false`). (3) A turn with `store:false`
+  still appends its input + output to the referenced conversation — conversation
+  items have their own lifecycle and are not gated by the Responses `store` flag
+  (the next turn was silently losing history).
 
 ## [0.4.0] - 2026-06-17
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,8 +18,9 @@ import (
 // API sunsets 2026-08-26): a client creates a conversation, then drives a
 // multi-turn loop by passing its id on each /v1/responses call instead of
 // chaining previous_response_id. The mock stores the conversation's Items and
-// replays them as prior turns, and (when store != false) appends each turn's new
-// input + the assistant output back onto the conversation.
+// replays them as prior turns, and appends each turn's new input + the assistant
+// output back onto the conversation (independent of the Responses `store` flag,
+// which only governs retention of the standalone Response object).
 const ProtocolOpenAIConversations = "openai-conversations"
 
 const (
@@ -53,6 +55,7 @@ type conversationItem struct {
 	ID        string          `json:"id"`
 	Type      string          `json:"type"`
 	Object    string          `json:"object,omitempty"` // "conversation.item" on read
+	CreatedAt int64           `json:"created_at,omitempty"`
 	Role      string          `json:"role,omitempty"`
 	Content   json.RawMessage `json:"content,omitempty"`
 	Status    string          `json:"status,omitempty"`
@@ -345,7 +348,23 @@ func (h *ConversationsHandler) HandleListItems(w http.ResponseWriter, r *http.Re
 		writeConversationNotFound(w, r.PathValue("id"))
 		return
 	}
-	writeJSON(w, http.StatusOK, itemListEnvelope(st.listItems()))
+
+	// List query params (matching the real API): order (default "desc"), an
+	// `after` item-id cursor, and limit (default 20, 1..100). The store keeps
+	// items in insertion (chronological) order.
+	items := st.listItems()
+	if q := r.URL.Query().Get("order"); q != "asc" {
+		reverseItems(items) // default + "desc" → newest first
+	}
+	if after := r.URL.Query().Get("after"); after != "" {
+		items = itemsAfter(items, after)
+	}
+	limit := parseListLimit(r.URL.Query().Get("limit"), 20)
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	writeJSON(w, http.StatusOK, itemListEnvelope(items, hasMore))
 }
 
 // HandleCreateItems handles POST /v1/conversations/{id}/items.
@@ -367,7 +386,7 @@ func (h *ConversationsHandler) HandleCreateItems(w http.ResponseWriter, r *http.
 		return
 	}
 	added := st.appendItems(req.Items)
-	writeJSON(w, http.StatusOK, itemListEnvelope(added))
+	writeJSON(w, http.StatusOK, itemListEnvelope(added, false))
 }
 
 // HandleGetItem handles GET /v1/conversations/{id}/items/{item_id}.
@@ -407,17 +426,52 @@ func (h *ConversationsHandler) HandleDeleteItem(w http.ResponseWriter, r *http.R
 // --- helpers ---
 
 // itemListEnvelope wraps items in the standard OpenAI list shape.
-func itemListEnvelope(items []conversationItem) map[string]any {
+func itemListEnvelope(items []conversationItem, hasMore bool) map[string]any {
 	resp := map[string]any{
 		"object":   "list",
 		"data":     items,
-		"has_more": false,
+		"has_more": hasMore,
 	}
 	if len(items) > 0 {
 		resp["first_id"] = items[0].ID
 		resp["last_id"] = items[len(items)-1].ID
 	}
 	return resp
+}
+
+// reverseItems reverses a slice in place (the store hands back a copy, so this
+// never mutates stored state).
+func reverseItems(items []conversationItem) {
+	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
+		items[i], items[j] = items[j], items[i]
+	}
+}
+
+// itemsAfter returns the items following the one whose id == afterID, in the
+// given order. An unknown cursor is a lenient no-op (returns all).
+func itemsAfter(items []conversationItem, afterID string) []conversationItem {
+	for i, it := range items {
+		if it.ID == afterID {
+			return items[i+1:]
+		}
+	}
+	return items
+}
+
+// parseListLimit parses the `limit` query param, defaulting and clamping to the
+// real API's 1..100 range.
+func parseListLimit(s string, def int) int {
+	if s == "" {
+		return def
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 {
+		return def
+	}
+	if n > 100 {
+		return 100
+	}
+	return n
 }
 
 // normalizeItem fills the id/object/type/status defaults the read shape needs.
@@ -429,6 +483,9 @@ func normalizeItem(it conversationItem) conversationItem {
 		it.ID = itemIDPrefix(it.Type) + generateID()
 	}
 	it.Object = "conversation.item"
+	if it.CreatedAt == 0 {
+		it.CreatedAt = time.Now().Unix()
+	}
 	if it.Type == "message" && it.Role == "" {
 		it.Role = "user"
 	}
