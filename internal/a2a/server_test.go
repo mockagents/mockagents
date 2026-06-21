@@ -68,8 +68,23 @@ func TestCard(t *testing.T) {
 	assert.Equal(t, "Weather Agent", c.Name)
 	assert.Equal(t, "http://example.test/", c.URL)
 	assert.Equal(t, types.DefaultA2AProtocolVersion, c.ProtocolVersion)
+	assert.Equal(t, types.DefaultA2ATransport, c.PreferredTransport, "preferredTransport is required by A2A v0.3")
 	assert.False(t, c.Capabilities.Streaming, "streaming must not be advertised (not served yet)")
 	assert.NotEmpty(t, c.DefaultInputModes)
+
+	// Every skill's tags must render as an array (never null) — the testDef
+	// skill leaves tags unset, so the server must normalize it to [].
+	require.Len(t, c.Skills, 1)
+	assert.NotNil(t, c.Skills[0].Tags, "skill tags must be non-nil so the card renders a JSON array")
+
+	// The normalization must not mutate the stored definition.
+	assert.Nil(t, s.def.Spec.Card.Skills[0].Tags, "Card() must not mutate the stored def's skills")
+
+	// The card serializes with the required fields present.
+	raw, err := json.Marshal(c)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"preferredTransport":"JSONRPC"`)
+	assert.Contains(t, string(raw), `"tags":[]`)
 }
 
 func TestMessageSend_MatchAndDefault(t *testing.T) {

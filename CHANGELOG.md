@@ -20,6 +20,12 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   `response.output_audio_transcript.delta`, their `.done` counterparts, and the
   `output_audio` content-part type — and emits the standard `rate_limits.updated`
   event at the start of each response.
+- **A2A Agent Card now satisfies the v0.3 spec** — the served card was missing the
+  **required** `preferredTransport` field (spec-strict clients reject a card
+  without it); it is now filled with `"JSONRPC"` at serve time. Each skill's `tags`
+  is also a required field that must be a JSON array — a skill that left it unset
+  rendered `null`, so the server now normalizes it to `[]`. The declared
+  definition is never mutated by this normalization.
 
 ## [0.4.0] - 2026-06-17
 
