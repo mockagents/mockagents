@@ -237,6 +237,17 @@ func evaluateAssertion(a types.TestAssertion, ec *evalContext) string {
 			return fmt.Sprintf("tool_call: expected call to %q with args %v, got %v",
 				a.Tool, a.Args, toolCallSummary(toolCalls))
 		}
+	case types.AssertToolCallArgs:
+		if a.Tool == "" {
+			return "tool_call_args: tool is required"
+		}
+		if len(a.Args) == 0 {
+			return "tool_call_args: arguments is required"
+		}
+		if !matchToolArgs(toolCalls, a.Tool, a.Args) {
+			return fmt.Sprintf("tool_call_args: no call to %q matched args %v, got %v",
+				a.Tool, a.Args, toolCallSummary(toolCalls))
+		}
 	case types.AssertNoToolCall:
 		if len(toolCalls) != 0 {
 			return fmt.Sprintf("no_tool_call: expected no tool calls, got %v", toolCallNames(toolCalls))
@@ -328,6 +339,75 @@ func hasToolCall(calls []types.ToolCallSpec, name string, wantArgs map[string]an
 		}
 	}
 	return false
+}
+
+// matchToolArgs reports whether some call to `name` has arguments matching every
+// (path, want) pair. Keys may be dotted paths into nested objects, and values
+// compare type-tolerantly (see looseEqual).
+func matchToolArgs(calls []types.ToolCallSpec, name string, want map[string]any) bool {
+	for _, tc := range calls {
+		if tc.Name != name {
+			continue
+		}
+		all := true
+		for path, wantVal := range want {
+			got, ok := resolvePath(tc.Arguments, path)
+			if !ok || !looseEqual(got, wantVal) {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
+}
+
+// resolvePath walks a dotted path into nested map[string]any arguments. A path
+// without dots is a plain top-level key. Returns false if any segment is missing
+// or a non-leaf segment is not an object.
+func resolvePath(args map[string]any, path string) (any, bool) {
+	cur := any(args)
+	for _, seg := range strings.Split(path, ".") {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		v, ok := m[seg]
+		if !ok {
+			return nil, false
+		}
+		cur = v
+	}
+	return cur, true
+}
+
+// looseEqual compares two argument values tolerantly: numbers compare by float
+// value (so a YAML int 2 matches a JSON float 2, the shape args take over the
+// wire), everything else falls back to reflect.DeepEqual.
+func looseEqual(got, want any) bool {
+	if gf, ok := toFloat(got); ok {
+		if wf, ok := toFloat(want); ok {
+			return gf == wf
+		}
+	}
+	return reflect.DeepEqual(got, want)
+}
+
+func toFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	default:
+		return 0, false
+	}
 }
 
 func toolCallSummary(calls []types.ToolCallSpec) []string {

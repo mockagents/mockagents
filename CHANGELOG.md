@@ -30,6 +30,12 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   containing a `value` substring), and `response_matches` (the response content
   matches a `value` **regular expression**, where `response_contains` is
   substring-only). Pure runner additions.
+- **`tool_call_args` assertion** — asserts a named tool was called with arguments
+  matching every given entry, where `tool_call`'s subset match cannot: keys may be
+  **dotted paths** into nested argument objects (`filters.class`) and values
+  compare **type-tolerantly** (a YAML `2` matches the JSON `2.0` arguments take on
+  the wire). Passes when some call to `tool` matches all entries. Dependency-free
+  (no JSONPath).
 
 ### Fixed
 - **TestSuite validation rejected the NF-03 trajectory assertions** — the

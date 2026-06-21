@@ -106,6 +106,20 @@ cases:
         value: "booked"
 ```
 
+**Asserting nested arguments.** `tool_call` matches whole top-level argument
+values; `tool_call_args` reaches into nested objects with dotted-path keys and
+compares numbers tolerantly (a YAML `2` matches the JSON `2.0` the args take over
+the wire). It passes when *some* call to `tool` matched every entry:
+
+```yaml
+- type: tool_call_args
+  tool: search_flights
+  arguments:
+    destination: NYC
+    passengers: 2          # numeric, type-tolerant
+    filters.class: economy # nested via a dotted path
+```
+
 ### Option B — pytest, against your real application code
 
 The `mockagents` pytest fixture (shipped with `pip install mockagents`) points

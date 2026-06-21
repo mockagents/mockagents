@@ -68,6 +68,7 @@
                       "type": "string",
                       "enum": [
                         "tool_call",
+                        "tool_call_args",
                         "no_tool_call",
                         "response_contains",
                         "response_matches",

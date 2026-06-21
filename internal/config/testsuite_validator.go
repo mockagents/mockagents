@@ -142,6 +142,15 @@ func validateTestAssertion(ctx *validationContext, field string, a *types.TestAs
 			ctx.addError(field+".tool", "tool_call assertion missing tool name",
 				"Set assertions[].tool to the name of an expected tool call.")
 		}
+	case types.AssertToolCallArgs:
+		if a.Tool == "" {
+			ctx.addError(field+".tool", "tool_call_args assertion missing tool name",
+				"Set assertions[].tool to the name of the tool whose arguments you assert.")
+		}
+		if len(a.Args) == 0 {
+			ctx.addError(field+".arguments", "tool_call_args assertion missing arguments",
+				"Set assertions[].arguments to the (possibly dotted-path) argument values to match.")
+		}
 	case types.AssertResponseContains:
 		if a.Value == "" {
 			ctx.addError(field+".value", "response_contains assertion missing value",
@@ -191,5 +200,6 @@ func validateTestAssertion(ctx *validationContext, field string, a *types.TestAs
 
 // assertionTypeList is the human-readable roster of supported assertion types,
 // kept in one place so the "required"/"unknown" hints stay in sync.
-const assertionTypeList = "tool_call, no_tool_call, response_contains, response_matches, " +
-	"scenario_matched, refusal, latency_ms_lt, tool_call_count, tool_call_sequence, node_sequence"
+const assertionTypeList = "tool_call, tool_call_args, no_tool_call, response_contains, " +
+	"response_matches, scenario_matched, refusal, latency_ms_lt, tool_call_count, " +
+	"tool_call_sequence, node_sequence"

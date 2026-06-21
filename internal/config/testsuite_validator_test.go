@@ -235,6 +235,11 @@ spec:
           value: policy
         - type: response_matches
           value: "ord-\\d+"
+        - type: tool_call_args
+          tool: search
+          arguments:
+            destination: NYC
+            filters.class: economy
 `)
 	if errs := ValidateTestSuite(def, "", node); errs != nil {
 		t.Fatalf("expected all assertion types to validate, got: %v", errs)
@@ -260,6 +265,7 @@ spec:
         - type: tool_call_sequence
         - type: response_matches
           value: "["
+        - type: tool_call_args
 `)
 	errs := ValidateTestSuite(def, "", node)
 	if errs == nil {
@@ -273,6 +279,12 @@ spec:
 	}
 	if !containsMessage(errs, "not a valid regular expression") {
 		t.Errorf("no response_matches regex error: %v", errs)
+	}
+	if !containsMessage(errs, "tool_call_args assertion missing tool name") {
+		t.Errorf("no tool_call_args tool error: %v", errs)
+	}
+	if !containsMessage(errs, "tool_call_args assertion missing arguments") {
+		t.Errorf("no tool_call_args arguments error: %v", errs)
 	}
 }
 

@@ -501,3 +501,54 @@ func TestRunSuite_MultiTurnSessionTurnCount(t *testing.T) {
 		t.Fatalf("expected 0 failures, got %d: %+v", res.Failed, res.Cases[0].Failures)
 	}
 }
+
+func TestEvaluateAssertion_ToolCallArgs(t *testing.T) {
+	resp := &engine.Response{
+		ToolCalls: []types.ToolCallSpec{{
+			Name: "search_flights",
+			Arguments: map[string]any{
+				"destination": "NYC",
+				"passengers":  2, // YAML/int on the in-process path
+				"filters":     map[string]any{"class": "economy", "nonstop": true},
+			},
+		}},
+	}
+	ec := &evalContext{final: resp, toolCalls: resp.ToolCalls}
+
+	cases := []struct {
+		name     string
+		args     map[string]any
+		tool     string
+		wantPass bool
+	}{
+		{"top-level match", map[string]any{"destination": "NYC"}, "search_flights", true},
+		{"numeric tolerant (float vs int)", map[string]any{"passengers": 2.0}, "search_flights", true},
+		{"nested dotted path", map[string]any{"filters.class": "economy"}, "search_flights", true},
+		{"nested bool", map[string]any{"filters.nonstop": true}, "search_flights", true},
+		{"multiple paths all match", map[string]any{"destination": "NYC", "filters.class": "economy"}, "search_flights", true},
+		{"wrong value fails", map[string]any{"destination": "LAX"}, "search_flights", false},
+		{"missing path fails", map[string]any{"filters.seat": "window"}, "search_flights", false},
+		{"descend into non-object fails", map[string]any{"destination.x": "y"}, "search_flights", false},
+		{"wrong tool name fails", map[string]any{"destination": "NYC"}, "book_flight", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := types.TestAssertion{Type: types.AssertToolCallArgs, Tool: c.tool, Args: c.args}
+			msg := evaluateAssertion(a, ec)
+			if c.wantPass && msg != "" {
+				t.Errorf("expected pass, got failure: %s", msg)
+			}
+			if !c.wantPass && msg == "" {
+				t.Errorf("expected failure, got pass")
+			}
+		})
+	}
+
+	// Missing required fields are reported, not silently passed.
+	if msg := evaluateAssertion(types.TestAssertion{Type: types.AssertToolCallArgs, Args: map[string]any{"a": 1}}, ec); msg == "" {
+		t.Error("expected error when tool is missing")
+	}
+	if msg := evaluateAssertion(types.TestAssertion{Type: types.AssertToolCallArgs, Tool: "search_flights"}, ec); msg == "" {
+		t.Error("expected error when arguments is missing")
+	}
+}

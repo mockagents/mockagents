@@ -19,6 +19,12 @@ const (
 	AssertNoToolCall      = "no_tool_call"     // the response made no tool calls
 	AssertRefusal         = "refusal"          // the response is a refusal (optionally containing `value`)
 	AssertResponseMatches = "response_matches" // the response content matches the `value` regular expression
+	// AssertToolCallArgs asserts that a named tool was called with arguments
+	// matching every given `arguments` entry. Unlike tool_call (top-level exact
+	// subset match), keys may be dotted paths into nested objects
+	// (`filters.city`) and values compare type-tolerantly (YAML int 2 matches a
+	// JSON float 2).
+	AssertToolCallArgs = "tool_call_args"
 )
 
 // TestSuiteDefinition is a declarative collection of test cases that run
