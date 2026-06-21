@@ -150,42 +150,55 @@ func (s *Session) createResponse(ctx context.Context) []Event {
 	}
 	s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: transcript})
 
+	inputTokens := countTokens(s.history[:len(s.history)-1])
+	outputTokens := wordCount(transcript)
+
+	// GA wire shape: assistant audio is the "output_audio" content part, and the
+	// streamed events are response.output_audio*.delta/.done — NOT the beta
+	// response.audio*.delta names. The mock advertises the GA model gpt-realtime,
+	// so it must speak GA or a current SDK receives no audio/transcript.
 	finalItem := map[string]any{
 		"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
-		"role": "assistant", "content": []any{map[string]any{"type": "audio", "transcript": transcript}},
+		"role": "assistant", "content": []any{map[string]any{"type": "output_audio", "transcript": transcript}},
 	}
 
 	out := []Event{
 		{"type": "response.created", "response": map[string]any{
 			"id": respID, "object": "realtime.response", "status": "in_progress", "output": []any{}}},
+		// rate_limits.updated is emitted at the start of a response (tokens are
+		// reserved on creation); synthesized deterministically.
+		{"type": "rate_limits.updated", "rate_limits": []any{
+			map[string]any{"name": "requests", "limit": 10000, "remaining": 9999, "reset_seconds": 0.06},
+			map[string]any{"name": "tokens", "limit": 1000000, "remaining": 1000000 - inputTokens - outputTokens, "reset_seconds": 0.0},
+		}},
 		{"type": "response.output_item.added", "response_id": respID, "output_index": 0, "item": map[string]any{
 			"id": itemID, "object": "realtime.item", "type": "message", "status": "in_progress",
 			"role": "assistant", "content": []any{}}},
 		{"type": "response.content_part.added", "response_id": respID, "item_id": itemID,
-			"output_index": 0, "content_index": 0, "part": map[string]any{"type": "audio", "transcript": ""}},
+			"output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_audio", "transcript": ""}},
 	}
 	for _, chunk := range chunkText(transcript) {
 		out = append(out,
-			Event{"type": "response.audio_transcript.delta", "response_id": respID, "item_id": itemID,
+			Event{"type": "response.output_audio_transcript.delta", "response_id": respID, "item_id": itemID,
 				"output_index": 0, "content_index": 0, "delta": chunk},
-			Event{"type": "response.audio.delta", "response_id": respID, "item_id": itemID,
+			Event{"type": "response.output_audio.delta", "response_id": respID, "item_id": itemID,
 				"output_index": 0, "content_index": 0, "delta": synthAudioChunk(chunk)},
 		)
 	}
 	out = append(out,
-		Event{"type": "response.audio.done", "response_id": respID, "item_id": itemID, "output_index": 0, "content_index": 0},
-		Event{"type": "response.audio_transcript.done", "response_id": respID, "item_id": itemID,
+		Event{"type": "response.output_audio.done", "response_id": respID, "item_id": itemID, "output_index": 0, "content_index": 0},
+		Event{"type": "response.output_audio_transcript.done", "response_id": respID, "item_id": itemID,
 			"output_index": 0, "content_index": 0, "transcript": transcript},
 		Event{"type": "response.content_part.done", "response_id": respID, "item_id": itemID,
-			"output_index": 0, "content_index": 0, "part": map[string]any{"type": "audio", "transcript": transcript}},
+			"output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_audio", "transcript": transcript}},
 		Event{"type": "response.output_item.done", "response_id": respID, "output_index": 0, "item": finalItem},
 		Event{"type": "response.done", "response": map[string]any{
 			"id": respID, "object": "realtime.response", "status": "completed",
 			"output": []any{finalItem},
 			"usage": map[string]any{
-				"input_tokens":  countTokens(s.history[:len(s.history)-1]),
-				"output_tokens": wordCount(transcript),
-				"total_tokens":  countTokens(s.history[:len(s.history)-1]) + wordCount(transcript),
+				"input_tokens":  inputTokens,
+				"output_tokens": outputTokens,
+				"total_tokens":  inputTokens + outputTokens,
 			}}},
 	)
 	return out
