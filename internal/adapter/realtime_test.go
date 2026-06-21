@@ -79,11 +79,11 @@ func TestRealtime_WebSocketEndToEnd(t *testing.T) {
 		ev := wsRead(t, ctx, c)
 		seen = append(seen, ev["type"].(string))
 		switch ev["type"] {
-		case "response.audio.delta":
+		case "response.output_audio.delta":
 			if ev["delta"].(string) != "" {
 				sawAudio = true
 			}
-		case "response.audio_transcript.done":
+		case "response.output_audio_transcript.done":
 			transcript = ev["transcript"].(string)
 		case "response.done":
 			goto done
@@ -91,7 +91,7 @@ func TestRealtime_WebSocketEndToEnd(t *testing.T) {
 	}
 done:
 	require.Equal(t, "response.created", seen[0])
-	require.Contains(t, seen, "response.audio_transcript.delta")
+	require.Contains(t, seen, "response.output_audio_transcript.delta")
 	require.True(t, sawAudio, "expected non-empty audio deltas")
 	// testOpenAIAgent answers "hello" with the greeting scenario "Hi there!".
 	require.Equal(t, "Hi there!", transcript)

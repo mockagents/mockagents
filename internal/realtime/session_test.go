@@ -68,8 +68,8 @@ func TestSession_ItemCreateThenResponseLadder(t *testing.T) {
 		t.Errorf("ladder must end with response.done, got %v", tps)
 	}
 	for _, want := range []string{"response.output_item.added", "response.content_part.added",
-		"response.audio_transcript.delta", "response.audio.delta", "response.audio.done",
-		"response.audio_transcript.done", "response.output_item.done"} {
+		"response.output_audio_transcript.delta", "response.output_audio.delta", "response.output_audio.done",
+		"response.output_audio_transcript.done", "response.output_item.done"} {
 		if !contains(tps, want) {
 			t.Errorf("ladder missing %q; got %v", want, tps)
 		}
@@ -81,11 +81,11 @@ func TestSession_ItemCreateThenResponseLadder(t *testing.T) {
 	sawAudio := false
 	for _, e := range ladder {
 		switch e["type"] {
-		case "response.audio_transcript.delta":
+		case "response.output_audio_transcript.delta":
 			assembled += e["delta"].(string)
-		case "response.audio_transcript.done":
+		case "response.output_audio_transcript.done":
 			doneTranscript = e["transcript"].(string)
-		case "response.audio.delta":
+		case "response.output_audio.delta":
 			if e["delta"].(string) != "" {
 				sawAudio = true
 			}

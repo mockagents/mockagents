@@ -10,6 +10,17 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 
 ## [Unreleased]
 
+### Fixed
+- **Realtime API now speaks the GA wire dialect** — the mock advertises the GA
+  model `gpt-realtime` but was emitting the deprecated **beta** response events
+  (`response.audio.delta` / `response.audio_transcript.delta` / `…done`) and the
+  beta `type:"audio"` content part. OpenAI removed the beta interface in May 2026,
+  so a current SDK received **no audio or transcript**. The response ladder now
+  uses the GA names — `response.output_audio.delta`,
+  `response.output_audio_transcript.delta`, their `.done` counterparts, and the
+  `output_audio` content-part type — and emits the standard `rate_limits.updated`
+  event at the start of each response.
+
 ## [0.4.0] - 2026-06-17
 
 ### Added
