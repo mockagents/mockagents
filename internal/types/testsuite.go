@@ -13,6 +13,12 @@ const (
 	AssertToolCallCount    = "tool_call_count"    // exact number of tool calls in the response
 	AssertToolCallSequence = "tool_call_sequence" // ordered tool-call names in the response
 	AssertNodeSequence     = "node_sequence"      // ordered pipeline node ids that ran (pipeline targets)
+	// Cheap behavioral assertions: catch a wrongly-eager tool call, a missing
+	// refusal, or a response that should match a pattern rather than a fixed
+	// substring.
+	AssertNoToolCall      = "no_tool_call"     // the response made no tool calls
+	AssertRefusal         = "refusal"          // the response is a refusal (optionally containing `value`)
+	AssertResponseMatches = "response_matches" // the response content matches the `value` regular expression
 )
 
 // TestSuiteDefinition is a declarative collection of test cases that run
