@@ -216,8 +216,10 @@ Run `kind: TestSuite` files against agents or pipelines.
 mockagents test [path...] [--format text|json|junit]
 ```
 
-Assertions include `tool_call`, `response_contains`, `scenario_matched`, and
-`latency_ms_lt`. `--format junit` writes a Jenkins-compatible report for CI.
+Assertions include `tool_call`, `no_tool_call`, `response_contains`,
+`response_matches` (regex), `scenario_matched`, `refusal`, `latency_ms_lt`,
+`tool_call_count`, `tool_call_sequence`, and `node_sequence` (pipeline targets).
+`--format junit` writes a Jenkins-compatible report for CI.
 
 ```bash
 mockagents test tests/ --format junit > report.xml

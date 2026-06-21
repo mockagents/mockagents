@@ -66,12 +66,29 @@
                   "properties": {
                     "type": {
                       "type": "string",
-                      "enum": ["tool_call", "response_contains", "scenario_matched", "latency_ms_lt"]
+                      "enum": [
+                        "tool_call",
+                        "no_tool_call",
+                        "response_contains",
+                        "response_matches",
+                        "scenario_matched",
+                        "refusal",
+                        "latency_ms_lt",
+                        "tool_call_count",
+                        "tool_call_sequence",
+                        "node_sequence"
+                      ]
                     },
                     "tool": { "type": "string" },
                     "arguments": { "type": "object" },
                     "value": { "type": "string" },
                     "max_ms": { "type": "integer", "minimum": 0 },
+                    "count": { "type": "integer", "minimum": 0, "description": "Exact tool-call count for tool_call_count." },
+                    "sequence": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Ordered names/ids for tool_call_sequence and node_sequence."
+                    },
                     "node_id": { "type": "string", "description": "Scope the assertion to a specific pipeline node." }
                   }
                 }

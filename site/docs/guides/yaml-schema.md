@@ -10,7 +10,7 @@ Agent definitions are YAML files that configure mock agent behavior.
 > |--------|---------|
 > | `Agent` | A single mock LLM agent (this page) |
 > | `Pipeline` | Multi-agent topology — `sequential`, `parallel`, or `graph` with conditional edges |
-> | `TestSuite` | Declarative test cases (`tool_call`, `response_contains`, `scenario_matched`, `latency_ms_lt`) run by `mockagents test` |
+> | `TestSuite` | Declarative test cases (`tool_call`, `no_tool_call`, `response_contains`, `response_matches`, `scenario_matched`, `refusal`, `latency_ms_lt`, `tool_call_count`, `tool_call_sequence`, `node_sequence`) run by `mockagents test` |
 > | `MCPServer` | A mock Model Context Protocol server (tools, resources, prompts) served by `mockagents mcp` |
 >
 > All four validate under `mockagents validate` and `POST /api/v1/config/validate`.

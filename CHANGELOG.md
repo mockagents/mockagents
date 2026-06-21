@@ -10,7 +10,23 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 
 ## [Unreleased]
 
+### Added
+- **Three cheap test-runner assertions** for `mockagents test` — `no_tool_call`
+  (the response made no tool calls — the common "agent shouldn't have used a tool
+  here" check), `refusal` (the response is an assistant refusal, optionally
+  containing a `value` substring), and `response_matches` (the response content
+  matches a `value` **regular expression**, where `response_contains` is
+  substring-only). Pure runner additions.
+
 ### Fixed
+- **TestSuite validation rejected the NF-03 trajectory assertions** — the
+  validator and the JSON schema only knew the four original assertion types, so
+  `mockagents validate` (and the GUI/schema check) flagged a suite using
+  `tool_call_count`, `tool_call_sequence`, or `node_sequence` — the very
+  assertions NF-03 shipped — as `unknown assertion type`. The validator and
+  `schema/mockagents-v1-testsuite.json` now recognize all assertion types
+  (including the new behavioral ones) and validate their type-specific fields
+  (`count` ≥ 0, non-empty `sequence`, compilable `response_matches` regex).
 - **Realtime API now speaks the GA wire dialect** — the mock advertises the GA
   model `gpt-realtime` but was emitting the deprecated **beta** response events
   (`response.audio.delta` / `response.audio_transcript.delta` / `…done`) and the
@@ -30,6 +46,12 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   still appends its input + output to the referenced conversation — conversation
   items have their own lifecycle and are not gated by the Responses `store` flag
   (the next turn was silently losing history).
+- **A2A Agent Card now satisfies the v0.3 spec** — the served card was missing the
+  **required** `preferredTransport` field (spec-strict clients reject a card
+  without it); it is now filled with `"JSONRPC"` at serve time. Each skill's `tags`
+  is also a required field that must be a JSON array — a skill that left it unset
+  rendered `null`, so the server now normalizes it to `[]`. The declared
+  definition is never mutated by this normalization.
 
 ## [0.4.0] - 2026-06-17
 

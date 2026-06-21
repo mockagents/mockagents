@@ -7,6 +7,11 @@ const A2AServerKind = "A2AServer"
 // leaves protocolVersion unset.
 const DefaultA2AProtocolVersion = "0.3.0"
 
+// DefaultA2ATransport is the transport label reported in the Agent Card's
+// required `preferredTransport` field. The mock serves the JSON-RPC 2.0
+// surface, so it advertises "JSONRPC" (the A2A v0.3 canonical name).
+const DefaultA2ATransport = "JSONRPC"
+
 // A2AServerDefinition is a declarative mock A2A server (NF-04). A2A is Google's
 // agent-to-agent protocol (now Linux-Foundation-governed): a JSON-RPC 2.0
 // surface plus a public "Agent Card" served at /.well-known/agent-card.json. The
@@ -29,11 +34,15 @@ type A2AServerSpec struct {
 // A2AAgentCard is the public Agent Card (the A2A discovery document). The server
 // fills url/protocolVersion/capabilities defaults at serve time.
 type A2AAgentCard struct {
-	Name               string          `yaml:"name" json:"name"`
-	Description        string          `yaml:"description,omitempty" json:"description,omitempty"`
-	URL                string          `yaml:"url,omitempty" json:"url,omitempty"`
-	Version            string          `yaml:"version,omitempty" json:"version,omitempty"`
-	ProtocolVersion    string          `yaml:"protocolVersion,omitempty" json:"protocolVersion"`
+	Name            string `yaml:"name" json:"name"`
+	Description     string `yaml:"description,omitempty" json:"description,omitempty"`
+	URL             string `yaml:"url,omitempty" json:"url,omitempty"`
+	Version         string `yaml:"version,omitempty" json:"version,omitempty"`
+	ProtocolVersion string `yaml:"protocolVersion,omitempty" json:"protocolVersion"`
+	// PreferredTransport is REQUIRED by the A2A v0.3 spec (spec-strict clients
+	// reject a card without it). The server fills it with DefaultA2ATransport
+	// ("JSONRPC") at serve time, so it always renders.
+	PreferredTransport string          `yaml:"preferredTransport,omitempty" json:"preferredTransport"`
 	DefaultInputModes  []string        `yaml:"defaultInputModes,omitempty" json:"defaultInputModes,omitempty"`
 	DefaultOutputModes []string        `yaml:"defaultOutputModes,omitempty" json:"defaultOutputModes,omitempty"`
 	Capabilities       A2ACapabilities `yaml:"capabilities,omitempty" json:"capabilities"`
@@ -48,11 +57,14 @@ type A2ACapabilities struct {
 
 // A2ASkill is one capability descriptor in the Agent Card.
 type A2ASkill struct {
-	ID          string   `yaml:"id" json:"id"`
-	Name        string   `yaml:"name" json:"name"`
-	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
-	Tags        []string `yaml:"tags,omitempty" json:"tags,omitempty"`
-	Examples    []string `yaml:"examples,omitempty" json:"examples,omitempty"`
+	ID          string `yaml:"id" json:"id"`
+	Name        string `yaml:"name" json:"name"`
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	// Tags is REQUIRED on every skill by the A2A spec; the server normalizes a
+	// nil slice to [] at serve time so the card always renders a JSON array
+	// (not null), which spec-strict clients require.
+	Tags     []string `yaml:"tags,omitempty" json:"tags"`
+	Examples []string `yaml:"examples,omitempty" json:"examples,omitempty"`
 }
 
 // A2AMessageResponse is one match-based canned reply for message/send. The first

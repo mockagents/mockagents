@@ -205,6 +205,77 @@ spec:
 	}
 }
 
+// TestValidateTestSuite_AllAssertionTypesAccepted guards against the validator
+// rejecting assertion types the runner supports — the NF-03 trajectory types
+// (tool_call_count/tool_call_sequence/node_sequence) and the cheap behavioral
+// types (no_tool_call/refusal/response_matches) must all pass with valid fields.
+func TestValidateTestSuite_AllAssertionTypesAccepted(t *testing.T) {
+	def, node := decodeTestSuiteYAML(t, `apiVersion: mockagents/v1
+kind: TestSuite
+metadata:
+  name: x
+spec:
+  target:
+    pipeline: p
+  cases:
+    - name: c
+      steps:
+        - role: user
+          content: hi
+      assertions:
+        - type: tool_call_count
+          count: 0
+        - type: tool_call_sequence
+          sequence: [a, b]
+        - type: node_sequence
+          sequence: [n1, n2]
+        - type: no_tool_call
+        - type: refusal
+        - type: refusal
+          value: policy
+        - type: response_matches
+          value: "ord-\\d+"
+`)
+	if errs := ValidateTestSuite(def, "", node); errs != nil {
+		t.Fatalf("expected all assertion types to validate, got: %v", errs)
+	}
+}
+
+// TestValidateTestSuite_BadAssertionFields covers the new per-type field rules.
+func TestValidateTestSuite_BadAssertionFields(t *testing.T) {
+	def, node := decodeTestSuiteYAML(t, `apiVersion: mockagents/v1
+kind: TestSuite
+metadata:
+  name: x
+spec:
+  target:
+    agent: a
+  cases:
+    - name: c
+      steps:
+        - role: user
+          content: hi
+      assertions:
+        - type: tool_call_count
+        - type: tool_call_sequence
+        - type: response_matches
+          value: "["
+`)
+	errs := ValidateTestSuite(def, "", node)
+	if errs == nil {
+		t.Fatal("expected field errors")
+	}
+	if !containsMessage(errs, "tool_call_count assertion missing count") {
+		t.Errorf("no tool_call_count error: %v", errs)
+	}
+	if !containsMessage(errs, "tool_call_sequence assertion missing sequence") {
+		t.Errorf("no tool_call_sequence error: %v", errs)
+	}
+	if !containsMessage(errs, "not a valid regular expression") {
+		t.Errorf("no response_matches regex error: %v", errs)
+	}
+}
+
 func TestValidateTestSuite_InvalidKind(t *testing.T) {
 	def, node := decodeTestSuiteYAML(t, `apiVersion: mockagents/v1
 kind: Agent

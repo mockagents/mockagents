@@ -336,3 +336,40 @@ func TestRunSuite_NodeSequenceRequiresPipeline(t *testing.T) {
 		t.Errorf("node_sequence on an agent target should fail, got %d failures", res.Failed)
 	}
 }
+
+func TestEvaluateAssertion_CheapBehavioral(t *testing.T) {
+	withTools := &engine.Response{
+		Content:   "I'll look that up.",
+		ToolCalls: []types.ToolCallSpec{{Name: "search"}},
+	}
+	noTools := &engine.Response{Content: "Order #4131 ships Tuesday."}
+	refused := &engine.Response{Refusal: "I can't help with that request."}
+
+	cases := []struct {
+		name      string
+		assertion types.TestAssertion
+		resp      *engine.Response
+		wantPass  bool
+	}{
+		{"no_tool_call passes when clean", types.TestAssertion{Type: types.AssertNoToolCall}, noTools, true},
+		{"no_tool_call fails on a call", types.TestAssertion{Type: types.AssertNoToolCall}, withTools, false},
+		{"refusal passes when refused", types.TestAssertion{Type: types.AssertRefusal}, refused, true},
+		{"refusal fails when not refused", types.TestAssertion{Type: types.AssertRefusal}, noTools, false},
+		{"refusal value substring passes", types.TestAssertion{Type: types.AssertRefusal, Value: "can't help"}, refused, true},
+		{"refusal value substring fails", types.TestAssertion{Type: types.AssertRefusal, Value: "policy"}, refused, false},
+		{"response_matches passes", types.TestAssertion{Type: types.AssertResponseMatches, Value: `#\d+ ships`}, noTools, true},
+		{"response_matches fails", types.TestAssertion{Type: types.AssertResponseMatches, Value: `^cancelled`}, noTools, false},
+		{"response_matches bad regex fails", types.TestAssertion{Type: types.AssertResponseMatches, Value: `[`}, noTools, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			msg := evaluateAssertion(c.assertion, c.resp, nil, 0)
+			if c.wantPass && msg != "" {
+				t.Errorf("expected pass, got failure: %s", msg)
+			}
+			if !c.wantPass && msg == "" {
+				t.Errorf("expected failure, got pass")
+			}
+		})
+	}
+}

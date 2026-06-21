@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
@@ -181,6 +182,17 @@ func evaluateAssertion(a types.TestAssertion, resp *engine.Response, pr *engine.
 		if target.ScenarioName != a.Value {
 			return fmt.Sprintf("scenario_matched: expected %q, got %q", a.Value, target.ScenarioName)
 		}
+	case types.AssertResponseMatches:
+		if target == nil {
+			return "response_matches: no response produced"
+		}
+		re, err := regexp.Compile(a.Value)
+		if err != nil {
+			return fmt.Sprintf("response_matches: invalid regular expression %q: %v", a.Value, err)
+		}
+		if !re.MatchString(target.Content) {
+			return fmt.Sprintf("response_matches: %q did not match %q", a.Value, truncate(target.Content, 120))
+		}
 	case types.AssertToolCall:
 		if target == nil {
 			return "tool_call: no response produced"
@@ -188,6 +200,23 @@ func evaluateAssertion(a types.TestAssertion, resp *engine.Response, pr *engine.
 		if !hasToolCall(target.ToolCalls, a.Tool, a.Args) {
 			return fmt.Sprintf("tool_call: expected call to %q with args %v, got %v",
 				a.Tool, a.Args, toolCallSummary(target.ToolCalls))
+		}
+	case types.AssertNoToolCall:
+		if target == nil {
+			return "no_tool_call: no response produced"
+		}
+		if len(target.ToolCalls) != 0 {
+			return fmt.Sprintf("no_tool_call: expected no tool calls, got %v", toolCallNames(target.ToolCalls))
+		}
+	case types.AssertRefusal:
+		if target == nil {
+			return "refusal: no response produced"
+		}
+		if target.Refusal == "" {
+			return "refusal: expected a refusal, but the response did not refuse"
+		}
+		if a.Value != "" && !strings.Contains(target.Refusal, a.Value) {
+			return fmt.Sprintf("refusal: %q not found in refusal %q", a.Value, truncate(target.Refusal, 120))
 		}
 	case types.AssertLatencyMsLT:
 		ms := latency.Milliseconds()
