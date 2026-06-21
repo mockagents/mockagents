@@ -23,6 +23,11 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded runs on the same branch/PR to save runner minutes.
+concurrency:
+  group: actions-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   setup-mockagents:
     name: setup-mockagents (server + exported env)

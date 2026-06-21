@@ -9,13 +9,25 @@ on:
 permissions:
   contents: read
 
+# Cancel an in-progress run when a newer commit is pushed to the same branch/PR,
+# so rapid pushes don't stack up billable runner minutes (only the latest commit
+# is ever fully tested).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-go:
     name: Go Tests
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Linux (1× billing, carries the race detector) + Windows (2×, the
+        # cross-platform / no-cgo guard). macOS is intentionally omitted: at a
+        # 10× minutes multiplier it dominated CI cost while adding little signal
+        # for pure-Go code already covered by the Linux+Windows legs. Run the
+        # full matrix locally on macOS if you touch OS-specific paths.
+        os: [ubuntu-latest, windows-latest]
         go-version: ["1.26"]
     steps:
       - uses: actions/checkout@v4
@@ -31,11 +43,11 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
-      # The race detector needs CGO_ENABLED=1 + a C compiler. The Linux and
-      # macOS runners always ship one, so they carry race coverage for the
-      # shared, platform-independent code. The Windows leg runs the suite
-      # without -race so the job never depends on whatever C toolchain happens
-      # to be on the runner image (the build itself is pure-Go, no cgo).
+      # The race detector needs CGO_ENABLED=1 + a C compiler. The Linux runner
+      # always ships one, so it carries race coverage for the shared,
+      # platform-independent code. The Windows leg runs the suite without -race
+      # so the job never depends on whatever C toolchain happens to be on the
+      # runner image (the build itself is pure-Go, no cgo).
       # See CONTRIBUTING.md "Race detection".
       - name: Run tests (race detector)
         if: runner.os != 'Windows'
@@ -89,7 +101,11 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # The supported bookends only — 3.10 (min) and 3.13 (max). The SDK is
+        # pure-Python with no version-specific code paths, so the intermediate
+        # minors rarely diverge; testing the ends bounds the support range at
+        # half the runner minutes.
+        python-version: ["3.10", "3.13"]
     steps:
       - uses: actions/checkout@v4
 

@@ -32,6 +32,11 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded runs on the same branch/PR to save runner minutes.
+concurrency:
+  group: mcp-conformance-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CONFORMANCE_VERSION: "0.1.16"
 
