@@ -43,9 +43,11 @@ func (rig *convRig) create(t *testing.T, tenant, body string) Conversation {
 	return c
 }
 
+// listItems lists in ascending (chronological) order so callers can assert on a
+// stable insertion order; the default (desc) + pagination are covered separately.
 func (rig *convRig) listItems(t *testing.T, tenant, id string) []map[string]any {
 	t.Helper()
-	req := httptest.NewRequest("GET", "/v1/conversations/"+id+"/items", nil)
+	req := httptest.NewRequest("GET", "/v1/conversations/"+id+"/items?order=asc", nil)
 	req.SetPathValue("id", id)
 	if tenant != "" {
 		req = req.WithContext(withTenant(req, tenant))
@@ -248,4 +250,81 @@ func TestConversation_UpdateMetadata(t *testing.T) {
 	assert.Equal(t, "orig", update(``).Metadata["topic"])
 	// A present metadata object replaces it.
 	assert.Equal(t, "new", update(`{"metadata":{"topic":"new"}}`).Metadata["topic"])
+}
+
+func (rig *convRig) listItemsRaw(t *testing.T, id, query string) map[string]any {
+	t.Helper()
+	req := httptest.NewRequest("GET", "/v1/conversations/"+id+"/items"+query, nil)
+	req.SetPathValue("id", id)
+	rec := httptest.NewRecorder()
+	rig.conv.HandleListItems(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var env map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &env))
+	return env
+}
+
+func TestConversation_ListItemsPagination(t *testing.T) {
+	rig := newConvRig()
+	c := rig.create(t, "", ``)
+
+	createBody := `{"items":[{"type":"message","role":"user","content":"a"},{"type":"message","role":"user","content":"b"},{"type":"message","role":"user","content":"c"},{"type":"message","role":"user","content":"d"},{"type":"message","role":"user","content":"e"}]}`
+	creq := httptest.NewRequest("POST", "/v1/conversations/"+c.ID+"/items", strings.NewReader(createBody))
+	creq.SetPathValue("id", c.ID)
+	crec := httptest.NewRecorder()
+	rig.conv.HandleCreateItems(crec, creq)
+	require.Equal(t, http.StatusOK, crec.Code, crec.Body.String())
+	var created struct {
+		Data []map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(crec.Body.Bytes(), &created))
+	require.Len(t, created.Data, 5)
+	oldestID := created.Data[0]["id"].(string)
+	newestID := created.Data[4]["id"].(string)
+
+	// Default order is desc (newest first), no more pages.
+	def := rig.listItemsRaw(t, c.ID, "")
+	defData := def["data"].([]any)
+	require.Len(t, defData, 5)
+	assert.Equal(t, false, def["has_more"])
+	assert.Equal(t, newestID, defData[0].(map[string]any)["id"], "desc → newest first")
+
+	// limit caps the page and sets has_more.
+	lim := rig.listItemsRaw(t, c.ID, "?limit=2")
+	assert.Len(t, lim["data"].([]any), 2)
+	assert.Equal(t, true, lim["has_more"])
+
+	// order=asc → oldest first.
+	asc := rig.listItemsRaw(t, c.ID, "?order=asc")
+	assert.Equal(t, oldestID, asc["data"].([]any)[0].(map[string]any)["id"])
+
+	// after cursor (asc) returns the items following the oldest → 4 of 5.
+	after := rig.listItemsRaw(t, c.ID, "?order=asc&after="+oldestID)
+	assert.Len(t, after["data"].([]any), 4)
+}
+
+func TestConversation_ResponseEchoesConversationField(t *testing.T) {
+	rig := newConvRig()
+	c := rig.create(t, "", ``)
+	rec := rig.turn(t, "", c.ID, "hello")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	conv, ok := resp["conversation"].(map[string]any)
+	require.True(t, ok, "response must echo a conversation object")
+	assert.Equal(t, c.ID, conv["id"])
+}
+
+func TestConversation_StoreFalseStillAppends(t *testing.T) {
+	rig := newConvRig()
+	c := rig.create(t, "", ``)
+	// A conversation's items have their own lifecycle, so store:false must NOT
+	// skip appending them.
+	body := fmt.Sprintf(`{"model":"gpt-4o","input":"hello","conversation":%q,"store":false}`, c.ID)
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	rig.resp.HandleResponses(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Len(t, rig.listItems(t, "", c.ID), 2, "store:false must still append to the conversation")
 }

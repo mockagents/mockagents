@@ -74,29 +74,32 @@ type responsesInputItem struct {
 // the real API always renders (even as null) are plain `any` without omitempty
 // so the wire shape matches what an SDK expects to deserialize.
 type ResponsesResponse struct {
-	ID                 string         `json:"id"`
-	Object             string         `json:"object"`
-	CreatedAt          int64          `json:"created_at"`
-	Status             string         `json:"status"`
-	Error              any            `json:"error"`
-	IncompleteDetails  any            `json:"incomplete_details"`
-	Instructions       any            `json:"instructions"`
-	MaxOutputTokens    any            `json:"max_output_tokens"`
-	Model              string         `json:"model"`
-	Output             []any          `json:"output"`
-	ParallelToolCalls  bool           `json:"parallel_tool_calls"`
-	PreviousResponseID any            `json:"previous_response_id"`
-	Reasoning          any            `json:"reasoning"`
-	Store              bool           `json:"store"`
-	Temperature        float64        `json:"temperature"`
-	Text               any            `json:"text"`
-	ToolChoice         any            `json:"tool_choice"`
-	Tools              []any          `json:"tools"`
-	TopP               float64        `json:"top_p"`
-	Truncation         string         `json:"truncation"`
-	Usage              ResponsesUsage `json:"usage"`
-	User               any            `json:"user"`
-	Metadata           map[string]any `json:"metadata"`
+	ID                 string `json:"id"`
+	Object             string `json:"object"`
+	CreatedAt          int64  `json:"created_at"`
+	Status             string `json:"status"`
+	Error              any    `json:"error"`
+	IncompleteDetails  any    `json:"incomplete_details"`
+	Instructions       any    `json:"instructions"`
+	MaxOutputTokens    any    `json:"max_output_tokens"`
+	Model              string `json:"model"`
+	Output             []any  `json:"output"`
+	ParallelToolCalls  bool   `json:"parallel_tool_calls"`
+	PreviousResponseID any    `json:"previous_response_id"`
+	Reasoning          any    `json:"reasoning"`
+	Store              bool   `json:"store"`
+	// Conversation echoes the referenced conversation as {"id": …} (NF-02), or
+	// null. SDKs read response.conversation.id to continue a thread.
+	Conversation any            `json:"conversation"`
+	Temperature  float64        `json:"temperature"`
+	Text         any            `json:"text"`
+	ToolChoice   any            `json:"tool_choice"`
+	Tools        []any          `json:"tools"`
+	TopP         float64        `json:"top_p"`
+	Truncation   string         `json:"truncation"`
+	Usage        ResponsesUsage `json:"usage"`
+	User         any            `json:"user"`
+	Metadata     map[string]any `json:"metadata"`
 }
 
 // ResponsesUsage is the Responses-API token-usage shape (input_tokens /
@@ -374,10 +377,12 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 	}
 	h.store.put(respID, stored)
 
-	// When this turn referenced a conversation and storage is on (the default),
-	// append the new input + the assistant output to it so the next turn replays
-	// them (the thread-replacement behavior).
-	if conv != nil && boolOr(req.Store, true) {
+	// When this turn referenced a conversation, append the new input + the
+	// assistant output to it so the next turn replays them (the thread-replacement
+	// behavior). This is independent of `store`: a conversation's items have their
+	// own lifecycle, so `store:false` still records them (store only governs
+	// retention of the standalone Response object).
+	if conv != nil {
 		appended := make([]conversationItem, 0, len(inputMsgs)+1)
 		for _, m := range inputMsgs {
 			appended = append(appended, userMessageItem(m.Role, m.Content))
@@ -388,6 +393,9 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 
 	inputTokens := sumMessageTokens(messages)
 	out := buildResponsesResponse(respID, &req, resp, inputTokens)
+	if convID != "" {
+		out.Conversation = map[string]any{"id": convID}
+	}
 
 	setHallucinationHeader(w, resp)
 
