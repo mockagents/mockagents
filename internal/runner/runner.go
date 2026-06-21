@@ -87,6 +87,22 @@ func (r *Runner) RunSuite(suite *types.TestSuiteDefinition) (*SuiteResult, error
 	return result, nil
 }
 
+// evalContext is the accumulated outcome of running a case's steps that the
+// assertions are evaluated against. For a single-step case it is identical to
+// the old single-response view; for a multi-turn case it carries the whole
+// trajectory: `final` is the last turn's response (outcome assertions like
+// response_contains / refusal look here), while `toolCalls` and `nodeSeq` are
+// the ordered aggregate across every turn (trajectory assertions like
+// tool_call_sequence / node_sequence look here). `pr` is the final turn's
+// pipeline result, used when an assertion retargets a specific node by id.
+type evalContext struct {
+	final     *engine.Response
+	toolCalls []types.ToolCallSpec
+	pr        *engine.PipelineResult
+	nodeSeq   []string
+	latency   time.Duration
+}
+
 func (r *Runner) runCase(suite *types.TestSuiteDefinition, tc *types.TestCase) *CaseResult {
 	cr := &CaseResult{Name: tc.Name}
 	if len(tc.Steps) == 0 {
@@ -95,8 +111,8 @@ func (r *Runner) runCase(suite *types.TestSuiteDefinition, tc *types.TestCase) *
 		return cr
 	}
 
-	userMsg := lastUserStep(tc.Steps)
-	if userMsg == "" {
+	userMsgs := userSteps(tc.Steps)
+	if len(userMsgs) == 0 {
 		cr.Failures = append(cr.Failures, "case has no user step")
 		return cr
 	}
@@ -104,23 +120,28 @@ func (r *Runner) runCase(suite *types.TestSuiteDefinition, tc *types.TestCase) *
 	sessionID := fmt.Sprintf("test::%s::%s", suite.Metadata.Name, tc.Name)
 	target := suite.Spec.Target
 
+	ec := &evalContext{}
 	start := time.Now()
-	var finalResp *engine.Response
-	var pipelineRes *engine.PipelineResult
 
 	if target.Agent != "" {
-		resp, err := r.Engine.ProcessRequest(&engine.InboundRequest{
-			AgentName: target.Agent,
-			SessionID: sessionID,
-			Messages:  []engine.RequestMessage{{Role: "user", Content: userMsg}},
-		})
-		cr.Latency = time.Since(start)
-		if err != nil {
-			cr.ErrMessage = err.Error()
-			cr.Failures = append(cr.Failures, "engine error: "+err.Error())
-			return cr
+		// Replay every user step as a turn in one session, so the engine
+		// accumulates conversation history and per-session turn count — a real
+		// multi-turn trajectory rather than only the final message.
+		for i, msg := range userMsgs {
+			resp, err := r.Engine.ProcessRequest(&engine.InboundRequest{
+				AgentName: target.Agent,
+				SessionID: sessionID,
+				Messages:  []engine.RequestMessage{{Role: "user", Content: msg}},
+			})
+			if err != nil {
+				cr.Latency = time.Since(start)
+				cr.ErrMessage = err.Error()
+				cr.Failures = append(cr.Failures, fmt.Sprintf("engine error on turn %d: %s", i+1, err.Error()))
+				return cr
+			}
+			ec.final = resp
+			ec.toolCalls = append(ec.toolCalls, resp.ToolCalls...)
 		}
-		finalResp = resp
 	} else {
 		if r.Pipelines == nil {
 			cr.Failures = append(cr.Failures, "no pipeline registry wired into runner")
@@ -131,22 +152,32 @@ func (r *Runner) runCase(suite *types.TestSuiteDefinition, tc *types.TestCase) *
 			cr.Failures = append(cr.Failures, fmt.Sprintf("pipeline %q not found", target.Pipeline))
 			return cr
 		}
-		pr, err := r.Executor.Run(pdef, userMsg, sessionID)
-		cr.Latency = time.Since(start)
-		if err != nil {
-			cr.ErrMessage = err.Error()
-			cr.Failures = append(cr.Failures, "pipeline error: "+err.Error())
-			return cr
-		}
-		pipelineRes = pr
-		finalResp = pr.FinalResponse()
-		if len(pr.Nodes) > 0 {
-			cr.FinalNode = pr.Nodes[len(pr.Nodes)-1].NodeID
+		for i, msg := range userMsgs {
+			pr, err := r.Executor.Run(pdef, msg, sessionID)
+			if err != nil {
+				cr.Latency = time.Since(start)
+				cr.ErrMessage = err.Error()
+				cr.Failures = append(cr.Failures, fmt.Sprintf("pipeline error on turn %d: %s", i+1, err.Error()))
+				return cr
+			}
+			ec.pr = pr
+			ec.final = pr.FinalResponse()
+			for _, n := range pr.Nodes {
+				ec.nodeSeq = append(ec.nodeSeq, n.NodeID)
+				if n.Response != nil {
+					ec.toolCalls = append(ec.toolCalls, n.Response.ToolCalls...)
+				}
+			}
+			if len(pr.Nodes) > 0 {
+				cr.FinalNode = pr.Nodes[len(pr.Nodes)-1].NodeID
+			}
 		}
 	}
+	cr.Latency = time.Since(start)
+	ec.latency = cr.Latency
 
 	for _, assertion := range tc.Assertions {
-		if msg := evaluateAssertion(assertion, finalResp, pipelineRes, cr.Latency); msg != "" {
+		if msg := evaluateAssertion(assertion, ec); msg != "" {
 			cr.Failures = append(cr.Failures, msg)
 		}
 	}
@@ -154,103 +185,99 @@ func (r *Runner) runCase(suite *types.TestSuiteDefinition, tc *types.TestCase) *
 	return cr
 }
 
-func evaluateAssertion(a types.TestAssertion, resp *engine.Response, pr *engine.PipelineResult, latency time.Duration) string {
-	// When a NodeID is set, retarget the response to that pipeline node.
-	target := resp
+func evaluateAssertion(a types.TestAssertion, ec *evalContext) string {
+	// Resolve which response + tool calls this assertion looks at. By default an
+	// outcome assertion reads the final turn's response and a trajectory
+	// assertion reads the whole-run aggregate. When node_id is set the assertion
+	// is scoped to a single pipeline node (in the final turn), so both views
+	// collapse to that node's response — preserving the original node_id
+	// semantics.
+	outcome := ec.final
+	toolCalls := ec.toolCalls
 	if a.NodeID != "" {
-		if pr == nil {
+		if ec.pr == nil {
 			return fmt.Sprintf("assertion %q: node_id set but case is not a pipeline target", a.Type)
 		}
-		target = pr.ResponseByNodeID(a.NodeID)
-		if target == nil {
+		nodeResp := ec.pr.ResponseByNodeID(a.NodeID)
+		if nodeResp == nil {
 			return fmt.Sprintf("assertion %q: node %q produced no response", a.Type, a.NodeID)
 		}
+		outcome = nodeResp
+		toolCalls = nodeResp.ToolCalls
 	}
 
 	switch a.Type {
 	case types.AssertResponseContains:
-		if target == nil {
+		if outcome == nil {
 			return "response_contains: no response produced"
 		}
-		if !strings.Contains(target.Content, a.Value) {
-			return fmt.Sprintf("response_contains: %q not found in %q", a.Value, truncate(target.Content, 120))
+		if !strings.Contains(outcome.Content, a.Value) {
+			return fmt.Sprintf("response_contains: %q not found in %q", a.Value, truncate(outcome.Content, 120))
 		}
 	case types.AssertScenarioMatched:
-		if target == nil {
+		if outcome == nil {
 			return "scenario_matched: no response produced"
 		}
-		if target.ScenarioName != a.Value {
-			return fmt.Sprintf("scenario_matched: expected %q, got %q", a.Value, target.ScenarioName)
+		if outcome.ScenarioName != a.Value {
+			return fmt.Sprintf("scenario_matched: expected %q, got %q", a.Value, outcome.ScenarioName)
 		}
 	case types.AssertResponseMatches:
-		if target == nil {
+		if outcome == nil {
 			return "response_matches: no response produced"
 		}
 		re, err := regexp.Compile(a.Value)
 		if err != nil {
 			return fmt.Sprintf("response_matches: invalid regular expression %q: %v", a.Value, err)
 		}
-		if !re.MatchString(target.Content) {
-			return fmt.Sprintf("response_matches: %q did not match %q", a.Value, truncate(target.Content, 120))
+		if !re.MatchString(outcome.Content) {
+			return fmt.Sprintf("response_matches: %q did not match %q", a.Value, truncate(outcome.Content, 120))
 		}
 	case types.AssertToolCall:
-		if target == nil {
-			return "tool_call: no response produced"
-		}
-		if !hasToolCall(target.ToolCalls, a.Tool, a.Args) {
+		if !hasToolCall(toolCalls, a.Tool, a.Args) {
 			return fmt.Sprintf("tool_call: expected call to %q with args %v, got %v",
-				a.Tool, a.Args, toolCallSummary(target.ToolCalls))
+				a.Tool, a.Args, toolCallSummary(toolCalls))
 		}
 	case types.AssertNoToolCall:
-		if target == nil {
-			return "no_tool_call: no response produced"
-		}
-		if len(target.ToolCalls) != 0 {
-			return fmt.Sprintf("no_tool_call: expected no tool calls, got %v", toolCallNames(target.ToolCalls))
+		if len(toolCalls) != 0 {
+			return fmt.Sprintf("no_tool_call: expected no tool calls, got %v", toolCallNames(toolCalls))
 		}
 	case types.AssertRefusal:
-		if target == nil {
+		if outcome == nil {
 			return "refusal: no response produced"
 		}
-		if target.Refusal == "" {
+		if outcome.Refusal == "" {
 			return "refusal: expected a refusal, but the response did not refuse"
 		}
-		if a.Value != "" && !strings.Contains(target.Refusal, a.Value) {
-			return fmt.Sprintf("refusal: %q not found in refusal %q", a.Value, truncate(target.Refusal, 120))
+		if a.Value != "" && !strings.Contains(outcome.Refusal, a.Value) {
+			return fmt.Sprintf("refusal: %q not found in refusal %q", a.Value, truncate(outcome.Refusal, 120))
 		}
 	case types.AssertLatencyMsLT:
-		ms := latency.Milliseconds()
+		ms := ec.latency.Milliseconds()
 		if ms >= a.MaxMs {
 			return fmt.Sprintf("latency_ms_lt: latency %dms >= max %dms", ms, a.MaxMs)
 		}
 	case types.AssertToolCallCount:
-		if target == nil {
-			return "tool_call_count: no response produced"
-		}
 		if a.Count == nil {
 			return "tool_call_count: count is required"
 		}
-		if got := len(target.ToolCalls); got != *a.Count {
+		if got := len(toolCalls); got != *a.Count {
 			return fmt.Sprintf("tool_call_count: expected %d tool call(s), got %d %v",
-				*a.Count, got, toolCallNames(target.ToolCalls))
+				*a.Count, got, toolCallNames(toolCalls))
 		}
 	case types.AssertToolCallSequence:
-		if target == nil {
-			return "tool_call_sequence: no response produced"
-		}
-		got := toolCallNames(target.ToolCalls)
+		got := toolCallNames(toolCalls)
 		if !equalStrings(got, a.Sequence) {
 			return fmt.Sprintf("tool_call_sequence: expected %v, got %v", a.Sequence, got)
 		}
 	case types.AssertNodeSequence:
-		// A pipeline-trajectory check: the ordered node ids that actually ran.
-		// It reads the whole run, so it ignores node_id retargeting.
-		if pr == nil {
+		// A pipeline-trajectory check: the ordered node ids that ran across the
+		// whole (possibly multi-turn) run. It reads the aggregate, so it ignores
+		// node_id retargeting.
+		if ec.pr == nil {
 			return "node_sequence: assertion requires a pipeline target"
 		}
-		got := nodeIDsInOrder(pr)
-		if !equalStrings(got, a.Sequence) {
-			return fmt.Sprintf("node_sequence: expected %v, got %v", a.Sequence, got)
+		if !equalStrings(ec.nodeSeq, a.Sequence) {
+			return fmt.Sprintf("node_sequence: expected %v, got %v", a.Sequence, ec.nodeSeq)
 		}
 	default:
 		return fmt.Sprintf("unknown assertion type %q", a.Type)
@@ -263,15 +290,6 @@ func toolCallNames(calls []types.ToolCallSpec) []string {
 	out := make([]string, len(calls))
 	for i, c := range calls {
 		out[i] = c.Name
-	}
-	return out
-}
-
-// nodeIDsInOrder returns the pipeline's node ids in execution order.
-func nodeIDsInOrder(pr *engine.PipelineResult) []string {
-	out := make([]string, len(pr.Nodes))
-	for i, n := range pr.Nodes {
-		out[i] = n.NodeID
 	}
 	return out
 }
@@ -320,13 +338,18 @@ func toolCallSummary(calls []types.ToolCallSpec) []string {
 	return out
 }
 
-func lastUserStep(steps []types.TestStep) string {
-	for i := len(steps) - 1; i >= 0; i-- {
-		if steps[i].Role == "user" || steps[i].Role == "" {
-			return steps[i].Content
+// userSteps returns the content of every user step in order. A step with an
+// empty role is treated as a user step (the historical default). Non-user steps
+// (assistant/system) are not replayed: the mock generates the assistant side
+// itself, so a case drives the conversation through its user turns.
+func userSteps(steps []types.TestStep) []string {
+	var out []string
+	for _, s := range steps {
+		if s.Role == "user" || s.Role == "" {
+			out = append(out, s.Content)
 		}
 	}
-	return ""
+	return out
 }
 
 func targetLabel(t types.TestTarget) string {

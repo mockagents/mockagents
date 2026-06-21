@@ -363,7 +363,8 @@ func TestEvaluateAssertion_CheapBehavioral(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			msg := evaluateAssertion(c.assertion, c.resp, nil, 0)
+			ec := &evalContext{final: c.resp, toolCalls: c.resp.ToolCalls}
+			msg := evaluateAssertion(c.assertion, ec)
 			if c.wantPass && msg != "" {
 				t.Errorf("expected pass, got failure: %s", msg)
 			}
@@ -371,5 +372,132 @@ func TestEvaluateAssertion_CheapBehavioral(t *testing.T) {
 				t.Errorf("expected failure, got pass")
 			}
 		})
+	}
+}
+
+// TestRunSuite_MultiTurnTrajectory proves the runner replays every user step as
+// a turn in one session and aggregates the trajectory: tool_call_sequence /
+// tool_call_count span all turns, while outcome assertions (response_contains,
+// scenario_matched) read the final turn.
+func TestRunSuite_MultiTurnTrajectory(t *testing.T) {
+	agent := &types.AgentDefinition{
+		APIVersion: types.AgentAPIVersion, Kind: types.AgentKind,
+		Metadata: types.Metadata{Name: "travel"},
+		Spec: types.AgentSpec{
+			Protocol: "openai-chat-completions",
+			Tools: []types.ToolDefinition{
+				{Name: "search_flights", Parameters: types.JSONSchemaObject{"type": "object"}},
+				{Name: "book_flight", Parameters: types.JSONSchemaObject{"type": "object"}},
+			},
+			Behavior: types.BehaviorConfig{
+				Scenarios: []types.Scenario{
+					{
+						Name:  "search",
+						Match: &types.MatchRule{ContentContains: "search"},
+						Response: types.ScenarioResponse{
+							Content:   "here are some flights",
+							ToolCalls: []types.ToolCallSpec{{Name: "search_flights"}},
+						},
+					},
+					{
+						Name:  "book",
+						Match: &types.MatchRule{ContentContains: "book"},
+						Response: types.ScenarioResponse{
+							Content:   "your flight is booked",
+							ToolCalls: []types.ToolCallSpec{{Name: "book_flight"}},
+						},
+					},
+				},
+			},
+		},
+	}
+	eng := newEngineWithAgent(t, agent)
+	r := New(eng, nil)
+
+	suite := &types.TestSuiteDefinition{
+		Metadata: types.Metadata{Name: "travel-suite"},
+		Spec: types.TestSuiteSpec{
+			Target: types.TestTarget{Agent: "travel"},
+			Cases: []types.TestCase{{
+				Name: "search-then-book",
+				Steps: []types.TestStep{
+					{Role: "user", Content: "search for flights to NYC"},
+					{Role: "user", Content: "book the first one"},
+				},
+				Assertions: []types.TestAssertion{
+					// Trajectory: spans BOTH turns — the whole point of multi-turn.
+					{Type: types.AssertToolCallSequence, Sequence: []string{"search_flights", "book_flight"}},
+					{Type: types.AssertToolCallCount, Count: intPtr(2)},
+					// Outcome: reads the final turn only.
+					{Type: types.AssertResponseContains, Value: "booked"},
+					{Type: types.AssertScenarioMatched, Value: "book"},
+				},
+			}},
+		},
+	}
+
+	res, err := r.RunSuite(suite)
+	if err != nil {
+		t.Fatalf("RunSuite error: %v", err)
+	}
+	if res.Failed != 0 {
+		t.Fatalf("expected 0 failures, got %d: %+v", res.Failed, res.Cases[0].Failures)
+	}
+}
+
+// TestRunSuite_MultiTurnSessionTurnCount proves the session turn count advances
+// across replayed steps: a turn_number-scoped scenario only fires on its turn.
+func TestRunSuite_MultiTurnSessionTurnCount(t *testing.T) {
+	turn2 := 2
+	agent := &types.AgentDefinition{
+		APIVersion: types.AgentAPIVersion, Kind: types.AgentKind,
+		Metadata: types.Metadata{Name: "counter"},
+		Spec: types.AgentSpec{
+			Protocol: "openai-chat-completions",
+			Behavior: types.BehaviorConfig{
+				Scenarios: []types.Scenario{
+					{
+						Name:     "second-turn",
+						Match:    &types.MatchRule{TurnNumber: &turn2},
+						Response: types.ScenarioResponse{Content: "this is turn two"},
+					},
+					{
+						Name:     "default",
+						Match:    &types.MatchRule{ContentContains: "ping"},
+						Response: types.ScenarioResponse{Content: "this is some other turn"},
+					},
+				},
+			},
+		},
+	}
+	eng := newEngineWithAgent(t, agent)
+	r := New(eng, nil)
+
+	suite := &types.TestSuiteDefinition{
+		Metadata: types.Metadata{Name: "counter-suite"},
+		Spec: types.TestSuiteSpec{
+			Target: types.TestTarget{Agent: "counter"},
+			Cases: []types.TestCase{{
+				Name: "turn-aware",
+				Steps: []types.TestStep{
+					{Role: "user", Content: "ping"},
+					{Role: "user", Content: "ping"},
+				},
+				// The final (2nd) turn must have matched the turn_number:2 scenario,
+				// which only happens if the session turn count advanced across steps.
+				Assertions: []types.TestAssertion{
+					{Type: types.AssertScenarioMatched, Value: "second-turn"},
+					{Type: types.AssertResponseContains, Value: "turn two"},
+				},
+			}},
+		},
+	}
+
+	res, err := r.RunSuite(suite)
+	if err != nil {
+		t.Fatalf("RunSuite error: %v", err)
+	}
+	if res.Failed != 0 {
+		t.Fatalf("expected 0 failures, got %d: %+v", res.Failed, res.Cases[0].Failures)
 	}
 }

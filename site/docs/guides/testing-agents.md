@@ -84,6 +84,28 @@ Suite: tool-router-suite (agent:tool-router)
 $ mockagents test --agents-dir examples examples/tool-routing-suite.yaml --format junit > report.xml
 ```
 
+**Multi-turn cases.** List several `role: user` steps and the runner replays each
+as a turn in one session (the engine carries conversation history and turn count
+between them). The trajectory assertions then span the whole conversation:
+`tool_call_sequence` and `tool_call_count` aggregate the tool calls of every turn
+in order, and `node_sequence` aggregates the pipeline nodes across turns — while
+`response_contains` / `scenario_matched` / `refusal` read the final turn:
+
+```yaml
+cases:
+  - name: search-then-book
+    steps:
+      - role: user
+        content: "search for flights to NYC"
+      - role: user
+        content: "book the first one"
+    assertions:
+      - type: tool_call_sequence      # spans both turns
+        sequence: [search_flights, book_flight]
+      - type: response_contains       # the final turn's answer
+        value: "booked"
+```
+
 ### Option B — pytest, against your real application code
 
 The `mockagents` pytest fixture (shipped with `pip install mockagents`) points

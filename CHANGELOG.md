@@ -10,6 +10,19 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 
 ## [Unreleased]
 
+### Changed
+- **The test runner is now multi-turn** — a `kind: TestSuite` case replays *every*
+  user step as a turn in one session (the engine accumulates conversation history
+  and per-session turn count), instead of only sending the last user message. This
+  makes the trajectory assertions meaningful across a real conversation:
+  `tool_call_sequence` / `tool_call_count` now aggregate the tool calls of every
+  turn in order, and `node_sequence` aggregates the pipeline nodes across all turns;
+  the outcome assertions (`response_contains`, `response_matches`,
+  `scenario_matched`, `refusal`) read the final turn. A `node_id`-scoped assertion
+  is evaluated against that node in the final turn. Single-step cases are
+  unaffected (one turn ⇒ aggregate equals final), so existing suites behave
+  identically.
+
 ### Added
 - **Three cheap test-runner assertions** for `mockagents test` — `no_tool_call`
   (the response made no tool calls — the common "agent shouldn't have used a tool
