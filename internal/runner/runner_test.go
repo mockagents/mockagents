@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"encoding/json"
 	"io"
 	"log/slog"
 	"testing"
@@ -707,5 +708,28 @@ func TestRunSuite_ToolErrorRecovery(t *testing.T) {
 	}
 	if res.Failed != 0 {
 		t.Fatalf("expected 0 failures, got %d: %+v", res.Failed, res.Cases[0].Failures)
+	}
+}
+
+func TestLooseEqual_NumericKinds(t *testing.T) {
+	cases := []struct {
+		a, b any
+		eq   bool
+	}{
+		{int(2), 2.0, true},
+		{uint64(2), 2, true},
+		{int32(2), int64(2), true},
+		{json.Number("2"), 2.0, true},
+		{json.Number("2.5"), 2.5, true},
+		{float32(2), int(2), true},
+		{2, 3, false},
+		{"2", 2, false},  // string vs number must NOT match
+		{true, 1, false}, // bool vs number must NOT match
+		{"x", "x", true}, // non-numbers fall back to DeepEqual
+	}
+	for _, c := range cases {
+		if got := looseEqual(c.a, c.b); got != c.eq {
+			t.Errorf("looseEqual(%#v, %#v) = %v, want %v", c.a, c.b, got, c.eq)
+		}
 	}
 }

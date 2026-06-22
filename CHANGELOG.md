@@ -79,6 +79,18 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   `ToolResults` (aggregate + final-turn) so these read real injected errors.
 
 ### Fixed
+- **Fidelity polish (round-2 eval, minor gaps)** — Realtime: the
+  `response.function_call_arguments.delta`/`.done` events now carry
+  `content_index`; `response.done` usage adds the GA per-modality
+  `input_token_details`/`output_token_details`; and the `response` envelope
+  (created + done) now carries `output_modalities`, `conversation_id`, and
+  `status_details`. Runner: numeric tolerance in `tool_call_args` now covers every
+  int/uint/float kind plus `json.Number` (not just `int`/`float64`), and the
+  validator now **rejects `node_id`** on the whole-run aggregate assertions
+  (`node_sequence`, `tool_error`, `handles_tool_error`, `latency_ms_lt`) instead
+  of silently ignoring it. Docs note that `handles_tool_error` is a multi-turn
+  check and which assertions accept `node_id`. A2A: corrected an overstated
+  "`preferredTransport` is required" comment (it is optional in the v0.3 schema).
 - **Fidelity polish (round-2 eval)** — three spec-conformance gaps in the new
   surfaces. (1) Every Realtime **server event now carries a unique `event_id`**
   (a required field on all Realtime events; previously omitted, which trips

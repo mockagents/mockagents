@@ -358,3 +358,32 @@ func TestSession_EventsHaveEventID(t *testing.T) {
 		seen[id] = true
 	}
 }
+
+func TestSession_ResponseEnvelopeAndUsageDetails(t *testing.T) {
+	s := NewSession("s", "gpt-realtime",
+		fakeGenTool("Checking.", types.ToolCallSpec{Name: "t", Arguments: map[string]any{"a": 1}}))
+	ev := s.Handle(context.Background(), &ClientEvent{Type: "response.create"})
+
+	// The response envelope (created + done) carries the GA fields.
+	for _, typ := range []string{"response.created", "response.done"} {
+		r := firstEvent(ev, typ)["response"].(map[string]any)
+		for _, k := range []string{"output_modalities", "conversation_id", "status_details"} {
+			if _, ok := r[k]; !ok {
+				t.Errorf("%s response missing %q", typ, k)
+			}
+		}
+	}
+	// response.done usage carries the GA per-modality token details.
+	usage := firstEvent(ev, "response.done")["response"].(map[string]any)["usage"].(map[string]any)
+	if _, ok := usage["input_token_details"]; !ok {
+		t.Error("usage missing input_token_details")
+	}
+	if _, ok := usage["output_token_details"]; !ok {
+		t.Error("usage missing output_token_details")
+	}
+	// Function-call argument events carry content_index.
+	d := firstEvent(ev, "response.function_call_arguments.delta")
+	if _, ok := d["content_index"]; !ok {
+		t.Error("function_call_arguments.delta missing content_index")
+	}
+}

@@ -136,6 +136,17 @@ func validateTestAssertion(ctx *validationContext, field string, a *types.TestAs
 			"Set type to one of: "+assertionTypeList+".")
 		return
 	}
+	// node_id scopes an assertion to one pipeline node. It is meaningless for the
+	// whole-run aggregate assertions, which would silently ignore it — reject it
+	// so the mistake surfaces at validation time.
+	if a.NodeID != "" {
+		switch a.Type {
+		case types.AssertNodeSequence, types.AssertToolError, types.AssertHandlesToolError, types.AssertLatencyMsLT:
+			ctx.addError(field+".node_id",
+				fmt.Sprintf("node_id is not supported on %q", a.Type),
+				"Remove node_id; this assertion reads the whole-run aggregate, not a single node.")
+		}
+	}
 	switch a.Type {
 	case types.AssertToolCall:
 		if a.Tool == "" {

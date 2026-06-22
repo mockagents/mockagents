@@ -242,8 +242,7 @@ func (s *Session) createResponse(ctx context.Context) []Event {
 	outputTokens := wordCount(transcript)
 
 	out := []Event{
-		{"type": "response.created", "response": map[string]any{
-			"id": respID, "object": "realtime.response", "status": "in_progress", "output": []any{}}},
+		{"type": "response.created", "response": s.responseObject(respID, "in_progress", []any{})},
 		// rate_limits.updated is emitted at the start of a response (tokens are
 		// reserved on creation); synthesized deterministically.
 		{"type": "rate_limits.updated", "rate_limits": []any{
@@ -263,15 +262,31 @@ func (s *Session) createResponse(ctx context.Context) []Event {
 		outputIndex++
 	}
 
-	out = append(out, Event{"type": "response.done", "response": map[string]any{
-		"id": respID, "object": "realtime.response", "status": "completed",
-		"output": items,
-		"usage": map[string]any{
-			"input_tokens":  inputTokens,
-			"output_tokens": outputTokens,
-			"total_tokens":  inputTokens + outputTokens,
-		}}})
+	done := s.responseObject(respID, "completed", items)
+	done["usage"] = map[string]any{
+		"input_tokens":  inputTokens,
+		"output_tokens": outputTokens,
+		"total_tokens":  inputTokens + outputTokens,
+		// GA per-modality breakdown. A mock attributes everything to text (the
+		// transcript drives output; synthesized audio carries no real tokens).
+		"input_token_details":  map[string]any{"text_tokens": inputTokens, "audio_tokens": 0, "cached_tokens": 0},
+		"output_token_details": map[string]any{"text_tokens": outputTokens, "audio_tokens": 0},
+	}
+	out = append(out, Event{"type": "response.done", "response": done})
 	return out
+}
+
+// responseObject builds the GA `response` envelope shared by response.created and
+// response.done: id/object/status plus the GA fields a client reads off the
+// final event (output_modalities, conversation_id, status_details).
+func (s *Session) responseObject(respID, status string, output []any) map[string]any {
+	return map[string]any{
+		"id": respID, "object": "realtime.response", "status": status,
+		"status_details":    nil,
+		"output":            output,
+		"output_modalities": s.outputModalities(),
+		"conversation_id":   "conv_" + s.id,
+	}
 }
 
 // appendMessageLadder emits the assistant-message item events (item.added →
@@ -362,11 +377,11 @@ func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types
 	)
 	for _, chunk := range chunkArgs(args) {
 		*out = append(*out, Event{"type": "response.function_call_arguments.delta", "response_id": respID, "item_id": itemID,
-			"output_index": outputIndex, "call_id": callID, "delta": chunk})
+			"output_index": outputIndex, "content_index": 0, "call_id": callID, "delta": chunk})
 	}
 	*out = append(*out,
 		Event{"type": "response.function_call_arguments.done", "response_id": respID, "item_id": itemID,
-			"output_index": outputIndex, "call_id": callID, "arguments": args},
+			"output_index": outputIndex, "content_index": 0, "call_id": callID, "arguments": args},
 		Event{"type": "response.output_item.done", "response_id": respID, "output_index": outputIndex, "item": final},
 	)
 	return final

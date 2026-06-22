@@ -3,6 +3,7 @@
 package runner
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -434,15 +435,22 @@ func looseEqual(got, want any) bool {
 }
 
 func toFloat(v any) (float64, bool) {
-	switch n := v.(type) {
-	case int:
-		return float64(n), true
-	case int64:
-		return float64(n), true
-	case float64:
-		return n, true
-	case float32:
-		return float64(n), true
+	// json.Number (from a decoder using UseNumber) carries the literal text.
+	if n, ok := v.(json.Number); ok {
+		f, err := n.Float64()
+		return f, err == nil
+	}
+	// Cover every int/uint/float kind via reflection so a value decoded as
+	// uint64/int32/etc. still compares numerically (the in-process path keeps
+	// authored ints, but a wire-decoded arg can be any numeric kind).
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return float64(rv.Uint()), true
+	case reflect.Float32, reflect.Float64:
+		return rv.Float(), true
 	default:
 		return 0, false
 	}

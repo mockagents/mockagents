@@ -314,3 +314,47 @@ spec:
 		t.Errorf("expected kind error: %v", errs)
 	}
 }
+
+func TestValidateTestSuite_NodeIDRejectedOnAggregates(t *testing.T) {
+	def, node := decodeTestSuiteYAML(t, `apiVersion: mockagents/v1
+kind: TestSuite
+metadata:
+  name: x
+spec:
+  target:
+    pipeline: p
+  cases:
+    - name: c
+      steps:
+        - role: user
+          content: hi
+      assertions:
+        - type: node_sequence
+          sequence: [a]
+          node_id: n
+        - type: tool_error
+          node_id: n
+        - type: handles_tool_error
+          node_id: n
+        - type: latency_ms_lt
+          max_ms: 100
+          node_id: n
+        - type: response_contains
+          value: ok
+          node_id: n
+`)
+	errs := ValidateTestSuite(def, "", node)
+	if errs == nil {
+		t.Fatal("expected node_id errors")
+	}
+	// The four aggregate types must be rejected.
+	for _, typ := range []string{"node_sequence", "tool_error", "handles_tool_error", "latency_ms_lt"} {
+		if !containsMessage(errs, "node_id is not supported on \""+typ+"\"") {
+			t.Errorf("expected node_id rejection for %s: %v", typ, errs)
+		}
+	}
+	// A per-node assertion (response_contains) must NOT be rejected for node_id.
+	if containsMessage(errs, "node_id is not supported on \"response_contains\"") {
+		t.Errorf("response_contains should accept node_id: %v", errs)
+	}
+}

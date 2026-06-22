@@ -145,6 +145,16 @@ cases:
         value: "manually"               # the recovery answer mentions a fallback
 ```
 
+`handles_tool_error` is effectively a **multi-turn** check: recovery means a
+*later* turn is clean, so a single-turn case (where the only turn both errors and
+replies) can never satisfy it — give the case at least two user steps.
+
+> **`node_id`** scopes an assertion to one pipeline node (it reads that node's
+> response in the final turn). It only applies to the per-response assertions
+> (`response_contains`, `response_matches`, `scenario_matched`, `refusal`,
+> `tool_call*`, `no_tool_call`); the whole-run aggregates (`node_sequence`,
+> `tool_error`, `handles_tool_error`, `latency_ms_lt`) reject it.
+
 ### Option B — pytest, against your real application code
 
 The `mockagents` pytest fixture (shipped with `pip install mockagents`) points

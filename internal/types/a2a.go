@@ -39,9 +39,10 @@ type A2AAgentCard struct {
 	URL             string `yaml:"url,omitempty" json:"url,omitempty"`
 	Version         string `yaml:"version,omitempty" json:"version,omitempty"`
 	ProtocolVersion string `yaml:"protocolVersion,omitempty" json:"protocolVersion"`
-	// PreferredTransport is REQUIRED by the A2A v0.3 spec (spec-strict clients
-	// reject a card without it). The server fills it with DefaultA2ATransport
-	// ("JSONRPC") at serve time, so it always renders.
+	// PreferredTransport names the transport served at `url`. It is optional in
+	// the v0.3 schema, but when set it MUST match the transport at `url`, and
+	// clients rely on it to choose how to call the agent. The server fills it with
+	// DefaultA2ATransport ("JSONRPC") at serve time so it always renders.
 	PreferredTransport string          `yaml:"preferredTransport,omitempty" json:"preferredTransport"`
 	DefaultInputModes  []string        `yaml:"defaultInputModes,omitempty" json:"defaultInputModes,omitempty"`
 	DefaultOutputModes []string        `yaml:"defaultOutputModes,omitempty" json:"defaultOutputModes,omitempty"`
