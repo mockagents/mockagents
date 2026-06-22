@@ -36,6 +36,15 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   compare **type-tolerantly** (a YAML `2` matches the JSON `2.0` arguments take on
   the wire). Passes when some call to `tool` matches all entries. Dependency-free
   (no JSONPath).
+- **`tool_error` / `handles_tool_error` assertions** — test agent error-handling
+  against the mock's existing tool-error injection (`tools[].responses[].error`
+  and `error_rate`). `tool_error` asserts a simulated tool result was an error
+  (optional `tool` name; optional `value` matching the error code or message);
+  `handles_tool_error` asserts the agent **recovered** — an error occurred earlier
+  in the (multi-turn) trajectory yet the final turn is a clean answer (non-empty,
+  not a refusal, not itself ending in an error), with an optional `value` the
+  recovery text must contain. The runner now surfaces each turn's simulated
+  `ToolResults` (aggregate + final-turn) so these read real injected errors.
 
 ### Fixed
 - **TestSuite validation rejected the NF-03 trajectory assertions** — the

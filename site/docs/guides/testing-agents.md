@@ -120,6 +120,31 @@ the wire). It passes when *some* call to `tool` matched every entry:
     filters.class: economy # nested via a dotted path
 ```
 
+**Testing tool-error handling.** Give a tool a failing fixture
+(`tools[].responses[].error`, or `error_rate`), then assert both that the error
+fired and that the agent recovered on a later turn. `tool_error` checks a
+simulated tool result was an error (optionally for a named `tool`, with `value`
+matching the error code or message); `handles_tool_error` checks an error
+occurred earlier yet the **final** turn is a clean answer — non-empty, not a
+refusal, and not itself ending in an error (optional `value` must appear in the
+recovery text):
+
+```yaml
+cases:
+  - name: order-lookup-fails-then-recovers
+    steps:
+      - role: user
+        content: "look up my order"     # turn 1 calls a tool whose fixture errors
+      - role: user
+        content: "what now?"            # turn 2 the agent recovers
+    assertions:
+      - type: tool_error
+        tool: lookup_order
+        value: UPSTREAM_DOWN            # substring of the error code or message
+      - type: handles_tool_error
+        value: "manually"               # the recovery answer mentions a fallback
+```
+
 ### Option B — pytest, against your real application code
 
 The `mockagents` pytest fixture (shipped with `pip install mockagents`) points

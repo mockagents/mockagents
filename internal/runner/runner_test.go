@@ -552,3 +552,160 @@ func TestEvaluateAssertion_ToolCallArgs(t *testing.T) {
 		t.Error("expected error when arguments is missing")
 	}
 }
+
+func errResult(tool, code, msg string) engine.ToolCallResult {
+	return engine.ToolCallResult{ToolName: tool, IsError: true, Error: &types.ToolError{Code: code, Message: msg}}
+}
+func okResult(tool string) engine.ToolCallResult {
+	return engine.ToolCallResult{ToolName: tool, Response: map[string]any{"ok": true}}
+}
+
+func TestEvaluateAssertion_ToolError(t *testing.T) {
+	results := []engine.ToolCallResult{
+		okResult("search"),
+		errResult("lookup", "UPSTREAM_DOWN", "backend unavailable"),
+	}
+	ec := &evalContext{final: &engine.Response{Content: "x"}, toolResults: results}
+
+	cases := []struct {
+		name     string
+		a        types.TestAssertion
+		wantPass bool
+	}{
+		{"any error", types.TestAssertion{Type: types.AssertToolError}, true},
+		{"by tool name", types.TestAssertion{Type: types.AssertToolError, Tool: "lookup"}, true},
+		{"value matches code", types.TestAssertion{Type: types.AssertToolError, Value: "UPSTREAM"}, true},
+		{"value matches message", types.TestAssertion{Type: types.AssertToolError, Value: "unavailable"}, true},
+		{"wrong tool fails", types.TestAssertion{Type: types.AssertToolError, Tool: "search"}, false},
+		{"wrong value fails", types.TestAssertion{Type: types.AssertToolError, Value: "timeout"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			msg := evaluateAssertion(c.a, ec)
+			if c.wantPass && msg != "" {
+				t.Errorf("expected pass, got: %s", msg)
+			}
+			if !c.wantPass && msg == "" {
+				t.Error("expected failure, got pass")
+			}
+		})
+	}
+
+	// No errors at all -> tool_error fails.
+	clean := &evalContext{final: &engine.Response{Content: "x"}, toolResults: []engine.ToolCallResult{okResult("search")}}
+	if msg := evaluateAssertion(types.TestAssertion{Type: types.AssertToolError}, clean); msg == "" {
+		t.Error("tool_error should fail when no tool errored")
+	}
+}
+
+func TestEvaluateAssertion_HandlesToolError(t *testing.T) {
+	recover := func() *evalContext {
+		return &evalContext{
+			final:            &engine.Response{Content: "Sorry, the lookup failed — here is a manual answer."},
+			toolResults:      []engine.ToolCallResult{errResult("lookup", "UPSTREAM_DOWN", "down")},
+			finalToolResults: nil, // recovered on a later, tool-free turn
+		}
+	}
+	if msg := evaluateAssertion(types.TestAssertion{Type: types.AssertHandlesToolError}, recover()); msg != "" {
+		t.Errorf("expected recovery to pass, got: %s", msg)
+	}
+	// value present in recovery content
+	if msg := evaluateAssertion(types.TestAssertion{Type: types.AssertHandlesToolError, Value: "manual answer"}, recover()); msg != "" {
+		t.Errorf("expected value match to pass, got: %s", msg)
+	}
+	// value absent
+	if msg := evaluateAssertion(types.TestAssertion{Type: types.AssertHandlesToolError, Value: "refund"}, recover()); msg == "" {
+		t.Error("expected failure when recovery value absent")
+	}
+
+	// No error anywhere -> fail.
+	noErr := &evalContext{final: &engine.Response{Content: "all good"}, toolResults: []engine.ToolCallResult{okResult("search")}}
+	if msg := evaluateAssertion(types.TestAssertion{Type: types.AssertHandlesToolError}, noErr); msg == "" {
+		t.Error("expected failure when no tool error occurred")
+	}
+
+	// Conversation ENDED on a tool error -> not handled.
+	endedOnError := &evalContext{
+		final:            &engine.Response{Content: "calling tool"},
+		toolResults:      []engine.ToolCallResult{errResult("lookup", "X", "y")},
+		finalToolResults: []engine.ToolCallResult{errResult("lookup", "X", "y")},
+	}
+	if msg := evaluateAssertion(types.TestAssertion{Type: types.AssertHandlesToolError}, endedOnError); msg == "" {
+		t.Error("expected failure when the final turn ended on a tool error")
+	}
+
+	// Recovered turn was a refusal -> not a clean recovery.
+	refused := &evalContext{
+		final:       &engine.Response{Refusal: "I cannot continue."},
+		toolResults: []engine.ToolCallResult{errResult("lookup", "X", "y")},
+	}
+	if msg := evaluateAssertion(types.TestAssertion{Type: types.AssertHandlesToolError}, refused); msg == "" {
+		t.Error("expected failure when the final turn was a refusal")
+	}
+}
+
+// TestRunSuite_ToolErrorRecovery is the end-to-end story: a tool whose default
+// response is an error, a turn that calls it, then a recovery turn — asserted
+// with tool_error + handles_tool_error through the real engine.
+func TestRunSuite_ToolErrorRecovery(t *testing.T) {
+	turn2 := 2
+	agent := &types.AgentDefinition{
+		APIVersion: types.AgentAPIVersion, Kind: types.AgentKind,
+		Metadata: types.Metadata{Name: "support"},
+		Spec: types.AgentSpec{
+			Protocol: "openai-chat-completions",
+			Tools: []types.ToolDefinition{{
+				Name:       "lookup_order",
+				Parameters: types.JSONSchemaObject{"type": "object"},
+				Responses: []types.ToolResponseRule{{
+					IsDefault: true,
+					Error:     &types.ToolError{Code: "UPSTREAM_DOWN", Message: "order service unavailable"},
+				}},
+			}},
+			Behavior: types.BehaviorConfig{
+				Scenarios: []types.Scenario{
+					{
+						Name:  "recover",
+						Match: &types.MatchRule{TurnNumber: &turn2},
+						Response: types.ScenarioResponse{
+							Content: "I couldn't reach the order service, but I've logged your request manually.",
+						},
+					},
+					{
+						Name:  "lookup",
+						Match: &types.MatchRule{ContentContains: "order"},
+						Response: types.ScenarioResponse{
+							Content:   "Let me look that up.",
+							ToolCalls: []types.ToolCallSpec{{Name: "lookup_order", Arguments: map[string]any{"id": "O-1"}}},
+						},
+					},
+				},
+			},
+		},
+	}
+	r := New(newEngineWithAgent(t, agent), nil)
+	suite := &types.TestSuiteDefinition{
+		Metadata: types.Metadata{Name: "support-suite"},
+		Spec: types.TestSuiteSpec{
+			Target: types.TestTarget{Agent: "support"},
+			Cases: []types.TestCase{{
+				Name: "order-lookup-fails-then-recovers",
+				Steps: []types.TestStep{
+					{Role: "user", Content: "look up my order"},
+					{Role: "user", Content: "what now?"},
+				},
+				Assertions: []types.TestAssertion{
+					{Type: types.AssertToolError, Tool: "lookup_order", Value: "UPSTREAM_DOWN"},
+					{Type: types.AssertHandlesToolError, Value: "manually"},
+				},
+			}},
+		},
+	}
+	res, err := r.RunSuite(suite)
+	if err != nil {
+		t.Fatalf("RunSuite error: %v", err)
+	}
+	if res.Failed != 0 {
+		t.Fatalf("expected 0 failures, got %d: %+v", res.Failed, res.Cases[0].Failures)
+	}
+}

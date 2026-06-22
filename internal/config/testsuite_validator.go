@@ -189,8 +189,9 @@ func validateTestAssertion(ctx *validationContext, field string, a *types.TestAs
 				fmt.Sprintf("%s assertion missing sequence", a.Type),
 				"Set assertions[].sequence to the ordered list of expected names/ids.")
 		}
-	case types.AssertNoToolCall, types.AssertRefusal:
-		// no required fields (refusal's optional `value` narrows the match)
+	case types.AssertNoToolCall, types.AssertRefusal, types.AssertToolError, types.AssertHandlesToolError:
+		// no required fields (tool_error's optional `tool`/`value` and refusal's /
+		// handles_tool_error's optional `value` only narrow the match)
 	default:
 		ctx.addError(field+".type",
 			fmt.Sprintf("unknown assertion type %q", a.Type),
@@ -200,6 +201,6 @@ func validateTestAssertion(ctx *validationContext, field string, a *types.TestAs
 
 // assertionTypeList is the human-readable roster of supported assertion types,
 // kept in one place so the "required"/"unknown" hints stay in sync.
-const assertionTypeList = "tool_call, tool_call_args, no_tool_call, response_contains, " +
-	"response_matches, scenario_matched, refusal, latency_ms_lt, tool_call_count, " +
-	"tool_call_sequence, node_sequence"
+const assertionTypeList = "tool_call, tool_call_args, no_tool_call, tool_error, " +
+	"handles_tool_error, response_contains, response_matches, scenario_matched, " +
+	"refusal, latency_ms_lt, tool_call_count, tool_call_sequence, node_sequence"

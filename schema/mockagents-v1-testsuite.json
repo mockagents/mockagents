@@ -70,6 +70,8 @@
                         "tool_call",
                         "tool_call_args",
                         "no_tool_call",
+                        "tool_error",
+                        "handles_tool_error",
                         "response_contains",
                         "response_matches",
                         "scenario_matched",

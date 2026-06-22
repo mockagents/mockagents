@@ -240,6 +240,13 @@ spec:
           arguments:
             destination: NYC
             filters.class: economy
+        - type: tool_error
+        - type: tool_error
+          tool: lookup
+          value: UPSTREAM
+        - type: handles_tool_error
+        - type: handles_tool_error
+          value: manually
 `)
 	if errs := ValidateTestSuite(def, "", node); errs != nil {
 		t.Fatalf("expected all assertion types to validate, got: %v", errs)

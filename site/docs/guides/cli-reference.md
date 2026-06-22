@@ -217,10 +217,11 @@ mockagents test [path...] [--format text|json|junit]
 ```
 
 Assertions include `tool_call`, `tool_call_args` (nested dotted-path argument
-match), `no_tool_call`, `response_contains`, `response_matches` (regex),
-`scenario_matched`, `refusal`, `latency_ms_lt`, `tool_call_count`,
-`tool_call_sequence`, and `node_sequence` (pipeline targets). `--format junit`
-writes a Jenkins-compatible report for CI.
+match), `no_tool_call`, `tool_error` (a simulated tool returned an error),
+`handles_tool_error` (the agent recovered from one), `response_contains`,
+`response_matches` (regex), `scenario_matched`, `refusal`, `latency_ms_lt`,
+`tool_call_count`, `tool_call_sequence`, and `node_sequence` (pipeline targets).
+`--format junit` writes a Jenkins-compatible report for CI.
 
 ```bash
 mockagents test tests/ --format junit > report.xml

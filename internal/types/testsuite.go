@@ -25,6 +25,16 @@ const (
 	// (`filters.city`) and values compare type-tolerantly (YAML int 2 matches a
 	// JSON float 2).
 	AssertToolCallArgs = "tool_call_args"
+	// AssertToolError asserts that a simulated tool call returned an error result
+	// (an agent's `tools[].responses[].error` fixture or `error_rate` firing).
+	// Optional `tool` narrows to one tool name; optional `value` must be a
+	// substring of the error code or message.
+	AssertToolError = "tool_error"
+	// AssertHandlesToolError asserts the agent RECOVERED from a tool error: a tool
+	// error occurred earlier in the (multi-turn) trajectory, yet the final turn is
+	// a clean assistant answer (non-empty content, not a refusal, and not itself
+	// ending in a tool error). Optional `value` must appear in the final content.
+	AssertHandlesToolError = "handles_tool_error"
 )
 
 // TestSuiteDefinition is a declarative collection of test cases that run

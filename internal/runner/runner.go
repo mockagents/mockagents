@@ -101,6 +101,11 @@ type evalContext struct {
 	pr        *engine.PipelineResult
 	nodeSeq   []string
 	latency   time.Duration
+	// toolResults is the simulated tool-execution outcome aggregated across all
+	// turns (tool_error looks here); finalToolResults is just the last turn's, so
+	// handles_tool_error can tell whether the conversation *ended* on an error.
+	toolResults      []engine.ToolCallResult
+	finalToolResults []engine.ToolCallResult
 }
 
 func (r *Runner) runCase(suite *types.TestSuiteDefinition, tc *types.TestCase) *CaseResult {
@@ -141,6 +146,8 @@ func (r *Runner) runCase(suite *types.TestSuiteDefinition, tc *types.TestCase) *
 			}
 			ec.final = resp
 			ec.toolCalls = append(ec.toolCalls, resp.ToolCalls...)
+			ec.toolResults = append(ec.toolResults, resp.ToolResults...)
+			ec.finalToolResults = resp.ToolResults
 		}
 	} else {
 		if r.Pipelines == nil {
@@ -162,12 +169,16 @@ func (r *Runner) runCase(suite *types.TestSuiteDefinition, tc *types.TestCase) *
 			}
 			ec.pr = pr
 			ec.final = pr.FinalResponse()
+			var turnResults []engine.ToolCallResult
 			for _, n := range pr.Nodes {
 				ec.nodeSeq = append(ec.nodeSeq, n.NodeID)
 				if n.Response != nil {
 					ec.toolCalls = append(ec.toolCalls, n.Response.ToolCalls...)
+					ec.toolResults = append(ec.toolResults, n.Response.ToolResults...)
+					turnResults = append(turnResults, n.Response.ToolResults...)
 				}
 			}
+			ec.finalToolResults = turnResults
 			if len(pr.Nodes) > 0 {
 				cr.FinalNode = pr.Nodes[len(pr.Nodes)-1].NodeID
 			}
@@ -247,6 +258,33 @@ func evaluateAssertion(a types.TestAssertion, ec *evalContext) string {
 		if !matchToolArgs(toolCalls, a.Tool, a.Args) {
 			return fmt.Sprintf("tool_call_args: no call to %q matched args %v, got %v",
 				a.Tool, a.Args, toolCallSummary(toolCalls))
+		}
+	case types.AssertToolError:
+		// node_id retargeting doesn't apply to tool results; always use the
+		// whole-trajectory aggregate.
+		if !hasToolError(ec.toolResults, a.Tool, a.Value) {
+			return fmt.Sprintf("tool_error: no errored tool result matched (tool=%q value=%q), got %v",
+				a.Tool, a.Value, toolErrorSummary(ec.toolResults))
+		}
+	case types.AssertHandlesToolError:
+		// Recovery = an error happened earlier AND the conversation did not end on
+		// one AND the final turn is a clean assistant answer.
+		if !hasToolError(ec.toolResults, "", "") {
+			return "handles_tool_error: expected a tool error somewhere in the trajectory, but none occurred"
+		}
+		if hasToolError(ec.finalToolResults, "", "") {
+			return "handles_tool_error: the final turn itself ended in a tool error (no recovery)"
+		}
+		if ec.final == nil || ec.final.Content == "" {
+			return "handles_tool_error: the final turn produced no content (did not recover)"
+		}
+		if ec.final.Refusal != "" {
+			return fmt.Sprintf("handles_tool_error: the final turn was a refusal, not a recovery: %q",
+				truncate(ec.final.Refusal, 120))
+		}
+		if a.Value != "" && !strings.Contains(ec.final.Content, a.Value) {
+			return fmt.Sprintf("handles_tool_error: %q not found in the recovery content %q",
+				a.Value, truncate(ec.final.Content, 120))
 		}
 	case types.AssertNoToolCall:
 		if len(toolCalls) != 0 {
@@ -408,6 +446,52 @@ func toFloat(v any) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// hasToolError reports whether any result is an error matching the (optional)
+// tool name and (optional) value. An empty name matches any tool; an empty value
+// matches any error; otherwise value must be a substring of the error code or
+// message.
+func hasToolError(results []engine.ToolCallResult, name, value string) bool {
+	for _, r := range results {
+		if !r.IsError {
+			continue
+		}
+		if name != "" && r.ToolName != name {
+			continue
+		}
+		if value != "" && !toolErrorContains(r.Error, value) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func toolErrorContains(e *types.ToolError, value string) bool {
+	if e == nil {
+		return false
+	}
+	return strings.Contains(e.Code, value) || strings.Contains(e.Message, value)
+}
+
+// toolErrorSummary renders the errored results for a failure message.
+func toolErrorSummary(results []engine.ToolCallResult) []string {
+	out := make([]string, 0)
+	for _, r := range results {
+		if !r.IsError {
+			continue
+		}
+		code, msg := "", ""
+		if r.Error != nil {
+			code, msg = r.Error.Code, r.Error.Message
+		}
+		out = append(out, fmt.Sprintf("%s(%s: %s)", r.ToolName, code, msg))
+	}
+	if len(out) == 0 {
+		return []string{"<no tool errors>"}
+	}
+	return out
 }
 
 func toolCallSummary(calls []types.ToolCallSpec) []string {
