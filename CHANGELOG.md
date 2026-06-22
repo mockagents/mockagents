@@ -74,6 +74,15 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   `ToolResults` (aggregate + final-turn) so these read real injected errors.
 
 ### Fixed
+- **Fidelity polish (round-2 eval)** — three spec-conformance gaps in the new
+  surfaces. (1) Every Realtime **server event now carries a unique `event_id`**
+  (a required field on all Realtime events; previously omitted, which trips
+  strict SDK models) — stamped at one choke point so every emit path is covered,
+  including the adapter's JSON-parse error. (2) The A2A **Agent Card defaults the
+  required `version` and `description`** when a document omits them, and `skills`
+  now always renders as a JSON array (never null/omitted) — so a minimal card is
+  still spec-valid. (3) The TestSuite **schema and validator agree on `max_ms`**
+  (schema now `minimum: 1`, matching the validator's positive-value rule).
 - **TestSuite validation rejected the NF-03 trajectory assertions** — the
   validator and the JSON schema only knew the four original assertion types, so
   `mockagents validate` (and the GUI/schema check) flagged a suite using

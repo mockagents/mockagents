@@ -303,3 +303,23 @@ func TestMessageSend_AcceptsFileAndDataParts(t *testing.T) {
 	assert.True(t, sawFile, "file part should round-trip")
 	assert.True(t, sawData, "data part should round-trip")
 }
+
+func TestCard_DefaultsRequiredFields(t *testing.T) {
+	// A minimal card (only a name) must still serve a spec-valid card: version +
+	// description defaulted, skills a non-null array.
+	def := &types.A2AServerDefinition{
+		APIVersion: types.AgentAPIVersion, Kind: types.A2AServerKind,
+		Metadata: types.Metadata{Name: "bare"},
+		Spec:     types.A2AServerSpec{Card: types.A2AAgentCard{Name: "Bare Agent"}},
+	}
+	c := NewServer(def).Card("http://example.test")
+	assert.NotEmpty(t, c.Version, "version is a required Agent Card field")
+	assert.NotEmpty(t, c.Description, "description is a required Agent Card field")
+	assert.NotNil(t, c.Skills, "skills must be a non-null array")
+
+	raw, err := json.Marshal(c)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"skills":[]`, "empty skills must render as []")
+	assert.Contains(t, string(raw), `"version":`)
+	assert.Contains(t, string(raw), `"description":`)
+}

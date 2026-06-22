@@ -85,7 +85,7 @@
                     "tool": { "type": "string" },
                     "arguments": { "type": "object" },
                     "value": { "type": "string" },
-                    "max_ms": { "type": "integer", "minimum": 0 },
+                    "max_ms": { "type": "integer", "minimum": 1, "description": "Latency budget in ms for latency_ms_lt (must be positive)." },
                     "count": { "type": "integer", "minimum": 0, "description": "Exact tool-call count for tool_call_count." },
                     "sequence": {
                       "type": "array",

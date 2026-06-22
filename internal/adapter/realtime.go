@@ -113,7 +113,7 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 		}
 		var ce realtime.ClientEvent
 		if err := json.Unmarshal(data, &ce); err != nil {
-			if writeEvent(ctx, c, realtime.Event{"type": "error", "error": map[string]any{
+			if writeEvent(ctx, c, realtime.Event{"type": "error", "event_id": "event_" + generateID(), "error": map[string]any{
 				"type": "invalid_request_error", "message": "event is not valid JSON"}}) != nil {
 				return
 			}

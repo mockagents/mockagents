@@ -83,12 +83,30 @@ func NewSession(id, model string, gen Generator) *Session {
 
 // Greeting returns the events to emit immediately on connect (session.created).
 func (s *Session) Greeting() []Event {
-	return []Event{{"type": "session.created", "session": s.sessionObject()}}
+	return s.stamp([]Event{{"type": "session.created", "session": s.sessionObject()}})
 }
 
 // Handle processes one inbound client event and returns the ordered server
-// events to write back. An unknown event yields a single error event.
+// events to write back. An unknown event yields a single error event. Every
+// emitted event is stamped with a unique event_id (a required field on all
+// Realtime server events).
 func (s *Session) Handle(ctx context.Context, ce *ClientEvent) []Event {
+	return s.stamp(s.handle(ctx, ce))
+}
+
+// stamp assigns a unique event_id to every event that lacks one. The Realtime
+// protocol requires event_id on all server events; a single choke point keeps
+// every emit path covered.
+func (s *Session) stamp(evs []Event) []Event {
+	for _, e := range evs {
+		if _, ok := e["event_id"]; !ok {
+			e["event_id"] = s.nextID("event")
+		}
+	}
+	return evs
+}
+
+func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 	switch ce.Type {
 	case "session.update":
 		s.applyConfig(ce.Session)

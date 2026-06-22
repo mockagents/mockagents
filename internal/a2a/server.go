@@ -159,24 +159,31 @@ func (s *Server) Card(baseURL string) types.A2AAgentCard {
 	if c.PreferredTransport == "" {
 		c.PreferredTransport = types.DefaultA2ATransport
 	}
+	// version + description are required Agent Card fields; default them so a
+	// document that omits them still yields a spec-valid card.
+	if c.Version == "" {
+		c.Version = "0.0.0"
+	}
+	if c.Description == "" {
+		c.Description = "Mock A2A agent."
+	}
 	if len(c.DefaultInputModes) == 0 {
 		c.DefaultInputModes = []string{"text/plain"}
 	}
 	if len(c.DefaultOutputModes) == 0 {
 		c.DefaultOutputModes = []string{"text/plain"}
 	}
-	// Every skill's `tags` is required by the spec and must render as a JSON
-	// array, never null. Copy the slice so we never mutate the stored def.
-	if len(c.Skills) > 0 {
-		skills := make([]types.A2ASkill, len(c.Skills))
-		copy(skills, c.Skills)
-		for i := range skills {
-			if skills[i].Tags == nil {
-				skills[i].Tags = []string{}
-			}
+	// skills is a required array and each skill's `tags` must render as a JSON
+	// array, never null/omitted. Copy into a fresh (non-nil) slice so an empty
+	// skill set serializes as [] and we never mutate the stored def.
+	skills := make([]types.A2ASkill, len(c.Skills))
+	copy(skills, c.Skills)
+	for i := range skills {
+		if skills[i].Tags == nil {
+			skills[i].Tags = []string{}
 		}
-		c.Skills = skills
 	}
+	c.Skills = skills
 	// The mock serves message/stream over SSE, so advertise streaming regardless
 	// of what the document declares (a client should be able to discover it).
 	c.Capabilities.Streaming = true

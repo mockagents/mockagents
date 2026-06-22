@@ -46,7 +46,9 @@ type A2AAgentCard struct {
 	DefaultInputModes  []string        `yaml:"defaultInputModes,omitempty" json:"defaultInputModes,omitempty"`
 	DefaultOutputModes []string        `yaml:"defaultOutputModes,omitempty" json:"defaultOutputModes,omitempty"`
 	Capabilities       A2ACapabilities `yaml:"capabilities,omitempty" json:"capabilities"`
-	Skills             []A2ASkill      `yaml:"skills,omitempty" json:"skills,omitempty"`
+	// Skills is a required array on the Agent Card; the server normalizes a nil
+	// slice to [] at serve time so it never renders as null/omitted.
+	Skills []A2ASkill `yaml:"skills,omitempty" json:"skills"`
 }
 
 // A2ACapabilities advertises optional protocol features in the Agent Card.

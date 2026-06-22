@@ -271,3 +271,26 @@ func TestSession_InputAudioTranscription(t *testing.T) {
 		t.Error("transcription.completed must carry a transcript")
 	}
 }
+
+func TestSession_EventsHaveEventID(t *testing.T) {
+	s := NewSession("s", "gpt-realtime", fakeGenTool("Checking.", types.ToolCallSpec{Name: "t", Arguments: map[string]any{"a": 1}}))
+	// Greeting + a full response ladder (message + function call) must all carry
+	// a non-empty event_id — a required field on every Realtime server event.
+	var all []Event
+	all = append(all, s.Greeting()...)
+	all = append(all, s.Handle(context.Background(), &ClientEvent{Type: "response.create"})...)
+	if len(all) == 0 {
+		t.Fatal("no events produced")
+	}
+	seen := map[string]bool{}
+	for _, e := range all {
+		id, _ := e["event_id"].(string)
+		if id == "" {
+			t.Fatalf("event %v missing event_id", e["type"])
+		}
+		if seen[id] {
+			t.Errorf("duplicate event_id %q", id)
+		}
+		seen[id] = true
+	}
+}
