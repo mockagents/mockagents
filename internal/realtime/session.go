@@ -49,18 +49,50 @@ type ClientEvent struct {
 // shapes; a map keeps the emitter readable without a struct per shape.
 type Event map[string]any
 
-// sessionConfig is the mutable session.* configuration a client can set. It
-// accepts both the GA field names (output_modalities) and the beta aliases
-// (modalities) so either generation of SDK round-trips its settings.
+// sessionConfig is the effective, mutable session state echoed back in the GA
+// session object. applyConfig merges incoming session.update payloads (GA-nested
+// or beta-flat) into it; raw json.RawMessage fields are stored verbatim so they
+// round-trip exactly. A zero value yields the GA defaults (see sessionObject).
 type sessionConfig struct {
-	Model            string   `json:"model,omitempty"`
-	Voice            string   `json:"voice,omitempty"`
-	Instructions     string   `json:"instructions,omitempty"`
-	Modalities       []string `json:"modalities,omitempty"`        // beta alias
-	OutputModalities []string `json:"output_modalities,omitempty"` // GA
-	// InputAudioTranscription mirrors session.input_audio_transcription: when set
-	// (and not null) the server emits a transcription event for committed audio.
-	InputAudioTranscription json.RawMessage `json:"input_audio_transcription,omitempty"`
+	model            string
+	voice            string
+	instructions     string
+	outputModalities []string
+	tools            json.RawMessage // session.tools (default [])
+	toolChoice       json.RawMessage // session.tool_choice (default "auto")
+	maxOutputTokens  json.RawMessage // session.max_output_tokens (default "inf")
+	transcription    json.RawMessage // audio.input.transcription (nil = off)
+	turnDetection    json.RawMessage // audio.input.turn_detection (nil = off)
+	inputFormat      json.RawMessage // audio.input.format
+	outputFormat     json.RawMessage // audio.output.format
+	speed            float64         // audio.output.speed (default 1.0)
+}
+
+// sessionUpdate is the inbound session.update payload. It accepts the GA shape
+// (audio.input/output, output_modalities) AND the beta aliases (top-level voice,
+// modalities, input_audio_transcription) so either SDK generation round-trips.
+type sessionUpdate struct {
+	Model                   string          `json:"model"`
+	Voice                   string          `json:"voice"` // beta top-level alias
+	Instructions            string          `json:"instructions"`
+	Modalities              []string        `json:"modalities"`        // beta alias
+	OutputModalities        []string        `json:"output_modalities"` // GA
+	InputAudioTranscription json.RawMessage `json:"input_audio_transcription"`
+	Tools                   json.RawMessage `json:"tools"`
+	ToolChoice              json.RawMessage `json:"tool_choice"`
+	MaxOutputTokens         json.RawMessage `json:"max_output_tokens"`
+	Audio                   *struct {
+		Input *struct {
+			Transcription json.RawMessage `json:"transcription"`
+			TurnDetection json.RawMessage `json:"turn_detection"`
+			Format        json.RawMessage `json:"format"`
+		} `json:"input"`
+		Output *struct {
+			Voice  string          `json:"voice"`
+			Format json.RawMessage `json:"format"`
+			Speed  *float64        `json:"speed"`
+		} `json:"output"`
+	} `json:"audio"`
 }
 
 // Session is one Realtime connection's state machine. It is NOT safe for
@@ -73,6 +105,7 @@ type Session struct {
 	history      []engine.RequestMessage
 	audioBuffer  bool
 	counter      int
+	expiresAt    int64 // unix seconds; emitted in the session object when > 0
 }
 
 // NewSession builds a session with the given id (minted by the caller) and the
@@ -80,6 +113,12 @@ type Session struct {
 func NewSession(id, model string, gen Generator) *Session {
 	return &Session{id: id, initialModel: model, generate: gen}
 }
+
+// SetExpiry sets the session's expiry (unix seconds), reported as expires_at in
+// the GA session object so a client can schedule a reconnect. The transport sets
+// it from the wall clock; left unset (0) it is omitted, keeping Session
+// deterministic for tests.
+func (s *Session) SetExpiry(unix int64) { s.expiresAt = unix }
 
 // Greeting returns the events to emit immediately on connect (session.created).
 func (s *Session) Greeting() []Event {
@@ -336,17 +375,17 @@ func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types
 // engineHistory is the conversation handed to the engine, prepended with the
 // session instructions as a system message when one is set.
 func (s *Session) engineHistory() []engine.RequestMessage {
-	if s.cfg.Instructions == "" {
+	if s.cfg.instructions == "" {
 		return s.history
 	}
 	out := make([]engine.RequestMessage, 0, len(s.history)+1)
-	out = append(out, engine.RequestMessage{Role: "system", Content: s.cfg.Instructions})
+	out = append(out, engine.RequestMessage{Role: "system", Content: s.cfg.instructions})
 	return append(out, s.history...)
 }
 
 func (s *Session) model() string {
-	if s.cfg.Model != "" {
-		return s.cfg.Model
+	if s.cfg.model != "" {
+		return s.cfg.model
 	}
 	if s.initialModel != "" {
 		return s.initialModel
@@ -354,29 +393,51 @@ func (s *Session) model() string {
 	return DefaultModel
 }
 
+// sessionObject builds the GA Realtime session object: top-level
+// output_modalities / instructions / tools / tool_choice / max_output_tokens,
+// and a nested `audio` object whose input/output carry the format,
+// transcription, turn_detection, voice and speed. Voice lives at
+// audio.output.voice (GA), NOT at the top level.
 func (s *Session) sessionObject() map[string]any {
-	mods := s.outputModalities()
-	voice := s.cfg.Voice
+	voice := s.cfg.voice
 	if voice == "" {
 		voice = "alloy"
 	}
-	return map[string]any{
-		// GA session objects carry type:"realtime" and output_modalities; the
-		// beta "modalities" alias is mirrored so an older SDK still reads it.
-		"id": s.id, "object": "realtime.session", "type": "realtime", "model": s.model(),
-		"output_modalities": mods, "modalities": mods,
-		"voice": voice, "instructions": s.cfg.Instructions,
+	speed := s.cfg.speed
+	if speed == 0 {
+		speed = 1.0
 	}
+	obj := map[string]any{
+		"id": s.id, "object": "realtime.session", "type": "realtime", "model": s.model(),
+		"output_modalities": s.outputModalities(),
+		"instructions":      s.cfg.instructions,
+		"tools":             rawOr(s.cfg.tools, "[]"),
+		"tool_choice":       rawOr(s.cfg.toolChoice, `"auto"`),
+		"max_output_tokens": rawOr(s.cfg.maxOutputTokens, `"inf"`),
+		"audio": map[string]any{
+			"input": map[string]any{
+				"format":         rawOr(s.cfg.inputFormat, defaultAudioFormat),
+				"transcription":  rawOr(s.cfg.transcription, "null"),
+				"turn_detection": rawOr(s.cfg.turnDetection, "null"),
+			},
+			"output": map[string]any{
+				"format": rawOr(s.cfg.outputFormat, defaultAudioFormat),
+				"voice":  voice,
+				"speed":  speed,
+			},
+		},
+	}
+	if s.expiresAt > 0 {
+		obj["expires_at"] = s.expiresAt
+	}
+	return obj
 }
 
-// outputModalities resolves the effective response modalities, preferring the GA
-// output_modalities field over the beta modalities alias, defaulting to both.
+// outputModalities resolves the effective response modalities, defaulting to
+// both. (applyConfig already folds the beta `modalities` alias into this field.)
 func (s *Session) outputModalities() []string {
-	if len(s.cfg.OutputModalities) > 0 {
-		return s.cfg.OutputModalities
-	}
-	if len(s.cfg.Modalities) > 0 {
-		return s.cfg.Modalities
+	if len(s.cfg.outputModalities) > 0 {
+		return s.cfg.outputModalities
 	}
 	return []string{"audio", "text"}
 }
@@ -393,38 +454,73 @@ func (s *Session) textOnly() bool {
 	return len(mods) > 0
 }
 
-// transcriptionEnabled reports whether the client configured
-// input_audio_transcription (a non-null value).
+// transcriptionEnabled reports whether the client configured input audio
+// transcription (a non-null value, from GA audio.input.transcription or the beta
+// top-level input_audio_transcription).
 func (s *Session) transcriptionEnabled() bool {
-	raw := strings.TrimSpace(string(s.cfg.InputAudioTranscription))
+	raw := strings.TrimSpace(string(s.cfg.transcription))
 	return raw != "" && raw != "null"
 }
 
+// applyConfig merges an inbound session.update payload into the effective
+// session config, accepting both the GA nested (audio.*) and beta flat shapes.
 func (s *Session) applyConfig(raw json.RawMessage) {
 	if len(raw) == 0 {
 		return
 	}
-	var c sessionConfig
-	if err := json.Unmarshal(raw, &c); err != nil {
+	var u sessionUpdate
+	if err := json.Unmarshal(raw, &u); err != nil {
 		return
 	}
-	if c.Model != "" {
-		s.cfg.Model = c.Model
+	if u.Model != "" {
+		s.cfg.model = u.Model
 	}
-	if c.Voice != "" {
-		s.cfg.Voice = c.Voice
+	if u.Instructions != "" {
+		s.cfg.instructions = u.Instructions
 	}
-	if c.Instructions != "" {
-		s.cfg.Instructions = c.Instructions
+	if u.Voice != "" { // beta top-level
+		s.cfg.voice = u.Voice
 	}
-	if len(c.Modalities) > 0 {
-		s.cfg.Modalities = c.Modalities
+	if len(u.OutputModalities) > 0 {
+		s.cfg.outputModalities = u.OutputModalities
+	} else if len(u.Modalities) > 0 { // beta alias
+		s.cfg.outputModalities = u.Modalities
 	}
-	if len(c.OutputModalities) > 0 {
-		s.cfg.OutputModalities = c.OutputModalities
+	if len(u.InputAudioTranscription) > 0 { // beta top-level
+		s.cfg.transcription = u.InputAudioTranscription
 	}
-	if len(c.InputAudioTranscription) > 0 {
-		s.cfg.InputAudioTranscription = c.InputAudioTranscription
+	if len(u.Tools) > 0 {
+		s.cfg.tools = u.Tools
+	}
+	if len(u.ToolChoice) > 0 {
+		s.cfg.toolChoice = u.ToolChoice
+	}
+	if len(u.MaxOutputTokens) > 0 {
+		s.cfg.maxOutputTokens = u.MaxOutputTokens
+	}
+	if u.Audio != nil {
+		if in := u.Audio.Input; in != nil {
+			if len(in.Transcription) > 0 {
+				s.cfg.transcription = in.Transcription
+			}
+			if len(in.TurnDetection) > 0 {
+				s.cfg.turnDetection = in.TurnDetection
+			}
+			if len(in.Format) > 0 {
+				s.cfg.inputFormat = in.Format
+			}
+		}
+		if o := u.Audio.Output; o != nil {
+			if o.Voice != "" {
+				s.cfg.voice = o.Voice
+			}
+			if len(o.Format) > 0 {
+				s.cfg.outputFormat = o.Format
+			}
+			if o.Speed != nil {
+				s.cfg.speed = *o.Speed
+			}
+		}
 	}
 }
 
@@ -485,6 +581,19 @@ func chunkText(s string) []string {
 		}
 	}
 	return out
+}
+
+// defaultAudioFormat is the GA PCM audio format object used when the client
+// hasn't set one (audio.input/output.format).
+const defaultAudioFormat = `{"type":"audio/pcm","rate":24000}`
+
+// rawOr returns v if it holds JSON, else the default JSON literal. The result is
+// a json.RawMessage so it serializes as raw JSON inside the session object.
+func rawOr(v json.RawMessage, def string) json.RawMessage {
+	if len(v) > 0 {
+		return v
+	}
+	return json.RawMessage(def)
 }
 
 // marshalArgs renders a tool call's arguments as the JSON string the Realtime

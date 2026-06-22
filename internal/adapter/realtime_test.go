@@ -114,5 +114,9 @@ func TestRealtime_ClientSecret(t *testing.T) {
 	require.NotNil(t, body["expires_at"])
 	sess := body["session"].(map[string]any)
 	require.Equal(t, "gpt-4o-realtime", sess["model"])
-	require.Equal(t, "verse", sess["voice"])
+	require.Equal(t, "realtime", sess["type"])
+	// GA shape: voice is nested under audio.output, not top-level.
+	require.Nil(t, sess["voice"])
+	audioOut := sess["audio"].(map[string]any)["output"].(map[string]any)
+	require.Equal(t, "verse", audioOut["voice"])
 }

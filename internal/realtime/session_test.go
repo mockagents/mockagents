@@ -55,14 +55,26 @@ func TestSession_GreetingAndUpdate(t *testing.T) {
 		t.Fatalf("greeting = %v, want session.created", typesOf(g))
 	}
 
+	// A beta-style top-level voice is accepted and echoed at the GA location
+	// (audio.output.voice).
 	evs := s.Handle(context.Background(), &ClientEvent{Type: "session.update", Session: []byte(`{"voice":"verse","instructions":"be brief"}`)})
 	if len(evs) != 1 || evs[0]["type"] != "session.updated" {
 		t.Fatalf("update events = %v", typesOf(evs))
 	}
 	sess := evs[0]["session"].(map[string]any)
-	if sess["voice"] != "verse" {
-		t.Errorf("voice not applied: %v", sess["voice"])
+	if v := audioOutVoice(sess); v != "verse" {
+		t.Errorf("voice not applied at audio.output.voice: %v", v)
 	}
+	if _, top := sess["voice"]; top {
+		t.Error("GA session object must not carry a top-level voice")
+	}
+}
+
+// audioOutVoice digs out session.audio.output.voice from a session object.
+func audioOutVoice(sess map[string]any) any {
+	audio, _ := sess["audio"].(map[string]any)
+	out, _ := audio["output"].(map[string]any)
+	return out["voice"]
 }
 
 func TestSession_ItemCreateThenResponseLadder(t *testing.T) {
@@ -243,8 +255,60 @@ func TestSession_GASessionObject(t *testing.T) {
 	if sess["type"] != "realtime" {
 		t.Errorf("session.type = %v, want realtime", sess["type"])
 	}
-	if _, ok := sess["output_modalities"]; !ok {
-		t.Error("session object missing output_modalities (GA field)")
+	for _, k := range []string{"output_modalities", "instructions", "tools", "tool_choice", "max_output_tokens", "audio"} {
+		if _, ok := sess[k]; !ok {
+			t.Errorf("GA session object missing %q", k)
+		}
+	}
+	// The beta top-level voice/modalities must NOT be present.
+	if _, ok := sess["voice"]; ok {
+		t.Error("GA session object must not carry top-level voice")
+	}
+	if _, ok := sess["modalities"]; ok {
+		t.Error("GA session object must not carry the beta modalities alias")
+	}
+	// Voice + format live under audio.output; transcription/turn_detection under input.
+	audio := sess["audio"].(map[string]any)
+	out := audio["output"].(map[string]any)
+	if out["voice"] != "alloy" {
+		t.Errorf("default voice = %v, want alloy (under audio.output)", out["voice"])
+	}
+	if _, ok := out["format"]; !ok {
+		t.Error("audio.output missing format")
+	}
+	if _, ok := audio["input"].(map[string]any)["turn_detection"]; !ok {
+		t.Error("audio.input missing turn_detection")
+	}
+}
+
+func TestSession_GANestedRoundTrip(t *testing.T) {
+	s := NewSession("s", "gpt-realtime", fakeGen("ok"))
+	// A GA client sets voice + speed under audio.output and transcription under
+	// audio.input; the server echoes them at the same GA locations.
+	s.Handle(context.Background(), &ClientEvent{Type: "session.update", Session: []byte(
+		`{"audio":{"output":{"voice":"marin","speed":1.5},"input":{"transcription":{"model":"whisper-1"}}}}`)})
+	sess := s.Greeting()[0]["session"].(map[string]any)
+	out := sess["audio"].(map[string]any)["output"].(map[string]any)
+	if out["voice"] != "marin" {
+		t.Errorf("nested voice not round-tripped: %v", out["voice"])
+	}
+	if out["speed"] != 1.5 {
+		t.Errorf("nested speed not round-tripped: %v", out["speed"])
+	}
+	// GA-nested transcription must also enable the transcription event path.
+	if !s.transcriptionEnabled() {
+		t.Error("GA audio.input.transcription should enable transcription")
+	}
+}
+
+func TestSession_ExpiresAt(t *testing.T) {
+	s := NewSession("s", "gpt-realtime", fakeGen("ok"))
+	if _, ok := s.Greeting()[0]["session"].(map[string]any)["expires_at"]; ok {
+		t.Error("expires_at must be omitted when unset (deterministic default)")
+	}
+	s.SetExpiry(1750000000)
+	if got := s.Greeting()[0]["session"].(map[string]any)["expires_at"]; got != int64(1750000000) {
+		t.Errorf("expires_at = %v, want 1750000000", got)
 	}
 }
 

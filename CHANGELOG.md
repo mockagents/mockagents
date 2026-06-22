@@ -44,8 +44,13 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   function calls; a content-free tool-call turn skips the message item. The
   session also honors **`output_modalities`** — `["text"]` streams a
   `response.output_text.delta`/`.done` ladder with an `output_text` content part
-  instead of audio — and the session object now reports the GA `type: "realtime"`
-  and `output_modalities` (with the beta `modalities` alias mirrored). Committed
+  instead of audio — and the session object is the **GA shape**: `type:
+  "realtime"`, top-level `output_modalities` / `instructions` / `tools` /
+  `tool_choice` / `max_output_tokens` (default `"inf"`), an `expires_at`, and a
+  nested `audio` object whose `input`/`output` carry the format, transcription,
+  turn_detection, **voice** (at `audio.output.voice`, not top level) and speed.
+  `session.update` is accepted in either the GA-nested or the beta-flat form, so
+  a client's settings round-trip to their GA locations. Committed
   input audio emits `conversation.item.input_audio_transcription.completed` when
   the client configured `input_audio_transcription` (otherwise the item transcript
   is null — a mock has no STT). Barge-in (server-VAD `speech_started`/`stopped`,

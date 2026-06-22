@@ -67,11 +67,16 @@ func (h *RealtimeHandler) HandleClientSecret(w http.ResponseWriter, r *http.Requ
 		"value":      "ek_" + generateID(),
 		"expires_at": time.Now().Add(60 * time.Second).Unix(),
 		"session": map[string]any{
-			"id":         "sess_" + generateID(),
-			"object":     "realtime.session",
-			"model":      model,
-			"modalities": []string{"audio", "text"},
-			"voice":      voice,
+			// GA session shape: type:"realtime", output_modalities, and voice nested
+			// under audio.output (not a top-level field).
+			"id":                "sess_" + generateID(),
+			"object":            "realtime.session",
+			"type":              "realtime",
+			"model":             model,
+			"output_modalities": []string{"audio", "text"},
+			"audio": map[string]any{
+				"output": map[string]any{"voice": voice},
+			},
 		},
 	})
 }
@@ -97,6 +102,7 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 	ctx := r.Context()
 	tenant := engine.TenantIDFromContext(ctx)
 	sess := realtime.NewSession("sess_"+generateID(), r.URL.Query().Get("model"), h.generator(tenant))
+	sess.SetExpiry(time.Now().Add(time.Hour).Unix()) // reported as session.expires_at
 
 	for _, ev := range sess.Greeting() {
 		if writeEvent(ctx, c, ev) != nil {
