@@ -24,6 +24,18 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   identically.
 
 ### Added
+- **A2A streaming + richer messages** (NF-04 depth) — the mock A2A server now
+  serves **`message/stream`** over Server-Sent Events (it previously returned
+  `-32601` and the Agent Card force-disabled streaming): a request streams a
+  `Task` → `status-update` (working) → `artifact-update` → final `status-update`
+  (`final: true`) sequence, each frame a JSON-RPC result, and the card now
+  advertises `capabilities.streaming`. `message/send` can return a **bare
+  `Message`** instead of a `Task` (the A2A result is `Task|Message`) when a
+  response sets `as_message: true`. Messages and artifacts now model all three
+  A2A **Part** kinds — `text`, `file` (bytes/uri), and `data` (structured JSON):
+  incoming file/data parts round-trip into task history, and a response's
+  `data:` field emits a `data` Part alongside the text. `examples/a2a-server.yaml`
+  shows the data part.
 - **Realtime mid-session function calls + text mode** (NF-01 depth) — a Realtime
   `response.create` now emits a `function_call` output item per tool call the
   scenario produced, with the streamed `response.function_call_arguments.delta` /

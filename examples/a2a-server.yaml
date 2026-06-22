@@ -19,9 +19,21 @@ spec:
         examples: ["What's the weather in Paris?"]
   # Canned, match-based replies to message/send (first substring match wins,
   # else the default). Each becomes the task's artifact + status message.
+  #
+  # The server also answers message/stream over SSE (the Agent Card advertises
+  # capabilities.streaming): the same matched reply is delivered as a Task →
+  # status-update → artifact-update → final status-update event sequence.
+  #
+  # Optional per-response fields:
+  #   as_message: true   -> message/send returns a bare Message (not a Task)
+  #   data: {...}        -> emit a structured `data` Part alongside the text Part
   responses:
     - match: weather
       text: "It's sunny and 22°C."
+      # Attach a machine-readable data Part next to the human-readable text.
+      data:
+        temperature_c: 22
+        condition: sunny
     - match: rain
       text: "Light rain is expected this afternoon."
     - default: true

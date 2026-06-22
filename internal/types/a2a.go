@@ -79,4 +79,11 @@ type A2AMessageResponse struct {
 	// State is the terminal task state to report (default "completed"); set e.g.
 	// "failed" or "input-required" to exercise non-happy paths.
 	State string `yaml:"state,omitempty" json:"state,omitempty"`
+	// AsMessage makes message/send return a bare Message result instead of a Task
+	// (the A2A result is Task|Message — a quick, stateless reply needs no task).
+	// message/stream always yields a Task regardless.
+	AsMessage bool `yaml:"as_message,omitempty" json:"as_message,omitempty"`
+	// Data, when set, is emitted as a structured `data` Part on the reply
+	// (alongside the text Part), exercising non-text A2A parts.
+	Data any `yaml:"data,omitempty" json:"data,omitempty"`
 }

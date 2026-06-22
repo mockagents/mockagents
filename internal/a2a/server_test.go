@@ -2,6 +2,7 @@ package a2a
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -69,7 +70,7 @@ func TestCard(t *testing.T) {
 	assert.Equal(t, "http://example.test/", c.URL)
 	assert.Equal(t, types.DefaultA2AProtocolVersion, c.ProtocolVersion)
 	assert.Equal(t, types.DefaultA2ATransport, c.PreferredTransport, "preferredTransport is required by A2A v0.3")
-	assert.False(t, c.Capabilities.Streaming, "streaming must not be advertised (not served yet)")
+	assert.True(t, c.Capabilities.Streaming, "streaming is served over SSE and must be advertised")
 	assert.NotEmpty(t, c.DefaultInputModes)
 
 	// Every skill's tags must render as an array (never null) — the testDef
@@ -137,13 +138,11 @@ func TestTasks_GetCancelLifecycle(t *testing.T) {
 	assert.Equal(t, errTaskNotFound, missing.Error.Code)
 }
 
-func TestUnknownAndStreamMethods(t *testing.T) {
+func TestUnknownMethod(t *testing.T) {
 	s := NewServer(testDef())
-	for _, m := range []string{"bogus/method", "message/stream"} {
-		r := call(t, s, m, map[string]any{})
-		require.NotNil(t, r.Error, m)
-		assert.Equal(t, errMethodNotFound, r.Error.Code, m)
-	}
+	r := call(t, s, "bogus/method", map[string]any{})
+	require.NotNil(t, r.Error)
+	assert.Equal(t, errMethodNotFound, r.Error.Code)
 }
 
 func TestHTTPHandlers(t *testing.T) {
@@ -176,4 +175,131 @@ func TestHTTPHandlers(t *testing.T) {
 	var task Task
 	require.NoError(t, json.Unmarshal(env.Result, &task))
 	assert.Equal(t, "It is sunny.", task.Artifacts[0].Parts[0].Text)
+}
+
+func streamReq(text string) *rpcRequest {
+	p, _ := json.Marshal(map[string]any{"message": map[string]any{
+		"role": "user", "parts": []any{map[string]any{"kind": "text", "text": text}}}})
+	return &rpcRequest{JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: "message/stream", Params: p}
+}
+
+func TestMessageStream_EventSequence(t *testing.T) {
+	s := NewServer(testDef())
+	events, rerr := s.StreamResults(streamReq("what is the weather"))
+	require.Nil(t, rerr)
+	require.Len(t, events, 4)
+
+	task, ok := events[0].(Task)
+	require.True(t, ok, "first event is the initial Task")
+	assert.Equal(t, "working", task.Status.State)
+
+	su0 := events[1].(statusUpdateEvent)
+	assert.Equal(t, "status-update", su0.Kind)
+	assert.False(t, su0.Final)
+
+	au := events[2].(artifactUpdateEvent)
+	assert.Equal(t, "artifact-update", au.Kind)
+	assert.True(t, au.LastChunk)
+	assert.Equal(t, "It is sunny.", au.Artifact.Parts[0].Text)
+
+	su1 := events[3].(statusUpdateEvent)
+	assert.True(t, su1.Final, "last event must be final")
+	assert.Equal(t, "completed", su1.Status.State)
+
+	// The terminal task is retrievable via tasks/get.
+	got := call(t, s, "tasks/get", map[string]any{"id": task.ID})
+	require.Nil(t, got.Error)
+}
+
+func TestMessageStream_OverHTTP_SSE(t *testing.T) {
+	s := NewServer(testDef())
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /", s.RPCHandler())
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"message/stream","params":{"message":{"role":"user","parts":[{"kind":"text","text":"weather?"}]}}}`
+	resp, err := http.Post(srv.URL+"/", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+
+	rawBytes, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	raw := string(rawBytes)
+	// Every event is a `data: {...}\n\n` frame; parse them.
+	var frames []map[string]any
+	for _, line := range strings.Split(raw, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var env map[string]any
+		require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &env))
+		frames = append(frames, env["result"].(map[string]any))
+	}
+	require.Len(t, frames, 4)
+	// The last frame is a final status-update.
+	last := frames[3]
+	assert.Equal(t, "status-update", last["kind"])
+	assert.Equal(t, true, last["final"])
+}
+
+func TestMessageSend_BareMessage(t *testing.T) {
+	def := testDef()
+	def.Spec.Responses = []types.A2AMessageResponse{{Default: true, Text: "quick reply", AsMessage: true}}
+	s := NewServer(def)
+
+	r := call(t, s, "message/send", map[string]any{"message": map[string]any{
+		"role": "user", "parts": []any{map[string]any{"kind": "text", "text": "hi"}}}})
+	require.Nil(t, r.Error)
+
+	var m Message
+	require.NoError(t, json.Unmarshal(r.Result, &m))
+	assert.Equal(t, "message", m.Kind, "result must be a bare Message, not a Task")
+	assert.Equal(t, "agent", m.Role)
+	require.NotEmpty(t, m.Parts)
+	assert.Equal(t, "quick reply", m.Parts[0].Text)
+	assert.Empty(t, s.tasks, "a bare-message reply must not create a task")
+}
+
+func TestMessageSend_DataPart(t *testing.T) {
+	def := testDef()
+	def.Spec.Responses = []types.A2AMessageResponse{{Default: true, Text: "here", Data: map[string]any{"temp": 22}}}
+	s := NewServer(def)
+
+	task := sendMessage(t, s, "anything")
+	parts := task.Artifacts[0].Parts
+	require.Len(t, parts, 2, "artifact carries a text part and a data part")
+	assert.Equal(t, "text", parts[0].Kind)
+	assert.Equal(t, "data", parts[1].Kind)
+	assert.NotNil(t, parts[1].Data)
+}
+
+func TestMessageSend_AcceptsFileAndDataParts(t *testing.T) {
+	s := NewServer(testDef())
+	r := call(t, s, "message/send", map[string]any{"message": map[string]any{
+		"role": "user", "parts": []any{
+			map[string]any{"kind": "file", "file": map[string]any{"name": "a.png", "mimeType": "image/png", "bytes": "AAAA"}},
+			map[string]any{"kind": "data", "data": map[string]any{"k": "v"}},
+			map[string]any{"kind": "text", "text": "what is the weather"},
+		}}})
+	require.Nil(t, r.Error)
+
+	var task Task
+	require.NoError(t, json.Unmarshal(r.Result, &task))
+	// Matching used the text part.
+	assert.Equal(t, "It is sunny.", task.Artifacts[0].Parts[0].Text)
+	// The non-text parts round-trip in the stored user message.
+	require.Len(t, task.History, 2)
+	var sawFile, sawData bool
+	for _, p := range task.History[0].Parts {
+		if p.Kind == "file" && p.File != nil && p.File.Name == "a.png" {
+			sawFile = true
+		}
+		if p.Kind == "data" && p.Data != nil {
+			sawData = true
+		}
+	}
+	assert.True(t, sawFile, "file part should round-trip")
+	assert.True(t, sawData, "data part should round-trip")
 }

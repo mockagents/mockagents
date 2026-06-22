@@ -1,11 +1,12 @@
 // Package a2a implements a mock A2A (Agent2Agent) server (NF-04). A2A is
 // Google's agent-to-agent protocol (now Linux-Foundation-governed): a public
 // "Agent Card" served at /.well-known/agent-card.json plus a JSON-RPC 2.0
-// surface (message/send, tasks/get, tasks/cancel, …). This package serves the
-// declared card and answers message/send with canned, match-based responses,
-// modeling the task lifecycle — mirroring how internal/mcp mocks the Model
-// Context Protocol. Streaming (message/stream), push notifications, and signed
-// cards are documented follow-ons.
+// surface (message/send, message/stream, tasks/get, tasks/cancel, …). This
+// package serves the declared card and answers message/send with canned,
+// match-based responses, modeling the task lifecycle — mirroring how
+// internal/mcp mocks the Model Context Protocol. message/stream is served over
+// SSE as a Task/status-update/artifact-update event sequence. Push
+// notifications and signed cards are documented follow-ons.
 package a2a
 
 import (
@@ -55,10 +56,23 @@ type rpcError struct {
 
 // --- A2A wire types ---
 
-// Part is one piece of a message or artifact (the mock models text parts).
+// Part is one piece of a message or artifact. A2A defines three kinds: text,
+// file (bytes or a uri), and data (an arbitrary JSON object). Only the field for
+// the part's kind is populated.
 type Part struct {
-	Kind string `json:"kind"` // "text"
-	Text string `json:"text,omitempty"`
+	Kind string    `json:"kind"` // "text" | "file" | "data"
+	Text string    `json:"text,omitempty"`
+	File *FilePart `json:"file,omitempty"`
+	Data any       `json:"data,omitempty"`
+}
+
+// FilePart is the payload of a kind:"file" Part — inline base64 `bytes` or a
+// `uri`, with optional name/mimeType.
+type FilePart struct {
+	Name     string `json:"name,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
+	Bytes    string `json:"bytes,omitempty"`
+	URI      string `json:"uri,omitempty"`
 }
 
 // Message is a turn in the conversation.
@@ -93,6 +107,26 @@ type Task struct {
 	Artifacts []Artifact `json:"artifacts,omitempty"`
 	History   []Message  `json:"history,omitempty"`
 	Kind      string     `json:"kind"` // "task"
+}
+
+// statusUpdateEvent / artifactUpdateEvent are the streamed events message/stream
+// emits over SSE (each wrapped in a JSON-RPC result). `final:true` on the last
+// status update tells the client the stream is complete.
+type statusUpdateEvent struct {
+	TaskID    string     `json:"taskId"`
+	ContextID string     `json:"contextId"`
+	Kind      string     `json:"kind"` // "status-update"
+	Status    TaskStatus `json:"status"`
+	Final     bool       `json:"final"`
+}
+
+type artifactUpdateEvent struct {
+	TaskID    string   `json:"taskId"`
+	ContextID string   `json:"contextId"`
+	Kind      string   `json:"kind"` // "artifact-update"
+	Artifact  Artifact `json:"artifact"`
+	Append    bool     `json:"append"`
+	LastChunk bool     `json:"lastChunk"`
 }
 
 // --- server ---
@@ -143,9 +177,9 @@ func (s *Server) Card(baseURL string) types.A2AAgentCard {
 		}
 		c.Skills = skills
 	}
-	// Streaming is not served yet (a documented follow-on), so never advertise it
-	// regardless of what the document declares.
-	c.Capabilities.Streaming = false
+	// The mock serves message/stream over SSE, so advertise streaming regardless
+	// of what the document declares (a client should be able to discover it).
+	c.Capabilities.Streaming = true
 	return c
 }
 
@@ -175,8 +209,9 @@ func (s *Server) dispatch(req *rpcRequest) *rpcResponse {
 	case "tasks/cancel":
 		return s.handleTasksCancel(req)
 	case "message/stream":
-		return newError(req.ID, errMethodNotFound,
-			"message/stream (streaming) is not supported by this mock yet", nil)
+		// Streaming is served over SSE by RPCHandler. A non-SSE (unary) caller of
+		// HandleBytes still gets a sensible single result: the completed task.
+		return s.handleMessageSend(req)
 	default:
 		if len(req.ID) == 0 {
 			return nil // a notification we don't handle
@@ -200,8 +235,80 @@ func (s *Server) handleMessageSend(req *rpcRequest) *rpcResponse {
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return newError(req.ID, errInvalidParams, "invalid params for message/send", err.Error())
 	}
-	userText := partsText(p.Message.Parts)
+	parts, state, asMessage := s.replyFor(partsText(p.Message.Parts))
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	contextID := p.Message.ContextID
+	if contextID == "" {
+		contextID = s.nextID("ctx")
+	}
+
+	// A2A result is Task|Message: a response flagged as_message returns a bare
+	// agent Message (no task is created/stored), modeling a quick stateless reply.
+	if asMessage {
+		return newResult(req.ID, Message{
+			Role: "agent", Parts: parts, MessageID: s.nextID("msg"), Kind: "message", ContextID: contextID,
+		})
+	}
+
+	taskID := s.nextID("task")
+	now := time.Now().UTC().Format(time.RFC3339)
+	userMsg := Message{
+		Role: "user", Parts: p.Message.Parts, MessageID: orDefault(p.Message.MessageID, s.nextID("msg")),
+		Kind: "message", TaskID: taskID, ContextID: contextID,
+	}
+	agentMsg := Message{
+		Role: "agent", Parts: parts, MessageID: s.nextID("msg"), Kind: "message", TaskID: taskID, ContextID: contextID,
+	}
+	task := &Task{
+		ID: taskID, ContextID: contextID, Kind: "task",
+		Status:    TaskStatus{State: state, Message: &agentMsg, Timestamp: now},
+		Artifacts: []Artifact{{ArtifactID: s.nextID("artifact"), Name: "response", Parts: parts}},
+		History:   []Message{userMsg, agentMsg},
+	}
+	s.tasks[taskID] = task
+	return newResult(req.ID, task)
+}
+
+// replyFor resolves the canned reply for an incoming user text: the agent's
+// reply Parts (a text Part, plus a data Part when the matched response sets
+// `data`), the terminal task state, and whether to return a bare Message.
+func (s *Server) replyFor(userText string) (parts []Part, state string, asMessage bool) {
 	resp := s.matchResponse(userText)
+	state = "completed"
+	replyText := "(no response configured)"
+	if resp != nil {
+		if resp.State != "" {
+			state = resp.State
+		}
+		if resp.Text != "" {
+			replyText = resp.Text
+		}
+		asMessage = resp.AsMessage
+	}
+	parts = []Part{{Kind: "text", Text: replyText}}
+	if resp != nil && resp.Data != nil {
+		parts = append(parts, Part{Kind: "data", Data: resp.Data})
+	}
+	return parts, state, asMessage
+}
+
+// StreamResults builds the ordered events message/stream emits over SSE: the
+// initial Task (working), a working status-update, the response artifact, and a
+// final status-update carrying the terminal state. Streaming always yields a
+// Task (the as_message shortcut applies to message/send only). The task is
+// stored in its terminal form so a later tasks/get is consistent.
+func (s *Server) StreamResults(req *rpcRequest) ([]any, *rpcResponse) {
+	if req.JSONRPC != "2.0" {
+		return nil, newError(req.ID, errInvalidRequest, "jsonrpc must be \"2.0\"", nil)
+	}
+	var p messageSendParams
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return nil, newError(req.ID, errInvalidParams, "invalid params for message/stream", err.Error())
+	}
+	parts, state, _ := s.replyFor(partsText(p.Message.Parts))
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -212,34 +319,36 @@ func (s *Server) handleMessageSend(req *rpcRequest) *rpcResponse {
 	}
 	taskID := s.nextID("task")
 	now := time.Now().UTC().Format(time.RFC3339)
-
 	userMsg := Message{
 		Role: "user", Parts: p.Message.Parts, MessageID: orDefault(p.Message.MessageID, s.nextID("msg")),
 		Kind: "message", TaskID: taskID, ContextID: contextID,
 	}
-	state := "completed"
-	replyText := "(no response configured)"
-	if resp != nil {
-		if resp.State != "" {
-			state = resp.State
-		}
-		if resp.Text != "" {
-			replyText = resp.Text
-		}
-	}
 	agentMsg := Message{
-		Role: "agent", Parts: []Part{{Kind: "text", Text: replyText}},
-		MessageID: s.nextID("msg"), Kind: "message", TaskID: taskID, ContextID: contextID,
+		Role: "agent", Parts: parts, MessageID: s.nextID("msg"), Kind: "message", TaskID: taskID, ContextID: contextID,
+	}
+	artifact := Artifact{ArtifactID: s.nextID("artifact"), Name: "response", Parts: parts}
+
+	working := Task{
+		ID: taskID, ContextID: contextID, Kind: "task",
+		Status: TaskStatus{State: "working", Timestamp: now}, History: []Message{userMsg},
+	}
+	finalStatus := TaskStatus{State: state, Message: &agentMsg, Timestamp: now}
+
+	// Persist the terminal task for a follow-up tasks/get.
+	s.tasks[taskID] = &Task{
+		ID: taskID, ContextID: contextID, Kind: "task",
+		Status: finalStatus, Artifacts: []Artifact{artifact}, History: []Message{userMsg, agentMsg},
 	}
 
-	task := &Task{
-		ID: taskID, ContextID: contextID, Kind: "task",
-		Status:    TaskStatus{State: state, Message: &agentMsg, Timestamp: now},
-		Artifacts: []Artifact{{ArtifactID: s.nextID("artifact"), Name: "response", Parts: []Part{{Kind: "text", Text: replyText}}}},
-		History:   []Message{userMsg, agentMsg},
-	}
-	s.tasks[taskID] = task
-	return newResult(req.ID, task)
+	return []any{
+		working,
+		statusUpdateEvent{TaskID: taskID, ContextID: contextID, Kind: "status-update",
+			Status: TaskStatus{State: "working", Timestamp: now}, Final: false},
+		artifactUpdateEvent{TaskID: taskID, ContextID: contextID, Kind: "artifact-update",
+			Artifact: artifact, Append: false, LastChunk: true},
+		statusUpdateEvent{TaskID: taskID, ContextID: contextID, Kind: "status-update",
+			Status: finalStatus, Final: true},
+	}, nil
 }
 
 type taskIDParams struct {
@@ -314,12 +423,19 @@ func (s *Server) CardHandler() http.HandlerFunc {
 }
 
 // RPCHandler serves the JSON-RPC endpoint (POST). A notification (no id)
-// produces 204 No Content.
+// produces 204 No Content. A message/stream request is answered with an SSE
+// stream of events; every other method is a single JSON response.
 func (s *Server) RPCHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := readBounded(r)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, newError(nil, errParse, "could not read request body", err.Error()))
+			return
+		}
+		// Peek the method so message/stream can be served as Server-Sent Events.
+		var probe rpcRequest
+		if json.Unmarshal(body, &probe) == nil && probe.Method == "message/stream" {
+			s.serveStream(w, r, &probe)
 			return
 		}
 		out, err := s.HandleBytes(body)
@@ -334,6 +450,37 @@ func (s *Server) RPCHandler() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(out)
+	}
+}
+
+// serveStream answers message/stream as Server-Sent Events: each event's data
+// is a JSON-RPC result wrapping one streamed Task/status-update/artifact-update.
+// A params/validation error is returned as a single JSON-RPC error response.
+func (s *Server) serveStream(w http.ResponseWriter, r *http.Request, req *rpcRequest) {
+	events, rerr := s.StreamResults(req)
+	if rerr != nil {
+		writeJSON(w, http.StatusOK, rerr)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	for _, ev := range events {
+		data, err := json.Marshal(newResult(req.ID, ev))
+		if err != nil {
+			continue
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+			return // client went away
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		if r.Context().Err() != nil {
+			return
+		}
 	}
 }
 
