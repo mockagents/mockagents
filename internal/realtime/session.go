@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/mockagents/mockagents/internal/engine"
+	"github.com/mockagents/mockagents/internal/types"
 )
 
 // DefaultModel is the model id reported when a client connects without one.
@@ -48,12 +49,18 @@ type ClientEvent struct {
 // shapes; a map keeps the emitter readable without a struct per shape.
 type Event map[string]any
 
-// sessionConfig is the mutable session.* configuration a client can set.
+// sessionConfig is the mutable session.* configuration a client can set. It
+// accepts both the GA field names (output_modalities) and the beta aliases
+// (modalities) so either generation of SDK round-trips its settings.
 type sessionConfig struct {
-	Model        string   `json:"model,omitempty"`
-	Voice        string   `json:"voice,omitempty"`
-	Instructions string   `json:"instructions,omitempty"`
-	Modalities   []string `json:"modalities,omitempty"`
+	Model            string   `json:"model,omitempty"`
+	Voice            string   `json:"voice,omitempty"`
+	Instructions     string   `json:"instructions,omitempty"`
+	Modalities       []string `json:"modalities,omitempty"`        // beta alias
+	OutputModalities []string `json:"output_modalities,omitempty"` // GA
+	// InputAudioTranscription mirrors session.input_audio_transcription: when set
+	// (and not null) the server emits a transcription event for committed audio.
+	InputAudioTranscription json.RawMessage `json:"input_audio_transcription,omitempty"`
 }
 
 // Session is one Realtime connection's state machine. It is NOT safe for
@@ -103,13 +110,27 @@ func (s *Session) Handle(ctx context.Context, ce *ClientEvent) []Event {
 		s.audioBuffer = false
 		itemID := s.nextID("item")
 		s.history = append(s.history, engine.RequestMessage{Role: "user", Content: audioInputPlaceholder})
-		return []Event{
+		// The committed item only carries a transcript when the client enabled
+		// input_audio_transcription; otherwise it is null (a mock has no STT, so
+		// the transcript is a deterministic placeholder when it is requested).
+		var transcript any
+		if s.transcriptionEnabled() {
+			transcript = audioInputPlaceholder
+		}
+		out := []Event{
 			{"type": "input_audio_buffer.committed", "item_id": itemID},
 			{"type": "conversation.item.created", "item": map[string]any{
 				"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
-				"role": "user", "content": []any{map[string]any{"type": "input_audio", "transcript": audioInputPlaceholder}},
+				"role": "user", "content": []any{map[string]any{"type": "input_audio", "transcript": transcript}},
 			}},
 		}
+		if s.transcriptionEnabled() {
+			out = append(out, Event{
+				"type":    "conversation.item.input_audio_transcription.completed",
+				"item_id": itemID, "content_index": 0, "transcript": audioInputPlaceholder,
+			})
+		}
+		return out
 
 	case "conversation.item.create":
 		role, text := parseItem(ce.Item)
@@ -131,11 +152,14 @@ func (s *Session) Handle(ctx context.Context, ce *ClientEvent) []Event {
 }
 
 // createResponse runs the engine on the accumulated history and emits the full
-// response event ladder (created → output_item.added → content_part.added →
-// transcript/audio deltas → *.done → response.done).
+// response event ladder. A response can carry several output items: an assistant
+// message (audio or, in text-only mode, text) and one function_call item per
+// tool call the scenario emitted — so a voice agent that calls tools produces
+// the response.function_call_arguments.* events a real client drives its tool
+// loop from. The ladder opens with response.created and ends with response.done
+// (whose output lists every item).
 func (s *Session) createResponse(ctx context.Context) []Event {
 	respID := s.nextID("resp")
-	itemID := s.nextID("msg")
 
 	resp, err := s.generate(ctx, s.model(), s.id, s.engineHistory())
 	if err != nil {
@@ -144,23 +168,21 @@ func (s *Session) createResponse(ctx context.Context) []Event {
 	if resp == nil {
 		return []Event{s.errorEvent("response_generation_failed", "engine returned no response")}
 	}
+
+	inputTokens := countTokens(s.history)
+
 	transcript := resp.Content
-	if transcript == "" {
+	hasTools := len(resp.ToolCalls) > 0
+	// Emit a message item when there is content, or when there are no tool calls
+	// at all (so the ladder is never empty — a bare tool-call turn skips it).
+	emitMessage := transcript != "" || !hasTools
+	if emitMessage && transcript == "" {
 		transcript = "(no content)"
 	}
-	s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: transcript})
-
-	inputTokens := countTokens(s.history[:len(s.history)-1])
-	outputTokens := wordCount(transcript)
-
-	// GA wire shape: assistant audio is the "output_audio" content part, and the
-	// streamed events are response.output_audio*.delta/.done — NOT the beta
-	// response.audio*.delta names. The mock advertises the GA model gpt-realtime,
-	// so it must speak GA or a current SDK receives no audio/transcript.
-	finalItem := map[string]any{
-		"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
-		"role": "assistant", "content": []any{map[string]any{"type": "output_audio", "transcript": transcript}},
+	if emitMessage {
+		s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: transcript})
 	}
+	outputTokens := wordCount(transcript)
 
 	out := []Event{
 		{"type": "response.created", "response": map[string]any{
@@ -171,37 +193,126 @@ func (s *Session) createResponse(ctx context.Context) []Event {
 			map[string]any{"name": "requests", "limit": 10000, "remaining": 9999, "reset_seconds": 0.06},
 			map[string]any{"name": "tokens", "limit": 1000000, "remaining": 1000000 - inputTokens - outputTokens, "reset_seconds": 0.0},
 		}},
-		{"type": "response.output_item.added", "response_id": respID, "output_index": 0, "item": map[string]any{
+	}
+
+	var items []any
+	outputIndex := 0
+	if emitMessage {
+		items = append(items, s.appendMessageLadder(&out, respID, transcript, outputIndex))
+		outputIndex++
+	}
+	for _, tc := range resp.ToolCalls {
+		items = append(items, s.appendFunctionCallLadder(&out, respID, tc, outputIndex))
+		outputIndex++
+	}
+
+	out = append(out, Event{"type": "response.done", "response": map[string]any{
+		"id": respID, "object": "realtime.response", "status": "completed",
+		"output": items,
+		"usage": map[string]any{
+			"input_tokens":  inputTokens,
+			"output_tokens": outputTokens,
+			"total_tokens":  inputTokens + outputTokens,
+		}}})
+	return out
+}
+
+// appendMessageLadder emits the assistant-message item events (item.added →
+// content_part.added → deltas → *.done) and returns the completed item. In
+// text-only mode (output_modalities without "audio") it streams
+// response.output_text.delta and an output_text content part; otherwise it
+// streams the GA audio ladder (output_audio + output_audio_transcript).
+func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, outputIndex int) map[string]any {
+	itemID := s.nextID("msg")
+
+	if s.textOnly() {
+		final := map[string]any{
+			"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
+			"role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": transcript}},
+		}
+		*out = append(*out,
+			Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": map[string]any{
+				"id": itemID, "object": "realtime.item", "type": "message", "status": "in_progress",
+				"role": "assistant", "content": []any{}}},
+			Event{"type": "response.content_part.added", "response_id": respID, "item_id": itemID,
+				"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "output_text", "text": ""}},
+		)
+		for _, chunk := range chunkText(transcript) {
+			*out = append(*out, Event{"type": "response.output_text.delta", "response_id": respID, "item_id": itemID,
+				"output_index": outputIndex, "content_index": 0, "delta": chunk})
+		}
+		*out = append(*out,
+			Event{"type": "response.output_text.done", "response_id": respID, "item_id": itemID,
+				"output_index": outputIndex, "content_index": 0, "text": transcript},
+			Event{"type": "response.content_part.done", "response_id": respID, "item_id": itemID,
+				"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "output_text", "text": transcript}},
+			Event{"type": "response.output_item.done", "response_id": respID, "output_index": outputIndex, "item": final},
+		)
+		return final
+	}
+
+	// GA audio ladder: assistant audio is the "output_audio" content part, and the
+	// streamed events are response.output_audio*.delta/.done (not the beta
+	// response.audio*.delta names).
+	final := map[string]any{
+		"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
+		"role": "assistant", "content": []any{map[string]any{"type": "output_audio", "transcript": transcript}},
+	}
+	*out = append(*out,
+		Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": map[string]any{
 			"id": itemID, "object": "realtime.item", "type": "message", "status": "in_progress",
 			"role": "assistant", "content": []any{}}},
-		{"type": "response.content_part.added", "response_id": respID, "item_id": itemID,
-			"output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_audio", "transcript": ""}},
-	}
+		Event{"type": "response.content_part.added", "response_id": respID, "item_id": itemID,
+			"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "output_audio", "transcript": ""}},
+	)
 	for _, chunk := range chunkText(transcript) {
-		out = append(out,
+		*out = append(*out,
 			Event{"type": "response.output_audio_transcript.delta", "response_id": respID, "item_id": itemID,
-				"output_index": 0, "content_index": 0, "delta": chunk},
+				"output_index": outputIndex, "content_index": 0, "delta": chunk},
 			Event{"type": "response.output_audio.delta", "response_id": respID, "item_id": itemID,
-				"output_index": 0, "content_index": 0, "delta": synthAudioChunk(chunk)},
+				"output_index": outputIndex, "content_index": 0, "delta": synthAudioChunk(chunk)},
 		)
 	}
-	out = append(out,
-		Event{"type": "response.output_audio.done", "response_id": respID, "item_id": itemID, "output_index": 0, "content_index": 0},
+	*out = append(*out,
+		Event{"type": "response.output_audio.done", "response_id": respID, "item_id": itemID, "output_index": outputIndex, "content_index": 0},
 		Event{"type": "response.output_audio_transcript.done", "response_id": respID, "item_id": itemID,
-			"output_index": 0, "content_index": 0, "transcript": transcript},
+			"output_index": outputIndex, "content_index": 0, "transcript": transcript},
 		Event{"type": "response.content_part.done", "response_id": respID, "item_id": itemID,
-			"output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_audio", "transcript": transcript}},
-		Event{"type": "response.output_item.done", "response_id": respID, "output_index": 0, "item": finalItem},
-		Event{"type": "response.done", "response": map[string]any{
-			"id": respID, "object": "realtime.response", "status": "completed",
-			"output": []any{finalItem},
-			"usage": map[string]any{
-				"input_tokens":  inputTokens,
-				"output_tokens": outputTokens,
-				"total_tokens":  inputTokens + outputTokens,
-			}}},
+			"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "output_audio", "transcript": transcript}},
+		Event{"type": "response.output_item.done", "response_id": respID, "output_index": outputIndex, "item": final},
 	)
-	return out
+	return final
+}
+
+// appendFunctionCallLadder emits a function_call output item and its streamed
+// argument events (response.function_call_arguments.delta/.done), returning the
+// completed item. This is what a Realtime client's tool loop consumes: it reads
+// call_id + name + assembled arguments, runs the tool, and sends the result back
+// as a conversation.item.create of type function_call_output.
+func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types.ToolCallSpec, outputIndex int) map[string]any {
+	itemID := s.nextID("fc")
+	callID := s.nextID("call")
+	args := marshalArgs(tc.Arguments)
+
+	final := map[string]any{
+		"id": itemID, "object": "realtime.item", "type": "function_call", "status": "completed",
+		"name": tc.Name, "call_id": callID, "arguments": args,
+	}
+	*out = append(*out,
+		Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": map[string]any{
+			"id": itemID, "object": "realtime.item", "type": "function_call", "status": "in_progress",
+			"name": tc.Name, "call_id": callID, "arguments": ""}},
+	)
+	for _, chunk := range chunkArgs(args) {
+		*out = append(*out, Event{"type": "response.function_call_arguments.delta", "response_id": respID, "item_id": itemID,
+			"output_index": outputIndex, "call_id": callID, "delta": chunk})
+	}
+	*out = append(*out,
+		Event{"type": "response.function_call_arguments.done", "response_id": respID, "item_id": itemID,
+			"output_index": outputIndex, "call_id": callID, "arguments": args},
+		Event{"type": "response.output_item.done", "response_id": respID, "output_index": outputIndex, "item": final},
+	)
+	return final
 }
 
 // engineHistory is the conversation handed to the engine, prepended with the
@@ -226,18 +337,49 @@ func (s *Session) model() string {
 }
 
 func (s *Session) sessionObject() map[string]any {
-	mods := s.cfg.Modalities
-	if len(mods) == 0 {
-		mods = []string{"audio", "text"}
-	}
+	mods := s.outputModalities()
 	voice := s.cfg.Voice
 	if voice == "" {
 		voice = "alloy"
 	}
 	return map[string]any{
-		"id": s.id, "object": "realtime.session", "model": s.model(),
-		"modalities": mods, "voice": voice, "instructions": s.cfg.Instructions,
+		// GA session objects carry type:"realtime" and output_modalities; the
+		// beta "modalities" alias is mirrored so an older SDK still reads it.
+		"id": s.id, "object": "realtime.session", "type": "realtime", "model": s.model(),
+		"output_modalities": mods, "modalities": mods,
+		"voice": voice, "instructions": s.cfg.Instructions,
 	}
+}
+
+// outputModalities resolves the effective response modalities, preferring the GA
+// output_modalities field over the beta modalities alias, defaulting to both.
+func (s *Session) outputModalities() []string {
+	if len(s.cfg.OutputModalities) > 0 {
+		return s.cfg.OutputModalities
+	}
+	if len(s.cfg.Modalities) > 0 {
+		return s.cfg.Modalities
+	}
+	return []string{"audio", "text"}
+}
+
+// textOnly reports whether the client asked for a text-only response (modalities
+// were set and do not include "audio").
+func (s *Session) textOnly() bool {
+	mods := s.outputModalities()
+	for _, m := range mods {
+		if m == "audio" {
+			return false
+		}
+	}
+	return len(mods) > 0
+}
+
+// transcriptionEnabled reports whether the client configured
+// input_audio_transcription (a non-null value).
+func (s *Session) transcriptionEnabled() bool {
+	raw := strings.TrimSpace(string(s.cfg.InputAudioTranscription))
+	return raw != "" && raw != "null"
 }
 
 func (s *Session) applyConfig(raw json.RawMessage) {
@@ -259,6 +401,12 @@ func (s *Session) applyConfig(raw json.RawMessage) {
 	}
 	if len(c.Modalities) > 0 {
 		s.cfg.Modalities = c.Modalities
+	}
+	if len(c.OutputModalities) > 0 {
+		s.cfg.OutputModalities = c.OutputModalities
+	}
+	if len(c.InputAudioTranscription) > 0 {
+		s.cfg.InputAudioTranscription = c.InputAudioTranscription
 	}
 }
 
@@ -317,6 +465,39 @@ func chunkText(s string) []string {
 		} else {
 			out[i] = f
 		}
+	}
+	return out
+}
+
+// marshalArgs renders a tool call's arguments as the JSON string the Realtime
+// protocol carries in function_call items, defaulting to "{}" for none.
+func marshalArgs(args map[string]any) string {
+	if len(args) == 0 {
+		return "{}"
+	}
+	b, err := json.Marshal(args)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+// chunkArgs splits a function-call arguments JSON string into fixed-size,
+// rune-safe pieces so the function_call_arguments.delta stream looks incremental
+// (a client concatenates the deltas back into the full string).
+func chunkArgs(s string) []string {
+	if s == "" {
+		return []string{""}
+	}
+	const size = 20
+	var out []string
+	runes := []rune(s)
+	for i := 0; i < len(runes); i += size {
+		end := i + size
+		if end > len(runes) {
+			end = len(runes)
+		}
+		out = append(out, string(runes[i:end]))
 	}
 	return out
 }

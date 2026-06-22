@@ -24,6 +24,21 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   identically.
 
 ### Added
+- **Realtime mid-session function calls + text mode** (NF-01 depth) — a Realtime
+  `response.create` now emits a `function_call` output item per tool call the
+  scenario produced, with the streamed `response.function_call_arguments.delta` /
+  `.done` events a voice agent's tool loop consumes (call_id + name + assembled
+  JSON arguments). A response carries both an assistant message **and** its
+  function calls; a content-free tool-call turn skips the message item. The
+  session also honors **`output_modalities`** — `["text"]` streams a
+  `response.output_text.delta`/`.done` ladder with an `output_text` content part
+  instead of audio — and the session object now reports the GA `type: "realtime"`
+  and `output_modalities` (with the beta `modalities` alias mirrored). Committed
+  input audio emits `conversation.item.input_audio_transcription.completed` when
+  the client configured `input_audio_transcription` (otherwise the item transcript
+  is null — a mock has no STT). Barge-in (server-VAD `speech_started`/`stopped`,
+  mid-stream `response.cancel`) remains a follow-on: it needs an async streaming
+  model that the current synchronous event-in/events-out session does not have.
 - **Three cheap test-runner assertions** for `mockagents test` — `no_tool_call`
   (the response made no tool calls — the common "agent shouldn't have used a tool
   here" check), `refusal` (the response is an assistant refusal, optionally
