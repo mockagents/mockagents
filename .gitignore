@@ -52,3 +52,7 @@ site/site/
 
 # Multi-pass review scratch reports (local-only, never on public main)
 review/
+
+# Local-only operational runbooks / notes (never on public main)
+/RUNBOOK.md
+*.local.md
