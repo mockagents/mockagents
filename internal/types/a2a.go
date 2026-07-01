@@ -32,7 +32,17 @@ type A2AServerSpec struct {
 }
 
 // A2AAgentCard is the public Agent Card (the A2A discovery document). The server
-// fills url/protocolVersion/capabilities defaults at serve time.
+// (Server.Card) fills these defaults at serve time when a document omits them, so
+// a minimal card is still spec-valid:
+//   - URL                → the request base URL (trailing "/")
+//   - ProtocolVersion    → DefaultA2AProtocolVersion
+//   - PreferredTransport → DefaultA2ATransport ("JSONRPC")
+//   - Version            → "0.0.0"
+//   - Description        → "Mock A2A agent."
+//   - DefaultInputModes  → ["text/plain"]
+//   - DefaultOutputModes → ["text/plain"]
+//   - Skills             → normalized to a non-nil slice, each Tags to []
+//   - Capabilities.Streaming → forced true (the mock always serves message/stream)
 type A2AAgentCard struct {
 	Name            string `yaml:"name" json:"name"`
 	Description     string `yaml:"description,omitempty" json:"description,omitempty"`

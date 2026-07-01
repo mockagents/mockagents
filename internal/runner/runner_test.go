@@ -726,6 +726,10 @@ func TestLooseEqual_NumericKinds(t *testing.T) {
 		{"2", 2, false},  // string vs number must NOT match
 		{true, 1, false}, // bool vs number must NOT match
 		{"x", "x", true}, // non-numbers fall back to DeepEqual
+		// A malformed json.Number is not numeric (Float64 errors), so it must NOT
+		// numerically match a real number, and falls back to DeepEqual otherwise.
+		{json.Number("abc"), 5.0, false},
+		{json.Number("abc"), json.Number("abc"), true},
 	}
 	for _, c := range cases {
 		if got := looseEqual(c.a, c.b); got != c.eq {
