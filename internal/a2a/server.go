@@ -42,10 +42,13 @@ type rpcRequest struct {
 }
 
 type rpcResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
-	Result  any             `json:"result,omitempty"`
-	Error   *rpcError       `json:"error,omitempty"`
+	JSONRPC string `json:"jsonrpc"`
+	// ID is NOT omitempty: JSON-RPC 2.0 §5.1 requires the response id to be
+	// null when it can't be determined (parse error / invalid request). A nil
+	// json.RawMessage marshals to `null`, which is exactly what we want.
+	ID     json.RawMessage `json:"id"`
+	Result any             `json:"result,omitempty"`
+	Error  *rpcError       `json:"error,omitempty"`
 }
 
 type rpcError struct {
@@ -464,6 +467,12 @@ func (s *Server) RPCHandler() http.HandlerFunc {
 // is a JSON-RPC result wrapping one streamed Task/status-update/artifact-update.
 // A params/validation error is returned as a single JSON-RPC error response.
 func (s *Server) serveStream(w http.ResponseWriter, r *http.Request, req *rpcRequest) {
+	// A notification (no id) is not a valid streaming request — answer 204 like
+	// any other notification rather than opening an id-less SSE stream.
+	if len(req.ID) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	events, rerr := s.StreamResults(req)
 	if rerr != nil {
 		writeJSON(w, http.StatusOK, rerr)

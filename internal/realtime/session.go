@@ -364,7 +364,13 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types.ToolCallSpec, outputIndex int) map[string]any {
 	itemID := s.nextID("fc")
 	callID := s.nextID("call")
-	args := marshalArgs(tc.Arguments)
+	// raw_arguments lets a scenario plant malformed/invalid JSON args verbatim
+	// (FB-03) to exercise a client's tool-arg parser; otherwise marshal the
+	// structured Arguments. Mirrors adapter/openai.go and the streaming paths.
+	args := tc.RawArguments
+	if args == "" {
+		args = marshalArgs(tc.Arguments)
+	}
 
 	final := map[string]any{
 		"id": itemID, "object": "realtime.item", "type": "function_call", "status": "completed",

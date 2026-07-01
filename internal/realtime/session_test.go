@@ -213,6 +213,31 @@ func TestSession_FunctionCallLadder(t *testing.T) {
 	}
 }
 
+// A scenario may plant malformed JSON via raw_arguments (FB-03) to exercise a
+// client's tool-arg parser; the Realtime ladder must emit it verbatim rather
+// than marshaling the structured Arguments (parity with the OpenAI adapter).
+func TestSession_FunctionCallLadder_RawArguments(t *testing.T) {
+	const raw = `{"city":` // deliberately invalid JSON
+	s := NewSession("s", "gpt-realtime",
+		fakeGenTool("", types.ToolCallSpec{
+			Name:         "get_weather",
+			Arguments:    map[string]any{"city": "Paris"}, // must be ignored when RawArguments is set
+			RawArguments: raw,
+		}))
+	ev := s.Handle(context.Background(), &ClientEvent{Type: "response.create"})
+
+	done := firstEvent(ev, "response.function_call_arguments.done")
+	if done == nil || done["arguments"].(string) != raw {
+		t.Errorf("arguments.done = %v, want verbatim %q", done["arguments"], raw)
+	}
+	final := firstEvent(ev, "response.done")
+	output := final["response"].(map[string]any)["output"].([]any)
+	fc := output[len(output)-1].(map[string]any)
+	if fc["arguments"].(string) != raw {
+		t.Errorf("function_call item arguments = %q, want verbatim %q", fc["arguments"], raw)
+	}
+}
+
 func TestSession_ToolCallOnlyNoMessage(t *testing.T) {
 	s := NewSession("s", "gpt-realtime", fakeGenTool("", types.ToolCallSpec{Name: "lookup"}))
 	ev := s.Handle(context.Background(), &ClientEvent{Type: "response.create"})

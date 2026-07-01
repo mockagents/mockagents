@@ -244,6 +244,38 @@ func TestMessageStream_OverHTTP_SSE(t *testing.T) {
 	assert.Equal(t, true, last["final"])
 }
 
+// JSON-RPC 2.0 §5.1 requires the response id to be null (not omitted) when it
+// can't be determined — a parse error or an invalid-request error.
+func TestErrorResponse_IDIsNull(t *testing.T) {
+	s := NewServer(testDef())
+
+	// Parse error: id can't be recovered from a malformed body.
+	out, err := s.HandleBytes([]byte(`{not json`))
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"id":null`, "parse-error response must carry id:null")
+
+	// Invalid request (wrong jsonrpc version) with no id likewise renders null.
+	out, err = s.HandleBytes([]byte(`{"jsonrpc":"1.0","method":"message/send"}`))
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"id":null`, "invalid-request response must carry id:null")
+}
+
+// A message/stream sent as a notification (no id) is not a valid streaming
+// request — the server answers 204 rather than opening an id-less SSE stream.
+func TestMessageStream_NotificationNoID_204(t *testing.T) {
+	s := NewServer(testDef())
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /", s.RPCHandler())
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	body := `{"jsonrpc":"2.0","method":"message/stream","params":{"message":{"role":"user","parts":[{"kind":"text","text":"weather?"}]}}}`
+	resp, err := http.Post(srv.URL+"/", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+}
+
 func TestMessageSend_BareMessage(t *testing.T) {
 	def := testDef()
 	def.Spec.Responses = []types.A2AMessageResponse{{Default: true, Text: "quick reply", AsMessage: true}}
