@@ -276,6 +276,67 @@ func TestMessageStream_NotificationNoID_204(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 }
 
+// A Data response streamed over message/stream carries the data part in the
+// artifact-update event, alongside the text part.
+func TestMessageStream_DataPart(t *testing.T) {
+	def := testDef()
+	def.Spec.Responses = []types.A2AMessageResponse{{Default: true, Text: "here", Data: map[string]any{"temp": 22}}}
+	s := NewServer(def)
+
+	events, rerr := s.StreamResults(streamReq("anything"))
+	require.Nil(t, rerr)
+	require.Len(t, events, 4)
+
+	au, ok := events[2].(artifactUpdateEvent)
+	require.True(t, ok, "third event is the artifact-update")
+	parts := au.Artifact.Parts
+	require.Len(t, parts, 2, "streamed artifact carries a text part and a data part")
+	assert.Equal(t, "text", parts[0].Kind)
+	assert.Equal(t, "data", parts[1].Kind)
+	assert.NotNil(t, parts[1].Data)
+}
+
+// A unary (non-SSE) caller of HandleBytes with method message/stream still gets a
+// sensible single result: the completed Task.
+func TestMessageStream_UnaryFallback(t *testing.T) {
+	s := NewServer(testDef())
+	req, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "message/stream",
+		"params": map[string]any{"message": map[string]any{
+			"role": "user", "parts": []any{map[string]any{"kind": "text", "text": "what is the weather"}}}}})
+	out, err := s.HandleBytes(req)
+	require.NoError(t, err)
+
+	var r rpcResult
+	require.NoError(t, json.Unmarshal(out, &r))
+	require.Nil(t, r.Error)
+	var task Task
+	require.NoError(t, json.Unmarshal(r.Result, &task))
+	assert.Equal(t, "task", task.Kind, "unary message/stream falls back to a single Task result")
+	assert.Equal(t, "completed", task.Status.State)
+	assert.Equal(t, "It is sunny.", task.Artifacts[0].Parts[0].Text)
+}
+
+// StreamResults surfaces a JSON-RPC error (not a stream) for a bad envelope or
+// malformed params.
+func TestStreamResults_ErrorPaths(t *testing.T) {
+	s := NewServer(testDef())
+
+	// Wrong jsonrpc version → invalid request, no events.
+	bad := &rpcRequest{JSONRPC: "1.0", ID: json.RawMessage(`1`), Method: "message/stream"}
+	events, rerr := s.StreamResults(bad)
+	require.Nil(t, events)
+	require.NotNil(t, rerr)
+	assert.Equal(t, errInvalidRequest, rerr.Error.Code)
+
+	// Malformed params → invalid params, no events.
+	malformed := &rpcRequest{JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: "message/stream",
+		Params: json.RawMessage(`{"message":"not-an-object"}`)}
+	events, rerr = s.StreamResults(malformed)
+	require.Nil(t, events)
+	require.NotNil(t, rerr)
+	assert.Equal(t, errInvalidParams, rerr.Error.Code)
+}
+
 func TestMessageSend_BareMessage(t *testing.T) {
 	def := testDef()
 	def.Spec.Responses = []types.A2AMessageResponse{{Default: true, Text: "quick reply", AsMessage: true}}

@@ -487,13 +487,14 @@ func (s *Session) outputModalities() []string {
 // textOnly reports whether the client asked for a text-only response (modalities
 // were set and do not include "audio").
 func (s *Session) textOnly() bool {
-	mods := s.outputModalities()
-	for _, m := range mods {
+	// outputModalities() never returns an empty slice (it defaults to both), so
+	// reaching here means modalities were set and omit "audio" → text-only.
+	for _, m := range s.outputModalities() {
 		if m == "audio" {
 			return false
 		}
 	}
-	return len(mods) > 0
+	return true
 }
 
 // transcriptionEnabled reports whether the client configured input audio
@@ -646,6 +647,9 @@ func marshalArgs(args map[string]any) string {
 	}
 	b, err := json.Marshal(args)
 	if err != nil {
+		// A map[string]any of scenario-authored args is effectively always
+		// marshalable; fall back to an empty object rather than emitting invalid
+		// JSON into the arguments stream. (Use raw_arguments to plant bad JSON.)
 		return "{}"
 	}
 	return string(b)

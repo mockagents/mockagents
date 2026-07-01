@@ -105,6 +105,10 @@ type evalContext struct {
 	// toolResults is the simulated tool-execution outcome aggregated across all
 	// turns (tool_error looks here); finalToolResults is just the last turn's, so
 	// handles_tool_error can tell whether the conversation *ended* on an error.
+	// For a pipeline target, finalToolResults aggregates *every node* of the final
+	// turn, so handles_tool_error recovery is turn-granular, not node-granular: if
+	// an early node in the last turn errors and a later node recovers within the
+	// same turn, that turn still counts as "ended on an error".
 	toolResults      []engine.ToolCallResult
 	finalToolResults []engine.ToolCallResult
 }
@@ -485,7 +489,7 @@ func toolErrorContains(e *types.ToolError, value string) bool {
 
 // toolErrorSummary renders the errored results for a failure message.
 func toolErrorSummary(results []engine.ToolCallResult) []string {
-	out := make([]string, 0)
+	out := make([]string, 0, len(results))
 	for _, r := range results {
 		if !r.IsError {
 			continue
