@@ -84,8 +84,10 @@ func TestSession_ItemCreateThenResponseLadder(t *testing.T) {
 		Type: "conversation.item.create",
 		Item: []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}`),
 	})
-	if len(evs) != 1 || evs[0]["type"] != "conversation.item.created" {
-		t.Fatalf("item.create events = %v", typesOf(evs))
+	// GA announces a new item with the added → done pair (not the beta
+	// conversation.item.created).
+	if len(evs) != 2 || evs[0]["type"] != "conversation.item.added" || evs[1]["type"] != "conversation.item.done" {
+		t.Fatalf("item.create events = %v, want [conversation.item.added conversation.item.done]", typesOf(evs))
 	}
 
 	ladder := s.Handle(context.Background(), &ClientEvent{Type: "response.create"})
@@ -137,11 +139,13 @@ func TestSession_AudioBufferCommit(t *testing.T) {
 	if got := s.Handle(context.Background(), &ClientEvent{Type: "input_audio_buffer.commit"}); got[0]["type"] != "error" {
 		t.Fatalf("empty commit should error, got %v", typesOf(got))
 	}
-	// Append then commit produces committed + item.created.
+	// Append then commit produces committed + the item added/done pair.
 	s.Handle(context.Background(), &ClientEvent{Type: "input_audio_buffer.append", Audio: "AAAA"})
 	evs := s.Handle(context.Background(), &ClientEvent{Type: "input_audio_buffer.commit"})
-	if !contains(typesOf(evs), "input_audio_buffer.committed") || !contains(typesOf(evs), "conversation.item.created") {
-		t.Errorf("commit events = %v", typesOf(evs))
+	for _, want := range []string{"input_audio_buffer.committed", "conversation.item.added", "conversation.item.done"} {
+		if !contains(typesOf(evs), want) {
+			t.Errorf("commit events missing %q: %v", want, typesOf(evs))
+		}
 	}
 }
 
@@ -154,20 +158,24 @@ func TestSession_PreviousItemIDChains(t *testing.T) {
 		Item: []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}`),
 	}
 
-	// First item: previous_item_id is present and null (this is the first item).
+	// First item: previous_item_id is present and null (this is the first item)
+	// on both halves of the added/done pair.
 	first := s.Handle(ctx, itemCreate)
-	created := firstEvent(first, "conversation.item.created")
-	prev, ok := created["previous_item_id"]
+	added := firstEvent(first, "conversation.item.added")
+	prev, ok := added["previous_item_id"]
 	if !ok {
-		t.Fatal("conversation.item.created missing previous_item_id")
+		t.Fatal("conversation.item.added missing previous_item_id")
 	}
 	if prev != nil {
 		t.Errorf("first item previous_item_id = %v, want null", prev)
 	}
-	firstID := created["item"].(map[string]any)["id"].(string)
+	if done := firstEvent(first, "conversation.item.done"); done["previous_item_id"] != nil {
+		t.Errorf("conversation.item.done previous_item_id = %v, want null", done["previous_item_id"])
+	}
+	firstID := added["item"].(map[string]any)["id"].(string)
 
 	// Second item chains off the first.
-	second := firstEvent(s.Handle(ctx, itemCreate), "conversation.item.created")
+	second := firstEvent(s.Handle(ctx, itemCreate), "conversation.item.added")
 	if second["previous_item_id"] != firstID {
 		t.Errorf("second item previous_item_id = %v, want %q", second["previous_item_id"], firstID)
 	}
@@ -185,7 +193,7 @@ func TestSession_PreviousItemIDChains(t *testing.T) {
 	if respItemID == "" || respItemID == secondID {
 		t.Fatalf("expected a distinct response output item id, got %q", respItemID)
 	}
-	third := firstEvent(s.Handle(ctx, itemCreate), "conversation.item.created")
+	third := firstEvent(s.Handle(ctx, itemCreate), "conversation.item.added")
 	if third["previous_item_id"] != respItemID {
 		t.Errorf("post-response item previous_item_id = %v, want %q", third["previous_item_id"], respItemID)
 	}
@@ -198,13 +206,24 @@ func TestSession_CommitCarriesPreviousItemID(t *testing.T) {
 	evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"})
 
 	committed := firstEvent(evs, "input_audio_buffer.committed")
-	created := firstEvent(evs, "conversation.item.created")
+	added := firstEvent(evs, "conversation.item.added")
 	// Both events report the same (null, on the first turn) previous_item_id.
 	if p, ok := committed["previous_item_id"]; !ok || p != nil {
 		t.Errorf("committed previous_item_id = %v (present=%v), want null", committed["previous_item_id"], ok)
 	}
-	if p, ok := created["previous_item_id"]; !ok || p != nil {
-		t.Errorf("created previous_item_id = %v (present=%v), want null", created["previous_item_id"], ok)
+	if p, ok := added["previous_item_id"]; !ok || p != nil {
+		t.Errorf("added previous_item_id = %v (present=%v), want null", added["previous_item_id"], ok)
+	}
+	firstID := added["item"].(map[string]any)["id"].(string)
+
+	// A second commit chains off the first committed item.
+	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: "BBBB"})
+	evs2 := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"})
+	if p := firstEvent(evs2, "input_audio_buffer.committed")["previous_item_id"]; p != firstID {
+		t.Errorf("second committed previous_item_id = %v, want %q", p, firstID)
+	}
+	if p := firstEvent(evs2, "conversation.item.added")["previous_item_id"]; p != firstID {
+		t.Errorf("second added previous_item_id = %v, want %q", p, firstID)
 	}
 }
 
