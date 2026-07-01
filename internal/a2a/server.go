@@ -486,7 +486,10 @@ func (s *Server) serveStream(w http.ResponseWriter, r *http.Request, req *rpcReq
 	for _, ev := range events {
 		data, err := json.Marshal(newResult(req.ID, ev))
 		if err != nil {
-			continue
+			// Abort rather than continue: silently skipping a frame would emit a
+			// stream that looks complete but is missing data (and may drop the
+			// terminal final:true event), which is worse than a truncated stream.
+			return
 		}
 		if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
 			return // client went away

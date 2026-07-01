@@ -105,7 +105,18 @@ type Session struct {
 	history      []engine.RequestMessage
 	audioBuffer  bool
 	counter      int
-	expiresAt    int64 // unix seconds; emitted in the session object when > 0
+	expiresAt    int64  // unix seconds; emitted in the session object when > 0
+	lastItemID   string // id of the most recently created conversation item ("" → previous_item_id is null)
+}
+
+// previousItemID returns the value for a server event's previous_item_id field:
+// the id of the item created just before the current one, or nil (JSON null)
+// when this is the first item in the conversation.
+func (s *Session) previousItemID() any {
+	if s.lastItemID == "" {
+		return nil
+	}
+	return s.lastItemID
 }
 
 // NewSession builds a session with the given id (minted by the caller) and the
@@ -165,6 +176,7 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			return []Event{s.errorEvent("input_audio_buffer_commit_empty", "cannot commit an empty input audio buffer")}
 		}
 		s.audioBuffer = false
+		prevItem := s.previousItemID()
 		itemID := s.nextID("item")
 		s.history = append(s.history, engine.RequestMessage{Role: "user", Content: audioInputPlaceholder})
 		// The committed item only carries a transcript when the client enabled
@@ -175,12 +187,13 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			transcript = audioInputPlaceholder
 		}
 		out := []Event{
-			{"type": "input_audio_buffer.committed", "item_id": itemID},
-			{"type": "conversation.item.created", "item": map[string]any{
+			{"type": "input_audio_buffer.committed", "previous_item_id": prevItem, "item_id": itemID},
+			{"type": "conversation.item.created", "previous_item_id": prevItem, "item": map[string]any{
 				"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 				"role": "user", "content": []any{map[string]any{"type": "input_audio", "transcript": transcript}},
 			}},
 		}
+		s.lastItemID = itemID
 		if s.transcriptionEnabled() {
 			out = append(out, Event{
 				"type":    "conversation.item.input_audio_transcription.completed",
@@ -191,11 +204,13 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 
 	case "conversation.item.create":
 		role, text := parseItem(ce.Item)
+		prevItem := s.previousItemID()
 		itemID := s.nextID("item")
 		if text != "" {
 			s.history = append(s.history, engine.RequestMessage{Role: role, Content: text})
 		}
-		return []Event{{"type": "conversation.item.created", "item": map[string]any{
+		s.lastItemID = itemID
+		return []Event{{"type": "conversation.item.created", "previous_item_id": prevItem, "item": map[string]any{
 			"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 			"role": role, "content": []any{map[string]any{"type": "input_text", "text": text}},
 		}}}
@@ -296,6 +311,9 @@ func (s *Session) responseObject(respID, status string, output []any) map[string
 // streams the GA audio ladder (output_audio + output_audio_transcript).
 func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, outputIndex int) map[string]any {
 	itemID := s.nextID("msg")
+	// A response output item joins the conversation, so a later user turn's
+	// previous_item_id chains off it.
+	defer func() { s.lastItemID = itemID }()
 
 	if s.textOnly() {
 		final := map[string]any{
@@ -364,6 +382,9 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types.ToolCallSpec, outputIndex int) map[string]any {
 	itemID := s.nextID("fc")
 	callID := s.nextID("call")
+	// A function_call output item joins the conversation, so a later user turn's
+	// previous_item_id chains off it.
+	defer func() { s.lastItemID = itemID }()
 	// raw_arguments lets a scenario plant malformed/invalid JSON args verbatim
 	// (FB-03) to exercise a client's tool-arg parser; otherwise marshal the
 	// structured Arguments. Mirrors adapter/openai.go and the streaming paths.
