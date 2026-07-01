@@ -79,11 +79,16 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   `ToolResults` (aggregate + final-turn) so these read real injected errors.
 
 ### Fixed
+- **Realtime GA `conversation.item.added` / `conversation.item.done`** — the mock
+  announced a new conversation item with the beta `conversation.item.created`
+  event; the GA dialect replaced it with an `added` → `done` pair. Both are now
+  emitted (each carrying `previous_item_id` and the completed item) after a
+  client `conversation.item.create` and on `input_audio_buffer.commit`.
 - **Realtime `previous_item_id`** — the `input_audio_buffer.committed` and
-  `conversation.item.created` server events now carry `previous_item_id` (the id
-  of the prior conversation item, or `null` for the first item), a field GA SDKs
-  use to order the conversation. The id chains across item creates, committed
-  audio buffers, and response output items, so a turn following a model response
+  conversation-item server events now carry `previous_item_id` (the id of the
+  prior conversation item, or `null` for the first item), a field GA SDKs use to
+  order the conversation. The id chains across item creates, committed audio
+  buffers, and response output items, so a turn following a model response
   correctly points back at that response's item rather than the last user item.
 - **A2A stream no longer silently drops a frame** — on a (defensive) JSON-marshal
   failure mid-`message/stream`, `serveStream` now aborts the SSE stream instead of

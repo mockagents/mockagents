@@ -119,6 +119,27 @@ func (s *Session) previousItemID() any {
 	return s.lastItemID
 }
 
+// newConversationItem does the bookkeeping every conversation-item emitter must
+// do: capture the previous_item_id value, mint the item id, and record it as the
+// most recent conversation item so the next item chains off it.
+func (s *Session) newConversationItem() (prev any, id string) {
+	prev = s.previousItemID()
+	id = s.nextID("item")
+	s.lastItemID = id
+	return prev, id
+}
+
+// conversationItemEvents returns the GA server-event pair announcing a new,
+// already-complete conversation item: conversation.item.added then
+// conversation.item.done (GA retired the beta conversation.item.created). Both
+// carry previous_item_id and the full item.
+func conversationItemEvents(prev any, item map[string]any) []Event {
+	return []Event{
+		{"type": "conversation.item.added", "previous_item_id": prev, "item": item},
+		{"type": "conversation.item.done", "previous_item_id": prev, "item": item},
+	}
+}
+
 // NewSession builds a session with the given id (minted by the caller) and the
 // model from the connection (may be empty → DefaultModel).
 func NewSession(id, model string, gen Generator) *Session {
@@ -176,8 +197,7 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			return []Event{s.errorEvent("input_audio_buffer_commit_empty", "cannot commit an empty input audio buffer")}
 		}
 		s.audioBuffer = false
-		prevItem := s.previousItemID()
-		itemID := s.nextID("item")
+		prevItem, itemID := s.newConversationItem()
 		s.history = append(s.history, engine.RequestMessage{Role: "user", Content: audioInputPlaceholder})
 		// The committed item only carries a transcript when the client enabled
 		// input_audio_transcription; otherwise it is null (a mock has no STT, so
@@ -186,14 +206,12 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		if s.transcriptionEnabled() {
 			transcript = audioInputPlaceholder
 		}
-		out := []Event{
+		out := append([]Event{
 			{"type": "input_audio_buffer.committed", "previous_item_id": prevItem, "item_id": itemID},
-			{"type": "conversation.item.created", "previous_item_id": prevItem, "item": map[string]any{
-				"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
-				"role": "user", "content": []any{map[string]any{"type": "input_audio", "transcript": transcript}},
-			}},
-		}
-		s.lastItemID = itemID
+		}, conversationItemEvents(prevItem, map[string]any{
+			"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
+			"role": "user", "content": []any{map[string]any{"type": "input_audio", "transcript": transcript}},
+		})...)
 		if s.transcriptionEnabled() {
 			out = append(out, Event{
 				"type":    "conversation.item.input_audio_transcription.completed",
@@ -204,16 +222,14 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 
 	case "conversation.item.create":
 		role, text := parseItem(ce.Item)
-		prevItem := s.previousItemID()
-		itemID := s.nextID("item")
+		prevItem, itemID := s.newConversationItem()
 		if text != "" {
 			s.history = append(s.history, engine.RequestMessage{Role: role, Content: text})
 		}
-		s.lastItemID = itemID
-		return []Event{{"type": "conversation.item.created", "previous_item_id": prevItem, "item": map[string]any{
+		return conversationItemEvents(prevItem, map[string]any{
 			"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 			"role": role, "content": []any{map[string]any{"type": "input_text", "text": text}},
-		}}}
+		})
 
 	case "response.create":
 		return s.createResponse(ctx)
@@ -313,7 +329,7 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 	itemID := s.nextID("msg")
 	// A response output item joins the conversation, so a later user turn's
 	// previous_item_id chains off it.
-	defer func() { s.lastItemID = itemID }()
+	s.lastItemID = itemID
 
 	if s.textOnly() {
 		final := map[string]any{
@@ -384,7 +400,7 @@ func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types
 	callID := s.nextID("call")
 	// A function_call output item joins the conversation, so a later user turn's
 	// previous_item_id chains off it.
-	defer func() { s.lastItemID = itemID }()
+	s.lastItemID = itemID
 	// raw_arguments lets a scenario plant malformed/invalid JSON args verbatim
 	// (FB-03) to exercise a client's tool-arg parser; otherwise marshal the
 	// structured Arguments. Mirrors adapter/openai.go and the streaming paths.

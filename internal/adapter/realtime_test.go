@@ -69,7 +69,9 @@ func TestRealtime_WebSocketEndToEnd(t *testing.T) {
 		"item": map[string]any{"type": "message", "role": "user",
 			"content": []any{map[string]any{"type": "input_text", "text": "hello"}}},
 	})
-	require.Equal(t, "conversation.item.created", wsRead(t, ctx, c)["type"])
+	// GA announces the new item with the added → done pair.
+	require.Equal(t, "conversation.item.added", wsRead(t, ctx, c)["type"])
+	require.Equal(t, "conversation.item.done", wsRead(t, ctx, c)["type"])
 
 	wsWrite(t, ctx, c, map[string]any{"type": "response.create"})
 	var seen []string
