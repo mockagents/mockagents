@@ -79,6 +79,16 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   `ToolResults` (aggregate + final-turn) so these read real injected errors.
 
 ### Fixed
+- **Realtime `previous_item_id`** — the `input_audio_buffer.committed` and
+  `conversation.item.created` server events now carry `previous_item_id` (the id
+  of the prior conversation item, or `null` for the first item), a field GA SDKs
+  use to order the conversation. The id chains across item creates, committed
+  audio buffers, and response output items, so a turn following a model response
+  correctly points back at that response's item rather than the last user item.
+- **A2A stream no longer silently drops a frame** — on a (defensive) JSON-marshal
+  failure mid-`message/stream`, `serveStream` now aborts the SSE stream instead of
+  `continue`-ing, which could emit a stream that looks complete but is missing a
+  frame (including the terminal `final: true` status-update).
 - **Fidelity polish (round-2 eval, minor gaps)** — Realtime: the
   `response.function_call_arguments.delta`/`.done` events now carry
   `content_index`; `response.done` usage adds the GA per-modality
