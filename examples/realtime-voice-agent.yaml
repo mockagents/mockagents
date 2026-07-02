@@ -1,0 +1,40 @@
+# examples/realtime-voice-agent.yaml
+# Voice agent for the OpenAI Realtime API surface (GET /v1/realtime).
+# The Realtime default model is gpt-realtime — this agent makes the
+# docs-faithful first connect (no ?model= query override) work out of the
+# box: connect, stream audio (server VAD is on by default), get answers.
+# Run: mockagents start examples/  then  ws://localhost:8080/v1/realtime
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: realtime-voice-agent
+  description: Voice agent for the Realtime API default model
+  tags: [example, realtime, voice]
+
+spec:
+  protocol: openai-chat-completions
+  model: gpt-realtime
+  systemPrompt: |
+    You are a friendly voice assistant.
+
+  behavior:
+    scenarios:
+      - name: greeting
+        match:
+          content_contains: "hello"
+        response:
+          content: "Hi! Great to hear your voice — how can I help today?"
+
+      - name: weather
+        match:
+          content_contains: "weather"
+        response:
+          content: "It's a beautiful sunny day — 72 degrees and clear skies."
+
+      # VAD-committed audio always transcribes to the fixed "[audio input]"
+      # placeholder (the mock has no STT), so voice turns land here.
+      - name: default
+        match:
+          default: true
+        response:
+          content: "I heard you loud and clear. What would you like to do next?"

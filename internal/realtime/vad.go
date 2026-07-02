@@ -123,12 +123,15 @@ func (s *Session) validateTurnDetection(sessionRaw json.RawMessage) []Event {
 // config (called when a session.update actually changes it). A null/absent/
 // unknown config disables VAD; cumulative audio time survives reconfiguration,
 // and an in-progress speech cycle survives a same-type reconfiguration.
-// Disabling VAD also disarms the idle timeout — idleTimeout dereferences the
-// VAD state, so a deadline left armed after `turn_detection: null` would panic
-// when the transport's timer fires.
+// Reconfiguring so that the idle timeout is no longer available also disarms a
+// pending idle deadline — the same predicate armIdleTimer uses. A deadline
+// left armed after `turn_detection: null` would panic in idleTimeout when the
+// transport's timer fires; one surviving a switch to semantic_vad (or a
+// server_vad re-send without idle_timeout_ms) would fire a phantom [silence]
+// turn under a config that no longer asks for it.
 func (s *Session) refreshVAD() {
 	defer func() {
-		if s.vad == nil {
+		if s.vad == nil || s.vad.cfg.Type != "server_vad" || s.vad.cfg.IdleTimeoutMs <= 0 {
 			s.idleAt, s.idleFired = time.Time{}, false
 		}
 	}()
@@ -243,6 +246,9 @@ func (s *Session) vadAppend(ctx context.Context, ms, energy float64) []Event {
 		v.silenceMs = 0
 		v.speechStartMs = startMs
 		v.pendingItemID = s.nextID("item")
+		// The committed turn's audio window starts prefix_padding_ms before the
+		// speech onset — drop leading silence buffered before that.
+		s.trimAudioBuffer(ms + float64(v.cfg.PrefixPaddingMs))
 		audioStart := v.speechStartMs - float64(v.cfg.PrefixPaddingMs)
 		if audioStart < 0 {
 			audioStart = 0

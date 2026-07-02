@@ -104,7 +104,7 @@ func (s *Session) Tick(ctx context.Context, now time.Time) []Event {
 		inf := s.inflight
 		ev := inf.queue[0]
 		inf.queue = inf.queue[1:]
-		out = append(out, ev)
+		emit := true
 		// Emission-time conversation joins: the item becomes retrievable and the
 		// chain tail only when its announcement reaches the client (see
 		// createResponse — build no longer mutates session state).
@@ -118,7 +118,12 @@ func (s *Session) Tick(ctx context.Context, now time.Time) []Event {
 				if prev, assigned := inf.chainPrev[id]; assigned {
 					ev["previous_item_id"] = prev
 				}
-				if !inf.deleted[id] {
+				if inf.deleted[id] {
+					// The client was told this item is deleted — its
+					// conversation mirror does not close out (the
+					// response-scoped output_item.done still emits).
+					emit = false
+				} else {
 					s.rememberItem(item)
 				}
 			}
@@ -141,6 +146,9 @@ func (s *Session) Tick(ctx context.Context, now time.Time) []Event {
 			}
 		case "response.output_item.done":
 			inf.doneItems = append(inf.doneItems, ev["item"])
+		}
+		if emit {
+			out = append(out, ev)
 		}
 		if len(inf.queue) == 0 {
 			if inf.onDone != nil {
@@ -236,9 +244,10 @@ drain:
 				if prev, assigned := inf.chainPrev[id]; assigned {
 					ev["previous_item_id"] = prev
 				}
-				if !inf.deleted[id] {
-					s.rememberItem(item) // the final (now incomplete) item — retrieve agrees
+				if inf.deleted[id] {
+					continue // no conversation mirror close-out for a deleted item
 				}
+				s.rememberItem(item) // the final (now incomplete) item — retrieve agrees
 			}
 			out = append(out, ev)
 		case t == "response.content_part.added":
@@ -329,6 +338,78 @@ drain:
 	return append(out, Event{"type": "response.done", "response": cancelled})
 }
 
+// truncateInflightItem applies a conversation.item.truncate to the item the
+// inflight response is still streaming. The mock has no audio timeline, so
+// the cut point is what has already been emitted: remaining deltas for the
+// item are dropped and the queued close-outs (and usage, and the history
+// append) are rewritten to the emitted prefix — the acked truncation must be
+// real in every observable surface, not a no-op.
+func (s *Session) truncateInflightItem(itemID string) {
+	inf := s.inflight
+	if inf == nil {
+		return
+	}
+	prefix := inf.emitted[itemID]
+
+	queue := inf.queue[:0:0]
+	for _, ev := range inf.queue {
+		t, _ := ev["type"].(string)
+		belongs, _ := ev["item_id"].(string)
+		if item, ok := ev["item"].(map[string]any); ok && belongs == "" {
+			belongs, _ = item["id"].(string)
+		}
+		if belongs != itemID {
+			queue = append(queue, ev)
+			continue
+		}
+		switch {
+		case strings.HasSuffix(t, ".delta"):
+			continue // the cut: nothing past the truncation point is emitted
+		case t == "response.output_text.done":
+			ev["text"] = prefix
+		case t == "response.output_audio_transcript.done":
+			ev["transcript"] = prefix
+		case t == "response.content_part.done":
+			rewriteContent(ev["part"], prefix)
+		case t == "response.output_item.done", t == "conversation.item.done":
+			// The final item map is shared by both events — one rewrite covers
+			// retrieve, the mirror, and the response.done output listing.
+			if item, ok := ev["item"].(map[string]any); ok {
+				if content, ok2 := item["content"].([]any); ok2 {
+					for _, c := range content {
+						rewriteContent(c, prefix)
+					}
+				}
+			}
+		}
+		queue = append(queue, ev)
+	}
+	inf.queue = queue
+
+	// Usage bills the truncated transcript, and completion appends it to the
+	// engine history in place of the full one ("no text in the context the
+	// model hasn't heard").
+	for _, ev := range inf.queue {
+		if ev["type"] != "response.done" {
+			continue
+		}
+		if resp, ok := ev["response"].(map[string]any); ok {
+			if u, ok2 := resp["usage"].(map[string]any); ok2 {
+				if in, ok3 := u["input_tokens"].(int); ok3 {
+					resp["usage"] = usageBlock(in, wordCount(prefix))
+				}
+			}
+		}
+	}
+	if !inf.rc.outOfBand {
+		inf.onDone = func() {
+			if prefix != "" {
+				s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: prefix})
+			}
+		}
+	}
+}
+
 // rewriteChainPrev replaces a queued conversation.item.added event's
 // build-time previous_item_id with the conversation tail AT EMISSION, and
 // records the value so the item's paired conversation.item.done matches. The
@@ -389,9 +470,10 @@ func (s *Session) armIdleTimer() {
 // continue (history gains the idleTimeoutPlaceholder turn so scenarios can
 // match it).
 func (s *Session) idleTimeout(ctx context.Context) []Event {
-	// Belt-and-braces: refreshVAD disarms the idle deadline when VAD is
-	// disabled, but a nil VAD state must never panic the read loop.
-	if s.vad == nil {
+	// Belt-and-braces: refreshVAD disarms the idle deadline whenever the idle
+	// timeout stops being configured, but a stale deadline must never panic
+	// the read loop or fire under a config that doesn't ask for it.
+	if s.vad == nil || s.vad.cfg.Type != "server_vad" || s.vad.cfg.IdleTimeoutMs <= 0 {
 		return nil
 	}
 	s.idleFired = true

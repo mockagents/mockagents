@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -189,6 +190,12 @@ type Session struct {
 	// assistant audio, the real API rejects a voice change
 	// (code cannot_update_voice) — see validateVoiceChange.
 	respondedWithAudio bool
+	// strict enables GA-strict session.update validation: unknown (including
+	// beta-generation) fields are rejected with unknown_parameter + a param
+	// path, the way the real GA endpoint does — the #1 real-world beta→GA
+	// migration failure. Off by default: dual-generation leniency is the
+	// mock's documented design.
+	strict bool
 	// pendingResponse queues the VAD auto-response for a turn that ended while
 	// a response was still in flight (a mid-speech response.create, or
 	// interrupt_response:false); Tick runs it when the inflight completes.
@@ -208,6 +215,20 @@ type Session struct {
 // PCM16 @ 24 kHz); appends past the cap still count toward VAD/duration but
 // their bytes are dropped.
 const maxBufferedAudioBytes = 2 << 20
+
+// trimAudioBuffer drops all but the trailing keepMs of buffered audio (and
+// duration). Called at VAD speech start: GA commits roughly
+// [speech_start − prefix_padding_ms, end], so leading silence from before the
+// turn must not end up in the stored item's audio or the billed duration.
+func (s *Session) trimAudioBuffer(keepMs float64) {
+	if s.bufferedMs <= keepMs {
+		return
+	}
+	if keepBytes := int(keepMs) * 48; len(s.audioBuf) > keepBytes {
+		s.audioBuf = append([]byte(nil), s.audioBuf[len(s.audioBuf)-keepBytes:]...)
+	}
+	s.bufferedMs = keepMs
+}
 
 // rememberItem indexes a completed conversation item for later retrieve /
 // delete / truncate, and returns it for inline use.
@@ -306,10 +327,20 @@ func conversationItemEvents(prev any, item map[string]any) []Event {
 	}
 }
 
+// defaultTurnDetection is the GA server-VAD default: turn detection is ON out
+// of the box ("threshold 0.5, prefix_padding_ms 300, silence_duration_ms 500")
+// and `turn_detection: null` is the explicit opt-out — not the other way
+// around. Raw-WS voice clients that rely on server defaults stream audio and
+// expect detected turns without a prior session.update.
+const defaultTurnDetection = `{"type":"server_vad","threshold":0.5,"prefix_padding_ms":300,"silence_duration_ms":500,"create_response":true,"interrupt_response":true}`
+
 // NewSession builds a session with the given id (minted by the caller) and the
 // model from the connection (may be empty → DefaultModel).
 func NewSession(id, model string, gen Generator) *Session {
-	return &Session{id: id, initialModel: model, generate: gen, items: make(map[string]map[string]any)}
+	s := &Session{id: id, initialModel: model, generate: gen, items: make(map[string]map[string]any)}
+	s.cfg.turnDetection = json.RawMessage(defaultTurnDetection)
+	s.refreshVAD()
+	return s
 }
 
 // SetExpiry sets the session's expiry (unix seconds), reported as expires_at in
@@ -317,6 +348,20 @@ func NewSession(id, model string, gen Generator) *Session {
 // it from the wall clock; left unset (0) it is omitted, keeping Session
 // deterministic for tests.
 func (s *Session) SetExpiry(unix int64) { s.expiresAt = unix }
+
+// SeedConfig applies a session configuration captured OUTSIDE the socket —
+// the payload a client supplied when minting its ephemeral key
+// (POST /v1/realtime/client_secrets) — before the greeting, so the session
+// comes up with the configuration the client paid for. Accepts the same
+// payload shape as session.update; the transport calls it pre-Greeting, so no
+// validation events are emitted (mint-time payloads were already accepted).
+func (s *Session) SeedConfig(raw json.RawMessage) {
+	oldTD := string(s.cfg.turnDetection)
+	s.applyConfig(raw)
+	if string(s.cfg.turnDetection) != oldTD {
+		s.refreshVAD()
+	}
+}
 
 // sessionDefaultInstructions mirrors the real server injecting default
 // instructions when the client sets none — "visible in the session.created
@@ -358,6 +403,11 @@ func (s *Session) stamp(evs []Event) []Event {
 func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 	switch ce.Type {
 	case "session.update":
+		// Strict mode first: an unknown (or beta-generation) field rejects the
+		// whole update the way the GA endpoint does.
+		if errEvs := s.validateStrictUpdate(ce.Session); errEvs != nil {
+			return errEvs
+		}
 		// An invalid turn_detection config rejects the WHOLE update with a GA
 		// error (code invalid_value, param naming the field) — accept-and-warp
 		// would silently corrupt the VAD state machine.
@@ -370,6 +420,9 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			return errEvs
 		}
 		if errEvs := s.validateSessionMaxOutputTokens(ce.Session); errEvs != nil {
+			return errEvs
+		}
+		if errEvs := s.validateSessionType(ce.Session); errEvs != nil {
 			return errEvs
 		}
 		oldTD := string(s.cfg.turnDetection)
@@ -409,8 +462,16 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		return []Event{{"type": "input_audio_buffer.cleared"}}
 
 	case "input_audio_buffer.commit":
+		// GA rejects both empty AND sub-100 ms buffers with this code — one of
+		// the most-hit realtime errors in real integrations; message texts
+		// match the GA captures.
 		if !s.audioBuffer {
-			return []Event{s.errorEvent("input_audio_buffer_commit_empty", "cannot commit an empty input audio buffer")}
+			return []Event{s.errorEvent("input_audio_buffer_commit_empty",
+				"Error committing input audio buffer: the buffer is empty.")}
+		}
+		if s.bufferedMs < 100 {
+			return []Event{s.errorEvent("input_audio_buffer_commit_empty", fmt.Sprintf(
+				"Error committing input audio buffer: buffer too small. Expected at least 100ms of audio, but buffer only has %.2fms of audio.", s.bufferedMs))}
 		}
 		s.audioBuffer = false
 		s.idleAt, s.idleFired = time.Time{}, false // user activity resets the idle timeout
@@ -506,6 +567,9 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 	case "conversation.item.create":
 		s.idleAt, s.idleFired = time.Time{}, false // user activity resets the idle timeout
 		it := parseItem(ce.Item)
+		if errEvs := s.validateMessageItem(it); errEvs != nil {
+			return errEvs
+		}
 		// Honor a client-supplied item id (clients pre-generate ids so they can
 		// truncate/delete/retrieve their own items later); duplicates rejected.
 		itemID := it.ID
@@ -572,6 +636,16 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		}
 
 	case "response.create":
+		// A transcription session has no response generation — that is the
+		// defining property of the union arm (the VAD auto-response and idle
+		// paths are gated the same way). Code null: the exact GA rejection
+		// shape is uncaptured; the null-code invalid_request_error matches the
+		// API's other unsupported-operation rejections.
+		if s.isTranscription() {
+			body := s.errorBody("invalid_request_error", "", "Cannot create a response on a transcription session")
+			body["code"] = nil
+			return []Event{{"type": "error", "error": body}}
+		}
 		var override struct {
 			MaxOutputTokens json.RawMessage `json:"max_output_tokens"`
 		}
@@ -589,11 +663,11 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		if item, ok := s.items[ce.ItemID]; ok {
 			return []Event{{"type": "conversation.item.retrieved", "item": item}}
 		}
-		return []Event{s.errorEvent("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID))}
+		return []Event{s.errorEventParam("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID), "item_id")}
 
 	case "conversation.item.delete":
 		if _, ok := s.items[ce.ItemID]; !ok {
-			return []Event{s.errorEvent("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID))}
+			return []Event{s.errorEventParam("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID), "item_id")}
 		}
 		delete(s.items, ce.ItemID)
 		s.removeItem(ce.ItemID)
@@ -614,7 +688,7 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		// the transcript for the truncated span) and the ack echoes the request.
 		item, ok := s.items[ce.ItemID]
 		if !ok {
-			return []Event{s.errorEvent("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID))}
+			return []Event{s.errorEventParam("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID), "item_id")}
 		}
 		// GA: "Only assistant message items can be truncated" — and only ones
 		// with audio content. (The real API additionally rejects audio_end_ms
@@ -640,7 +714,13 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			body["code"] = nil
 			return []Event{{"type": "error", "error": body}}
 		}
-		if content, ok := item["content"].([]any); ok {
+		if inProgressAudio {
+			// Truncating the item the response is still streaming CUTS the
+			// stream: remaining deltas are dropped and the queued close-outs
+			// rewritten to the emitted prefix (an acked truncation must not be
+			// a no-op — round-7 R7-8).
+			s.truncateInflightItem(ce.ItemID)
+		} else if content, ok := item["content"].([]any); ok {
 			for _, c := range content {
 				if part, ok := c.(map[string]any); ok && part["type"] == "output_audio" {
 					part["transcript"] = ""
@@ -671,6 +751,11 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		return []Event{s.errorEvent("response_cancel_not_active", "Cancellation failed: no active response found")}
 
 	default:
+		// GA distinguishes a MISSING type (invalid_event) from a present-but-
+		// unrecognized one (unknown_event).
+		if ce.Type == "" {
+			return []Event{s.errorEvent("invalid_event", "Missing required parameter: 'type'")}
+		}
 		return []Event{s.errorEvent("unknown_event", fmt.Sprintf("unknown or unsupported event type %q", ce.Type))}
 	}
 }
@@ -714,8 +799,11 @@ type responseCtx struct {
 	// GA custom context: response.create `input` replaces the default
 	// conversation as the model's context for THIS response. hasInput
 	// distinguishes an explicit empty array (clear the context) from absent.
+	// inputErr carries a rejection (dangling item_reference) the caller must
+	// emit instead of creating the response.
 	hasInput bool
 	input    []engine.RequestMessage
+	inputErr []Event
 }
 
 func (s *Session) newResponseCtx(raw json.RawMessage) *responseCtx {
@@ -747,9 +835,18 @@ func (s *Session) newResponseCtx(raw json.RawMessage) *responseCtx {
 		}
 		rc.metadata = cfg.Metadata
 		rc.outOfBand = cfg.Conversation == "none"
-		if len(cfg.Input) > 0 {
-			rc.hasInput = true
-			rc.input = s.inputContext(cfg.Input)
+		// `input: null` (an SDK's unset Optional) means ABSENT — only an
+		// explicit array replaces the context ([] clears it). A malformed
+		// non-array is likewise treated as absent rather than clearing.
+		if trimmed := strings.TrimSpace(string(cfg.Input)); trimmed != "" && trimmed != "null" {
+			items, errEvs, ok := s.inputContext(cfg.Input)
+			switch {
+			case len(errEvs) > 0:
+				rc.inputErr = errEvs
+			case ok:
+				rc.hasInput = true
+				rc.input = items
+			}
 		}
 	}
 	// An integer cap is enforced (transcript trimming → status "incomplete");
@@ -778,6 +875,11 @@ func (rc *responseCtx) textOnly() bool {
 // (whose output lists every item).
 func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 	rc := s.newResponseCtx(ce.Response)
+	// A rejected `input` (dangling item_reference) fails the whole create —
+	// no response is opened.
+	if rc.inputErr != nil {
+		return rc.inputErr
+	}
 	// The voice lock covers per-response overrides too: once the conversation
 	// holds assistant audio, an in-conversation response in a DIFFERENT voice
 	// is rejected the same way a session.update would be (out-of-band
@@ -794,7 +896,11 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 		return []Event{s.errorEvent("conversation_already_has_active_response",
 			"Conversation already has an active response in progress")}
 	}
-	s.idleAt = time.Time{} // user activity resets the idle timeout
+	// User activity resets the idle timeout — but an out-of-band side-response
+	// is not the user's turn: it must neither arm NOR disarm the idle timer.
+	if !rc.outOfBand {
+		s.idleAt = time.Time{}
+	}
 	respID := s.nextID("resp")
 
 	// GA custom context: `input` replaces the default conversation as the
@@ -828,8 +934,17 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 	// the append is deferred to completion — a cancelled response leaves no
 	// transcript behind.
 	appendHistory := func() {
-		if emitMessage && !rc.outOfBand {
+		if rc.outOfBand {
+			return
+		}
+		if emitMessage {
 			s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: transcript})
+		}
+		// GA context includes the model's function calls; mirror the
+		// conversation.item.create {type:"function_call"} mapping — an
+		// assistant turn with no matchable text.
+		for range resp.ToolCalls {
+			s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: ""})
 		}
 	}
 	outputTokens := wordCount(transcript)
@@ -926,24 +1041,23 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 }
 
 // failedResponse emits the GA failure ladder for a response that could not be
-// generated. response.done is ALWAYS emitted no matter the final state — a bare
-// error event alone would leave a client awaiting response.done hanging — so:
-// response.created → error (type server_error, carrying the detail) →
-// response.done (status "failed" + status_details.error).
+// generated: response.created → response.done (status "failed" +
+// status_details.error). GA emits NO standalone error event for a failed
+// response (per capture, SDK on-error handlers do not fire); the real failure
+// code rides in status_details.error — a mock engine failure has no GA
+// billing/quota code, so code is null, and the human-readable detail travels
+// as an extra `message` field GA parsers ignore.
 func (s *Session) failedResponse(respID, msg string, rc *responseCtx) []Event {
 	failed := s.responseObject(respID, "failed", []any{}, rc)
 	failed["status_details"] = map[string]any{
-		"type": "failed",
-		// status_details.error carries only type+code (GA RealtimeResponseStatus);
-		// the human-readable detail travels on the error event above it.
-		"error": map[string]any{"type": "server_error", "code": "response_generation_failed"},
+		"type":  "failed",
+		"error": map[string]any{"type": "server_error", "code": nil, "message": msg},
 	}
 	// Real terminal response.done events always carry usage; a failed response
 	// produced nothing, so it is all zeros.
 	failed["usage"] = zeroUsage()
 	return []Event{
 		{"type": "response.created", "response": s.responseObject(respID, "in_progress", []any{}, rc)},
-		{"type": "error", "error": s.errorBody("server_error", "response_generation_failed", msg)},
 		{"type": "response.done", "response": failed},
 	}
 }
@@ -1162,23 +1276,28 @@ func engineHistory(instructions string, base []engine.RequestMessage) []engine.R
 // inputContext converts a response.create `input` array into engine messages:
 // full items map exactly like conversation.item.create (message text,
 // function_call_output → tool, function_call → assistant); item_reference
-// entries resolve against the session's stored items. Unknown types and
-// unresolvable references are skipped — a mock stays lenient about context it
-// cannot represent.
-func (s *Session) inputContext(raw json.RawMessage) []engine.RequestMessage {
+// entries resolve against the session's stored items — a DANGLING reference
+// is rejected (errEvs), matching the adjacent Responses API. Unknown item
+// types are skipped (a mock stays lenient about context it cannot represent);
+// ok is false when the payload is not an array (the caller treats that as an
+// absent input, not a cleared context).
+func (s *Session) inputContext(raw json.RawMessage) ([]engine.RequestMessage, []Event, bool) {
 	var items []json.RawMessage
 	if json.Unmarshal(raw, &items) != nil {
-		return nil
+		return nil, nil, false
 	}
 	out := []engine.RequestMessage{}
 	for _, ri := range items {
 		it := parseItem(ri)
 		switch it.Type {
 		case "item_reference":
-			if stored, ok := s.items[it.ID]; ok {
-				if msg, ok2 := storedItemToMessage(stored); ok2 {
-					out = append(out, msg)
-				}
+			stored, ok := s.items[it.ID]
+			if !ok {
+				return nil, []Event{s.errorEventParam("item_not_found",
+					fmt.Sprintf("input item_reference %q not found", it.ID), "response.input")}, false
+			}
+			if msg, ok2 := storedItemToMessage(stored); ok2 {
+				out = append(out, msg)
 			}
 		case "function_call_output":
 			out = append(out, engine.RequestMessage{Role: "tool", Content: it.Output})
@@ -1190,7 +1309,7 @@ func (s *Session) inputContext(raw json.RawMessage) []engine.RequestMessage {
 			}
 		}
 	}
-	return out
+	return out, nil, true
 }
 
 // storedItemToMessage maps a stored conversation item (an item_reference
@@ -1290,6 +1409,118 @@ func (s *Session) sessionObject() map[string]any {
 		obj["expires_at"] = s.expiresAt
 	}
 	return obj
+}
+
+// SetStrict toggles GA-strict session.update validation (the transport wires
+// it from MOCKAGENTS_REALTIME_STRICT).
+func (s *Session) SetStrict(v bool) { s.strict = v }
+
+// GA field sets for strict-mode validation. Beta-generation spellings
+// (top-level voice/modalities/input_audio_transcription/turn_detection/
+// input_audio_format/...) are deliberately NOT here — rejecting them is the
+// point: that is what the real GA endpoint does.
+var (
+	gaSessionKeys = map[string]bool{
+		"type": true, "model": true, "instructions": true, "output_modalities": true,
+		"tools": true, "tool_choice": true, "max_output_tokens": true, "tracing": true,
+		"truncation": true, "prompt": true, "include": true, "parallel_tool_calls": true,
+		"audio": true,
+	}
+	gaAudioInputKeys  = map[string]bool{"format": true, "transcription": true, "turn_detection": true, "noise_reduction": true}
+	gaAudioOutputKeys = map[string]bool{"format": true, "voice": true, "speed": true}
+)
+
+// validateStrictUpdate rejects a session.update carrying fields outside the
+// GA schema with the GA unknown_parameter error (code + param path) — active
+// only in strict mode. Keys are checked in sorted order so the reported
+// parameter is deterministic.
+func (s *Session) validateStrictUpdate(raw json.RawMessage) []Event {
+	if !s.strict || len(raw) == 0 {
+		return nil
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	unknown := func(path string) []Event {
+		return []Event{s.errorEventParam("unknown_parameter", fmt.Sprintf("Unknown parameter: '%s'.", path), path)}
+	}
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		if !gaSessionKeys[k] {
+			return unknown("session." + k)
+		}
+	}
+	var audio map[string]map[string]json.RawMessage
+	if raw, ok := m["audio"]; ok && json.Unmarshal(raw, &audio) == nil {
+		for _, section := range slices.Sorted(maps.Keys(audio)) {
+			var allowed map[string]bool
+			switch section {
+			case "input":
+				allowed = gaAudioInputKeys
+			case "output":
+				allowed = gaAudioOutputKeys
+			default:
+				return unknown("session.audio." + section)
+			}
+			for _, k := range slices.Sorted(maps.Keys(audio[section])) {
+				if !allowed[k] {
+					return unknown(fmt.Sprintf("session.audio.%s.%s", section, k))
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// validateSessionType rejects a session.update that changes the session's
+// union arm after it has been set — GA fixes the type at creation. The first
+// explicit set (on a fresh session) is how the mock enters transcription mode.
+func (s *Session) validateSessionType(raw json.RawMessage) []Event {
+	if s.cfg.sessionType == "" || len(raw) == 0 {
+		return nil
+	}
+	var u struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &u) != nil || u.Type == "" || u.Type == s.cfg.sessionType {
+		return nil
+	}
+	return []Event{s.errorEventParam("invalid_value",
+		fmt.Sprintf("cannot change session type from %q to %q after creation", s.cfg.sessionType, u.Type), "session.type")}
+}
+
+// validateMessageItem rejects a conversation.item.create message whose role or
+// role/part-type combination is invalid — GA validates both instead of
+// warping them into a user message. The allowed part-type sets are a lenient
+// superset (GA's short spellings included); only clearly cross-role types are
+// rejected.
+func (s *Session) validateMessageItem(it parsedItem) []Event {
+	if it.Type != "message" {
+		return nil
+	}
+	allowed, knownRole := map[string]map[string]bool{
+		"user":      {"input_text": true, "input_audio": true, "input_image": true, "text": true},
+		"assistant": {"output_text": true, "output_audio": true, "text": true, "audio": true},
+		"system":    {"input_text": true, "text": true},
+	}[it.Role]
+	if !knownRole {
+		return []Event{s.errorEventParam("invalid_value",
+			fmt.Sprintf("invalid role %q for a message item", it.Role), "item.role")}
+	}
+	var parts []struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(it.Content, &parts) != nil {
+		return nil // absent/opaque content stays lenient
+	}
+	for i, p := range parts {
+		if p.Type != "" && !allowed[p.Type] {
+			return []Event{s.errorEventParam("invalid_value",
+				fmt.Sprintf("invalid content part type %q for role %q", p.Type, it.Role),
+				fmt.Sprintf("item.content[%d].type", i))}
+		}
+	}
+	return nil
 }
 
 // validMaxOutputTokens checks a max_output_tokens value against the GA

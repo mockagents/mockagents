@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -33,6 +36,56 @@ const realtimePaceInterval = 5 * time.Millisecond
 // RealtimeHandler serves the OpenAI Realtime API.
 type RealtimeHandler struct {
 	Engine *engine.Engine
+	// minted retains the session config supplied at ephemeral-key mint time
+	// (POST /v1/realtime/client_secrets), keyed by the ek_ value, so a connect
+	// presenting that key comes up with the configuration the client paid for
+	// — the GA browser flow sets everything at mint and sends no
+	// session.update.
+	mintedMu sync.Mutex
+	minted   map[string]mintedSession
+}
+
+type mintedSession struct {
+	config    json.RawMessage // the request's session payload (session.update shape)
+	expiresAt int64           // unix seconds — resolution fails after expiry
+}
+
+// maxMintedSessions bounds the mint store; past the cap new mints are simply
+// not retained (the key still works for connecting — it just seeds nothing).
+const maxMintedSessions = 1024
+
+func (h *RealtimeHandler) rememberMinted(key string, cfg json.RawMessage, expiresAt int64) {
+	if len(cfg) == 0 {
+		return
+	}
+	h.mintedMu.Lock()
+	defer h.mintedMu.Unlock()
+	if h.minted == nil {
+		h.minted = make(map[string]mintedSession)
+	}
+	now := time.Now().Unix()
+	for k, v := range h.minted {
+		if v.expiresAt < now {
+			delete(h.minted, k)
+		}
+	}
+	if len(h.minted) >= maxMintedSessions {
+		return
+	}
+	h.minted[key] = mintedSession{config: cfg, expiresAt: expiresAt}
+}
+
+func (h *RealtimeHandler) mintedConfig(key string) (json.RawMessage, bool) {
+	if key == "" {
+		return nil, false
+	}
+	h.mintedMu.Lock()
+	defer h.mintedMu.Unlock()
+	m, ok := h.minted[key]
+	if !ok || m.expiresAt < time.Now().Unix() {
+		return nil, false
+	}
+	return m.config, true
 }
 
 // Name identifies this adapter in logs and diagnostics.
@@ -53,13 +106,24 @@ func (h *RealtimeHandler) Routes() []Route {
 // mock ignores the key on connect (it accepts any client), so this is a
 // well-formed stub the SDK can round-trip.
 func (h *RealtimeHandler) buildEphemeralSession(r *http.Request) (value string, expiresAt int64, session map[string]any) {
-	var body struct {
+	var outer struct {
 		Model        string `json:"model"` // legacy flat
 		Voice        string `json:"voice"` // legacy flat
 		ExpiresAfter *struct {
 			Anchor  string `json:"anchor"` // only "created_at" is defined
 			Seconds int    `json:"seconds"`
 		} `json:"expires_after"`
+		// Kept raw: the verbatim session payload is retained per minted key so
+		// a connect presenting the key can be seeded with it (SeedConfig
+		// accepts the session.update shape, which this is).
+		Session json.RawMessage `json:"session"`
+	}
+	_ = decodeJSONBody(r, &outer) // an empty/invalid body is tolerated (all fields optional)
+	defer r.Body.Close()
+	var body struct {
+		Model string `json:"model"`
+		Voice string `json:"voice"`
+		// Legacy aliases live on the outer struct.
 		Session struct {
 			Type             string          `json:"type"`
 			Model            string          `json:"model"`
@@ -78,8 +142,10 @@ func (h *RealtimeHandler) buildEphemeralSession(r *http.Request) (value string, 
 			} `json:"audio"`
 		} `json:"session"`
 	}
-	_ = decodeJSONBody(r, &body) // an empty/invalid body is tolerated (all fields optional)
-	defer r.Body.Close()
+	body.Model, body.Voice = outer.Model, outer.Voice
+	if len(outer.Session) > 0 {
+		_ = json.Unmarshal(outer.Session, &body.Session)
+	}
 
 	model := firstNonEmpty(body.Model, body.Session.Model, realtime.DefaultModel)
 	// GA nests the voice at session.audio.output.voice; the beta nested-flat and
@@ -98,11 +164,12 @@ func (h *RealtimeHandler) buildEphemeralSession(r *http.Request) (value string, 
 
 	// GA expires_after: {anchor:"created_at", seconds: 10..7200}, default 600 s.
 	expiresIn := 600 * time.Second
-	if body.ExpiresAfter != nil && body.ExpiresAfter.Seconds > 0 {
-		expiresIn = time.Duration(min(max(body.ExpiresAfter.Seconds, 10), 7200)) * time.Second
+	if outer.ExpiresAfter != nil && outer.ExpiresAfter.Seconds > 0 {
+		expiresIn = time.Duration(min(max(outer.ExpiresAfter.Seconds, 10), 7200)) * time.Second
 	}
 	value = "ek_" + generateID()
 	expiresAt = time.Now().Add(expiresIn).Unix()
+	h.rememberMinted(value, outer.Session, expiresAt)
 
 	// session is a GA discriminated union: type "transcription" mints an
 	// input-transcription-only session (no output side, no tools).
@@ -242,10 +309,31 @@ func (h *RealtimeHandler) HandleLegacySession(w http.ResponseWriter, r *http.Req
 func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) {
 	stampProtocol(r, ProtocolOpenAIRealtime)
 
+	// A GA browser client presents its ephemeral key either as a bearer token
+	// or embedded in a subprotocol offer ("openai-insecure-api-key.<key>").
+	// Extract it before Accept so (a) the offered subprotocol can be accepted
+	// and (b) the minted session config can seed the session below.
+	ephemeralKey := ""
+	if bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "); strings.HasPrefix(bearer, "ek_") {
+		ephemeralKey = bearer
+	}
+	subprotocols := []string{"realtime"}
+	for _, header := range r.Header.Values("Sec-WebSocket-Protocol") {
+		for _, p := range strings.Split(header, ",") {
+			p = strings.TrimSpace(p)
+			if token, ok := strings.CutPrefix(p, "openai-insecure-api-key."); ok {
+				if ephemeralKey == "" {
+					ephemeralKey = token
+				}
+				subprotocols = append(subprotocols, p)
+			}
+		}
+	}
+
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// The real Realtime API negotiates the "realtime" subprotocol; offer it so
-		// an SDK client that requires it connects. A mock accepts any origin.
-		Subprotocols:       []string{"realtime"},
+		// The real Realtime API negotiates the "realtime" subprotocol (plus the
+		// browser key-bearing offers accepted above); a mock accepts any origin.
+		Subprotocols:       subprotocols,
 		InsecureSkipVerify: true,
 	})
 	if err != nil {
@@ -262,6 +350,18 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 	// session.update {type:"transcription"} reaches the same state).
 	if r.URL.Query().Get("intent") == "transcription" {
 		sess.SetSessionType("transcription")
+	}
+	// A connect presenting a minted ephemeral key comes up with the session
+	// config supplied at mint time — the GA browser flow configures everything
+	// at POST /v1/realtime/client_secrets and sends no session.update.
+	if cfg, ok := h.mintedConfig(ephemeralKey); ok {
+		sess.SeedConfig(cfg)
+	}
+	// Opt-in GA-strict session.update validation: unknown/beta fields are
+	// rejected with unknown_parameter, the way prod does — catches the #1
+	// beta→GA migration failure. Off by default (dual-generation leniency).
+	if v := os.Getenv("MOCKAGENTS_REALTIME_STRICT"); v == "1" || strings.EqualFold(v, "true") {
+		sess.SetStrict(true)
 	}
 	// Paced emission (Phase 2): responses on VAD-enabled sessions stream their
 	// ladder incrementally, creating the interruption window barge-in and
@@ -313,10 +413,12 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 		case data := <-frames:
 			var ce realtime.ClientEvent
 			if err := json.Unmarshal(data, &ce); err != nil {
-				// GA error object shape: param is null and event_id (the offending
-				// client event's id) is unknowable for a body that didn't parse.
+				// GA error shape for an unparseable frame: code invalid_json;
+				// param is null and event_id (the offending client event's id)
+				// is unknowable for a body that didn't parse.
 				events = []realtime.Event{{"type": "error", "event_id": "event_" + generateID(), "error": map[string]any{
-					"type": "invalid_request_error", "message": "event is not valid JSON", "param": nil, "event_id": nil}}}
+					"type": "invalid_request_error", "code": "invalid_json",
+					"message": "Invalid event: failed to parse JSON value", "param": nil, "event_id": nil}}}
 			} else {
 				events = sess.Handle(ctx, &ce)
 			}
