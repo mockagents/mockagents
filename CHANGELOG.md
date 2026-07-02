@@ -79,6 +79,19 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   `ToolResults` (aggregate + final-turn) so these read real injected errors.
 
 ### Fixed
+- **Realtime `response.create` inline overrides** (round-3 eval) — the inline
+  `response` payload was silently ignored. The mock now honors per-response
+  `instructions` (override the session system prompt for one turn),
+  `output_modalities` (switch one response between the audio and text ladders;
+  beta `modalities` alias accepted), `metadata` (echoed verbatim on the
+  `response.created`/`response.done` envelope — the field clients route
+  side-responses by), and **`conversation: "none"`** (out-of-band responses: the
+  response joins no conversation — `conversation_id` is `null`, no
+  `conversation.item.*` mirror is emitted, the transcript does not become
+  context for later turns, and the `previous_item_id` chain is untouched).
+  Per-response `tools` and custom `input` context remain unsupported (the
+  engine's tools come from the agent definition). The response envelope now also
+  always carries `metadata` (null unless set).
 - **Realtime conversation-item operations** (round-3 eval) —
   `conversation.item.truncate` (the barge-in primitive every interruption-capable
   WS client sends), `conversation.item.retrieve`, and `conversation.item.delete`

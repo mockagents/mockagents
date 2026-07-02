@@ -40,9 +40,10 @@ type Generator func(ctx context.Context, model, sessionID string, history []engi
 type ClientEvent struct {
 	Type    string          `json:"type"`
 	EventID string          `json:"event_id,omitempty"`
-	Session json.RawMessage `json:"session,omitempty"` // session.update
-	Item    json.RawMessage `json:"item,omitempty"`    // conversation.item.create
-	Audio   string          `json:"audio,omitempty"`   // input_audio_buffer.append (base64)
+	Session  json.RawMessage `json:"session,omitempty"`  // session.update
+	Item     json.RawMessage `json:"item,omitempty"`     // conversation.item.create
+	Audio    string          `json:"audio,omitempty"`    // input_audio_buffer.append (base64)
+	Response json.RawMessage `json:"response,omitempty"` // response.create inline overrides
 	// conversation.item.retrieve / delete / truncate
 	ItemID       string `json:"item_id,omitempty"`
 	ContentIndex int    `json:"content_index,omitempty"` // truncate
@@ -274,7 +275,7 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		}
 
 	case "response.create":
-		return s.createResponse(ctx)
+		return s.createResponse(ctx, ce)
 
 	case "conversation.item.retrieve":
 		if item, ok := s.items[ce.ItemID]; ok {
@@ -322,6 +323,58 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 	}
 }
 
+// responseConfig is the inline `response` payload of response.create — the GA
+// per-response overrides the mock honors: instructions, output_modalities (or
+// the beta modalities alias), metadata (echoed on the response envelope), and
+// conversation ("none" → out-of-band: the response joins no conversation).
+// Per-response tools and custom `input` context are not supported (the engine's
+// tools come from the agent definition).
+type responseConfig struct {
+	Instructions     string          `json:"instructions"`
+	OutputModalities []string        `json:"output_modalities"`
+	Modalities       []string        `json:"modalities"` // beta alias
+	Metadata         json.RawMessage `json:"metadata"`
+	Conversation     string          `json:"conversation"` // "auto" (default) | "none"
+}
+
+// responseCtx carries one response's effective settings through the ladder:
+// session defaults overlaid with the response.create inline overrides.
+type responseCtx struct {
+	mods         []string
+	outOfBand    bool            // conversation:"none" — no history, no conversation-item mirror, conversation_id null
+	metadata     json.RawMessage // echoed verbatim on the response envelope (nil → null)
+	instructions string
+}
+
+func (s *Session) newResponseCtx(raw json.RawMessage) *responseCtx {
+	rc := &responseCtx{mods: s.outputModalities(), instructions: s.cfg.instructions}
+	var cfg responseConfig
+	if len(raw) > 0 && json.Unmarshal(raw, &cfg) == nil {
+		if len(cfg.OutputModalities) > 0 {
+			rc.mods = cfg.OutputModalities
+		} else if len(cfg.Modalities) > 0 {
+			rc.mods = cfg.Modalities
+		}
+		if cfg.Instructions != "" {
+			rc.instructions = cfg.Instructions
+		}
+		rc.metadata = cfg.Metadata
+		rc.outOfBand = cfg.Conversation == "none"
+	}
+	return rc
+}
+
+// textOnly reports whether this response streams text (mods set and omitting
+// "audio") — mods is never empty (session default is ["audio"]).
+func (rc *responseCtx) textOnly() bool {
+	for _, m := range rc.mods {
+		if m == "audio" {
+			return false
+		}
+	}
+	return true
+}
+
 // createResponse runs the engine on the accumulated history and emits the full
 // response event ladder. A response can carry several output items: an assistant
 // message (audio or, in text-only mode, text) and one function_call item per
@@ -329,15 +382,16 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 // the response.function_call_arguments.* events a real client drives its tool
 // loop from. The ladder opens with response.created and ends with response.done
 // (whose output lists every item).
-func (s *Session) createResponse(ctx context.Context) []Event {
+func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 	respID := s.nextID("resp")
+	rc := s.newResponseCtx(ce.Response)
 
-	resp, err := s.generate(ctx, s.model(), s.id, s.engineHistory())
+	resp, err := s.generate(ctx, s.model(), s.id, s.engineHistory(rc.instructions))
 	if err != nil {
-		return s.failedResponse(respID, err.Error())
+		return s.failedResponse(respID, err.Error(), rc)
 	}
 	if resp == nil {
-		return s.failedResponse(respID, "engine returned no response")
+		return s.failedResponse(respID, "engine returned no response", rc)
 	}
 
 	inputTokens := countTokens(s.history)
@@ -350,13 +404,15 @@ func (s *Session) createResponse(ctx context.Context) []Event {
 	if emitMessage && transcript == "" {
 		transcript = "(no content)"
 	}
-	if emitMessage {
+	// An out-of-band response never joins the default conversation, so its
+	// transcript must not become context for later turns.
+	if emitMessage && !rc.outOfBand {
 		s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: transcript})
 	}
 	outputTokens := wordCount(transcript)
 
 	out := []Event{
-		{"type": "response.created", "response": s.responseObject(respID, "in_progress", []any{})},
+		{"type": "response.created", "response": s.responseObject(respID, "in_progress", []any{}, rc)},
 		// rate_limits.updated is emitted at the start of a response (tokens are
 		// reserved on creation); synthesized deterministically.
 		{"type": "rate_limits.updated", "rate_limits": []any{
@@ -368,15 +424,15 @@ func (s *Session) createResponse(ctx context.Context) []Event {
 	var items []any
 	outputIndex := 0
 	if emitMessage {
-		items = append(items, s.appendMessageLadder(&out, respID, transcript, outputIndex))
+		items = append(items, s.appendMessageLadder(&out, respID, transcript, outputIndex, rc))
 		outputIndex++
 	}
 	for _, tc := range resp.ToolCalls {
-		items = append(items, s.appendFunctionCallLadder(&out, respID, tc, outputIndex))
+		items = append(items, s.appendFunctionCallLadder(&out, respID, tc, outputIndex, rc))
 		outputIndex++
 	}
 
-	done := s.responseObject(respID, "completed", items)
+	done := s.responseObject(respID, "completed", items, rc)
 	done["usage"] = map[string]any{
 		"input_tokens":  inputTokens,
 		"output_tokens": outputTokens,
@@ -395,8 +451,8 @@ func (s *Session) createResponse(ctx context.Context) []Event {
 // error event alone would leave a client awaiting response.done hanging — so:
 // response.created → error (type server_error, carrying the detail) →
 // response.done (status "failed" + status_details.error).
-func (s *Session) failedResponse(respID, msg string) []Event {
-	failed := s.responseObject(respID, "failed", []any{})
+func (s *Session) failedResponse(respID, msg string, rc *responseCtx) []Event {
+	failed := s.responseObject(respID, "failed", []any{}, rc)
 	failed["status_details"] = map[string]any{
 		"type": "failed",
 		// status_details.error carries only type+code (GA RealtimeResponseStatus);
@@ -404,7 +460,7 @@ func (s *Session) failedResponse(respID, msg string) []Event {
 		"error": map[string]any{"type": "server_error", "code": "response_generation_failed"},
 	}
 	return []Event{
-		{"type": "response.created", "response": s.responseObject(respID, "in_progress", []any{})},
+		{"type": "response.created", "response": s.responseObject(respID, "in_progress", []any{}, rc)},
 		{"type": "error", "error": s.errorBody("server_error", "response_generation_failed", msg)},
 		{"type": "response.done", "response": failed},
 	}
@@ -412,14 +468,25 @@ func (s *Session) failedResponse(respID, msg string) []Event {
 
 // responseObject builds the GA `response` envelope shared by response.created and
 // response.done: id/object/status plus the GA fields a client reads off the
-// final event (output_modalities, conversation_id, status_details).
-func (s *Session) responseObject(respID, status string, output []any) map[string]any {
+// final event (output_modalities, conversation_id, status_details, metadata).
+// An out-of-band response (conversation:"none") carries conversation_id null —
+// the discriminator clients use to route side-responses, along with metadata.
+func (s *Session) responseObject(respID, status string, output []any, rc *responseCtx) map[string]any {
+	var convID any
+	if !rc.outOfBand {
+		convID = "conv_" + s.id
+	}
+	var metadata any
+	if len(rc.metadata) > 0 {
+		metadata = rc.metadata
+	}
 	return map[string]any{
 		"id": respID, "object": "realtime.response", "status": status,
 		"status_details":    nil,
 		"output":            output,
-		"output_modalities": s.outputModalities(),
-		"conversation_id":   "conv_" + s.id,
+		"output_modalities": rc.mods,
+		"conversation_id":   convID,
+		"metadata":          metadata,
 	}
 }
 
@@ -428,12 +495,16 @@ func (s *Session) responseObject(respID, status string, output []any) map[string
 // text-only mode (output_modalities without "audio") it streams
 // response.output_text.delta and an output_text content part; otherwise it
 // streams the GA audio ladder (output_audio + output_audio_transcript).
-func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, outputIndex int) map[string]any {
+func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, outputIndex int, rc *responseCtx) map[string]any {
 	itemID := s.nextID("msg")
 	// A response output item joins the conversation: capture what it chains off,
 	// then record it so a later user turn's previous_item_id points at it.
+	// Out-of-band responses (conversation:"none") join nothing — no chain update
+	// and no conversation-item mirror below.
 	prevItem := s.previousItemID()
-	s.lastItemID = itemID
+	if !rc.outOfBand {
+		s.lastItemID = itemID
+	}
 	// GA mirrors a response output item into the conversation: it announces
 	// conversation.item.added when generation of the item starts (in_progress)
 	// and conversation.item.done when it is finalized, alongside the
@@ -443,7 +514,7 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 		"id": itemID, "object": "realtime.item", "type": "message", "status": "in_progress",
 		"role": "assistant", "content": []any{}}
 
-	if s.textOnly() {
+	if rc.textOnly() {
 		final := s.rememberItem(map[string]any{
 			"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 			"role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": transcript}},
@@ -452,9 +523,11 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 		// "audio", per the GA Part type on ResponseContentPartAdded/DoneEvent) —
 		// only ITEM content uses "output_text"/"output_audio". The GA API is
 		// asymmetric here; don't "fix" one to match the other.
+		*out = append(*out, Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress})
+		if !rc.outOfBand {
+			*out = append(*out, Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress})
+		}
 		*out = append(*out,
-			Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress},
-			Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress},
 			Event{"type": "response.content_part.added", "response_id": respID, "item_id": itemID,
 				"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "text", "text": ""}},
 		)
@@ -468,8 +541,10 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 			Event{"type": "response.content_part.done", "response_id": respID, "item_id": itemID,
 				"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "text", "text": transcript}},
 			Event{"type": "response.output_item.done", "response_id": respID, "output_index": outputIndex, "item": final},
-			Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final},
 		)
+		if !rc.outOfBand {
+			*out = append(*out, Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final})
+		}
 		return final
 	}
 
@@ -480,9 +555,11 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 		"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 		"role": "assistant", "content": []any{map[string]any{"type": "output_audio", "transcript": transcript}},
 	})
+	*out = append(*out, Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress})
+	if !rc.outOfBand {
+		*out = append(*out, Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress})
+	}
 	*out = append(*out,
-		Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress},
-		Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress},
 		// Short part type on content_part events ("audio"), output_audio only on
 		// item content — see the note in the text branch.
 		Event{"type": "response.content_part.added", "response_id": respID, "item_id": itemID,
@@ -503,8 +580,10 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 		Event{"type": "response.content_part.done", "response_id": respID, "item_id": itemID,
 			"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "audio", "transcript": transcript}},
 		Event{"type": "response.output_item.done", "response_id": respID, "output_index": outputIndex, "item": final},
-		Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final},
 	)
+	if !rc.outOfBand {
+		*out = append(*out, Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final})
+	}
 	return final
 }
 
@@ -513,13 +592,16 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 // completed item. This is what a Realtime client's tool loop consumes: it reads
 // call_id + name + assembled arguments, runs the tool, and sends the result back
 // as a conversation.item.create of type function_call_output.
-func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types.ToolCallSpec, outputIndex int) map[string]any {
+func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types.ToolCallSpec, outputIndex int, rc *responseCtx) map[string]any {
 	itemID := s.nextID("fc")
 	callID := s.nextID("call")
 	// A function_call output item joins the conversation: capture what it chains
 	// off, then record it so a later user turn's previous_item_id points at it.
+	// (Out-of-band responses join nothing — see appendMessageLadder.)
 	prevItem := s.previousItemID()
-	s.lastItemID = itemID
+	if !rc.outOfBand {
+		s.lastItemID = itemID
+	}
 	// raw_arguments lets a scenario plant malformed/invalid JSON args verbatim
 	// (FB-03) to exercise a client's tool-arg parser; otherwise marshal the
 	// structured Arguments. Mirrors adapter/openai.go and the streaming paths.
@@ -537,10 +619,10 @@ func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types
 	})
 	// GA mirrors the item into the conversation (added at generation start, done
 	// when finalized) alongside the response.output_item.* events.
-	*out = append(*out,
-		Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress},
-		Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress},
-	)
+	*out = append(*out, Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress})
+	if !rc.outOfBand {
+		*out = append(*out, Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress})
+	}
 	// NB: no content_index on the function_call_arguments events — a function_call
 	// item has no content parts, and the GA SDK types
 	// (ResponseFunctionCallArgumentsDelta/DoneEvent) carry only call_id/delta/
@@ -553,19 +635,22 @@ func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types
 		Event{"type": "response.function_call_arguments.done", "response_id": respID, "item_id": itemID,
 			"output_index": outputIndex, "call_id": callID, "arguments": args},
 		Event{"type": "response.output_item.done", "response_id": respID, "output_index": outputIndex, "item": final},
-		Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final},
 	)
+	if !rc.outOfBand {
+		*out = append(*out, Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final})
+	}
 	return final
 }
 
 // engineHistory is the conversation handed to the engine, prepended with the
-// session instructions as a system message when one is set.
-func (s *Session) engineHistory() []engine.RequestMessage {
-	if s.cfg.instructions == "" {
+// given instructions (the response override, or the session default the caller
+// resolved) as a system message when non-empty.
+func (s *Session) engineHistory(instructions string) []engine.RequestMessage {
+	if instructions == "" {
 		return s.history
 	}
 	out := make([]engine.RequestMessage, 0, len(s.history)+1)
-	out = append(out, engine.RequestMessage{Role: "system", Content: s.cfg.instructions})
+	out = append(out, engine.RequestMessage{Role: "system", Content: instructions})
 	return append(out, s.history...)
 }
 
@@ -628,19 +713,6 @@ func (s *Session) outputModalities() []string {
 		return s.cfg.outputModalities
 	}
 	return []string{"audio"}
-}
-
-// textOnly reports whether the client asked for a text-only response (modalities
-// were set and do not include "audio").
-func (s *Session) textOnly() bool {
-	// outputModalities() never returns an empty slice (it defaults to both), so
-	// reaching here means modalities were set and omit "audio" → text-only.
-	for _, m := range s.outputModalities() {
-		if m == "audio" {
-			return false
-		}
-	}
-	return true
 }
 
 // transcriptionEnabled reports whether the client configured input audio

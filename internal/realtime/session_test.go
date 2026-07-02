@@ -350,6 +350,80 @@ func TestSession_UnknownEvent(t *testing.T) {
 	}
 }
 
+// response.create inline overrides: per-response output_modalities switch the
+// ladder mode, instructions override the session system prompt, and metadata is
+// echoed on the response envelope.
+func TestSession_ResponseCreateOverrides(t *testing.T) {
+	ctx := context.Background()
+	var gotHistory []engine.RequestMessage
+	gen := func(_ context.Context, _, _ string, history []engine.RequestMessage) (*engine.Response, error) {
+		gotHistory = history
+		return &engine.Response{Content: "Brief."}, nil
+	}
+	s := NewSession("so", "gpt-realtime", gen)
+
+	evs := s.Handle(ctx, &ClientEvent{Type: "response.create",
+		Response: []byte(`{"output_modalities":["text"],"instructions":"be brief","metadata":{"topic":"weather"}}`)})
+	tps := typesOf(evs)
+	if !contains(tps, "response.output_text.delta") || contains(tps, "response.output_audio.delta") {
+		t.Errorf("per-response text modality not honored; got %v", tps)
+	}
+	if len(gotHistory) == 0 || gotHistory[0].Role != "system" || gotHistory[0].Content != "be brief" {
+		t.Errorf("per-response instructions not prepended: %+v", gotHistory)
+	}
+	resp := firstEvent(evs, "response.done")["response"].(map[string]any)
+	md, _ := json.Marshal(resp["metadata"])
+	if string(md) != `{"topic":"weather"}` {
+		t.Errorf("metadata = %s, want the echoed object", md)
+	}
+	if mods := resp["output_modalities"].([]string); len(mods) != 1 || mods[0] != "text" {
+		t.Errorf("response output_modalities = %v, want [text]", resp["output_modalities"])
+	}
+}
+
+// conversation:"none" = out-of-band: conversation_id is null, no conversation-
+// item mirror is emitted, and the response leaves no trace in the conversation
+// (no history for later turns, no previous_item_id chain update).
+func TestSession_OutOfBandResponse(t *testing.T) {
+	ctx := context.Background()
+	var gotHistory []engine.RequestMessage
+	gen := func(_ context.Context, _, _ string, history []engine.RequestMessage) (*engine.Response, error) {
+		gotHistory = history
+		return &engine.Response{Content: "side classification"}, nil
+	}
+	s := NewSession("sb", "gpt-realtime", gen)
+
+	itemCreate := &ClientEvent{Type: "conversation.item.create",
+		Item: []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}`)}
+	created := firstEvent(s.Handle(ctx, itemCreate), "conversation.item.added")
+	userID := created["item"].(map[string]any)["id"].(string)
+
+	evs := s.Handle(ctx, &ClientEvent{Type: "response.create", Response: []byte(`{"conversation":"none"}`)})
+	tps := typesOf(evs)
+	if contains(tps, "conversation.item.added") || contains(tps, "conversation.item.done") {
+		t.Errorf("out-of-band response must not emit conversation-item events; got %v", tps)
+	}
+	resp := firstEvent(evs, "response.done")["response"].(map[string]any)
+	if resp["conversation_id"] != nil {
+		t.Errorf("out-of-band conversation_id = %v, want null", resp["conversation_id"])
+	}
+
+	// The next user item still chains off the last CONVERSATION item (the user
+	// message), not the out-of-band response item.
+	second := firstEvent(s.Handle(ctx, itemCreate), "conversation.item.added")
+	if second["previous_item_id"] != userID {
+		t.Errorf("post-out-of-band previous_item_id = %v, want %q", second["previous_item_id"], userID)
+	}
+
+	// And the out-of-band transcript is not context for later turns.
+	s.Handle(ctx, &ClientEvent{Type: "response.create"})
+	for _, m := range gotHistory {
+		if m.Content == "side classification" {
+			t.Errorf("out-of-band response leaked into history: %+v", gotHistory)
+		}
+	}
+}
+
 // conversation.item.retrieve / delete address stored items; unknown ids get an
 // item-specific error, not unknown_event.
 func TestSession_ItemRetrieveDelete(t *testing.T) {
