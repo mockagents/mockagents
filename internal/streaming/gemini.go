@@ -43,7 +43,7 @@ type geminiStreamPart struct {
 
 type geminiStreamFunctionCall struct {
 	Name string         `json:"name"`
-	Args map[string]any `json:"args,omitempty"`
+	Args map[string]any `json:"args,omitzero"` // no-arg calls render "args": {} (R9-6)
 }
 
 // StreamGemini writes an engine Response as a Gemini-format SSE stream
@@ -81,33 +81,59 @@ func StreamGemini(
 		return err
 	}
 
-	// 1. Content chunks (with stream-timing physics + fault injection).
-	// A refusal-only response (FB-03) streams its refusal text here.
+	// finishReason + usage ride the LAST content-bearing chunk (round-9
+	// R9-13) — the real API attaches them there; a separate empty-parts
+	// terminal chunk broke clients reading parts[0] off the finish chunk.
+	finishReason := "STOP"
+	if resp.FinishReason != "" {
+		finishReason = GeminiFinishReason(resp.FinishReason) // FB-03: e.g. "length" -> MAX_TOKENS
+	} else if resp.Refusal != "" {
+		finishReason = "SAFETY"
+	}
+	usage := &geminiStreamUsage{
+		PromptTokenCount:     promptTokens,
+		CandidatesTokenCount: candidateTokens,
+		TotalTokenCount:      promptTokens + candidateTokens,
+	}
 	textBody := resp.Content
 	if textBody == "" {
-		textBody = resp.Refusal
+		textBody = resp.Refusal // refusal-only responses stream the refusal text (FB-03)
 	}
+	var texts []string
 	if textBody != "" {
-		chunks := NewChunker(chunkSize).Chunk(textBody)
-		for i, chunk := range chunks {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			truncate, err := pacer.beforeChunk(ctx, i, tokenLen(chunk))
-			if err != nil {
-				return err
-			}
-			if truncate {
-				return pacer.writeStop(sse) // truncated/malformed: no final event
-			}
-			if err := sse.WriteData(geminiStreamResponse{
-				Candidates: []geminiStreamCandidate{{
-					Content: geminiStreamContent{Role: "model", Parts: []geminiStreamPart{{Text: chunk}}},
-					Index:   0,
-				}},
-			}); err != nil {
-				return err
-			}
+		texts = NewChunker(chunkSize).Chunk(textBody)
+	}
+	totalParts := len(texts) + len(resp.ToolCalls)
+	emitted := 0
+	write := func(part geminiStreamPart) error {
+		emitted++
+		out := geminiStreamResponse{Candidates: []geminiStreamCandidate{{
+			Content: geminiStreamContent{Role: "model", Parts: []geminiStreamPart{part}},
+			Index:   0,
+		}}}
+		// A malformed-fault stream ends with the injected bad frame instead of
+		// a finish — never decorate its last chunk.
+		if emitted == totalParts && !pacer.malformed {
+			out.Candidates[0].FinishReason = finishReason
+			out.UsageMetadata = usage
+		}
+		return sse.WriteData(out)
+	}
+
+	// 1. Content chunks (with stream-timing physics + fault injection).
+	for i, chunk := range texts {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		truncate, err := pacer.beforeChunk(ctx, i, tokenLen(chunk))
+		if err != nil {
+			return err
+		}
+		if truncate {
+			return pacer.writeStop(sse) // truncated/malformed: no final event
+		}
+		if err := write(geminiStreamPart{Text: chunk}); err != nil {
+			return err
 		}
 	}
 
@@ -123,37 +149,25 @@ func StreamGemini(
 		if err := sleepCtx(ctx, time.Duration(delayMs)*time.Millisecond); err != nil {
 			return err
 		}
-		if err := sse.WriteData(geminiStreamResponse{
-			Candidates: []geminiStreamCandidate{{
-				Content: geminiStreamContent{Role: "model", Parts: []geminiStreamPart{{
-					FunctionCall: &geminiStreamFunctionCall{Name: tc.Name, Args: tc.Arguments},
-				}}},
-				Index: 0,
-			}},
+		if err := write(geminiStreamPart{
+			FunctionCall: &geminiStreamFunctionCall{Name: tc.Name, Args: tc.ArgumentsObject()},
 		}); err != nil {
 			return err
 		}
 	}
 
-	// 3. Final event with finishReason + usage (no [DONE] sentinel in Gemini).
-	// The real streamGenerateContent emits usageMetadata, in practice on the
-	// terminal chunk.
-	finishReason := "STOP"
-	if resp.FinishReason != "" {
-		finishReason = GeminiFinishReason(resp.FinishReason) // FB-03: e.g. "length" -> MAX_TOKENS
-	} else if resp.Refusal != "" {
-		finishReason = "SAFETY"
+	// Degenerate case (no content, no tool calls): a lone finish chunk is
+	// unavoidable — but its parts stay empty only because there is nothing
+	// to attach the finish to.
+	if totalParts == 0 {
+		return sse.WriteData(geminiStreamResponse{
+			Candidates: []geminiStreamCandidate{{
+				Content:      geminiStreamContent{Role: "model", Parts: []geminiStreamPart{}},
+				FinishReason: finishReason,
+				Index:        0,
+			}},
+			UsageMetadata: usage,
+		})
 	}
-	return sse.WriteData(geminiStreamResponse{
-		Candidates: []geminiStreamCandidate{{
-			Content:      geminiStreamContent{Role: "model", Parts: []geminiStreamPart{}},
-			FinishReason: finishReason,
-			Index:        0,
-		}},
-		UsageMetadata: &geminiStreamUsage{
-			PromptTokenCount:     promptTokens,
-			CandidatesTokenCount: candidateTokens,
-			TotalTokenCount:      promptTokens + candidateTokens,
-		},
-	})
+	return nil
 }

@@ -60,12 +60,13 @@ type ResponsesRequest struct {
 // echoed "function_call". Content/Output are RawMessage because each can be a
 // string or an array of content parts.
 type responsesInputItem struct {
-	Type    string          `json:"type"`
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
-	CallID  string          `json:"call_id"`
-	Output  json.RawMessage `json:"output"`
-	Name    string          `json:"name"`
+	Type      string          `json:"type"`
+	Role      string          `json:"role"`
+	Content   json.RawMessage `json:"content"`
+	CallID    string          `json:"call_id"`
+	Output    json.RawMessage `json:"output"`
+	Name      string          `json:"name"`
+	Arguments string          `json:"arguments"` // echoed function_call args (fingerprint material)
 }
 
 // --- Response types ---
@@ -322,10 +323,11 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 	}
 
 	inbound := &engine.InboundRequest{
-		Model:     req.Model,
-		SessionID: responsesSessionID(r, req.PreviousResponseID),
-		Messages:  messages,
-		Stream:    req.Stream,
+		Model:          req.Model,
+		SessionID:      responsesSessionID(r, req.PreviousResponseID),
+		Messages:       messages,
+		Stream:         req.Stream,
+		ToolChoiceNone: strings.TrimSpace(string(req.ToolChoice)) == `"none"`,
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID
@@ -370,10 +372,21 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 	// Persist this turn (conversation + assistant reply) for a later
 	// previous_response_id, and stamp the new id onto the response object.
 	respID := "resp_" + generateID()
-	stored := make([]engine.RequestMessage, 0, len(messages)+1)
+	stored := make([]engine.RequestMessage, 0, len(messages)+2)
 	stored = append(stored, messages...)
 	if resp.Content != "" {
 		stored = append(stored, engine.RequestMessage{Role: "assistant", Content: resp.Content})
+	}
+	// Persist the emitted function_call items too (round-9 R9-2): a
+	// previous_response_id tool loop replays this thread, and the convergence
+	// guard needs the fingerprint material — previously only text survived.
+	if len(resp.ToolCalls) > 0 {
+		echoed := make([]engine.EchoedToolCall, 0, len(resp.ToolCalls))
+		for _, tc := range resp.ToolCalls {
+			echoed = append(echoed, engine.EchoedToolCall{
+				Name: tc.Name, Arguments: tc.Arguments, RawArguments: tc.RawArguments})
+		}
+		stored = append(stored, engine.RequestMessage{Role: "assistant", ToolCalls: echoed})
 	}
 	h.store.put(respID, stored)
 
@@ -454,7 +467,7 @@ func parseResponsesInput(raw json.RawMessage) ([]engine.RequestMessage, error) {
 
 	msgs := make([]engine.RequestMessage, 0, len(items))
 	for _, it := range items {
-		msgs = append(msgs, responsesItemToMessage(it.Type, it.Role, it.Content, it.Output))
+		msgs = append(msgs, responsesItemToMessage(it.Type, it.Role, it.Content, it.Output, it.Name, it.Arguments))
 	}
 	return msgs, nil
 }
@@ -467,16 +480,19 @@ func parseResponsesInput(raw json.RawMessage) ([]engine.RequestMessage, error) {
 // produce identical history (review finding X-001). The discriminator is the
 // item type (plus role for plain messages); content/output are the raw JSON
 // payloads each kind carries.
-func responsesItemToMessage(itemType, role string, content, output json.RawMessage) engine.RequestMessage {
+func responsesItemToMessage(itemType, role string, content, output json.RawMessage, name, arguments string) engine.RequestMessage {
 	switch itemType {
 	case "function_call_output":
 		// A tool result fed back in. Map to a "tool" role so it joins the
-		// history; its text never becomes the matched user message.
-		return engine.RequestMessage{Role: "tool", Content: rawToString(output)}
+		// history; its text never becomes the matched user message. The
+		// IsToolResult mark feeds the convergence guard (round-9).
+		return engine.RequestMessage{Role: "tool", Content: rawToString(output), IsToolResult: true}
 	case "function_call":
 		// An echoed prior tool call. Keep it in history as an assistant turn; it
-		// carries no user-visible text to match on.
-		return engine.RequestMessage{Role: "assistant", Content: ""}
+		// carries no user-visible text to match on, but its name+arguments are
+		// the convergence guard's fingerprint material (round-9).
+		return engine.RequestMessage{Role: "assistant", Content: "",
+			ToolCalls: []engine.EchoedToolCall{engine.EchoToolCall(name, arguments)}}
 	default:
 		// "message" or a role-only object.
 		if role == "" {
@@ -632,11 +648,7 @@ func buildResponsesOutput(resp *engine.Response) ([]any, int) {
 		if i < len(resp.ToolResults) && resp.ToolResults[i].ID != "" {
 			callID = resp.ToolResults[i].ID
 		}
-		args := tc.RawArguments
-		if args == "" {
-			argsJSON, _ := json.Marshal(tc.Arguments)
-			args = string(argsJSON)
-		}
+		args := tc.ArgumentsJSON() // raw verbatim or structured, nil → "{}" (R9-6)
 		output = append(output, responseFunctionCallItem{
 			Type:      "function_call",
 			ID:        "fc_" + generateID(),

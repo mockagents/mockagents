@@ -106,10 +106,10 @@ func (g *ResponseGenerator) Generate(agent *types.AgentDefinition, scenario *typ
 	}
 
 	return &Response{
-		AgentName:    agent.Metadata.Name,
-		Model:        agent.Spec.Model,
-		Content:      content,
-		ToolCalls:    scenario.Response.ToolCalls,
+		AgentName:     agent.Metadata.Name,
+		Model:         agent.Spec.Model,
+		Content:       content,
+		ToolCalls:     scenario.Response.ToolCalls,
 		ScenarioName:  scenario.Name,
 		SystemPrompt:  agent.Spec.SystemPrompt,
 		Metadata:      scenario.Response.Metadata,

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 
@@ -145,6 +146,14 @@ func (r *AgentRegistry) registerLocked(def *types.AgentDefinition) {
 	}
 	bucket[name] = def
 	if def.Spec.Model != "" {
+		// Model collisions resolve deterministically (F-AR-002), but the
+		// losing agent becomes unreachable by model — surface it at load time
+		// instead of leaving authors to discover the tie-break by probing
+		// (round-9 R9-17: six shipped examples claim gpt-4o).
+		if prev, ok := r.byModel[def.Spec.Model]; ok && prev.Metadata.Name != name {
+			slog.Warn("model claimed by multiple agents; requests resolve to one deterministically",
+				"model", def.Spec.Model, "agents", []string{prev.Metadata.Name, name})
+		}
 		r.byModel[def.Spec.Model] = def
 	}
 	// Keep the tenant-aware index in sync (PERF-01): rebuild the bucket for the

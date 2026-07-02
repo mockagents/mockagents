@@ -513,7 +513,7 @@ func itemIDPrefix(itemType string) string {
 func conversationItemsToMessages(items []conversationItem) []engine.RequestMessage {
 	msgs := make([]engine.RequestMessage, 0, len(items))
 	for _, it := range items {
-		msgs = append(msgs, responsesItemToMessage(it.Type, it.Role, it.Content, it.Output))
+		msgs = append(msgs, responsesItemToMessage(it.Type, it.Role, it.Content, it.Output, it.Name, it.Arguments))
 	}
 	return msgs
 }
@@ -531,11 +531,7 @@ func assistantItemsFromResponse(resp *engine.Response) []conversationItem {
 		out = append(out, userMessageItem("assistant", resp.Content))
 	}
 	for _, tc := range resp.ToolCalls {
-		args := tc.RawArguments
-		if args == "" {
-			b, _ := json.Marshal(tc.Arguments)
-			args = string(b)
-		}
+		args := tc.ArgumentsJSON() // raw verbatim or structured, nil → "{}" (R9-6)
 		out = append(out, normalizeItem(conversationItem{
 			Type:      "function_call",
 			Name:      tc.Name,

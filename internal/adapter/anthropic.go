@@ -28,6 +28,9 @@ type AnthropicRequest struct {
 	Tools     []AnthropicTool `json:"tools,omitempty"`
 	MaxTokens int             `json:"max_tokens,omitempty"`
 	Stream    bool            `json:"stream,omitempty"`
+	// ToolChoice is the Anthropic {type:"auto"/"any"/"tool"/"none"} object;
+	// only "none" changes mock behavior (tool calls suppressed — R9-5).
+	ToolChoice map[string]any `json:"tool_choice,omitempty"`
 	// Thinking is the extended-thinking gate; type "enabled" turns on a
 	// synthesized thinking content block (A-04). budget_tokens is advisory.
 	Thinking *AnthropicThinkingReq `json:"thinking,omitempty"`
@@ -74,11 +77,15 @@ type AnthropicContent struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
 	// Thinking / Signature carry an extended-thinking block (type "thinking").
-	Thinking  string         `json:"thinking,omitempty"`
-	Signature string         `json:"signature,omitempty"`
-	ID        string         `json:"id,omitempty"`
-	Name      string         `json:"name,omitempty"`
-	Input     map[string]any `json:"input,omitempty"`
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	// omitzero (not omitempty): a tool_use block's `input` is a REQUIRED key
+	// — the real API always renders "input": {} for no-arg calls, and strict
+	// SDK validation rejects a missing key (round-9 R9-6). Non-tool blocks
+	// leave the map nil and the key absent.
+	Input map[string]any `json:"input,omitzero"`
 }
 
 // AnthropicUsage represents token usage. The cache_* fields are pointers so
@@ -199,10 +206,11 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 	// Convert to engine request.
 	convertedMsgs, imageCount := convertAnthropicMessages(req.Messages, req.System)
 	inbound := &engine.InboundRequest{
-		Model:     req.Model,
-		SessionID: extractSessionID(r),
-		Messages:  convertedMsgs,
-		Stream:    req.Stream,
+		Model:          req.Model,
+		SessionID:      extractSessionID(r),
+		Messages:       convertedMsgs,
+		Stream:         req.Stream,
+		ToolChoiceNone: req.ToolChoice["type"] == "none",
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID
@@ -266,7 +274,8 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 		if agent != nil {
 			streamCfg = agent.Spec.Behavior.Streaming
 		}
-		if err := streaming.StreamAnthropic(r.Context(), w, resp, streamCfg); err != nil {
+		if err := streaming.StreamAnthropic(r.Context(), w, resp, streamCfg,
+			sumMessageTokens(inbound.Messages)); err != nil {
 			return
 		}
 		return
@@ -329,11 +338,33 @@ func convertAnthropicMessages(msgs []AnthropicMessage, system any) ([]engine.Req
 	for _, m := range msgs {
 		content, imgCount := extractAnthropicContentWithImages(m.Content)
 		totalImages += imgCount
-		result = append(result, engine.RequestMessage{
+		rm := engine.RequestMessage{
 			Role:       m.Role,
 			Content:    content,
 			ImageCount: imgCount,
-		})
+		}
+		// Convergence-guard signals (round-9), carried OUT-OF-BAND: the text
+		// flattening above stays exactly as it was — scenario authors match
+		// on tool_result markers and that must keep working. tool_result
+		// blocks mark the message as a tool result; tool_use blocks are the
+		// echoed fingerprint material.
+		if blocks, ok := m.Content.([]any); ok {
+			for _, block := range blocks {
+				bm, ok := block.(map[string]any)
+				if !ok {
+					continue
+				}
+				switch bm["type"] {
+				case "tool_result":
+					rm.IsToolResult = true
+				case "tool_use":
+					name, _ := bm["name"].(string)
+					args, _ := bm["input"].(map[string]any)
+					rm.ToolCalls = append(rm.ToolCalls, engine.EchoedToolCall{Name: name, Arguments: args})
+				}
+			}
+		}
+		result = append(result, rm)
 	}
 	return result, totalImages
 }
@@ -453,15 +484,17 @@ func formatAnthropicResponse(resp *engine.Response, inputTokens, outputTokens in
 	if len(resp.ToolCalls) > 0 {
 		stopReason = "tool_use"
 		for i, tc := range resp.ToolCalls {
+			// The engine mints provider-neutral call_<hex> ids; the Anthropic
+			// wire uses toolu_ (round-9 R9-7). Reuse the hex for correlation.
 			toolID := "toolu_" + generateID()
-			if i < len(resp.ToolResults) {
-				toolID = resp.ToolResults[i].ID
+			if i < len(resp.ToolResults) && resp.ToolResults[i].ID != "" {
+				toolID = "toolu_" + strings.TrimPrefix(resp.ToolResults[i].ID, "call_")
 			}
 			content = append(content, AnthropicContent{
 				Type:  "tool_use",
 				ID:    toolID,
 				Name:  tc.Name,
-				Input: tc.Arguments,
+				Input: tc.ArgumentsObject(), // never nil — "input" is required (R9-6)
 			})
 		}
 	}

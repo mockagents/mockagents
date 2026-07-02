@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/mockagents/mockagents/internal/engine"
@@ -15,17 +16,17 @@ import (
 // Anthropic SSE event types.
 
 type anthropicMessageStart struct {
-	Type    string                  `json:"type"`
-	Message anthropicMessageHeader  `json:"message"`
+	Type    string                 `json:"type"`
+	Message anthropicMessageHeader `json:"message"`
 }
 
 type anthropicMessageHeader struct {
-	ID         string `json:"id"`
-	Type       string `json:"type"`
-	Role       string `json:"role"`
-	Content    []any  `json:"content"`
-	Model      string `json:"model"`
-	StopReason *string `json:"stop_reason"`
+	ID         string         `json:"id"`
+	Type       string         `json:"type"`
+	Role       string         `json:"role"`
+	Content    []any          `json:"content"`
+	Model      string         `json:"model"`
+	StopReason *string        `json:"stop_reason"`
 	Usage      anthropicUsage `json:"usage"`
 }
 
@@ -78,19 +79,30 @@ type anthropicMessageDelta struct {
 	Delta struct {
 		StopReason string `json:"stop_reason"`
 	} `json:"delta"`
-	Usage anthropicUsage `json:"usage"`
+	// Delta usage carries ONLY output_tokens: an input_tokens:0 here clobbers
+	// the message_start value in SDK accumulation (round-9 R9-10).
+	Usage anthropicDeltaUsage `json:"usage"`
+}
+
+// anthropicDeltaUsage is message_delta's cumulative output count.
+type anthropicDeltaUsage struct {
+	OutputTokens int `json:"output_tokens"`
 }
 
 type anthropicMessageStop struct {
 	Type string `json:"type"`
 }
 
-// StreamAnthropic writes an engine Response as an Anthropic-format SSE stream.
+// StreamAnthropic writes an engine Response as an Anthropic-format SSE
+// stream. The optional promptTokens is the computed input-token count for
+// message_start's usage (round-9 R9-10 — a hardcoded value diverged from the
+// non-streaming path); omitted, a deterministic default applies.
 func StreamAnthropic(
 	ctx context.Context,
 	w http.ResponseWriter,
 	resp *engine.Response,
 	streamCfg *types.StreamingConfig,
+	promptTokens ...int,
 ) error {
 	sse, err := NewSSEWriter(w)
 	if err != nil {
@@ -119,12 +131,16 @@ func StreamAnthropic(
 	}
 
 	// 1. message_start
+	inputTokens := 25 // deterministic default for direct callers
+	if len(promptTokens) > 0 {
+		inputTokens = promptTokens[0]
+	}
 	if err := sse.WriteEvent("message_start", anthropicMessageStart{
 		Type: "message_start",
 		Message: anthropicMessageHeader{
 			ID: msgID, Type: "message", Role: "assistant",
 			Content: []any{}, Model: resp.Model,
-			Usage: anthropicUsage{InputTokens: 25, OutputTokens: 1},
+			Usage: anthropicUsage{InputTokens: inputTokens, OutputTokens: 1},
 		},
 	}); err != nil {
 		return err
@@ -187,9 +203,11 @@ func StreamAnthropic(
 			return err
 		}
 
+		// The engine mints provider-neutral call_<hex> ids; the Anthropic wire
+		// uses toolu_ (round-9 R9-7). Reuse the hex so logs still correlate.
 		toolID := fmt.Sprintf("toolu_%s", generateAnthropicID())
-		if i < len(resp.ToolResults) {
-			toolID = resp.ToolResults[i].ID
+		if i < len(resp.ToolResults) && resp.ToolResults[i].ID != "" {
+			toolID = "toolu_" + strings.TrimPrefix(resp.ToolResults[i].ID, "call_")
 		}
 
 		// content_block_start with tool_use
@@ -203,21 +221,26 @@ func StreamAnthropic(
 			return err
 		}
 
-		// input_json_delta chunks
-		argsJSON, _ := json.Marshal(tc.Arguments)
-		argChunks := chunkString(string(argsJSON), 20)
-		for _, argChunk := range argChunks {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if err := sleepCtx(ctx, time.Duration(delayMs)*time.Millisecond); err != nil {
-				return err
-			}
-			if err := sse.WriteEvent("content_block_delta", anthropicContentBlockDelta{
-				Type: "content_block_delta", Index: blockIndex,
-				Delta: anthropicInputJSONDelta{Type: "input_json_delta", PartialJSON: argChunk},
-			}); err != nil {
-				return err
+		// input_json_delta chunks. An EMPTY input streams no deltas at all —
+		// the block stays the {} from content_block_start; the real API sends
+		// nothing (round-9 R9-6: a "null" delta made SDK accumulation set the
+		// snapshot's input to None).
+		if len(tc.Arguments) > 0 {
+			argsJSON, _ := json.Marshal(tc.Arguments)
+			argChunks := chunkString(string(argsJSON), 20)
+			for _, argChunk := range argChunks {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if err := sleepCtx(ctx, time.Duration(delayMs)*time.Millisecond); err != nil {
+					return err
+				}
+				if err := sse.WriteEvent("content_block_delta", anthropicContentBlockDelta{
+					Type: "content_block_delta", Index: blockIndex,
+					Delta: anthropicInputJSONDelta{Type: "input_json_delta", PartialJSON: argChunk},
+				}); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -244,11 +267,11 @@ func StreamAnthropic(
 	}
 	outputTokens := len(resp.Content)/4 + 1
 	if err := sse.WriteEvent("message_delta", anthropicMessageDelta{
-		Type:  "message_delta",
+		Type: "message_delta",
 		Delta: struct {
 			StopReason string `json:"stop_reason"`
 		}{StopReason: stopReason},
-		Usage: anthropicUsage{OutputTokens: outputTokens},
+		Usage: anthropicDeltaUsage{OutputTokens: outputTokens},
 	}); err != nil {
 		return err
 	}

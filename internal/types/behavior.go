@@ -1,5 +1,7 @@
 package types
 
+import "encoding/json"
+
 // BehaviorConfig defines how an agent responds to messages.
 type BehaviorConfig struct {
 	Scenarios []Scenario       `yaml:"scenarios" json:"scenarios"`
@@ -74,6 +76,36 @@ type ToolCallSpec struct {
 	// argument parser (FB-03 semantic errors). OpenAI only (the provider whose
 	// tool-call arguments are a JSON string).
 	RawArguments string `yaml:"raw_arguments,omitempty" json:"raw_arguments,omitempty"`
+}
+
+// ArgumentsJSON renders the call's arguments as the JSON object string the
+// OpenAI-family wire carries: RawArguments (scenario-planted, possibly
+// malformed — FB-03) wins verbatim; otherwise the structured Arguments are
+// marshaled, with nil/absent coerced to "{}" — never "null". A real model
+// always produces an object string; `json.loads(arguments)` returning None
+// crashes every standard dispatch loop (round-9 R9-6).
+func (tc ToolCallSpec) ArgumentsJSON() string {
+	if tc.RawArguments != "" {
+		return tc.RawArguments
+	}
+	if len(tc.Arguments) == 0 {
+		return "{}"
+	}
+	b, err := json.Marshal(tc.Arguments)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+// ArgumentsObject returns the arguments map, never nil — the Anthropic
+// (`input`) and Gemini (`args`) wires carry a REQUIRED object, and strict SDK
+// validation rejects a missing key (round-9 R9-6).
+func (tc ToolCallSpec) ArgumentsObject() map[string]any {
+	if tc.Arguments == nil {
+		return map[string]any{}
+	}
+	return tc.Arguments
 }
 
 // StreamingConfig controls SSE streaming behavior, including stream-timing

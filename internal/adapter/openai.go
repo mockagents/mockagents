@@ -1,7 +1,6 @@
 package adapter
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -27,6 +26,14 @@ type ChatCompletionRequest struct {
 	Temperature    *float64        `json:"temperature,omitempty"`
 	MaxTokens      *int            `json:"max_tokens,omitempty"`
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+	// StreamOptions carries include_usage — the final streaming chunk then
+	// reports usage (round-9 R9-9).
+	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
+}
+
+// StreamOptions is the Chat Completions streaming-options object.
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // OpenAIMessage represents a message in an OpenAI request/response.
@@ -155,10 +162,11 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 	// Convert to engine request.
 	convertedMsgs, imageCount := convertOpenAIMessages(req.Messages)
 	inbound := &engine.InboundRequest{
-		Model:     req.Model,
-		SessionID: extractSessionID(r),
-		Messages:  convertedMsgs,
-		Stream:    req.Stream,
+		Model:          req.Model,
+		SessionID:      extractSessionID(r),
+		Messages:       convertedMsgs,
+		Stream:         req.Stream,
+		ToolChoiceNone: req.ToolChoice == "none",
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID
@@ -226,7 +234,14 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 		if agent != nil {
 			streamCfg = agent.Spec.Behavior.Streaming
 		}
-		if err := streaming.StreamOpenAI(r.Context(), w, resp, streamCfg); err != nil {
+		// stream_options {include_usage:true} appends the final usage chunk
+		// (empty choices) before [DONE] — token-accounting callbacks
+		// (LangChain, Agents SDK) read usage only from that chunk (R9-9).
+		var usageTokens []int
+		if req.StreamOptions != nil && req.StreamOptions.IncludeUsage {
+			usageTokens = []int{sumMessageTokens(inbound.Messages), EstimateTokens(resp.Content)}
+		}
+		if err := streaming.StreamOpenAI(r.Context(), w, resp, streamCfg, usageTokens...); err != nil {
 			// Already started streaming; can't write error JSON.
 			return
 		}
@@ -274,11 +289,19 @@ func convertOpenAIMessages(msgs []OpenAIMessage) ([]engine.RequestMessage, int) 
 	for _, m := range msgs {
 		content, imgCount := extractStringContentWithImages(m.Content)
 		totalImages += imgCount
-		result = append(result, engine.RequestMessage{
+		rm := engine.RequestMessage{
 			Role:       m.Role,
 			Content:    content,
 			ImageCount: imgCount,
-		})
+			// Convergence-guard signals (round-9): a role:"tool" message is a
+			// tool result; an assistant message's echoed tool_calls are the
+			// fingerprint material — previously both were dropped here.
+			IsToolResult: m.Role == "tool",
+		}
+		for _, tc := range m.ToolCalls {
+			rm.ToolCalls = append(rm.ToolCalls, engine.EchoToolCall(tc.Function.Name, tc.Function.Arguments))
+		}
+		result = append(result, rm)
 	}
 	return result, totalImages
 }
@@ -343,13 +366,9 @@ func formatOpenAIResponse(resp *engine.Response, promptTokens, completionTokens 
 			if i < len(resp.ToolResults) {
 				callID = resp.ToolResults[i].ID
 			}
-			// raw_arguments lets a scenario plant malformed/invalid JSON args
-			// verbatim (FB-03); otherwise marshal the structured Arguments.
-			args := tc.RawArguments
-			if args == "" {
-				argsJSON, _ := json.Marshal(tc.Arguments)
-				args = string(argsJSON)
-			}
+			// raw_arguments verbatim (FB-03) or the structured Arguments,
+			// nil coerced to "{}" — never "null" (round-9 R9-6).
+			args := tc.ArgumentsJSON()
 			toolCalls = append(toolCalls, OpenAIToolCall{
 				ID:   callID,
 				Type: "function",
@@ -443,6 +462,9 @@ type openAIError struct {
 type openAIErrorBody struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
+	// Param is always rendered (null when no specific field is at fault) —
+	// the real error envelope carries it on every error (round-9 R9-14).
+	Param any `json:"param"`
 	// Code is OpenAI's stable machine-readable error code (e.g. invalid_api_key,
 	// rate_limit_exceeded). Omitted when empty so non-chaos errors are unchanged.
 	Code string `json:"code,omitempty"`

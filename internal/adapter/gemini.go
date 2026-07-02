@@ -22,6 +22,16 @@ type GeminiRequest struct {
 	SystemInstruction *GeminiContent          `json:"systemInstruction,omitempty"`
 	Tools             []GeminiToolDeclaration `json:"tools,omitempty"`
 	GenerationConfig  map[string]any          `json:"generationConfig,omitempty"`
+	// ToolConfig carries functionCallingConfig.mode; only NONE changes mock
+	// behavior (function calls suppressed — R9-5).
+	ToolConfig *GeminiToolConfig `json:"toolConfig,omitempty"`
+}
+
+// GeminiToolConfig is the request-side function-calling gate.
+type GeminiToolConfig struct {
+	FunctionCallingConfig *struct {
+		Mode string `json:"mode,omitempty"`
+	} `json:"functionCallingConfig,omitempty"`
 }
 
 // GeminiContent is one turn ("user" / "model") or the system instruction,
@@ -59,10 +69,12 @@ type GeminiFunctionDecl struct {
 	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
-// GeminiFunctionCall is an emitted function/tool call.
+// GeminiFunctionCall is an emitted function/tool call. Args uses omitzero so
+// an emitted no-arg call renders "args": {} (real-wire shape — R9-6/R9-12)
+// while request-side echoes without args stay key-free.
 type GeminiFunctionCall struct {
 	Name string         `json:"name"`
-	Args map[string]any `json:"args,omitempty"`
+	Args map[string]any `json:"args,omitzero"`
 }
 
 // --- Gemini Response Types ---
@@ -155,6 +167,8 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 		SessionID: extractSessionID(r),
 		Messages:  convertGeminiContents(req.Contents, req.SystemInstruction),
 		Stream:    stream,
+		ToolChoiceNone: req.ToolConfig != nil && req.ToolConfig.FunctionCallingConfig != nil &&
+			req.ToolConfig.FunctionCallingConfig.Mode == "NONE",
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID
@@ -256,7 +270,20 @@ func convertGeminiContents(contents []GeminiContent, system *GeminiContent) []en
 		if role == "model" {
 			role = "assistant"
 		}
-		result = append(result, engine.RequestMessage{Role: role, Content: joinGeminiParts(c.Parts)})
+		rm := engine.RequestMessage{Role: role, Content: joinGeminiParts(c.Parts)}
+		// Convergence-guard signals (round-9): a functionResponse part in ANY
+		// role (older clients use role:"function") marks a tool-result turn;
+		// functionCall parts are the echoed fingerprint material.
+		for _, p := range c.Parts {
+			if p.FunctionResponse != nil {
+				rm.IsToolResult = true
+			}
+			if p.FunctionCall != nil {
+				rm.ToolCalls = append(rm.ToolCalls, engine.EchoedToolCall{
+					Name: p.FunctionCall.Name, Arguments: p.FunctionCall.Args})
+			}
+		}
+		result = append(result, rm)
 	}
 	return result
 }
@@ -267,16 +294,15 @@ func joinGeminiParts(parts []GeminiPart) string {
 		if p.Text != "" {
 			out = append(out, p.Text)
 		}
-		// Surface tool-result content so scenario matching sees tool-result
-		// follow-up turns (mirrors the OpenAI/Anthropic tool_result handling).
-		if p.FunctionResponse != nil {
-			if p.FunctionResponse.Name != "" {
-				out = append(out, p.FunctionResponse.Name)
-			}
-			if len(p.FunctionResponse.Response) > 0 {
-				if b, err := json.Marshal(p.FunctionResponse.Response); err == nil {
-					out = append(out, string(b))
-				}
+		// Surface tool-result CONTENT so scenario matching sees tool-result
+		// follow-up turns (mirrors the Anthropic tool_result flattening). The
+		// tool NAME is deliberately excluded (round-9 R9-4): tools are named
+		// after their trigger keyword almost universally (get_weather /
+		// "weather"), so injecting the name re-fired the same scenario on
+		// every follow-up and the loop never converged.
+		if p.FunctionResponse != nil && len(p.FunctionResponse.Response) > 0 {
+			if b, err := json.Marshal(p.FunctionResponse.Response); err == nil {
+				out = append(out, string(b))
 			}
 		}
 	}
@@ -294,7 +320,7 @@ func formatGeminiResponse(resp *engine.Response, model string, promptTokens, can
 	}
 	for _, tc := range resp.ToolCalls {
 		parts = append(parts, GeminiPart{
-			FunctionCall: &GeminiFunctionCall{Name: tc.Name, Args: tc.Arguments},
+			FunctionCall: &GeminiFunctionCall{Name: tc.Name, Args: tc.ArgumentsObject()},
 		})
 	}
 
