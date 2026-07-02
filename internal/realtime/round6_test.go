@@ -337,6 +337,170 @@ func TestTranscriptionSession(t *testing.T) {
 	}
 }
 
+// R6-11/R6-12 (S3): voice-lock scoping — out-of-band audio does not lock the
+// conversation's voice, and a locked conversation rejects a per-response
+// voice override the same way it rejects a session.update.
+func TestVoiceLockScoping(t *testing.T) {
+	ctx := context.Background()
+
+	// OOB audio does NOT lock (it joins no conversation).
+	s := NewSession("r611", "", fakeGen("side audio"))
+	s.Handle(ctx, &ClientEvent{Type: "response.create", Response: []byte(`{"conversation":"none"}`)})
+	if evs := s.Handle(ctx, &ClientEvent{Type: "session.update",
+		Session: []byte(`{"audio":{"output":{"voice":"cedar"}}}`)}); evs[0]["type"] != "session.updated" {
+		t.Errorf("OOB audio locked the voice: %v", typesOf(evs))
+	}
+
+	// In-conversation audio DOES lock, and the lock covers response.create
+	// overrides (a per-response voice change is two voices in one conversation).
+	s2 := NewSession("r612", "", fakeGen("spoken"))
+	s2.Handle(ctx, &ClientEvent{Type: "response.create"})
+	evs := s2.Handle(ctx, &ClientEvent{Type: "response.create",
+		Response: []byte(`{"audio":{"output":{"voice":"cedar"}}}`)})
+	if evs[0]["type"] != "error" || evs[0]["error"].(map[string]any)["code"] != "cannot_update_voice" {
+		t.Errorf("per-response voice override bypassed the lock: %v", evs[0])
+	}
+	// An OOB override on the same locked session is still fine.
+	evs = s2.Handle(ctx, &ClientEvent{Type: "response.create",
+		Response: []byte(`{"conversation":"none","audio":{"output":{"voice":"cedar"}}}`)})
+	if firstEvent(evs, "response.done") == nil {
+		t.Errorf("OOB voice override rejected: %v", typesOf(evs))
+	}
+}
+
+// R6-13 (S3): a still-streaming assistant audio item (announced, content not
+// yet streamed) is a model-output-audio message — truncate must not reject it
+// with "Only model output audio messages can be truncated".
+func TestTruncateInProgressAudioItem(t *testing.T) {
+	ctx := context.Background()
+	s, fc := pacedSession(t, fakeGen("long spoken answer"), serverVAD)
+	endVADTurn(t, s)
+
+	// Announce the item (output_item.added + conversation.item.added).
+	var msgID string
+	for range 2 {
+		for _, ev := range s.Tick(ctx, fc.advance(10*time.Millisecond)) {
+			if ev["type"] == "conversation.item.added" {
+				msgID = ev["item"].(map[string]any)["id"].(string)
+			}
+		}
+	}
+	if msgID == "" {
+		t.Fatal("setup: item not announced")
+	}
+	evs := s.Handle(ctx, &ClientEvent{Type: "conversation.item.truncate",
+		ItemID: msgID, ContentIndex: 0, AudioEndMs: 50})
+	if evs[0]["type"] != "conversation.item.truncated" {
+		t.Errorf("truncate of in-progress audio item = %v, want conversation.item.truncated", evs[0])
+	}
+}
+
+// R6-15 (S3): the gpt-4o-transcribe* family reports TOKEN usage on
+// transcription.completed; duration stays whisper-1's shape.
+func TestTranscriptionUsageVariant(t *testing.T) {
+	ctx := context.Background()
+	usageFor := func(model string) map[string]any {
+		s := NewSession("r615", "", fakeGen("ok"))
+		s.Handle(ctx, &ClientEvent{Type: "session.update",
+			Session: []byte(`{"audio":{"input":{"transcription":{"model":"` + model + `"}}}}`)})
+		s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(500, speechAmp)})
+		evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"})
+		done := firstEvent(evs, "conversation.item.input_audio_transcription.completed")
+		if done == nil {
+			t.Fatalf("no transcription.completed for %s: %v", model, typesOf(evs))
+		}
+		return done["usage"].(map[string]any)
+	}
+	if u := usageFor("whisper-1"); u["type"] != "duration" {
+		t.Errorf("whisper-1 usage = %v, want the duration variant", u)
+	}
+	u := usageFor("gpt-4o-transcribe")
+	if u["type"] != "tokens" {
+		t.Fatalf("gpt-4o-transcribe usage = %v, want the tokens variant", u)
+	}
+	if u["total_tokens"] != u["input_tokens"].(int)+u["output_tokens"].(int) {
+		t.Errorf("token usage does not add up: %v", u)
+	}
+}
+
+// R6-16 (S3): retrieve returns the committed user audio (its documented
+// purpose); the item .added/.done events keep excluding it.
+func TestRetrieveReturnsCommittedAudio(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("r616", "", fakeGen("ok"))
+	chunk := pcmChunk(100, speechAmp)
+	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: chunk})
+	evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"})
+
+	added := firstEvent(evs, "conversation.item.added")
+	itemID := added["item"].(map[string]any)["id"].(string)
+	if _, has := added["item"].(map[string]any)["content"].([]any)[0].(map[string]any)["audio"]; has {
+		t.Error("item events must exclude audio data")
+	}
+
+	got := firstEvent(s.Handle(ctx, &ClientEvent{Type: "conversation.item.retrieve", ItemID: itemID}), "conversation.item.retrieved")
+	audio, _ := got["item"].(map[string]any)["content"].([]any)[0].(map[string]any)["audio"].(string)
+	if audio != chunk {
+		t.Errorf("retrieved audio length %d, want the appended payload (%d chars)", len(audio), len(chunk))
+	}
+}
+
+// R6-17 (S3): session.include item.input_audio_transcription.logprobs attaches
+// logprobs to the transcription delta and completed events.
+func TestTranscriptionLogprobsInclude(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("r617", "", fakeGen("ok"))
+	s.Handle(ctx, &ClientEvent{Type: "session.update", Session: []byte(
+		`{"include":["item.input_audio_transcription.logprobs"],"audio":{"input":{"transcription":{"model":"gpt-4o-transcribe"}}}}`)})
+	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(100, speechAmp)})
+	evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"})
+
+	delta := firstEvent(evs, "conversation.item.input_audio_transcription.delta")
+	lps, ok := delta["logprobs"].([]any)
+	if !ok || len(lps) == 0 {
+		t.Fatalf("delta missing logprobs: %v", delta)
+	}
+	lp := lps[0].(map[string]any)
+	if lp["token"] == "" || lp["logprob"] == nil {
+		t.Errorf("logprob entry = %v, want token+logprob", lp)
+	}
+	done := firstEvent(evs, "conversation.item.input_audio_transcription.completed")
+	if _, ok := done["logprobs"].([]any); !ok {
+		t.Errorf("completed missing logprobs: %v", done)
+	}
+	// Without the include flag, no logprobs appear.
+	s2 := NewSession("r617b", "", fakeGen("ok"))
+	s2.Handle(ctx, &ClientEvent{Type: "session.update", Session: []byte(
+		`{"audio":{"input":{"transcription":{"model":"gpt-4o-transcribe"}}}}`)})
+	s2.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(100, speechAmp)})
+	evs = s2.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"})
+	if _, ok := firstEvent(evs, "conversation.item.input_audio_transcription.delta")["logprobs"]; ok {
+		t.Error("logprobs emitted without the include opt-in")
+	}
+}
+
+// R6-18 (S3): an input_audio content part's transcript is matchable text —
+// conversation-restore flows re-create prior audio turns that way.
+func TestInputAudioTranscriptJoinsHistory(t *testing.T) {
+	ctx := context.Background()
+	var lastUser string
+	gen := func(_ context.Context, _, _ string, history []engine.RequestMessage) (*engine.Response, error) {
+		for _, m := range history {
+			if m.Role == "user" {
+				lastUser = m.Content
+			}
+		}
+		return &engine.Response{Content: "ok"}, nil
+	}
+	s := NewSession("r618", "", gen)
+	s.Handle(ctx, &ClientEvent{Type: "conversation.item.create", Item: []byte(
+		`{"type":"message","role":"user","content":[{"type":"input_audio","transcript":"restored audio turn"}]}`)})
+	s.Handle(ctx, &ClientEvent{Type: "response.create"})
+	if lastUser != "restored audio turn" {
+		t.Errorf("engine saw last user turn %q, want the input_audio transcript", lastUser)
+	}
+}
+
 // R6-1 (S1): disabling turn_detection must disarm the idle timeout — a Tick
 // firing afterwards nil-dereferenced the VAD state and killed the session.
 func TestIdleTimerDisarmedWhenVADDisabled(t *testing.T) {

@@ -192,8 +192,22 @@ type Session struct {
 	// pendingResponse queues the VAD auto-response for a turn that ended while
 	// a response was still in flight (a mid-speech response.create, or
 	// interrupt_response:false); Tick runs it when the inflight completes.
+	// Deliberate simplification: it is a bool, not a queue — several turns
+	// committed during one inflight coalesce into ONE auto-response (which
+	// sees all of them in history). GA's exact queueing semantics here are
+	// unverified.
 	pendingResponse bool
+	// audioBuf accumulates the decoded PCM of un-committed appends (bounded by
+	// maxBufferedAudioBytes) so conversation.item.retrieve can return the user
+	// audio — the event's documented purpose. Item .added/.done events always
+	// EXCLUDE audio; only the stored item carries it.
+	audioBuf []byte
 }
+
+// maxBufferedAudioBytes bounds the per-turn audio kept for retrieve (~40 s of
+// PCM16 @ 24 kHz); appends past the cap still count toward VAD/duration but
+// their bytes are dropped.
+const maxBufferedAudioBytes = 2 << 20
 
 // rememberItem indexes a completed conversation item for later retrieve /
 // delete / truncate, and returns it for inline use.
@@ -373,6 +387,12 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		s.audioBuffer = true
 		ms, energy := audioEnergy(ce.Audio)
 		s.bufferedMs += ms
+		// Keep the (bounded) audio bytes so retrieve can return them later.
+		if raw, err := base64.StdEncoding.DecodeString(ce.Audio); err == nil && len(s.audioBuf) < maxBufferedAudioBytes {
+			if n := min(len(raw), maxBufferedAudioBytes-len(s.audioBuf)); n > 0 {
+				s.audioBuf = append(s.audioBuf, raw[:n]...)
+			}
+		}
 		// With turn detection enabled the appended audio drives the VAD state
 		// machine (which may auto-commit and auto-respond); otherwise a mock
 		// just notes the buffer is non-empty.
@@ -384,6 +404,7 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 	case "input_audio_buffer.clear":
 		s.audioBuffer = false
 		s.bufferedMs = 0
+		s.audioBuf = nil
 		s.vadReset()
 		return []Event{{"type": "input_audio_buffer.cleared"}}
 
@@ -413,32 +434,72 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		if s.transcriptionEnabled() {
 			transcript = audioInputPlaceholder
 		}
-		out := append([]Event{
-			{"type": "input_audio_buffer.committed", "previous_item_id": prevItem, "item_id": itemID},
-		}, conversationItemEvents(prevItem, s.rememberItem(map[string]any{
+		emitted := map[string]any{
 			"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 			"role": "user", "content": []any{map[string]any{"type": "input_audio", "transcript": transcript}},
-		}))...)
+		}
+		out := append([]Event{
+			{"type": "input_audio_buffer.committed", "previous_item_id": prevItem, "item_id": itemID},
+		}, conversationItemEvents(prevItem, emitted)...)
+		// GA item events exclude audio data; retrieve returns it — so the
+		// STORED item is a copy carrying the buffered audio, while the emitted
+		// events use the audio-free map above.
+		if len(s.audioBuf) > 0 {
+			s.rememberItem(map[string]any{
+				"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
+				"role": "user", "content": []any{map[string]any{"type": "input_audio", "transcript": transcript,
+					"audio": base64.StdEncoding.EncodeToString(s.audioBuf)}},
+			})
+		} else {
+			s.rememberItem(emitted)
+		}
+		s.audioBuf = nil
 		if s.transcriptionEnabled() {
 			// GA streams the transcription: delta chunks, then completed with the
-			// full transcript and a REQUIRED usage field — the "duration" variant
-			// is the honest one for a mock (derived from the decoded audio length,
-			// deterministic; ASR-token billing does not apply here).
-			// Only the gpt-4o-transcribe* models stream word deltas; whisper-1
-			// emits ONE delta carrying the full transcript (per the docs).
+			// full transcript and a REQUIRED usage field. Only the
+			// gpt-4o-transcribe* models stream word deltas AND report token
+			// usage; whisper-1 emits ONE delta carrying the full transcript and
+			// reports the "duration" variant. (Divergence, documented: GA
+			// transcription is asynchronous and typically lands after the
+			// response starts; the mock emits it synchronously on commit.)
 			chunks := chunkText(audioInputPlaceholder)
-			if s.transcriptionModel() == "whisper-1" {
+			model := s.transcriptionModel()
+			if model == "whisper-1" {
 				chunks = []string{audioInputPlaceholder}
 			}
+			logprobs := s.includesTranscriptionLogprobs()
+			var allLogprobs []any
 			for _, chunk := range chunks {
-				out = append(out, Event{"type": "conversation.item.input_audio_transcription.delta",
-					"item_id": itemID, "content_index": 0, "delta": chunk})
+				delta := Event{"type": "conversation.item.input_audio_transcription.delta",
+					"item_id": itemID, "content_index": 0, "delta": chunk}
+				if logprobs {
+					lp := logprobEntry(chunk)
+					delta["logprobs"] = []any{lp}
+					allLogprobs = append(allLogprobs, lp)
+				}
+				out = append(out, delta)
 			}
-			out = append(out, Event{
+			var usage map[string]any
+			if model == "" || model == "whisper-1" {
+				usage = map[string]any{"type": "duration", "seconds": committedSeconds}
+			} else {
+				// Deterministic audio-token derivation: 10 tokens per second.
+				inTokens := int(committedSeconds * 10)
+				outTokens := wordCount(audioInputPlaceholder)
+				usage = map[string]any{"type": "tokens",
+					"input_tokens": inTokens, "output_tokens": outTokens, "total_tokens": inTokens + outTokens,
+					"input_token_details": map[string]any{"text_tokens": 0, "audio_tokens": inTokens},
+				}
+			}
+			completed := Event{
 				"type":    "conversation.item.input_audio_transcription.completed",
 				"item_id": itemID, "content_index": 0, "transcript": audioInputPlaceholder,
-				"usage": map[string]any{"type": "duration", "seconds": committedSeconds},
-			})
+				"usage": usage,
+			}
+			if logprobs {
+				completed["logprobs"] = allLogprobs
+			}
+			out = append(out, completed)
 		}
 		return out
 
@@ -567,7 +628,12 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 				}
 			}
 		}
-		if item["type"] != "message" || item["role"] != "assistant" || !hasAudio {
+		// A still-streaming assistant item of an audio-mode response has no
+		// content yet — it IS a model-output-audio message, so it must not
+		// trip the rejection below just because its part hasn't opened.
+		inProgressAudio := item["type"] == "message" && item["role"] == "assistant" &&
+			item["status"] == "in_progress" && s.inflight != nil && !s.inflight.rc.textOnly()
+		if (item["type"] != "message" || item["role"] != "assistant" || !hasAudio) && !inProgressAudio {
 			// Real capture: code null, param null, this exact message — not an
 			// invalid_value/param-bearing rejection.
 			body := s.errorBody("invalid_request_error", "", "Only model output audio messages can be truncated")
@@ -712,6 +778,14 @@ func (rc *responseCtx) textOnly() bool {
 // (whose output lists every item).
 func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 	rc := s.newResponseCtx(ce.Response)
+	// The voice lock covers per-response overrides too: once the conversation
+	// holds assistant audio, an in-conversation response in a DIFFERENT voice
+	// is rejected the same way a session.update would be (out-of-band
+	// responses join no conversation and may override freely).
+	if s.respondedWithAudio && !rc.outOfBand && rc.voice != s.effectiveVoice() {
+		return []Event{{"type": "error", "error": s.errorBody("invalid_request_error",
+			"cannot_update_voice", "Cannot update a conversation's voice if assistant audio is present.")}}
+	}
 	// Only one response may WRITE TO THE DEFAULT CONVERSATION at a time — but
 	// GA explicitly allows out-of-band responses (conversation:"none") to run
 	// in parallel; those are burst-emitted below and never occupy the inflight
@@ -827,7 +901,10 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 		return s.beginPacedResponse(respID, rc, out, appendHistory)
 	}
 	appendHistory()
-	if emitMessage && !rc.textOnly() {
+	// Out-of-band audio joins no conversation, so it does not lock the
+	// CONVERSATION's voice (the GA error is explicit: "a conversation's
+	// voice").
+	if emitMessage && !rc.textOnly() && !rc.outOfBand {
 		s.respondedWithAudio = true // this burst emitted output_audio — voice is now locked
 	}
 	// A burst response's whole ladder reaches the client now — join its items
@@ -1325,6 +1402,27 @@ func (s *Session) transcriptionModel() string {
 	return cfg.Model
 }
 
+// includesTranscriptionLogprobs reports whether the client opted into
+// transcription logprobs via session.include.
+func (s *Session) includesTranscriptionLogprobs() bool {
+	var include []string
+	if json.Unmarshal(s.cfg.include, &include) != nil {
+		return false
+	}
+	return slices.Contains(include, "item.input_audio_transcription.logprobs")
+}
+
+// logprobEntry builds one deterministic GA LogProbProperties object for a
+// transcription delta chunk (a mock has no acoustic model — a fixed logprob
+// exercises the client's parsing, which is what matters).
+func logprobEntry(token string) map[string]any {
+	bs := make([]any, 0, len(token))
+	for _, b := range []byte(token) {
+		bs = append(bs, int(b))
+	}
+	return map[string]any{"token": token, "logprob": -0.1, "bytes": bs}
+}
+
 // applyConfig merges an inbound session.update payload into the effective
 // session config, accepting both the GA nested (audio.*) and beta flat shapes.
 func (s *Session) applyConfig(raw json.RawMessage) {
@@ -1476,18 +1574,26 @@ type parsedItem struct {
 	Content   json.RawMessage `json:"content"` // kept raw so the ack can echo it verbatim
 }
 
-// text joins the item's text-bearing content parts (the mock's matchable payload).
+// text joins the item's text-bearing content parts (the mock's matchable
+// payload). input_audio parts carry their matchable text in `transcript`
+// rather than `text` — conversation-restore flows re-create prior audio turns
+// that way, and those turns must stay visible to scenario matching.
 func (it *parsedItem) text() string {
 	var parts []struct {
-		Text string `json:"text"`
+		Text       string `json:"text"`
+		Transcript string `json:"transcript"`
 	}
 	if json.Unmarshal(it.Content, &parts) != nil {
 		return ""
 	}
 	var out []string
 	for _, p := range parts {
-		if p.Text != "" {
-			out = append(out, p.Text)
+		t := p.Text
+		if t == "" {
+			t = p.Transcript
+		}
+		if t != "" {
+			out = append(out, t)
 		}
 	}
 	return strings.Join(out, " ")
