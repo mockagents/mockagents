@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/types"
@@ -121,6 +122,13 @@ type Session struct {
 	// vad is the server turn-detection state machine (vad.go); nil when the
 	// client has not enabled turn_detection.
 	vad *vadState
+	// Phase-2 deadline state (pace.go): the injected clock (nil = time.Now),
+	// the transport's paced-emission interval (0 = burst), the paced response
+	// currently mid-emission, and the armed idle-timeout deadline (zero = none).
+	now          func() time.Time
+	paceInterval time.Duration
+	inflight     *inflightResponse
+	idleAt       time.Time
 }
 
 // rememberItem indexes a completed conversation item for later retrieve /
@@ -228,6 +236,7 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			return []Event{s.errorEvent("input_audio_buffer_commit_empty", "cannot commit an empty input audio buffer")}
 		}
 		s.audioBuffer = false
+		s.idleAt = time.Time{} // user activity resets the idle timeout
 		// A VAD-detected turn pre-announced its item id on speech_started; the
 		// committed item must carry that exact id. Manual turns mint one here.
 		var prevItem any
@@ -261,6 +270,7 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		return out
 
 	case "conversation.item.create":
+		s.idleAt = time.Time{} // user activity resets the idle timeout
 		it := parseItem(ce.Item)
 		prevItem, itemID := s.newConversationItem()
 		switch it.Type {
@@ -331,10 +341,13 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			"item_id": ce.ItemID, "content_index": ce.ContentIndex, "audio_end_ms": ce.AudioEndMs}}
 
 	case "response.cancel":
-		// The mock generates responses atomically, so there is never an
-		// in-flight response to cancel. The real API also errors in that
-		// situation — but with this cancel-specific code, which SDKs recognize
-		// and suppress (unknown_event they surface as a protocol failure).
+		// A paced response can actually be in flight now — cancel it. Otherwise
+		// (burst mode, or nothing running) the real API also errors, with this
+		// cancel-specific code that SDKs recognize and suppress (unknown_event
+		// they surface as a protocol failure).
+		if s.inflight != nil {
+			return s.cancelInflight("client_cancelled")
+		}
 		return []Event{s.errorEvent("response_cancel_not_active", "Cancellation failed: no active response found")}
 
 	default:
@@ -402,6 +415,13 @@ func (rc *responseCtx) textOnly() bool {
 // loop from. The ladder opens with response.created and ends with response.done
 // (whose output lists every item).
 func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
+	// One response at a time — the real API rejects a second response.create
+	// while one is active on the conversation.
+	if s.inflight != nil {
+		return []Event{s.errorEvent("conversation_already_has_active_response",
+			"Conversation already has an active response")}
+	}
+	s.idleAt = time.Time{} // user activity resets the idle timeout
 	respID := s.nextID("resp")
 	rc := s.newResponseCtx(ce.Response)
 
@@ -424,9 +444,13 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 		transcript = "(no content)"
 	}
 	// An out-of-band response never joins the default conversation, so its
-	// transcript must not become context for later turns.
-	if emitMessage && !rc.outOfBand {
-		s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: transcript})
+	// transcript must not become context for later turns. For a paced response
+	// the append is deferred to completion — a cancelled response leaves no
+	// transcript behind.
+	appendHistory := func() {
+		if emitMessage && !rc.outOfBand {
+			s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: transcript})
+		}
 	}
 	outputTokens := wordCount(transcript)
 
@@ -462,6 +486,15 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 		"output_token_details": map[string]any{"text_tokens": outputTokens, "audio_tokens": 0},
 	}
 	out = append(out, Event{"type": "response.done", "response": done})
+
+	// Paced sessions emit response.created + rate_limits now and the rest of
+	// the ladder against deadlines (Tick) — the interruption window barge-in
+	// and response.cancel need. Burst mode returns everything at once.
+	if s.paced() {
+		return s.beginPacedResponse(respID, rc, out, appendHistory)
+	}
+	appendHistory()
+	s.armIdleTimer()
 	return out
 }
 

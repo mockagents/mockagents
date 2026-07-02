@@ -24,6 +24,29 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   identically.
 
 ### Added
+- **Realtime server VAD Phase 2: paced responses, barge-in, idle timeout** —
+  the `Session` now exposes a deadline API (`NextDeadline()` / `Tick(ctx, now)`;
+  it still never spawns a goroutine or arms a timer itself) and the WebSocket
+  transport selects between the client's next frame and the session's next
+  deadline. On VAD-enabled sessions responses are **paced**: `response.created`
+  + `rate_limits.updated` are sent immediately and the rest of the ladder
+  streams one event per interval — creating the interruption window that makes
+  barge-in real. A VAD speech start now **cancels an in-flight response**
+  (`response.done` with `status:"cancelled"`,
+  `status_details.reason:"turn_detected"`; the cancelled transcript never enters
+  the conversation history) unless `interrupt_response:false`;
+  `response.cancel` cancels likewise (`reason:"client_cancelled"`) and only
+  errors with `response_cancel_not_active` when nothing is in flight; a second
+  `response.create` during one is rejected with
+  `conversation_already_has_active_response`. **`idle_timeout_ms`** is honored:
+  after a response completes the deadline fires
+  `input_audio_buffer.timeout_triggered` (an empty segment), commits a
+  null-transcript user item, and auto-runs a follow-up response — the history
+  gains a `[silence]` user turn so scenarios can match "are you still there?"
+  flows. Documented simplifications: pacing uses a constant inter-event
+  interval (StreamingConfig TTFT/ITL physics are a follow-on) and the idle
+  deadline is `response.done` + `idle_timeout_ms` (no playback-duration
+  offset). Burst emission remains the default for non-VAD sessions.
 - **Realtime server VAD / turn detection (Phase 1)** — when a client enables
   `turn_detection` via `session.update`, the appended audio now drives a real
   (deterministic, pure-Go) energy detector over the PCM16 payload: speech onset

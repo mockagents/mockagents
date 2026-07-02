@@ -14,19 +14,27 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+	"time"
 )
 
 // vadConfig is the decoded turn_detection session config. Defaults follow the
 // GA reference: threshold 0.5, prefix_padding_ms 300, silence_duration_ms 500,
-// create_response true. interrupt_response and idle_timeout_ms are accepted but
-// inert in Phase 1 (they need the deadline-driven async model).
+// create_response true, interrupt_response true.
 type vadConfig struct {
 	Type              string  `json:"type"` // "server_vad" | "semantic_vad"
 	Threshold         float64 `json:"threshold"`
 	PrefixPaddingMs   int     `json:"prefix_padding_ms"`
 	SilenceDurationMs int     `json:"silence_duration_ms"`
-	CreateResponse    *bool   `json:"create_response"` // nil → true
-	Eagerness         string  `json:"eagerness"`       // semantic_vad: low|medium|high|auto
+	CreateResponse    *bool   `json:"create_response"`    // nil → true
+	InterruptResponse *bool   `json:"interrupt_response"` // nil → true (Phase 2: cancels an in-flight paced response on speech start)
+	IdleTimeoutMs     int     `json:"idle_timeout_ms"`    // Phase 2: 0 = off
+	Eagerness         string  `json:"eagerness"`          // semantic_vad: low|medium|high|auto
+}
+
+// interrupts reports whether a VAD speech start should cancel an in-flight
+// response (GA default: yes).
+func (c *vadConfig) interrupts() bool {
+	return c.InterruptResponse == nil || *c.InterruptResponse
 }
 
 // vadState is the per-session turn-detection state machine. All durations are
@@ -126,6 +134,10 @@ func (s *Session) vadAppend(ctx context.Context, audioB64 string) []Event {
 	v.totalMs += ms
 	speech := energy >= v.cfg.Threshold
 
+	if speech {
+		s.idleAt = time.Time{} // the user is talking — reset any idle timeout
+	}
+
 	if !v.speechActive {
 		if !speech {
 			return nil // leading / inter-turn silence
@@ -138,8 +150,14 @@ func (s *Session) vadAppend(ctx context.Context, audioB64 string) []Event {
 		if audioStart < 0 {
 			audioStart = 0
 		}
-		return []Event{{"type": "input_audio_buffer.speech_started",
+		out := []Event{{"type": "input_audio_buffer.speech_started",
 			"audio_start_ms": int(audioStart), "item_id": v.pendingItemID}}
+		// Barge-in: a VAD start event interrupts an in-flight (paced) response
+		// unless the client set interrupt_response:false.
+		if s.inflight != nil && v.cfg.interrupts() {
+			out = append(out, s.cancelInflight("turn_detected")...)
+		}
+		return out
 	}
 
 	if speech {
@@ -162,7 +180,10 @@ func (s *Session) vadEndOfTurn(ctx context.Context) []Event {
 	out := []Event{{"type": "input_audio_buffer.speech_stopped",
 		"audio_end_ms": int(endMs), "item_id": v.pendingItemID}}
 	out = append(out, s.handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"})...)
-	if v.cfg.CreateResponse == nil || *v.cfg.CreateResponse {
+	// Auto-respond unless disabled — or unless a response is still in flight
+	// (interrupt_response:false let it survive the barge-in; don't stack a
+	// second one on top).
+	if (v.cfg.CreateResponse == nil || *v.cfg.CreateResponse) && s.inflight == nil {
 		out = append(out, s.createResponse(ctx, &ClientEvent{})...)
 	}
 	return out

@@ -1,6 +1,11 @@
 # Design: Server VAD / turn detection for the mock Realtime API (F5)
 
-**Status:** Phase 1 implemented (`internal/realtime/vad.go`) · Phases 2–3 proposed
+**Status:** Phases 1–2 implemented (`internal/realtime/vad.go`, `pace.go`) · Phase 3 proposed
+**Phase-2 deviations from this design:** `Tick` takes a `ctx` (idle-triggered
+generation needs one); pacing uses a constant inter-event interval
+(`adapter.realtimePaceInterval`) — plumbing the agent's `StreamingConfig`
+TTFT/ITL physics through the Generator remains a follow-on; the idle deadline
+is `response.done` + `idle_timeout_ms` with no playback-duration offset.
 **Origin:** round-3 fidelity eval, finding F5 (S1, architectural)
 **Scope:** `internal/realtime` + `internal/adapter/realtime.go`
 

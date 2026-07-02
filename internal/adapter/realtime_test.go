@@ -96,6 +96,50 @@ func TestRealtime_WebSocketServerVADTurn(t *testing.T) {
 	require.NoError(t, c.Close(websocket.StatusNormalClosure, ""))
 }
 
+// Phase 2 over the wire: after a VAD turn's response completes, the server's
+// idle timeout fires on its own — the client sends nothing and still receives
+// timeout_triggered plus the follow-up response.
+func TestRealtime_WebSocketIdleTimeout(t *testing.T) {
+	base, closeFn := realtimeServer(t)
+	defer closeFn()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(base, "http") + "/v1/realtime?model=gpt-4o"
+	c, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{Subprotocols: []string{"realtime"}})
+	require.NoError(t, err)
+	defer c.CloseNow()
+
+	require.Equal(t, "session.created", wsRead(t, ctx, c)["type"])
+	wsWrite(t, ctx, c, map[string]any{"type": "session.update", "session": map[string]any{
+		"audio": map[string]any{"input": map[string]any{"turn_detection": map[string]any{
+			"type": "server_vad", "idle_timeout_ms": 150}}}}})
+	require.Equal(t, "session.updated", wsRead(t, ctx, c)["type"])
+
+	// One VAD turn, then go silent (no frames at all).
+	wsWrite(t, ctx, c, map[string]any{"type": "input_audio_buffer.append", "audio": pcmB64(400, 20000)})
+	wsWrite(t, ctx, c, map[string]any{"type": "input_audio_buffer.append", "audio": pcmB64(600, 0)})
+	for wsRead(t, ctx, c)["type"] != "response.done" {
+	}
+
+	// The idle timeout fires server-side: timeout_triggered, the empty-segment
+	// commit, and a follow-up response — all without another client frame.
+	var seen []string
+	for {
+		ev := wsRead(t, ctx, c)
+		seen = append(seen, ev["type"].(string))
+		if ev["type"] == "response.done" {
+			break
+		}
+	}
+	require.Equal(t, "input_audio_buffer.timeout_triggered", seen[0])
+	for _, want := range []string{"input_audio_buffer.committed", "conversation.item.added", "response.created"} {
+		require.Contains(t, seen, want)
+	}
+	require.NoError(t, c.Close(websocket.StatusNormalClosure, ""))
+}
+
 func TestRealtime_WebSocketEndToEnd(t *testing.T) {
 	base, closeFn := realtimeServer(t)
 	defer closeFn()
