@@ -36,6 +36,10 @@ type Response struct {
 	// fixture (FB-02). Adapters advertise it via the X-Mockagents-Hallucination
 	// response header.
 	Hallucination *types.HallucinationSpec `json:"hallucination,omitempty"`
+	// StrictWarnings carries strict-tools violations detected in WARN mode
+	// (round-11). Adapters surface them via the
+	// X-Mockagents-Strict-Violation response header; the request succeeds.
+	StrictWarnings []string `json:"strict_warnings,omitempty"`
 }
 
 // TemplateContext provides data available to Go templates in response content.

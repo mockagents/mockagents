@@ -23,6 +23,7 @@
       "additionalProperties": false,
       "properties": {
         "protocolVersion": { "type": "string", "description": "MCP protocol version returned by initialize." },
+        "strictArgs": { "type": "boolean", "description": "Validate tools/call arguments against each tool's inputSchema (default true). Violations return an isError:true execution result. Set false to accept any arguments.", "default": true },
         "capabilities": {
           "type": "object",
           "additionalProperties": false,

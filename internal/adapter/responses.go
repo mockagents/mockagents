@@ -323,11 +323,13 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 	}
 
 	inbound := &engine.InboundRequest{
-		Model:          req.Model,
-		SessionID:      responsesSessionID(r, req.PreviousResponseID),
-		Messages:       messages,
-		Stream:         req.Stream,
-		ToolChoiceNone: strings.TrimSpace(string(req.ToolChoice)) == `"none"`,
+		Model:            req.Model,
+		SessionID:        responsesSessionID(r, req.PreviousResponseID),
+		Messages:         messages,
+		Stream:           req.Stream,
+		ToolChoice:       parseResponsesToolChoice(req.ToolChoice, req.ParallelToolCalls),
+		RequestToolNames: responsesToolNames(req.Tools),
+		StrictFunctions:  responsesStrictFunctions(req.Tools),
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID
@@ -350,6 +352,10 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 			}
 			errType, code := openAIChaosError(ce.StatusCode)
 			writeErrorCode(w, ce.StatusCode, errType, code, ce.Message)
+			return
+		}
+		if se := engine.AsStrictToolError(err); se != nil {
+			writeResponsesStrictError(w, se)
 			return
 		}
 		status := http.StatusInternalServerError
@@ -382,9 +388,16 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 	// guard needs the fingerprint material — previously only text survived.
 	if len(resp.ToolCalls) > 0 {
 		echoed := make([]engine.EchoedToolCall, 0, len(resp.ToolCalls))
-		for _, tc := range resp.ToolCalls {
-			echoed = append(echoed, engine.EchoedToolCall{
-				Name: tc.Name, Arguments: tc.Arguments, RawArguments: tc.RawArguments})
+		for i, tc := range resp.ToolCalls {
+			e := engine.EchoedToolCall{
+				Name: tc.Name, Arguments: tc.Arguments, RawArguments: tc.RawArguments}
+			// Persist the emitted call_id too (round-11): strict round-trip id
+			// validation must see the id across a previous_response_id hop —
+			// this store was the one place the material didn't survive.
+			if i < len(resp.ToolResults) {
+				e.ID = resp.ToolResults[i].ID
+			}
+			echoed = append(echoed, e)
 		}
 		stored = append(stored, engine.RequestMessage{Role: "assistant", ToolCalls: echoed})
 	}
@@ -411,6 +424,7 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 	}
 
 	setHallucinationHeader(w, resp)
+	setStrictViolationHeader(w, resp)
 
 	if req.Stream {
 		streamCfg := h.streamConfigFor(r, req.Model)
@@ -467,9 +481,103 @@ func parseResponsesInput(raw json.RawMessage) ([]engine.RequestMessage, error) {
 
 	msgs := make([]engine.RequestMessage, 0, len(items))
 	for _, it := range items {
-		msgs = append(msgs, responsesItemToMessage(it.Type, it.Role, it.Content, it.Output, it.Name, it.Arguments))
+		msgs = append(msgs, responsesItemToMessage(it.Type, it.Role, it.Content, it.Output, it.Name, it.Arguments, it.CallID))
 	}
 	return msgs, nil
+}
+
+// responsesToolNames collects the request's declared function names from the
+// raw tools echoes — flat Responses form ({"type":"function","name":…}) with
+// the nested Chat form tolerated (round-11).
+func responsesToolNames(tools []json.RawMessage) []string {
+	var names []string
+	for _, raw := range tools {
+		var t struct {
+			Name     string `json:"name"`
+			Function *struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		}
+		if json.Unmarshal(raw, &t) != nil {
+			continue
+		}
+		name := t.Name
+		if name == "" && t.Function != nil {
+			name = t.Function.Name
+		}
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// responsesStrictFunctions collects strict:true function tools from the raw
+// tools echoes (flat Responses form; nested Chat form tolerated) for
+// schema-subset validation (round-11 R9-16b).
+func responsesStrictFunctions(tools []json.RawMessage) []engine.StrictFunction {
+	var out []engine.StrictFunction
+	for i, raw := range tools {
+		var t struct {
+			Name       string         `json:"name"`
+			Strict     *bool          `json:"strict"`
+			Parameters map[string]any `json:"parameters"`
+			Function   *struct {
+				Name       string         `json:"name"`
+				Strict     *bool          `json:"strict"`
+				Parameters map[string]any `json:"parameters"`
+			} `json:"function"`
+		}
+		if json.Unmarshal(raw, &t) != nil {
+			continue
+		}
+		name, strict, params := t.Name, t.Strict, t.Parameters
+		if name == "" && t.Function != nil {
+			name, strict, params = t.Function.Name, t.Function.Strict, t.Function.Parameters
+		}
+		if strict != nil && *strict {
+			out = append(out, engine.StrictFunction{Index: i, Name: name, Parameters: params})
+		}
+	}
+	return out
+}
+
+// parseResponsesToolChoice maps the Responses tool_choice (a string, the flat
+// {"type":"function","name":…} object, or the nested Chat form) plus
+// parallel_tool_calls into the engine's provider-neutral contract.
+func parseResponsesToolChoice(raw json.RawMessage, parallel *bool) engine.ToolChoice {
+	out := engine.ToolChoice{ParallelDisabled: parallel != nil && !*parallel}
+	if len(raw) == 0 {
+		return out
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		switch s {
+		case "none":
+			out.None = true
+		case "required":
+			out.Required = true
+		}
+		return out
+	}
+	var obj struct {
+		Type     string `json:"type"`
+		Name     string `json:"name"`
+		Function *struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}
+	if json.Unmarshal(raw, &obj) == nil && obj.Type == "function" {
+		name := obj.Name
+		if name == "" && obj.Function != nil {
+			name = obj.Function.Name
+		}
+		if name != "" {
+			out.Name = name
+			out.Required = true
+		}
+	}
+	return out
 }
 
 // responsesItemToMessage maps a single Responses/Conversations Item to a flat
@@ -480,19 +588,26 @@ func parseResponsesInput(raw json.RawMessage) ([]engine.RequestMessage, error) {
 // produce identical history (review finding X-001). The discriminator is the
 // item type (plus role for plain messages); content/output are the raw JSON
 // payloads each kind carries.
-func responsesItemToMessage(itemType, role string, content, output json.RawMessage, name, arguments string) engine.RequestMessage {
+func responsesItemToMessage(itemType, role string, content, output json.RawMessage, name, arguments, callID string) engine.RequestMessage {
 	switch itemType {
 	case "function_call_output":
 		// A tool result fed back in. Map to a "tool" role so it joins the
 		// history; its text never becomes the matched user message. The
-		// IsToolResult mark feeds the convergence guard (round-9).
-		return engine.RequestMessage{Role: "tool", Content: rawToString(output), IsToolResult: true}
+		// IsToolResult mark feeds the convergence guard (round-9); the call_id
+		// is the strict-mode round-trip material (round-11).
+		rm := engine.RequestMessage{Role: "tool", Content: rawToString(output), IsToolResult: true}
+		if callID != "" {
+			rm.ToolResultIDs = []string{callID}
+		}
+		return rm
 	case "function_call":
 		// An echoed prior tool call. Keep it in history as an assistant turn; it
 		// carries no user-visible text to match on, but its name+arguments are
 		// the convergence guard's fingerprint material (round-9).
+		echoed := engine.EchoToolCall(name, arguments)
+		echoed.ID = callID
 		return engine.RequestMessage{Role: "assistant", Content: "",
-			ToolCalls: []engine.EchoedToolCall{engine.EchoToolCall(name, arguments)}}
+			ToolCalls: []engine.EchoedToolCall{echoed}}
 	default:
 		// "message" or a role-only object.
 		if role == "" {

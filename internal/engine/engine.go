@@ -26,12 +26,50 @@ type InboundRequest struct {
 	SessionID string           `json:"session_id"`
 	Messages  []RequestMessage `json:"messages"`
 	Stream    bool             `json:"stream,omitempty"`
-	// ToolChoiceNone marks a request whose tool_choice explicitly forbids
-	// tool calls (OpenAI "none", Anthropic {type:"none"}, Gemini mode NONE) —
-	// the standard forced-final-answer escape hatch. The engine strips any
-	// scenario-emitted calls (round-9 R9-5). required/named-function
-	// enforcement is a separate decision (needs response synthesis).
-	ToolChoiceNone bool `json:"tool_choice_none,omitempty"`
+	// ToolChoice is the provider-neutral tool_choice contract, populated by
+	// each adapter from its wire spelling (round-11 widened round-9's
+	// none-only flag). None is always honored (R9-5); Required/Name/
+	// AllowedNames/ParallelDisabled are enforced only under the strict-tools
+	// knob (see StrictToolsFor).
+	ToolChoice ToolChoice `json:"tool_choice,omitzero"`
+	// RequestToolNames are the tool/function names the REQUEST declared —
+	// what a real API validates a named tool_choice against (round-11).
+	RequestToolNames []string `json:"request_tool_names,omitempty"`
+	// StrictFunctions are the request's function tools declared with
+	// strict:true. The real API validates their schemas against the
+	// structured-outputs subset at request time; the schemas dimension of
+	// the strict-tools knob mirrors that (round-11 R9-16b).
+	StrictFunctions []StrictFunction `json:"strict_functions,omitempty"`
+}
+
+// StrictFunction is one strict:true function tool from the request: its
+// tools[] index (for the error's param path), name, and parameters schema.
+type StrictFunction struct {
+	Index      int            `json:"index"`
+	Name       string         `json:"name"`
+	Parameters map[string]any `json:"parameters,omitempty"`
+}
+
+// ToolChoice is the parsed tool_choice + parallel-call contract shared by
+// every protocol: OpenAI "none"/"required"/named function (+
+// parallel_tool_calls:false), Anthropic {type: none|any|tool} (+
+// disable_parallel_tool_use), Gemini functionCallingConfig mode NONE/ANY (+
+// allowedFunctionNames).
+type ToolChoice struct {
+	// None: the client explicitly forbade tool calls.
+	None bool `json:"none,omitempty"`
+	// Required: the model MUST call at least one tool (OpenAI "required",
+	// Anthropic "any", Gemini ANY). Also set when Name forces a specific one.
+	Required bool `json:"required,omitempty"`
+	// Name forces one specific tool (OpenAI named function, Anthropic
+	// {type:"tool"}, a single-entry allowedFunctionNames).
+	Name string `json:"name,omitempty"`
+	// AllowedNames limits which tools may be called (Gemini
+	// allowedFunctionNames under mode ANY).
+	AllowedNames []string `json:"allowed_names,omitempty"`
+	// ParallelDisabled caps the response to at most one tool call
+	// (parallel_tool_calls:false / disable_parallel_tool_use:true).
+	ParallelDisabled bool `json:"parallel_disabled,omitempty"`
 }
 
 // RequestMessage is a single message from the client request.
@@ -52,6 +90,11 @@ type RequestMessage struct {
 	// the request history — the fingerprint material the convergence guard
 	// compares the newly generated calls against.
 	ToolCalls []EchoedToolCall `json:"tool_calls,omitempty"`
+	// ToolResultIDs are the tool-call ids this tool-result message references
+	// (tool_call_id / tool_use_id / call_id; the function NAME on Gemini,
+	// which has no ids). Strict-mode round-trip validation matches them
+	// against prior EchoedToolCall.IDs (round-11 R9-15).
+	ToolResultIDs []string `json:"tool_result_ids,omitempty"`
 }
 
 // EchoedToolCall is one tool call present in the request history (the client
@@ -59,6 +102,10 @@ type RequestMessage struct {
 // RawArguments keeps the verbatim string for payloads that do not parse
 // (scenario-planted malformed JSON must fingerprint verbatim).
 type EchoedToolCall struct {
+	// ID is the wire id the call was echoed under (call_/toolu_; the function
+	// NAME on Gemini, which addresses calls by name). Strict-mode round-trip
+	// validation matches tool results against these (round-11).
+	ID           string         `json:"id,omitempty"`
 	Name         string         `json:"name"`
 	Arguments    map[string]any `json:"arguments,omitempty"`
 	RawArguments string         `json:"raw_arguments,omitempty"`
@@ -180,6 +227,53 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 		return nil, ErrEmptyMessage
 	}
 
+	// Strict-tools request validation (round-11): round-trip id coherence is
+	// a request-shape check real APIs run before any generation. In warn
+	// mode the violation is collected and surfaced on the response (header +
+	// log) instead of failing.
+	strictModes := StrictToolsFor(agent)
+	var strictWarnings []string
+	strictViolation := func(v *StrictToolError, mode StrictMode) error {
+		if mode == StrictEnforce {
+			if traceOn {
+				observability.RecordError(span, v)
+			}
+			return v
+		}
+		strictWarnings = append(strictWarnings, v.Message)
+		e.Logger.Warn("strict-tools violation (warn mode)",
+			"agent", agent.Metadata.Name, "check", v.Check, "kind", v.Kind, "violation", v.Message)
+		return nil
+	}
+	if strictModes.IDs != StrictOff {
+		if v := validateRoundTripIDs(req.Messages); v != nil {
+			if err := strictViolation(v, strictModes.IDs); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if strictModes.ToolChoice != StrictOff {
+		// A named tool_choice must exist among the request's declared tools —
+		// real APIs 400 it before any generation.
+		if v := validateToolChoiceName(req.ToolChoice, req.RequestToolNames); v != nil {
+			if err := strictViolation(v, strictModes.ToolChoice); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if strictModes.Schemas != StrictOff {
+		// strict:true function schemas are validated against the
+		// structured-outputs subset at request time, exactly as the real API
+		// does (R9-16b).
+		for _, sf := range req.StrictFunctions {
+			if v := validateStrictFunctionSchema(sf); v != nil {
+				if err := strictViolation(v, strictModes.Schemas); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
 	// 3. Get or create session. Session state is namespaced by tenant and
 	// agent so neither two tenants (X-02) nor two agents (X-03) that
 	// independently pick the same client session_id share conversation
@@ -252,10 +346,25 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 
 		// tool_choice "none" (round-9 R9-5): the client explicitly forbade
 		// tool calls for this request — real APIs honor it strictly.
-		if req.ToolChoiceNone && len(resp.ToolCalls) > 0 {
+		if req.ToolChoice.None && len(resp.ToolCalls) > 0 {
 			e.Logger.Info("tool_choice none: scenario tool calls suppressed",
 				"agent", agent.Metadata.Name, "scenario", scenario.Name)
 			resp.ToolCalls = nil
+		}
+
+		// Strict tool_choice forcing + parallel cap (round-11 R9-16a): under
+		// required/named forcing a real API always returns a call, so strict
+		// mode synthesizes it when the scenario didn't; warn mode only
+		// records what strict would have changed. Runs BEFORE tool
+		// processing so synthesized calls get results too.
+		if strictModes.ToolChoice != StrictOff {
+			if tcw := applyStrictToolChoice(req.ToolChoice, strictModes.ToolChoice, resp, agent, req.RequestToolNames); len(tcw) > 0 {
+				strictWarnings = append(strictWarnings, tcw...)
+				for _, wmsg := range tcw {
+					e.Logger.Warn("strict-tools violation (warn mode)",
+						"agent", agent.Metadata.Name, "check", "tool_choice", "violation", wmsg)
+				}
+			}
 		}
 
 		if traceOn {
@@ -306,6 +415,9 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 		return resp.Content, toolCallMsgs, nil
 	}); err != nil {
 		return nil, err
+	}
+	if len(strictWarnings) > 0 && resp != nil {
+		resp.StrictWarnings = strictWarnings
 	}
 	// No explicit save (F-ST-004/X-06): `session` is the store's own pointer
 	// and ApplyTurn mutated it under the session lock, so the changes are

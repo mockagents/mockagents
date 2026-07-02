@@ -28,8 +28,10 @@ type AnthropicRequest struct {
 	Tools     []AnthropicTool `json:"tools,omitempty"`
 	MaxTokens int             `json:"max_tokens,omitempty"`
 	Stream    bool            `json:"stream,omitempty"`
-	// ToolChoice is the Anthropic {type:"auto"/"any"/"tool"/"none"} object;
-	// only "none" changes mock behavior (tool calls suppressed — R9-5).
+	// ToolChoice is the Anthropic {type:"auto"/"any"/"tool"/"none"} object
+	// (optionally carrying name + disable_parallel_tool_use). "none" is
+	// always honored (R9-5); any/tool forcing and the parallel cap are
+	// enforced under the strict-tools knob (round-11).
 	ToolChoice map[string]any `json:"tool_choice,omitempty"`
 	// Thinking is the extended-thinking gate; type "enabled" turns on a
 	// synthesized thinking content block (A-04). budget_tokens is advisory.
@@ -206,11 +208,12 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 	// Convert to engine request.
 	convertedMsgs, imageCount := convertAnthropicMessages(req.Messages, req.System)
 	inbound := &engine.InboundRequest{
-		Model:          req.Model,
-		SessionID:      extractSessionID(r),
-		Messages:       convertedMsgs,
-		Stream:         req.Stream,
-		ToolChoiceNone: req.ToolChoice["type"] == "none",
+		Model:            req.Model,
+		SessionID:        extractSessionID(r),
+		Messages:         convertedMsgs,
+		Stream:           req.Stream,
+		ToolChoice:       parseAnthropicToolChoice(req.ToolChoice),
+		RequestToolNames: anthropicToolNames(req.Tools),
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID
@@ -234,6 +237,10 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 			writeAnthropicError(w, ce.StatusCode, anthropicChaosErrorType(ce.StatusCode), ce.Message)
 			return
 		}
+		if se := engine.AsStrictToolError(err); se != nil {
+			writeAnthropicStrictError(w, se)
+			return
+		}
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "not found") {
 			status = http.StatusNotFound
@@ -255,6 +262,7 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 	}
 
 	setHallucinationHeader(w, resp)
+	setStrictViolationHeader(w, resp)
 	setImageCountHeader(w, imageCount)
 
 	// Stream or JSON.
@@ -357,16 +365,59 @@ func convertAnthropicMessages(msgs []AnthropicMessage, system any) ([]engine.Req
 				switch bm["type"] {
 				case "tool_result":
 					rm.IsToolResult = true
+					// Round-trip id material (round-11): the tool_use_id each
+					// result references, for strict-mode validation.
+					if id, ok := bm["tool_use_id"].(string); ok && id != "" {
+						rm.ToolResultIDs = append(rm.ToolResultIDs, id)
+					}
 				case "tool_use":
 					name, _ := bm["name"].(string)
 					args, _ := bm["input"].(map[string]any)
-					rm.ToolCalls = append(rm.ToolCalls, engine.EchoedToolCall{Name: name, Arguments: args})
+					id, _ := bm["id"].(string)
+					rm.ToolCalls = append(rm.ToolCalls, engine.EchoedToolCall{ID: id, Name: name, Arguments: args})
 				}
 			}
 		}
 		result = append(result, rm)
 	}
 	return result, totalImages
+}
+
+// anthropicToolNames collects the request's declared tool names — the set a
+// named tool_choice is validated against (round-11).
+func anthropicToolNames(tools []AnthropicTool) []string {
+	if len(tools) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if t.Name != "" {
+			names = append(names, t.Name)
+		}
+	}
+	return names
+}
+
+// parseAnthropicToolChoice maps the Anthropic tool_choice object into the
+// engine's provider-neutral contract: "any" = must use one tool, "tool" =
+// forced specific tool; disable_parallel_tool_use rides inside the object.
+func parseAnthropicToolChoice(tc map[string]any) engine.ToolChoice {
+	var out engine.ToolChoice
+	if dp, ok := tc["disable_parallel_tool_use"].(bool); ok && dp {
+		out.ParallelDisabled = true
+	}
+	switch tc["type"] {
+	case "none":
+		out.None = true
+	case "any":
+		out.Required = true
+	case "tool":
+		if name, _ := tc["name"].(string); name != "" {
+			out.Name = name
+			out.Required = true
+		}
+	}
+	return out
 }
 
 // extractAnthropicContentWithImages flattens content to text (preserving the

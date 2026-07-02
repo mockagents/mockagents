@@ -22,16 +22,23 @@ type GeminiRequest struct {
 	SystemInstruction *GeminiContent          `json:"systemInstruction,omitempty"`
 	Tools             []GeminiToolDeclaration `json:"tools,omitempty"`
 	GenerationConfig  map[string]any          `json:"generationConfig,omitempty"`
-	// ToolConfig carries functionCallingConfig.mode; only NONE changes mock
-	// behavior (function calls suppressed — R9-5).
+	// ToolConfig carries functionCallingConfig. NONE is always honored
+	// (function calls suppressed — R9-5); ANY forcing and
+	// allowedFunctionNames are enforced under the strict-tools knob
+	// (round-11).
 	ToolConfig *GeminiToolConfig `json:"toolConfig,omitempty"`
 }
 
 // GeminiToolConfig is the request-side function-calling gate.
 type GeminiToolConfig struct {
-	FunctionCallingConfig *struct {
-		Mode string `json:"mode,omitempty"`
-	} `json:"functionCallingConfig,omitempty"`
+	FunctionCallingConfig *GeminiFunctionCallingConfig `json:"functionCallingConfig,omitempty"`
+}
+
+// GeminiFunctionCallingConfig is the mode + allowlist pair: AUTO (default),
+// ANY (must call; optionally limited to allowedFunctionNames), NONE.
+type GeminiFunctionCallingConfig struct {
+	Mode                 string   `json:"mode,omitempty"`
+	AllowedFunctionNames []string `json:"allowedFunctionNames,omitempty"`
 }
 
 // GeminiContent is one turn ("user" / "model") or the system instruction,
@@ -163,12 +170,12 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	inbound := &engine.InboundRequest{
-		Model:     model,
-		SessionID: extractSessionID(r),
-		Messages:  convertGeminiContents(req.Contents, req.SystemInstruction),
-		Stream:    stream,
-		ToolChoiceNone: req.ToolConfig != nil && req.ToolConfig.FunctionCallingConfig != nil &&
-			req.ToolConfig.FunctionCallingConfig.Mode == "NONE",
+		Model:            model,
+		SessionID:        extractSessionID(r),
+		Messages:         convertGeminiContents(req.Contents, req.SystemInstruction),
+		Stream:           stream,
+		ToolChoice:       parseGeminiToolChoice(req.ToolConfig),
+		RequestToolNames: geminiToolNames(req.Tools),
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID
@@ -192,6 +199,10 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 			writeGeminiError(w, ce.StatusCode, geminiStatusFor(ce.StatusCode), ce.Message)
 			return
 		}
+		if se := engine.AsStrictToolError(err); se != nil {
+			writeGeminiStrictError(w, se)
+			return
+		}
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "not found") {
 			status = http.StatusNotFound
@@ -212,6 +223,7 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	setHallucinationHeader(w, resp)
+	setStrictViolationHeader(w, resp)
 
 	// Count prompt tokens off the already-flattened inbound.Messages (the system
 	// instruction is prepended there) rather than re-extracting req.Contents
@@ -277,15 +289,57 @@ func convertGeminiContents(contents []GeminiContent, system *GeminiContent) []en
 		for _, p := range c.Parts {
 			if p.FunctionResponse != nil {
 				rm.IsToolResult = true
+				// Gemini has no call ids — results reference calls by NAME,
+				// so the name is the round-trip id material (round-11).
+				if p.FunctionResponse.Name != "" {
+					rm.ToolResultIDs = append(rm.ToolResultIDs, p.FunctionResponse.Name)
+				}
 			}
 			if p.FunctionCall != nil {
 				rm.ToolCalls = append(rm.ToolCalls, engine.EchoedToolCall{
-					Name: p.FunctionCall.Name, Arguments: p.FunctionCall.Args})
+					ID: p.FunctionCall.Name, Name: p.FunctionCall.Name, Arguments: p.FunctionCall.Args})
 			}
 		}
 		result = append(result, rm)
 	}
 	return result
+}
+
+// geminiToolNames flattens the request's declared function names — the set
+// allowedFunctionNames-style forcing is validated against (round-11).
+func geminiToolNames(tools []GeminiToolDeclaration) []string {
+	var names []string
+	for _, t := range tools {
+		for _, d := range t.FunctionDeclarations {
+			if d.Name != "" {
+				names = append(names, d.Name)
+			}
+		}
+	}
+	return names
+}
+
+// parseGeminiToolChoice maps functionCallingConfig into the engine's
+// provider-neutral contract: ANY = constrained to function calls only
+// (optionally limited to allowedFunctionNames — a single entry forces that
+// exact function), NONE = no function calls.
+func parseGeminiToolChoice(tc *GeminiToolConfig) engine.ToolChoice {
+	var out engine.ToolChoice
+	if tc == nil || tc.FunctionCallingConfig == nil {
+		return out
+	}
+	fc := tc.FunctionCallingConfig
+	switch fc.Mode {
+	case "NONE":
+		out.None = true
+	case "ANY":
+		out.Required = true
+		out.AllowedNames = fc.AllowedFunctionNames
+		if len(fc.AllowedFunctionNames) == 1 {
+			out.Name = fc.AllowedFunctionNames[0]
+		}
+	}
+	return out
 }
 
 func joinGeminiParts(parts []GeminiPart) string {

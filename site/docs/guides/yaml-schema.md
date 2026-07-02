@@ -86,6 +86,45 @@ tools:
 - **Unspecified parameters ignored** — extra args in the call don't prevent matching
 - **Default** — rule with `default: true` used when nothing else matches
 
+!!! note "Where tool `responses:`, `validate:`, and `error_rate:` apply"
+    The resolved tool **results** are consumed by the test runner
+    (`mockagents test` assertions like `tool_error` / `handles_tool_error`)
+    and by `kind: MCPServer` documents. The HTTP protocol surfaces
+    (OpenAI/Anthropic/Gemini) return the tool **calls** only — real APIs
+    never execute tools, the client does — so these tables do not change
+    what an SDK client receives on those endpoints.
+
+## `spec.behavior.strict_tools`
+
+Opt-in request-side strictness that mirrors what real APIs enforce (and the
+mock is otherwise lenient about). Fail-like-production for CI:
+
+```yaml
+behavior:
+  strict_tools:
+    level: strict       # off (default) | warn | strict
+    ids: true           # round-trip tool id validation: tool results must
+                        # answer echoed call ids; unanswered calls 400
+    tool_choice: true   # required/named forcing (forced-call synthesis,
+                        # finish_reason "stop") + parallel_tool_calls cap
+    schemas: true       # strict:true function schemas validated against the
+                        # structured-outputs subset at request time
+```
+
+- The `level` fills every dimension you leave unset; a boolean set to
+  `false` excludes that check. A block without a `level` implies `strict`.
+- `warn` runs every check but only logs and sets the
+  `X-Mockagents-Strict-Violation` response header — assert on its absence
+  to migrate a suite incrementally.
+- `strict` fails the request with the provider's real 400 body (verbatim
+  message shapes per protocol).
+- Fleet default via `MOCKAGENTS_STRICT_TOOLS=off|warn|strict`; the agent
+  block overrides the env value.
+
+MCP `tools/call` argument validation is separate and **on by default** for
+`kind: MCPServer` documents (the MCP spec requires servers to validate
+inputs); opt out with `spec.strictArgs: false`.
+
 ## `spec.behavior.scenarios`
 
 ```yaml

@@ -107,6 +107,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	}
 
 	var allValidationErrors []*config.ValidationError
+	var allWarnings []*config.ValidationError
 	validator := &config.Validator{}
 
 	for _, result := range allAgentResults {
@@ -114,6 +115,8 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		if errList := validator.Validate(result.Definition, result.FilePath, result.Node); errList != nil {
 			allValidationErrors = append(allValidationErrors, errList.Errors...)
 		}
+		// Non-fatal lint findings (round-11); --strict upgrades them.
+		allWarnings = append(allWarnings, validator.Lint(result.Definition, result.FilePath, result.Node)...)
 	}
 	for _, result := range allPipelineResults {
 		if errList := config.ValidatePipeline(result.Definition, result.FilePath, result.Node); errList != nil {
@@ -163,6 +166,12 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		format = config.ErrorFormatText
 	}
 
+	// --strict upgrades lint warnings to errors.
+	if strictMode && len(allWarnings) > 0 {
+		allValidationErrors = append(allValidationErrors, allWarnings...)
+		allWarnings = nil
+	}
+
 	totalFiles := len(allAgentResults) + len(allPipelineResults) +
 		len(allTestSuiteResults) + len(allMCPServerResults) +
 		len(allA2AServerResults) + len(allLoadErrors)
@@ -173,9 +182,12 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 	}
 
-	// Print validation errors.
+	// Print validation errors, then non-fatal warnings.
 	if len(allValidationErrors) > 0 {
 		fmt.Fprintln(os.Stderr, config.FormatErrors(allValidationErrors, format))
+	}
+	for _, w := range allWarnings {
+		fmt.Fprintln(os.Stderr, "Warning:", w.Error())
 	}
 
 	// Summary.

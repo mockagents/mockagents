@@ -162,4 +162,3 @@ func ValidateDocuments(docs *Documents) *ValidationErrorList {
 	}
 	return &ValidationErrorList{Errors: errs}
 }
-

@@ -1,0 +1,54 @@
+# Strict-tools demo (round-11): fail like production.
+#
+# With strict_tools enabled, this agent enforces what the real OpenAI API
+# enforces — and today's lenient mock behavior does not:
+#   * round-trip tool ids: a role:"tool" message must answer a tool_call_id
+#     the assistant actually issued (orphans/mismatches -> the real 400)
+#   * tool_choice "required" / named function: a tool call is ALWAYS
+#     returned (synthesized if no scenario plants one), finish_reason "stop"
+#   * parallel_tool_calls:false: at most one call per response
+#   * strict:true function schemas: validated against the structured-outputs
+#     subset at request time
+#
+# level: warn runs every check but only sets the
+# X-Mockagents-Strict-Violation response header (assert it is absent to
+# migrate a suite incrementally). Fleet default: MOCKAGENTS_STRICT_TOOLS.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: strict-tools-agent
+  description: Weather agent that rejects malformed tool round-trips like the real API.
+spec:
+  protocol: openai-chat-completions
+  model: gpt-strict-demo
+  tools:
+    - name: get_weather
+      description: Get the current weather for a city.
+      parameters:
+        type: object
+        additionalProperties: false
+        required: [city]
+        properties:
+          city:
+            type: string
+      responses:
+        - default: true
+          response:
+            temperature: 21
+            conditions: sunny
+  behavior:
+    strict_tools:
+      level: strict
+    scenarios:
+      - name: weather-question
+        match:
+          content_contains: weather
+        response:
+          content: Let me check that for you.
+          tool_calls:
+            - name: get_weather
+              arguments:
+                city: NYC
+      - name: default
+        response:
+          content: Ask me about the weather.

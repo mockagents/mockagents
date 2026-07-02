@@ -29,6 +29,13 @@ type MCPServerSpec struct {
 	Resources       []MCPResource   `yaml:"resources,omitempty" json:"resources,omitempty"`
 	Prompts         []MCPPrompt     `yaml:"prompts,omitempty" json:"prompts,omitempty"`
 	Completions     []MCPCompletion `yaml:"completions,omitempty" json:"completions,omitempty"`
+	// StrictArgs controls tools/call argument validation against each tool's
+	// inputSchema (round-11, closes R10-19). Default ON (nil = true): the MCP
+	// spec says servers MUST validate tool inputs, and official SDK servers
+	// do. Invalid argument VALUES are reported as an isError:true execution
+	// result per the 2025-11-25 revision — never a -32602 protocol error.
+	// Set strictArgs: false to restore the old accept-anything behavior.
+	StrictArgs *bool `yaml:"strictArgs,omitempty" json:"strictArgs,omitempty"`
 }
 
 // MCPCapabilities controls which sections the server advertises during

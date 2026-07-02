@@ -18,14 +18,17 @@ import (
 
 // ChatCompletionRequest represents an OpenAI Chat Completions API request.
 type ChatCompletionRequest struct {
-	Model          string          `json:"model"`
-	Messages       []OpenAIMessage `json:"messages"`
-	Tools          []OpenAITool    `json:"tools,omitempty"`
-	ToolChoice     any             `json:"tool_choice,omitempty"`
-	Stream         bool            `json:"stream,omitempty"`
-	Temperature    *float64        `json:"temperature,omitempty"`
-	MaxTokens      *int            `json:"max_tokens,omitempty"`
-	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+	Model      string          `json:"model"`
+	Messages   []OpenAIMessage `json:"messages"`
+	Tools      []OpenAITool    `json:"tools,omitempty"`
+	ToolChoice any             `json:"tool_choice,omitempty"`
+	// ParallelToolCalls false caps the response to at most one tool call
+	// (round-11; previously the field was silently swallowed).
+	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
+	Stream            bool            `json:"stream,omitempty"`
+	Temperature       *float64        `json:"temperature,omitempty"`
+	MaxTokens         *int            `json:"max_tokens,omitempty"`
+	ResponseFormat    *ResponseFormat `json:"response_format,omitempty"`
 	// StreamOptions carries include_usage — the final streaming chunk then
 	// reports usage (round-9 R9-9).
 	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
@@ -55,6 +58,9 @@ type OpenAIFunction struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
+	// Strict opts the function into structured-outputs schema validation —
+	// the real API validates the schema SHAPE at request time (round-11).
+	Strict *bool `json:"strict,omitempty"`
 }
 
 // OpenAIToolCall represents a tool call in an OpenAI response.
@@ -162,11 +168,13 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 	// Convert to engine request.
 	convertedMsgs, imageCount := convertOpenAIMessages(req.Messages)
 	inbound := &engine.InboundRequest{
-		Model:          req.Model,
-		SessionID:      extractSessionID(r),
-		Messages:       convertedMsgs,
-		Stream:         req.Stream,
-		ToolChoiceNone: req.ToolChoice == "none",
+		Model:            req.Model,
+		SessionID:        extractSessionID(r),
+		Messages:         convertedMsgs,
+		Stream:           req.Stream,
+		ToolChoice:       parseOpenAIToolChoice(req.ToolChoice, req.ParallelToolCalls),
+		RequestToolNames: openAIToolNames(req.Tools),
+		StrictFunctions:  openAIStrictFunctions(req.Tools),
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID
@@ -192,6 +200,10 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 			writeErrorCode(w, ce.StatusCode, errType, code, ce.Message)
 			return
 		}
+		if se := engine.AsStrictToolError(err); se != nil {
+			writeOpenAIStrictError(w, se)
+			return
+		}
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "not found") {
 			status = http.StatusNotFound
@@ -213,6 +225,7 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 
 	setHallucinationHeader(w, resp)
+	setStrictViolationHeader(w, resp)
 	setImageCountHeader(w, imageCount)
 
 	// Enforce response_format (structured outputs / JSON mode) on the engine
@@ -298,12 +311,73 @@ func convertOpenAIMessages(msgs []OpenAIMessage) ([]engine.RequestMessage, int) 
 			// fingerprint material — previously both were dropped here.
 			IsToolResult: m.Role == "tool",
 		}
+		// Round-trip id material (round-11): the tool_call_id a role:"tool"
+		// message references, and the ids the assistant's echoed calls were
+		// issued under — strict-mode validation matches the two sets.
+		if m.Role == "tool" && m.ToolCallID != "" {
+			rm.ToolResultIDs = []string{m.ToolCallID}
+		}
 		for _, tc := range m.ToolCalls {
-			rm.ToolCalls = append(rm.ToolCalls, engine.EchoToolCall(tc.Function.Name, tc.Function.Arguments))
+			echoed := engine.EchoToolCall(tc.Function.Name, tc.Function.Arguments)
+			echoed.ID = tc.ID
+			rm.ToolCalls = append(rm.ToolCalls, echoed)
 		}
 		result = append(result, rm)
 	}
 	return result, totalImages
+}
+
+// openAIToolNames collects the request's declared function names — the set
+// a named tool_choice is validated against (round-11).
+func openAIToolNames(tools []OpenAITool) []string {
+	if len(tools) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if t.Function.Name != "" {
+			names = append(names, t.Function.Name)
+		}
+	}
+	return names
+}
+
+// openAIStrictFunctions collects the request's strict:true function tools
+// for structured-outputs schema-subset validation (round-11 R9-16b).
+func openAIStrictFunctions(tools []OpenAITool) []engine.StrictFunction {
+	var out []engine.StrictFunction
+	for i, t := range tools {
+		if t.Function.Strict != nil && *t.Function.Strict {
+			out = append(out, engine.StrictFunction{
+				Index: i, Name: t.Function.Name, Parameters: t.Function.Parameters})
+		}
+	}
+	return out
+}
+
+// parseOpenAIToolChoice maps the Chat Completions tool_choice (a string or a
+// {"type":"function","function":{"name":…}} object) plus parallel_tool_calls
+// into the engine's provider-neutral contract. A named function implies
+// Required — the real API forces exactly that call.
+func parseOpenAIToolChoice(tc any, parallel *bool) engine.ToolChoice {
+	out := engine.ToolChoice{ParallelDisabled: parallel != nil && !*parallel}
+	switch v := tc.(type) {
+	case string:
+		switch v {
+		case "none":
+			out.None = true
+		case "required":
+			out.Required = true
+		}
+	case map[string]any:
+		if fn, ok := v["function"].(map[string]any); ok {
+			if name, _ := fn["name"].(string); name != "" {
+				out.Name = name
+				out.Required = true
+			}
+		}
+	}
+	return out
 }
 
 // extractStringContentWithImages flattens content to text and counts image_url

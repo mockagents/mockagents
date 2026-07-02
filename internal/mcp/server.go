@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/mockagents/mockagents/internal/toolschema"
 	"github.com/mockagents/mockagents/internal/types"
 )
 
@@ -394,6 +395,9 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 	// failure comes back as a result with IsError=true, while a Go error is an
 	// unexpected internal fault mapped to a JSON-RPC error.
 	if rt, ok := s.lookupToolHandler(params.Name); ok {
+		if errResp := s.validateToolArgs(req.ID, params.Name, rt.spec.InputSchema, params.Arguments); errResp != nil {
+			return errResp
+		}
 		res, err := rt.handler(context.Background(), params.Arguments)
 		if err != nil {
 			return newError(req.ID, ErrInternal, err.Error(), nil)
@@ -410,6 +414,10 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 			map[string]any{"available": s.toolNames()})
 	}
 
+	if errResp := s.validateToolArgs(req.ID, tool.Name, tool.InputSchema, params.Arguments); errResp != nil {
+		return errResp
+	}
+
 	resp := resolveToolResponse(tool.Responses, params.Arguments)
 	if resp == nil {
 		return newResult(req.ID, toolCallResult{
@@ -417,6 +425,35 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		})
 	}
 	return newResult(req.ID, toolCallResult{Content: resp.Content, IsError: resp.IsError})
+}
+
+// validateToolArgs checks call arguments against the tool's inputSchema
+// (round-11, closes R10-19). Spec: servers MUST validate tool inputs;
+// per the 2025-11-25 revision invalid argument VALUES are a Tool Execution
+// Error — an isError:true result with actionable, path-qualified feedback
+// the model can self-correct on — never a -32602 protocol error (that is
+// reserved for structurally malformed requests). Extra arguments on a
+// schema without additionalProperties:false stay accepted, matching the
+// official SDK's leniency. Opt out with spec.strictArgs: false. Nil means
+// "valid, proceed".
+func (s *Server) validateToolArgs(id json.RawMessage, name string, schema types.JSONSchemaObject, args map[string]any) *Response {
+	if s.def.Spec.StrictArgs != nil && !*s.def.Spec.StrictArgs {
+		return nil
+	}
+	if args == nil {
+		args = map[string]any{}
+	}
+	errs := toolschema.NewValidator().ValidateParameters(schema, args)
+	if len(errs) == 0 {
+		return nil
+	}
+	return newResult(id, toolCallResult{
+		Content: []types.MCPContentBlock{{
+			Type: "text",
+			Text: fmt.Sprintf("invalid arguments for tool %q: %s", name, strings.Join(errs, "; ")),
+		}},
+		IsError: true,
+	})
 }
 
 // resolveToolResponse picks the first MCPToolResponse whose Match is a

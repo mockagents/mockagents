@@ -111,6 +111,16 @@
             "$ref": "#/$defs/ToolResponseRule"
           },
           "description": "Response mappings for this tool."
+        },
+        "validate": {
+          "type": "boolean",
+          "description": "Validate scenario-emitted call arguments against `parameters`; violations resolve to an INVALID_PARAMETERS error result."
+        },
+        "error_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Probability (0-1) that a call to this tool resolves to an injected error result."
         }
       }
     },
@@ -170,6 +180,33 @@
         },
         "chaos": {
           "$ref": "#/$defs/ChaosConfig"
+        },
+        "strict_tools": {
+          "$ref": "#/$defs/StrictToolsConfig"
+        }
+      }
+    },
+    "StrictToolsConfig": {
+      "type": "object",
+      "description": "Strict-tools knob: opt-in request-side strictness mirroring real-API behavior (round-trip tool ids, tool_choice forcing, parallel caps, strict:true schemas). Fleet default via MOCKAGENTS_STRICT_TOOLS.",
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["off", "warn", "strict"],
+          "description": "off = lenient (default); warn = run checks, log + X-Mockagents-Strict-Violation header; strict = fail with the provider's real 400. A block without a level implies strict."
+        },
+        "ids": {
+          "type": "boolean",
+          "description": "Round-trip tool id validation: tool results must reference echoed call ids, and every call must be answered."
+        },
+        "tool_choice": {
+          "type": "boolean",
+          "description": "Enforce required/named tool_choice (forced-call synthesis) and the parallel-call cap."
+        },
+        "schemas": {
+          "type": "boolean",
+          "description": "Validate strict:true function schemas against the structured-outputs subset."
         }
       }
     },
