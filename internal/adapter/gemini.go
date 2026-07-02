@@ -22,6 +22,16 @@ type GeminiRequest struct {
 	SystemInstruction *GeminiContent          `json:"systemInstruction,omitempty"`
 	Tools             []GeminiToolDeclaration `json:"tools,omitempty"`
 	GenerationConfig  map[string]any          `json:"generationConfig,omitempty"`
+	// ToolConfig carries functionCallingConfig.mode; only NONE changes mock
+	// behavior (function calls suppressed — R9-5).
+	ToolConfig *GeminiToolConfig `json:"toolConfig,omitempty"`
+}
+
+// GeminiToolConfig is the request-side function-calling gate.
+type GeminiToolConfig struct {
+	FunctionCallingConfig *struct {
+		Mode string `json:"mode,omitempty"`
+	} `json:"functionCallingConfig,omitempty"`
 }
 
 // GeminiContent is one turn ("user" / "model") or the system instruction,
@@ -155,6 +165,8 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 		SessionID: extractSessionID(r),
 		Messages:  convertGeminiContents(req.Contents, req.SystemInstruction),
 		Stream:    stream,
+		ToolChoiceNone: req.ToolConfig != nil && req.ToolConfig.FunctionCallingConfig != nil &&
+			req.ToolConfig.FunctionCallingConfig.Mode == "NONE",
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID

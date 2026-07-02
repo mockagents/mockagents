@@ -323,10 +323,11 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 	}
 
 	inbound := &engine.InboundRequest{
-		Model:     req.Model,
-		SessionID: responsesSessionID(r, req.PreviousResponseID),
-		Messages:  messages,
-		Stream:    req.Stream,
+		Model:          req.Model,
+		SessionID:      responsesSessionID(r, req.PreviousResponseID),
+		Messages:       messages,
+		Stream:         req.Stream,
+		ToolChoiceNone: strings.TrimSpace(string(req.ToolChoice)) == `"none"`,
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID

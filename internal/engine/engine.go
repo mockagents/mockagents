@@ -26,6 +26,12 @@ type InboundRequest struct {
 	SessionID string           `json:"session_id"`
 	Messages  []RequestMessage `json:"messages"`
 	Stream    bool             `json:"stream,omitempty"`
+	// ToolChoiceNone marks a request whose tool_choice explicitly forbids
+	// tool calls (OpenAI "none", Anthropic {type:"none"}, Gemini mode NONE) —
+	// the standard forced-final-answer escape hatch. The engine strips any
+	// scenario-emitted calls (round-9 R9-5). required/named-function
+	// enforcement is a separate decision (needs response synthesis).
+	ToolChoiceNone bool `json:"tool_choice_none,omitempty"`
 }
 
 // RequestMessage is a single message from the client request.
@@ -237,6 +243,14 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 		if len(resp.ToolCalls) > 0 && tailIsToolResult(req.Messages) &&
 			sameToolCalls(resp.ToolCalls, lastEchoedToolCalls(req.Messages)) {
 			e.Logger.Info("tool-loop convergence: identical re-issue after a tool result consumed",
+				"agent", agent.Metadata.Name, "scenario", scenario.Name)
+			resp.ToolCalls = nil
+		}
+
+		// tool_choice "none" (round-9 R9-5): the client explicitly forbade
+		// tool calls for this request — real APIs honor it strictly.
+		if req.ToolChoiceNone && len(resp.ToolCalls) > 0 {
+			e.Logger.Info("tool_choice none: scenario tool calls suppressed",
 				"agent", agent.Metadata.Name, "scenario", scenario.Name)
 			resp.ToolCalls = nil
 		}

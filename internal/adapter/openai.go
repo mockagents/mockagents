@@ -155,10 +155,11 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 	// Convert to engine request.
 	convertedMsgs, imageCount := convertOpenAIMessages(req.Messages)
 	inbound := &engine.InboundRequest{
-		Model:     req.Model,
-		SessionID: extractSessionID(r),
-		Messages:  convertedMsgs,
-		Stream:    req.Stream,
+		Model:          req.Model,
+		SessionID:      extractSessionID(r),
+		Messages:       convertedMsgs,
+		Stream:         req.Stream,
+		ToolChoiceNone: req.ToolChoice == "none",
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID

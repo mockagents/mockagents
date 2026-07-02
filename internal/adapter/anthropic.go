@@ -28,6 +28,9 @@ type AnthropicRequest struct {
 	Tools     []AnthropicTool `json:"tools,omitempty"`
 	MaxTokens int             `json:"max_tokens,omitempty"`
 	Stream    bool            `json:"stream,omitempty"`
+	// ToolChoice is the Anthropic {type:"auto"/"any"/"tool"/"none"} object;
+	// only "none" changes mock behavior (tool calls suppressed — R9-5).
+	ToolChoice map[string]any `json:"tool_choice,omitempty"`
 	// Thinking is the extended-thinking gate; type "enabled" turns on a
 	// synthesized thinking content block (A-04). budget_tokens is advisory.
 	Thinking *AnthropicThinkingReq `json:"thinking,omitempty"`
@@ -199,10 +202,11 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 	// Convert to engine request.
 	convertedMsgs, imageCount := convertAnthropicMessages(req.Messages, req.System)
 	inbound := &engine.InboundRequest{
-		Model:     req.Model,
-		SessionID: extractSessionID(r),
-		Messages:  convertedMsgs,
-		Stream:    req.Stream,
+		Model:          req.Model,
+		SessionID:      extractSessionID(r),
+		Messages:       convertedMsgs,
+		Stream:         req.Stream,
+		ToolChoiceNone: req.ToolChoice["type"] == "none",
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID

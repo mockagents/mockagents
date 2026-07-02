@@ -213,6 +213,59 @@ func TestToolLoop_GeminiConverges(t *testing.T) {
 	}
 }
 
+// R9-5: tool_choice "none" (and its per-provider spellings) suppresses tool
+// calls — the standard forced-final-answer escape hatch real APIs honor
+// strictly.
+func TestToolChoiceNoneSuppressesCalls(t *testing.T) {
+	// OpenAI chat completions.
+	h := &OpenAIHandler{Engine: testEngine(toolLoopAgent("openai-chat-completions", "gpt-4o"))}
+	rec := doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model:      "gpt-4o",
+		Messages:   []OpenAIMessage{{Role: "user", Content: "what is the weather?"}},
+		ToolChoice: "none",
+	})
+	var resp ChatCompletionResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	assert.Equal(t, "stop", resp.Choices[0].FinishReason)
+	assert.Nil(t, resp.Choices[0].Message.ToolCalls, "tool_choice none must suppress calls")
+
+	// Anthropic {type:"none"}.
+	ah := &AnthropicHandler{Engine: testEngine(toolLoopAgent("anthropic-messages", "claude-3-opus"))}
+	areq := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(
+		`{"model":"claude-3-opus","max_tokens":100,"tool_choice":{"type":"none"},
+		  "messages":[{"role":"user","content":"what is the weather?"}]}`))
+	areq.Header.Set("Content-Type", "application/json")
+	areq.Header.Set("x-api-key", "mock-key")
+	arec := httptest.NewRecorder()
+	ah.HandleMessages(arec, areq)
+	require.Equal(t, http.StatusOK, arec.Code)
+	var amsg map[string]any
+	require.NoError(t, json.Unmarshal(arec.Body.Bytes(), &amsg))
+	assert.Equal(t, "end_turn", amsg["stop_reason"])
+
+	// Gemini functionCallingConfig mode NONE.
+	gh := &GeminiHandler{Engine: testEngine(toolLoopAgent("google-gemini", "gemini-1.5-pro"))}
+	greq := httptest.NewRequest("POST", "/v1beta/models/gemini-1.5-pro:generateContent", strings.NewReader(
+		`{"toolConfig":{"functionCallingConfig":{"mode":"NONE"}},
+		  "contents":[{"role":"user","parts":[{"text":"what is the weather?"}]}]}`))
+	greq.SetPathValue("modelmethod", "gemini-1.5-pro:generateContent")
+	greq.Header.Set("Content-Type", "application/json")
+	grec := httptest.NewRecorder()
+	gh.HandleGenerate(grec, greq)
+	require.Equal(t, http.StatusOK, grec.Code)
+	assert.NotContains(t, grec.Body.String(), "functionCall")
+
+	// Responses API.
+	rh := NewResponsesHandler(testEngine(toolLoopAgent("openai-chat-completions", "gpt-4o")), newConversationStore())
+	rreq := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(
+		`{"model":"gpt-4o","tool_choice":"none","input":"what is the weather?"}`))
+	rreq.Header.Set("Content-Type", "application/json")
+	rrec := httptest.NewRecorder()
+	rh.HandleResponses(rrec, rreq)
+	require.Equal(t, http.StatusOK, rrec.Code)
+	assert.NotContains(t, rrec.Body.String(), `"function_call"`)
+}
+
 // The guard's fingerprint survives JSON number-typing differences: the
 // scenario's YAML-decoded int args must match a client echo parsed as
 // float64.
