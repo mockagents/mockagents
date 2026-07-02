@@ -52,6 +52,9 @@ type ClientEvent struct {
 	// conversation.item.create: insert after this item ("" = append at the
 	// end; "root" = insert at the beginning).
 	PreviousItemID string `json:"previous_item_id,omitempty"`
+	// response.cancel: target a specific response ("" = the in-progress
+	// default-conversation response).
+	ResponseID string `json:"response_id,omitempty"`
 }
 
 // Event is an outbound server event. The Realtime protocol has dozens of event
@@ -436,11 +439,13 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			"item_id": ce.ItemID, "content_index": ce.ContentIndex, "audio_end_ms": ce.AudioEndMs}}
 
 	case "response.cancel":
-		// A paced response can actually be in flight now — cancel it. Otherwise
-		// (burst mode, or nothing running) the real API also errors, with this
+		// A paced response can actually be in flight now — cancel it, honoring
+		// an explicit response_id target (GA: "a specific response ID to cancel;
+		// if not provided, will cancel an in-progress response in the default
+		// conversation"). Otherwise the real API also errors, with this
 		// cancel-specific code that SDKs recognize and suppress (unknown_event
 		// they surface as a protocol failure).
-		if s.inflight != nil {
+		if s.inflight != nil && (ce.ResponseID == "" || ce.ResponseID == s.inflight.respID) {
 			return s.cancelInflight("client_cancelled")
 		}
 		return []Event{s.errorEvent("response_cancel_not_active", "Cancellation failed: no active response found")}
@@ -462,19 +467,35 @@ type responseConfig struct {
 	Modalities       []string        `json:"modalities"` // beta alias
 	Metadata         json.RawMessage `json:"metadata"`
 	Conversation     string          `json:"conversation"` // "auto" (default) | "none"
+	MaxOutputTokens  json.RawMessage `json:"max_output_tokens"`
+	Audio            *struct {
+		Output *struct {
+			Voice  string          `json:"voice"`
+			Format json.RawMessage `json:"format"`
+		} `json:"output"`
+	} `json:"audio"`
 }
 
 // responseCtx carries one response's effective settings through the ladder:
 // session defaults overlaid with the response.create inline overrides.
 type responseCtx struct {
-	mods         []string
-	outOfBand    bool            // conversation:"none" — no history, no conversation-item mirror, conversation_id null
-	metadata     json.RawMessage // echoed verbatim on the response envelope (nil → null)
-	instructions string
+	mods            []string
+	outOfBand       bool            // conversation:"none" — no history, no conversation-item mirror, conversation_id null
+	metadata        json.RawMessage // echoed verbatim on the response envelope (nil → null)
+	instructions    string
+	voice           string          // effective audio.output.voice for this response
+	format          json.RawMessage // effective audio.output.format (nil → default)
+	maxOutputTokens json.RawMessage // echoed on the envelope (nil → "inf")
+	maxTokens       int             // decoded integer cap (0 = "inf"/unlimited)
+	incomplete      bool            // the cap trimmed the transcript → status "incomplete"
 }
 
 func (s *Session) newResponseCtx(raw json.RawMessage) *responseCtx {
-	rc := &responseCtx{mods: s.outputModalities(), instructions: s.cfg.instructions}
+	rc := &responseCtx{
+		mods: s.outputModalities(), instructions: s.cfg.instructions,
+		voice: s.effectiveVoice(), format: s.cfg.outputFormat,
+		maxOutputTokens: s.cfg.maxOutputTokens,
+	}
 	var cfg responseConfig
 	if len(raw) > 0 && json.Unmarshal(raw, &cfg) == nil {
 		if len(cfg.OutputModalities) > 0 {
@@ -485,9 +506,23 @@ func (s *Session) newResponseCtx(raw json.RawMessage) *responseCtx {
 		if cfg.Instructions != "" {
 			rc.instructions = cfg.Instructions
 		}
+		if len(cfg.MaxOutputTokens) > 0 {
+			rc.maxOutputTokens = cfg.MaxOutputTokens
+		}
+		if cfg.Audio != nil && cfg.Audio.Output != nil {
+			if cfg.Audio.Output.Voice != "" {
+				rc.voice = cfg.Audio.Output.Voice
+			}
+			if len(cfg.Audio.Output.Format) > 0 {
+				rc.format = cfg.Audio.Output.Format
+			}
+		}
 		rc.metadata = cfg.Metadata
 		rc.outOfBand = cfg.Conversation == "none"
 	}
+	// An integer cap is enforced (transcript trimming → status "incomplete");
+	// "inf" or absent means unlimited.
+	_ = json.Unmarshal(rc.maxOutputTokens, &rc.maxTokens)
 	return rc
 }
 
@@ -510,15 +545,17 @@ func (rc *responseCtx) textOnly() bool {
 // loop from. The ladder opens with response.created and ends with response.done
 // (whose output lists every item).
 func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
-	// One response at a time — the real API rejects a second response.create
-	// while one is active on the conversation.
-	if s.inflight != nil {
+	rc := s.newResponseCtx(ce.Response)
+	// Only one response may WRITE TO THE DEFAULT CONVERSATION at a time — but
+	// GA explicitly allows out-of-band responses (conversation:"none") to run
+	// in parallel; those are burst-emitted below and never occupy the inflight
+	// slot, so the guard applies to default-conversation responses only.
+	if s.inflight != nil && !rc.outOfBand {
 		return []Event{s.errorEvent("conversation_already_has_active_response",
-			"Conversation already has an active response")}
+			"Conversation already has an active response in progress")}
 	}
 	s.idleAt = time.Time{} // user activity resets the idle timeout
 	respID := s.nextID("resp")
-	rc := s.newResponseCtx(ce.Response)
 
 	resp, err := s.generate(ctx, s.model(), s.id, s.engineHistory(rc.instructions))
 	if err != nil {
@@ -548,6 +585,14 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 		}
 	}
 	outputTokens := wordCount(transcript)
+	// An integer max_output_tokens cap is enforced the way GA does it: the
+	// output is cut, the response ends status "incomplete" with reason
+	// max_output_tokens, and the message item is likewise incomplete.
+	if rc.maxTokens > 0 && outputTokens > rc.maxTokens {
+		transcript = strings.Join(strings.Fields(transcript)[:rc.maxTokens], " ")
+		outputTokens = rc.maxTokens
+		rc.incomplete = true
+	}
 
 	out := []Event{
 		{"type": "response.created", "response": s.responseObject(respID, "in_progress", []any{}, rc)},
@@ -570,7 +615,14 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 		outputIndex++
 	}
 
-	done := s.responseObject(respID, "completed", items, rc)
+	finalStatus := "completed"
+	if rc.incomplete {
+		finalStatus = "incomplete"
+	}
+	done := s.responseObject(respID, finalStatus, items, rc)
+	if rc.incomplete {
+		done["status_details"] = map[string]any{"type": "incomplete", "reason": "max_output_tokens"}
+	}
 	done["usage"] = map[string]any{
 		"input_tokens":  inputTokens,
 		"output_tokens": outputTokens,
@@ -587,8 +639,10 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 
 	// Paced sessions emit response.created + rate_limits now and the rest of
 	// the ladder against deadlines (Tick) — the interruption window barge-in
-	// and response.cancel need. Burst mode returns everything at once.
-	if s.paced() {
+	// and response.cancel need. Out-of-band responses are ALWAYS burst: GA
+	// scopes interruption to default-conversation responses, and never pacing
+	// them is what lets them run concurrently with an in-flight paced one.
+	if s.paceInterval > 0 && s.vad != nil && !rc.outOfBand {
 		return s.beginPacedResponse(respID, rc, out, appendHistory)
 	}
 	appendHistory()
@@ -653,12 +707,13 @@ func (s *Session) responseObject(respID, status string, output []any, rc *respon
 		"conversation_id":   convID,
 		"metadata":          metadata,
 		// GA fields a strict reader expects on every envelope: usage is null
-		// until response.done overwrites it; audio echoes the effective output
-		// config; max_output_tokens mirrors the session setting.
+		// until response.done overwrites it; audio + max_output_tokens echo the
+		// RESPONSE-effective config (session defaults overlaid with any
+		// response.create overrides).
 		"usage": nil,
 		"audio": map[string]any{"output": map[string]any{
-			"voice": s.effectiveVoice(), "format": rawOr(s.cfg.outputFormat, defaultAudioFormat)}},
-		"max_output_tokens": rawOr(s.cfg.maxOutputTokens, `"inf"`),
+			"voice": rc.voice, "format": rawOr(rc.format, defaultAudioFormat)}},
+		"max_output_tokens": rawOr(rc.maxOutputTokens, `"inf"`),
 	}
 }
 
@@ -686,9 +741,13 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 		"id": itemID, "object": "realtime.item", "type": "message", "status": "in_progress",
 		"role": "assistant", "content": []any{}}
 
+	itemStatus := "completed"
+	if rc.incomplete {
+		itemStatus = "incomplete" // the max_output_tokens cap trimmed this item
+	}
 	if rc.textOnly() {
 		final := s.rememberItem(map[string]any{
-			"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
+			"id": itemID, "object": "realtime.item", "type": "message", "status": itemStatus,
 			"role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": transcript}},
 		})
 		// NB: the content_part events' part uses the SHORT type names ("text"/
@@ -724,7 +783,7 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 	// streamed events are response.output_audio*.delta/.done (not the beta
 	// response.audio*.delta names).
 	final := s.rememberItem(map[string]any{
-		"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
+		"id": itemID, "object": "realtime.item", "type": "message", "status": itemStatus,
 		"role": "assistant", "content": []any{map[string]any{"type": "output_audio", "transcript": transcript}},
 	})
 	*out = append(*out, Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress})

@@ -60,10 +60,6 @@ func (s *Session) clock() time.Time {
 	return time.Now()
 }
 
-// paced reports whether responses should be emitted incrementally: the
-// transport opted in AND the client enabled turn detection.
-func (s *Session) paced() bool { return s.paceInterval > 0 && s.vad != nil }
-
 // NextDeadline returns the earliest pending deadline (paced-response emission
 // or idle timeout), if any. The transport arms its timer from this.
 func (s *Session) NextDeadline() (time.Time, bool) {

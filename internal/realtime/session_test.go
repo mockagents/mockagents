@@ -578,6 +578,54 @@ func TestSession_OutOfBandResponse(t *testing.T) {
 	}
 }
 
+// Per-response audio.output.voice and an integer max_output_tokens cap are
+// honored: the envelope echoes the overrides, the transcript is trimmed, and
+// the response + item end status "incomplete" / reason max_output_tokens.
+func TestResponseCreate_VoiceAndMaxTokenOverrides(t *testing.T) {
+	s := NewSession("smo", "gpt-realtime", fakeGen("one two three four five six"))
+	evs := s.Handle(context.Background(), &ClientEvent{Type: "response.create",
+		Response: []byte(`{"audio":{"output":{"voice":"cedar"}},"max_output_tokens":3}`)})
+
+	created := firstEvent(evs, "response.created")["response"].(map[string]any)
+	if v := created["audio"].(map[string]any)["output"].(map[string]any)["voice"]; v != "cedar" {
+		t.Errorf("envelope voice = %v, want the per-response override cedar", v)
+	}
+	if raw, _ := json.Marshal(created["max_output_tokens"]); string(raw) != "3" {
+		t.Errorf("envelope max_output_tokens = %s, want 3", raw)
+	}
+
+	done := firstEvent(evs, "response.done")["response"].(map[string]any)
+	if done["status"] != "incomplete" {
+		t.Fatalf("capped response status = %v, want incomplete", done["status"])
+	}
+	sd := done["status_details"].(map[string]any)
+	if sd["type"] != "incomplete" || sd["reason"] != "max_output_tokens" {
+		t.Errorf("status_details = %v, want incomplete/max_output_tokens", sd)
+	}
+	item := done["output"].([]any)[0].(map[string]any)
+	if item["status"] != "incomplete" {
+		t.Errorf("capped item status = %v, want incomplete", item["status"])
+	}
+	transcript := item["content"].([]any)[0].(map[string]any)["transcript"].(string)
+	if transcript != "one two three" {
+		t.Errorf("trimmed transcript = %q, want the first 3 words", transcript)
+	}
+	usage := done["usage"].(map[string]any)
+	if usage["output_tokens"] != 3 {
+		t.Errorf("output_tokens = %v, want the capped 3", usage["output_tokens"])
+	}
+	// The trimmed content is what entered history.
+	found := false
+	for _, m := range s.history {
+		if m.Role == "assistant" && m.Content == "one two three" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("history did not get the trimmed transcript: %+v", s.history)
+	}
+}
+
 // conversation.item.retrieve / delete address stored items; unknown ids get an
 // item-specific error, not unknown_event.
 func TestSession_ItemRetrieveDelete(t *testing.T) {
