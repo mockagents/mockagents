@@ -79,6 +79,17 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   `ToolResults` (aggregate + final-turn) so these read real injected errors.
 
 ### Fixed
+- **Realtime conversation-item operations** (round-3 eval) —
+  `conversation.item.truncate` (the barge-in primitive every interruption-capable
+  WS client sends), `conversation.item.retrieve`, and `conversation.item.delete`
+  previously returned an `unknown_event` error. The session now indexes every
+  completed conversation item: truncate acks `conversation.item.truncated`
+  (echoing `item_id`/`content_index`/`audio_end_ms`) and drops the truncated
+  audio transcript from the stored item; retrieve returns
+  `conversation.item.retrieved` with the item; delete acks
+  `conversation.item.deleted`. Unknown ids get an `item_not_found` error rather
+  than `unknown_event`. (Mock simplification: deletion does not rewrite the
+  engine history already accumulated.)
 - **Realtime error fidelity** (round-3 eval) — three gaps in how failures reach
   a GA client: (1) a response that cannot be generated now closes the ladder —
   `response.done` is **always** emitted (status `failed` +

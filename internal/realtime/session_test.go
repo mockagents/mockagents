@@ -350,6 +350,74 @@ func TestSession_UnknownEvent(t *testing.T) {
 	}
 }
 
+// conversation.item.retrieve / delete address stored items; unknown ids get an
+// item-specific error, not unknown_event.
+func TestSession_ItemRetrieveDelete(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("sr", "", fakeGen("ok"))
+	created := firstEvent(s.Handle(ctx, &ClientEvent{
+		Type: "conversation.item.create",
+		Item: []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}`),
+	}), "conversation.item.added")
+	id := created["item"].(map[string]any)["id"].(string)
+
+	got := s.Handle(ctx, &ClientEvent{Type: "conversation.item.retrieve", ItemID: id})
+	if got[0]["type"] != "conversation.item.retrieved" {
+		t.Fatalf("retrieve events = %v", typesOf(got))
+	}
+	if got[0]["item"].(map[string]any)["id"] != id {
+		t.Errorf("retrieved wrong item: %v", got[0]["item"])
+	}
+
+	del := s.Handle(ctx, &ClientEvent{Type: "conversation.item.delete", ItemID: id})
+	if del[0]["type"] != "conversation.item.deleted" || del[0]["item_id"] != id {
+		t.Errorf("delete events = %v", del)
+	}
+
+	// Retrieval after deletion (and any unknown id) errors with item_not_found.
+	for _, typ := range []string{"conversation.item.retrieve", "conversation.item.delete"} {
+		evs := s.Handle(ctx, &ClientEvent{Type: typ, ItemID: id})
+		if evs[0]["type"] != "error" || evs[0]["error"].(map[string]any)["code"] != "item_not_found" {
+			t.Errorf("%s on deleted item = %v, want item_not_found error", typ, evs[0])
+		}
+	}
+}
+
+// conversation.item.truncate (the barge-in primitive) acks with the echoed
+// cut point and drops the truncated transcript from the stored item.
+func TestSession_ItemTruncate(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("st", "", fakeGen("A long spoken answer."))
+	s.Handle(ctx, &ClientEvent{
+		Type: "conversation.item.create",
+		Item: []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}`),
+	})
+	ladder := s.Handle(ctx, &ClientEvent{Type: "response.create"})
+	msgItem := firstEvent(ladder, "response.output_item.done")["item"].(map[string]any)
+	id := msgItem["id"].(string)
+
+	evs := s.Handle(ctx, &ClientEvent{Type: "conversation.item.truncate", ItemID: id, ContentIndex: 0, AudioEndMs: 1500})
+	if evs[0]["type"] != "conversation.item.truncated" {
+		t.Fatalf("truncate events = %v", typesOf(evs))
+	}
+	if evs[0]["item_id"] != id || evs[0]["audio_end_ms"] != 1500 || evs[0]["content_index"] != 0 {
+		t.Errorf("truncated ack = %v", evs[0])
+	}
+
+	// The stored item's audio transcript is dropped.
+	got := firstEvent(s.Handle(ctx, &ClientEvent{Type: "conversation.item.retrieve", ItemID: id}), "conversation.item.retrieved")
+	part := got["item"].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if part["transcript"] != "" {
+		t.Errorf("post-truncate transcript = %q, want empty", part["transcript"])
+	}
+
+	// Unknown item id errors.
+	bad := s.Handle(ctx, &ClientEvent{Type: "conversation.item.truncate", ItemID: "item_nope"})
+	if bad[0]["type"] != "error" || bad[0]["error"].(map[string]any)["code"] != "item_not_found" {
+		t.Errorf("truncate unknown item = %v, want item_not_found error", bad[0])
+	}
+}
+
 // GA error objects carry five fields; error.event_id echoes the id of the
 // client event that caused the error (the SDK correlation handle).
 func TestSession_ErrorEchoesClientEventID(t *testing.T) {

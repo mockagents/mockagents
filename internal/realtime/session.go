@@ -43,6 +43,10 @@ type ClientEvent struct {
 	Session json.RawMessage `json:"session,omitempty"` // session.update
 	Item    json.RawMessage `json:"item,omitempty"`    // conversation.item.create
 	Audio   string          `json:"audio,omitempty"`   // input_audio_buffer.append (base64)
+	// conversation.item.retrieve / delete / truncate
+	ItemID       string `json:"item_id,omitempty"`
+	ContentIndex int    `json:"content_index,omitempty"` // truncate
+	AudioEndMs   int    `json:"audio_end_ms,omitempty"`  // truncate
 }
 
 // Event is an outbound server event. The Realtime protocol has dozens of event
@@ -110,6 +114,18 @@ type Session struct {
 	// lastClientEventID is the event_id of the client event currently being
 	// handled; error events echo it as error.event_id (the GA correlation handle).
 	lastClientEventID string
+	// items indexes every completed conversation item by id so
+	// conversation.item.retrieve / delete / truncate can address them.
+	items map[string]map[string]any
+}
+
+// rememberItem indexes a completed conversation item for later retrieve /
+// delete / truncate, and returns it for inline use.
+func (s *Session) rememberItem(item map[string]any) map[string]any {
+	if id, _ := item["id"].(string); id != "" {
+		s.items[id] = item
+	}
+	return item
 }
 
 // previousItemID returns the value for a server event's previous_item_id field:
@@ -146,7 +162,7 @@ func conversationItemEvents(prev any, item map[string]any) []Event {
 // NewSession builds a session with the given id (minted by the caller) and the
 // model from the connection (may be empty → DefaultModel).
 func NewSession(id, model string, gen Generator) *Session {
-	return &Session{id: id, initialModel: model, generate: gen}
+	return &Session{id: id, initialModel: model, generate: gen, items: make(map[string]map[string]any)}
 }
 
 // SetExpiry sets the session's expiry (unix seconds), reported as expires_at in
@@ -212,10 +228,10 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		}
 		out := append([]Event{
 			{"type": "input_audio_buffer.committed", "previous_item_id": prevItem, "item_id": itemID},
-		}, conversationItemEvents(prevItem, map[string]any{
+		}, conversationItemEvents(prevItem, s.rememberItem(map[string]any{
 			"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 			"role": "user", "content": []any{map[string]any{"type": "input_audio", "transcript": transcript}},
-		})...)
+		}))...)
 		if s.transcriptionEnabled() {
 			out = append(out, Event{
 				"type":    "conversation.item.input_audio_transcription.completed",
@@ -234,31 +250,65 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			// without becoming the matched user message, so a follow-up
 			// response.create can scenario-match on the tool result.
 			s.history = append(s.history, engine.RequestMessage{Role: "tool", Content: it.Output})
-			return conversationItemEvents(prevItem, map[string]any{
+			return conversationItemEvents(prevItem, s.rememberItem(map[string]any{
 				"id": itemID, "object": "realtime.item", "type": "function_call_output", "status": "completed",
 				"call_id": it.CallID, "output": it.Output,
-			})
+			}))
 		case "function_call":
 			// An echoed prior tool call (context replay): an assistant turn with
 			// no matchable text, acked with the real function_call item shape.
 			s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: ""})
-			return conversationItemEvents(prevItem, map[string]any{
+			return conversationItemEvents(prevItem, s.rememberItem(map[string]any{
 				"id": itemID, "object": "realtime.item", "type": "function_call", "status": "completed",
 				"call_id": it.CallID, "name": it.Name, "arguments": it.Arguments,
-			})
+			}))
 		default:
 			text := it.text()
 			if text != "" {
 				s.history = append(s.history, engine.RequestMessage{Role: it.Role, Content: text})
 			}
-			return conversationItemEvents(prevItem, map[string]any{
+			return conversationItemEvents(prevItem, s.rememberItem(map[string]any{
 				"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 				"role": it.Role, "content": []any{map[string]any{"type": "input_text", "text": text}},
-			})
+			}))
 		}
 
 	case "response.create":
 		return s.createResponse(ctx)
+
+	case "conversation.item.retrieve":
+		if item, ok := s.items[ce.ItemID]; ok {
+			return []Event{{"type": "conversation.item.retrieved", "item": item}}
+		}
+		return []Event{s.errorEvent("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID))}
+
+	case "conversation.item.delete":
+		if _, ok := s.items[ce.ItemID]; !ok {
+			return []Event{s.errorEvent("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID))}
+		}
+		delete(s.items, ce.ItemID)
+		// Mock simplification: the engine history is not rewritten — deletion
+		// affects retrieval, not scenario matching on prior turns.
+		return []Event{{"type": "conversation.item.deleted", "item_id": ce.ItemID}}
+
+	case "conversation.item.truncate":
+		// The barge-in primitive: a client truncates an assistant audio item at
+		// the point playback stopped. A mock has no audio timeline, so the whole
+		// synthesized transcript past the cut is dropped (real servers remove
+		// the transcript for the truncated span) and the ack echoes the request.
+		item, ok := s.items[ce.ItemID]
+		if !ok {
+			return []Event{s.errorEvent("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID))}
+		}
+		if content, ok := item["content"].([]any); ok {
+			for _, c := range content {
+				if part, ok := c.(map[string]any); ok && part["type"] == "output_audio" {
+					part["transcript"] = ""
+				}
+			}
+		}
+		return []Event{{"type": "conversation.item.truncated",
+			"item_id": ce.ItemID, "content_index": ce.ContentIndex, "audio_end_ms": ce.AudioEndMs}}
 
 	case "response.cancel":
 		// The mock generates responses atomically, so there is never an
@@ -394,10 +444,10 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 		"role": "assistant", "content": []any{}}
 
 	if s.textOnly() {
-		final := map[string]any{
+		final := s.rememberItem(map[string]any{
 			"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 			"role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": transcript}},
-		}
+		})
 		// NB: the content_part events' part uses the SHORT type names ("text"/
 		// "audio", per the GA Part type on ResponseContentPartAdded/DoneEvent) —
 		// only ITEM content uses "output_text"/"output_audio". The GA API is
@@ -426,10 +476,10 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 	// GA audio ladder: assistant audio is the "output_audio" content part, and the
 	// streamed events are response.output_audio*.delta/.done (not the beta
 	// response.audio*.delta names).
-	final := map[string]any{
+	final := s.rememberItem(map[string]any{
 		"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 		"role": "assistant", "content": []any{map[string]any{"type": "output_audio", "transcript": transcript}},
-	}
+	})
 	*out = append(*out,
 		Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress},
 		Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress},
@@ -481,10 +531,10 @@ func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types
 	inProgress := map[string]any{
 		"id": itemID, "object": "realtime.item", "type": "function_call", "status": "in_progress",
 		"name": tc.Name, "call_id": callID, "arguments": ""}
-	final := map[string]any{
+	final := s.rememberItem(map[string]any{
 		"id": itemID, "object": "realtime.item", "type": "function_call", "status": "completed",
 		"name": tc.Name, "call_id": callID, "arguments": args,
-	}
+	})
 	// GA mirrors the item into the conversation (added at generation start, done
 	// when finalized) alongside the response.output_item.* events.
 	*out = append(*out,
