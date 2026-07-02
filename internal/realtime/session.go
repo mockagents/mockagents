@@ -572,6 +572,16 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		}
 
 	case "response.create":
+		// A transcription session has no response generation — that is the
+		// defining property of the union arm (the VAD auto-response and idle
+		// paths are gated the same way). Code null: the exact GA rejection
+		// shape is uncaptured; the null-code invalid_request_error matches the
+		// API's other unsupported-operation rejections.
+		if s.isTranscription() {
+			body := s.errorBody("invalid_request_error", "", "Cannot create a response on a transcription session")
+			body["code"] = nil
+			return []Event{{"type": "error", "error": body}}
+		}
 		var override struct {
 			MaxOutputTokens json.RawMessage `json:"max_output_tokens"`
 		}
@@ -747,9 +757,14 @@ func (s *Session) newResponseCtx(raw json.RawMessage) *responseCtx {
 		}
 		rc.metadata = cfg.Metadata
 		rc.outOfBand = cfg.Conversation == "none"
-		if len(cfg.Input) > 0 {
-			rc.hasInput = true
-			rc.input = s.inputContext(cfg.Input)
+		// `input: null` (an SDK's unset Optional) means ABSENT — only an
+		// explicit array replaces the context ([] clears it). A malformed
+		// non-array is likewise treated as absent rather than clearing.
+		if trimmed := strings.TrimSpace(string(cfg.Input)); trimmed != "" && trimmed != "null" {
+			if items, ok := s.inputContext(cfg.Input); ok {
+				rc.hasInput = true
+				rc.input = items
+			}
 		}
 	}
 	// An integer cap is enforced (transcript trimming → status "incomplete");
@@ -1164,11 +1179,12 @@ func engineHistory(instructions string, base []engine.RequestMessage) []engine.R
 // function_call_output → tool, function_call → assistant); item_reference
 // entries resolve against the session's stored items. Unknown types and
 // unresolvable references are skipped — a mock stays lenient about context it
-// cannot represent.
-func (s *Session) inputContext(raw json.RawMessage) []engine.RequestMessage {
+// cannot represent. ok is false when the payload is not an array (the caller
+// treats that as an absent input, not a cleared context).
+func (s *Session) inputContext(raw json.RawMessage) ([]engine.RequestMessage, bool) {
 	var items []json.RawMessage
 	if json.Unmarshal(raw, &items) != nil {
-		return nil
+		return nil, false
 	}
 	out := []engine.RequestMessage{}
 	for _, ri := range items {
@@ -1190,7 +1206,7 @@ func (s *Session) inputContext(raw json.RawMessage) []engine.RequestMessage {
 			}
 		}
 	}
-	return out
+	return out, true
 }
 
 // storedItemToMessage maps a stored conversation item (an item_reference

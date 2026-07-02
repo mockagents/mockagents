@@ -389,9 +389,10 @@ func (s *Session) armIdleTimer() {
 // continue (history gains the idleTimeoutPlaceholder turn so scenarios can
 // match it).
 func (s *Session) idleTimeout(ctx context.Context) []Event {
-	// Belt-and-braces: refreshVAD disarms the idle deadline when VAD is
-	// disabled, but a nil VAD state must never panic the read loop.
-	if s.vad == nil {
+	// Belt-and-braces: refreshVAD disarms the idle deadline whenever the idle
+	// timeout stops being configured, but a stale deadline must never panic
+	// the read loop or fire under a config that doesn't ask for it.
+	if s.vad == nil || s.vad.cfg.Type != "server_vad" || s.vad.cfg.IdleTimeoutMs <= 0 {
 		return nil
 	}
 	s.idleFired = true
