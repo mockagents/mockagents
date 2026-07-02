@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,8 +40,8 @@ type Generator func(ctx context.Context, model, sessionID string, history []engi
 
 // ClientEvent is an inbound Realtime event — the subset the mock handles.
 type ClientEvent struct {
-	Type    string          `json:"type"`
-	EventID string          `json:"event_id,omitempty"`
+	Type     string          `json:"type"`
+	EventID  string          `json:"event_id,omitempty"`
 	Session  json.RawMessage `json:"session,omitempty"`  // session.update
 	Item     json.RawMessage `json:"item,omitempty"`     // conversation.item.create
 	Audio    string          `json:"audio,omitempty"`    // input_audio_buffer.append (base64)
@@ -150,7 +151,11 @@ type Session struct {
 	audioBuffer  bool
 	counter      int
 	expiresAt    int64  // unix seconds; emitted in the session object when > 0
-	lastItemID   string // id of the most recently created conversation item ("" → previous_item_id is null)
+	lastItemID   string // id of the conversation's current tail item ("" → previous_item_id is null)
+	// itemOrder is the conversation's item ids in conversation order (inserts
+	// honored), so deleting the tail item can repair lastItemID instead of
+	// leaving it dangling at an id the server itself rejects.
+	itemOrder []string
 	// lastClientEventID is the event_id of the client event currently being
 	// handled; error events echo it as error.event_id (the GA correlation handle).
 	lastClientEventID string
@@ -185,6 +190,63 @@ func (s *Session) rememberItem(item map[string]any) map[string]any {
 	return item
 }
 
+// joinTail appends a new item id at the conversation tail (the common case:
+// commits, idle turns, and response output items all join at the end).
+func (s *Session) joinTail(id string) {
+	s.itemOrder = append(s.itemOrder, id)
+	s.lastItemID = id
+}
+
+// insertItem places an item into the conversation order: after="" appends,
+// "root" inserts first, any other value inserts after that id (the caller has
+// already validated it exists). lastItemID is re-derived from the tail, so an
+// insert in the middle leaves the chain tail untouched.
+func (s *Session) insertItem(after, id string) {
+	switch after {
+	case "":
+		s.itemOrder = append(s.itemOrder, id)
+	case "root":
+		s.itemOrder = append([]string{id}, s.itemOrder...)
+	default:
+		if i := slices.Index(s.itemOrder, after); i >= 0 {
+			s.itemOrder = slices.Insert(s.itemOrder, i+1, id)
+		} else {
+			s.itemOrder = append(s.itemOrder, id)
+		}
+	}
+	s.lastItemID = s.itemOrder[len(s.itemOrder)-1]
+}
+
+// removeItem drops an item from the conversation order and repairs the chain
+// tail — deleting the tail item must not leave lastItemID dangling at an id
+// later events reference but retrieve rejects.
+func (s *Session) removeItem(id string) {
+	if i := slices.Index(s.itemOrder, id); i >= 0 {
+		s.itemOrder = slices.Delete(s.itemOrder, i, i+1)
+	}
+	if n := len(s.itemOrder); n > 0 {
+		s.lastItemID = s.itemOrder[n-1]
+	} else {
+		s.lastItemID = ""
+	}
+}
+
+// joinEmittedItem applies the conversation-join side effects when an item's
+// conversation.item.added actually reaches the client (paced emission / cancel
+// drain): the item becomes retrievable and the chain tail. Deferring the join
+// to emission is what keeps a cancelled paced response from leaving phantom
+// items — retrievable, chain-anchoring, but never announced.
+func (s *Session) joinEmittedItem(ev Event) {
+	item, ok := ev["item"].(map[string]any)
+	if !ok {
+		return
+	}
+	s.rememberItem(item)
+	if id, _ := item["id"].(string); id != "" {
+		s.joinTail(id)
+	}
+}
+
 // previousItemID returns the value for a server event's previous_item_id field:
 // the id of the item created just before the current one, or nil (JSON null)
 // when this is the first item in the conversation.
@@ -201,7 +263,7 @@ func (s *Session) previousItemID() any {
 func (s *Session) newConversationItem() (prev any, id string) {
 	prev = s.previousItemID()
 	id = s.nextID("item")
-	s.lastItemID = id
+	s.joinTail(id)
 	return prev, id
 }
 
@@ -310,7 +372,7 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		var itemID string
 		if id, ok := s.vadCommitItemID(); ok {
 			prevItem, itemID = s.previousItemID(), id
-			s.lastItemID = id
+			s.joinTail(id)
 		} else {
 			prevItem, itemID = s.newConversationItem()
 		}
@@ -363,22 +425,19 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		// history stays append-order — insertion positions the event-log view,
 		// not scenario-matching order.)
 		var prevItem any
-		tail := true
 		switch ce.PreviousItemID {
 		case "":
 			prevItem = s.previousItemID()
 		case "root":
-			prevItem, tail = nil, s.lastItemID == ""
+			prevItem = nil
 		default:
 			if _, known := s.items[ce.PreviousItemID]; !known {
 				return []Event{s.errorEventParam("item_not_found",
 					fmt.Sprintf("previous_item_id %q not found", ce.PreviousItemID), "previous_item_id")}
 			}
-			prevItem, tail = ce.PreviousItemID, ce.PreviousItemID == s.lastItemID
+			prevItem = ce.PreviousItemID
 		}
-		if tail {
-			s.lastItemID = itemID
-		}
+		s.insertItem(ce.PreviousItemID, itemID)
 		switch it.Type {
 		case "function_call_output":
 			// The tool-loop reply. Same history mapping as the Responses
@@ -425,6 +484,7 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			return []Event{s.errorEvent("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID))}
 		}
 		delete(s.items, ce.ItemID)
+		s.removeItem(ce.ItemID)
 		// Mock simplification: the engine history is not rewritten — deletion
 		// affects retrieval, not scenario matching on prior turns.
 		return []Event{{"type": "conversation.item.deleted", "item_id": ce.ItemID}}
@@ -630,14 +690,32 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 		}},
 	}
 
+	// The ladder is built with a LOCAL chain cursor — session state (lastItemID,
+	// the retrievable-items index) is only mutated when an item's announcement
+	// actually reaches the client: immediately after build for a burst response,
+	// per emitted conversation.item.added for a paced one (Tick / cancel drain).
+	// Mutating at build time left cancelled-before-emission items retrievable
+	// and chain-anchoring despite never being announced (phantom items).
 	var items []any
+	var convItems []map[string]any // in-conversation items, in emission order
+	chainPrev := s.previousItemID()
 	outputIndex := 0
 	if emitMessage {
-		items = append(items, s.appendMessageLadder(&out, respID, transcript, outputIndex, rc))
+		final := s.appendMessageLadder(&out, respID, transcript, outputIndex, rc, chainPrev)
+		items = append(items, final)
+		if !rc.outOfBand {
+			chainPrev = final["id"]
+			convItems = append(convItems, final)
+		}
 		outputIndex++
 	}
 	for _, tc := range resp.ToolCalls {
-		items = append(items, s.appendFunctionCallLadder(&out, respID, tc, outputIndex, rc))
+		final := s.appendFunctionCallLadder(&out, respID, tc, outputIndex, rc, chainPrev)
+		items = append(items, final)
+		if !rc.outOfBand {
+			chainPrev = final["id"]
+			convItems = append(convItems, final)
+		}
 		outputIndex++
 	}
 
@@ -672,6 +750,15 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 		return s.beginPacedResponse(respID, rc, out, appendHistory)
 	}
 	appendHistory()
+	// A burst response's whole ladder reaches the client now — join its items
+	// to the conversation (out-of-band items join nothing and are NOT
+	// retrievable: they belong to no conversation, so convItems excludes them).
+	for _, it := range convItems {
+		s.rememberItem(it)
+		if id, _ := it["id"].(string); id != "" {
+			s.joinTail(id)
+		}
+	}
 	s.armIdleTimer()
 	return out
 }
@@ -748,16 +835,12 @@ func (s *Session) responseObject(respID, status string, output []any, rc *respon
 // text-only mode (output_modalities without "audio") it streams
 // response.output_text.delta and an output_text content part; otherwise it
 // streams the GA audio ladder (output_audio + output_audio_transcript).
-func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, outputIndex int, rc *responseCtx) map[string]any {
+func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, outputIndex int, rc *responseCtx, prevItem any) map[string]any {
 	itemID := s.nextID("msg")
-	// A response output item joins the conversation: capture what it chains off,
-	// then record it so a later user turn's previous_item_id points at it.
-	// Out-of-band responses (conversation:"none") join nothing — no chain update
-	// and no conversation-item mirror below.
-	prevItem := s.previousItemID()
-	if !rc.outOfBand {
-		s.lastItemID = itemID
-	}
+	// prevItem is the caller's build-time chain cursor; the session-state join
+	// (rememberItem + chain tail) happens when the item's announcement is
+	// actually emitted — see createResponse. Out-of-band responses
+	// (conversation:"none") join nothing — no conversation-item mirror below.
 	// GA mirrors a response output item into the conversation: it announces
 	// conversation.item.added when generation of the item starts (in_progress)
 	// and conversation.item.done when it is finalized, alongside the
@@ -772,10 +855,10 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 		itemStatus = "incomplete" // the max_output_tokens cap trimmed this item
 	}
 	if rc.textOnly() {
-		final := s.rememberItem(map[string]any{
+		final := map[string]any{
 			"id": itemID, "object": "realtime.item", "type": "message", "status": itemStatus,
 			"role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": transcript}},
-		})
+		}
 		// NB: the content_part events' part uses the SHORT type names ("text"/
 		// "audio", per the GA Part type on ResponseContentPartAdded/DoneEvent) —
 		// only ITEM content uses "output_text"/"output_audio". The GA API is
@@ -808,10 +891,10 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 	// GA audio ladder: assistant audio is the "output_audio" content part, and the
 	// streamed events are response.output_audio*.delta/.done (not the beta
 	// response.audio*.delta names).
-	final := s.rememberItem(map[string]any{
+	final := map[string]any{
 		"id": itemID, "object": "realtime.item", "type": "message", "status": itemStatus,
 		"role": "assistant", "content": []any{map[string]any{"type": "output_audio", "transcript": transcript}},
-	})
+	}
 	*out = append(*out, Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress})
 	if !rc.outOfBand {
 		*out = append(*out, Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress})
@@ -849,16 +932,11 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 // completed item. This is what a Realtime client's tool loop consumes: it reads
 // call_id + name + assembled arguments, runs the tool, and sends the result back
 // as a conversation.item.create of type function_call_output.
-func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types.ToolCallSpec, outputIndex int, rc *responseCtx) map[string]any {
+func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types.ToolCallSpec, outputIndex int, rc *responseCtx, prevItem any) map[string]any {
 	itemID := s.nextID("fc")
 	callID := s.nextID("call")
-	// A function_call output item joins the conversation: capture what it chains
-	// off, then record it so a later user turn's previous_item_id points at it.
-	// (Out-of-band responses join nothing — see appendMessageLadder.)
-	prevItem := s.previousItemID()
-	if !rc.outOfBand {
-		s.lastItemID = itemID
-	}
+	// prevItem is the caller's build-time chain cursor; the session-state join
+	// happens at emission — see createResponse and appendMessageLadder.
 	// raw_arguments lets a scenario plant malformed/invalid JSON args verbatim
 	// (FB-03) to exercise a client's tool-arg parser; otherwise marshal the
 	// structured Arguments. Mirrors adapter/openai.go and the streaming paths.
@@ -870,10 +948,10 @@ func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types
 	inProgress := map[string]any{
 		"id": itemID, "object": "realtime.item", "type": "function_call", "status": "in_progress",
 		"name": tc.Name, "call_id": callID, "arguments": ""}
-	final := s.rememberItem(map[string]any{
+	final := map[string]any{
 		"id": itemID, "object": "realtime.item", "type": "function_call", "status": "completed",
 		"name": tc.Name, "call_id": callID, "arguments": args,
-	})
+	}
 	// GA mirrors the item into the conversation (added at generation start, done
 	// when finalized) alongside the response.output_item.* events.
 	*out = append(*out, Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress})

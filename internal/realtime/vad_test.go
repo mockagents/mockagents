@@ -198,7 +198,7 @@ func TestVAD_PauseResumesTurn(t *testing.T) {
 	enableVAD(t, s, serverVAD)
 
 	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(200, speechAmp)})
-	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(400, quietAmp)}) // pause < 500
+	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(400, quietAmp)})  // pause < 500
 	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(200, speechAmp)}) // resume resets
 	if evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(400, quietAmp)}); len(evs) != 0 {
 		t.Fatalf("silence counter did not reset on resumed speech: %v", typesOf(evs))

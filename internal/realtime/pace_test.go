@@ -6,12 +6,13 @@ import (
 	"time"
 
 	"github.com/mockagents/mockagents/internal/engine"
+	"github.com/mockagents/mockagents/internal/types"
 )
 
 type fakeClock struct{ t time.Time }
 
-func newFakeClock() *fakeClock                          { return &fakeClock{t: time.Unix(1000, 0)} }
-func (f *fakeClock) now() time.Time                     { return f.t }
+func newFakeClock() *fakeClock                         { return &fakeClock{t: time.Unix(1000, 0)} }
+func (f *fakeClock) now() time.Time                    { return f.t }
 func (f *fakeClock) advance(d time.Duration) time.Time { f.t = f.t.Add(d); return f.t }
 
 // pacedSession builds a VAD session with paced emission and a fake clock.
@@ -351,6 +352,81 @@ func TestIdleTimeout_FiresOncePerActivity(t *testing.T) {
 	evs = s.Tick(ctx, fc.advance(5*time.Second))
 	if firstEvent(evs, "input_audio_buffer.timeout_triggered") == nil {
 		t.Errorf("second idle fire (after activity) missing; got %v", typesOf(evs))
+	}
+}
+
+// Round 5 T-F1/R4-1: cancelling a paced response before any of its items were
+// announced must leave no phantoms — the response.done output is empty, no
+// close-out events are fabricated, the items are not retrievable, and the
+// conversation chain still ends at the last item the client actually saw.
+func TestPaced_HeadCancelLeavesNoPhantoms(t *testing.T) {
+	ctx := context.Background()
+	s, _ := pacedSession(t, fakeGenTool("never emitted", types.ToolCallSpec{Name: "lookup"}), serverVAD)
+	evs := endVADTurn(t, s)
+	userItem := firstEvent(evs, "input_audio_buffer.committed")["item_id"].(string)
+
+	// Nothing of the ladder has emitted yet: only the user item exists.
+	if len(s.items) != 1 {
+		t.Fatalf("pre-drain items = %d, want 1 (build must not index un-announced items)", len(s.items))
+	}
+	if s.lastItemID != userItem {
+		t.Fatalf("pre-drain chain tail = %q, want the announced user item %q", s.lastItemID, userItem)
+	}
+
+	cancel := s.Handle(ctx, &ClientEvent{Type: "response.cancel"})
+	done := firstEvent(cancel, "response.done")
+	if done == nil {
+		t.Fatalf("cancel events = %v, want response.done", typesOf(cancel))
+	}
+	resp := done["response"].(map[string]any)
+	if resp["status"] != "cancelled" {
+		t.Errorf("status = %v, want cancelled", resp["status"])
+	}
+	if out := resp["output"].([]any); len(out) != 0 {
+		t.Errorf("head-cancel output = %v, want empty (nothing was announced)", out)
+	}
+	for _, typ := range []string{"response.output_item.done", "conversation.item.added",
+		"conversation.item.done", "response.content_part.added", "response.content_part.done"} {
+		if firstEvent(cancel, typ) != nil {
+			t.Errorf("head-cancel fabricated %s; got %v", typ, typesOf(cancel))
+		}
+	}
+	if len(s.items) != 1 {
+		t.Errorf("post-cancel items = %d, want 1 — cancelled-before-emission items must not be retrievable", len(s.items))
+	}
+
+	// The next user turn chains off the last ANNOUNCED item, not a phantom id
+	// the client never saw.
+	evs = endVADTurn(t, s)
+	committed := firstEvent(evs, "input_audio_buffer.committed")
+	if committed["previous_item_id"] != userItem {
+		t.Errorf("previous_item_id = %v, want %v (the last announced item)", committed["previous_item_id"], userItem)
+	}
+}
+
+// Round 5: a paced response's items become retrievable only when their
+// announcement is emitted, and join the chain in emission order.
+func TestPaced_ItemsJoinAtEmission(t *testing.T) {
+	s, fc := pacedSession(t, fakeGen("brief reply"), serverVAD)
+	evs := endVADTurn(t, s)
+	userItem := firstEvent(evs, "input_audio_buffer.committed")["item_id"].(string)
+
+	rest := drain(t, s, fc, 100)
+	added := firstEvent(rest, "conversation.item.added")
+	if added == nil {
+		t.Fatalf("drained ladder missing conversation.item.added; got %v", typesOf(rest))
+	}
+	if added["previous_item_id"] != userItem {
+		t.Errorf("assistant item chains off %v, want %v", added["previous_item_id"], userItem)
+	}
+	msgID := added["item"].(map[string]any)["id"].(string)
+	got := firstEvent(s.Handle(context.Background(),
+		&ClientEvent{Type: "conversation.item.retrieve", ItemID: msgID}), "conversation.item.retrieved")
+	if got == nil {
+		t.Fatal("completed paced item must be retrievable")
+	}
+	if s.lastItemID != msgID {
+		t.Errorf("chain tail = %q, want the emitted assistant item %q", s.lastItemID, msgID)
 	}
 }
 

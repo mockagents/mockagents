@@ -82,7 +82,17 @@ func (s *Session) Tick(ctx context.Context, now time.Time) []Event {
 		ev := inf.queue[0]
 		inf.queue = inf.queue[1:]
 		out = append(out, ev)
-		if ev["type"] == "response.output_item.done" {
+		// Emission-time conversation joins: the item becomes retrievable and the
+		// chain tail only when its announcement reaches the client (see
+		// createResponse — build no longer mutates session state).
+		switch ev["type"] {
+		case "conversation.item.added":
+			s.joinEmittedItem(ev)
+		case "conversation.item.done":
+			if item, ok := ev["item"].(map[string]any); ok {
+				s.rememberItem(item)
+			}
+		case "response.output_item.done":
 			inf.doneItems = append(inf.doneItems, ev["item"])
 		}
 		if len(inf.queue) == 0 {
@@ -146,14 +156,24 @@ drain:
 			continue // the cut: content past the cancel point is never emitted
 		case t == "response.output_item.added" || t == "response.done":
 			break drain // a never-started item, or the end of the ladder
+		case t == "conversation.item.added":
+			// The announced item's mirror pair still opens during close-out; the
+			// join side effects apply exactly as they would in Tick.
+			s.joinEmittedItem(ev)
+			out = append(out, ev)
+		case t == "conversation.item.done":
+			if item, ok := ev["item"].(map[string]any); ok {
+				s.rememberItem(item) // the final (now incomplete) item — retrieve agrees
+			}
+			out = append(out, ev)
 		case t == "response.output_item.done":
 			if item, ok := ev["item"].(map[string]any); ok {
-				item["status"] = "incomplete" // shared with s.items — retrieve agrees
+				item["status"] = "incomplete" // same map the mirror .done carries
 				inf.doneItems = append(inf.doneItems, item)
 			}
 			out = append(out, ev)
 		default:
-			out = append(out, ev) // content_part/audio/transcript close-outs, item mirror
+			out = append(out, ev) // content_part/audio/transcript close-outs
 		}
 	}
 
@@ -196,7 +216,7 @@ func (s *Session) idleTimeout(ctx context.Context) []Event {
 	v := s.vad
 	prevItem := s.previousItemID()
 	itemID := s.nextID("item")
-	s.lastItemID = itemID
+	s.joinTail(itemID)
 	at := int(v.totalMs)
 
 	out := []Event{
