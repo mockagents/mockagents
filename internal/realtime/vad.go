@@ -120,9 +120,18 @@ func (s *Session) validateTurnDetection(sessionRaw json.RawMessage) []Event {
 }
 
 // refreshVAD re-derives the VAD state machine from the session's turn_detection
-// config (called after every session.update). A null/absent/unknown config
-// disables VAD; cumulative audio time survives reconfiguration.
+// config (called when a session.update actually changes it). A null/absent/
+// unknown config disables VAD; cumulative audio time survives reconfiguration,
+// and an in-progress speech cycle survives a same-type reconfiguration.
+// Disabling VAD also disarms the idle timeout — idleTimeout dereferences the
+// VAD state, so a deadline left armed after `turn_detection: null` would panic
+// when the transport's timer fires.
 func (s *Session) refreshVAD() {
+	defer func() {
+		if s.vad == nil {
+			s.idleAt, s.idleFired = time.Time{}, false
+		}
+	}()
 	raw := strings.TrimSpace(string(s.cfg.turnDetection))
 	if raw == "" || raw == "null" {
 		s.vad = nil

@@ -317,6 +317,11 @@ func (s *Session) armIdleTimer() {
 // continue (history gains the idleTimeoutPlaceholder turn so scenarios can
 // match it).
 func (s *Session) idleTimeout(ctx context.Context) []Event {
+	// Belt-and-braces: refreshVAD disarms the idle deadline when VAD is
+	// disabled, but a nil VAD state must never panic the read loop.
+	if s.vad == nil {
+		return nil
+	}
 	s.idleFired = true
 	v := s.vad
 	prevItem := s.previousItemID()
