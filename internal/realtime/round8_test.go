@@ -8,7 +8,45 @@ import (
 	"testing"
 
 	"github.com/mockagents/mockagents/internal/engine"
+	"github.com/mockagents/mockagents/internal/types"
 )
+
+// R8-2 (S2, live-SDK proven): the tool loop must converge — a follow-up right
+// after a function_call_output must not re-issue the identical function_call
+// (an SDK agent loop answering every call would spin forever). A DIFFERENT
+// call (deliberate multi-step chain) still goes out, and a fresh user turn
+// re-arms the original call.
+func TestToolLoopConverges(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("r82", "", fakeGenTool("Checking the weather.",
+		types.ToolCallSpec{Name: "get_weather", Arguments: map[string]any{"location": "NYC"}}))
+
+	// Turn 1: user asks → function_call ladder.
+	s.Handle(ctx, mkUserItem("item_q1", "What is the weather in NYC?"))
+	evs := s.Handle(ctx, &ClientEvent{Type: "response.create"})
+	fcDone := firstEvent(evs, "response.function_call_arguments.done")
+	if fcDone == nil {
+		t.Fatalf("first response = %v, want the function_call ladder", typesOf(evs))
+	}
+
+	// The client answers the call → the follow-up must NOT re-issue it.
+	s.Handle(ctx, &ClientEvent{Type: "conversation.item.create",
+		Item: []byte(`{"type":"function_call_output","call_id":"` + fcDone["call_id"].(string) + `","output":"{\"temp\":72}"}`)})
+	evs = s.Handle(ctx, &ClientEvent{Type: "response.create"})
+	if firstEvent(evs, "response.function_call_arguments.done") != nil {
+		t.Fatalf("follow-up re-issued the identical function_call: %v", typesOf(evs))
+	}
+	if firstEvent(evs, "response.done") == nil {
+		t.Fatalf("follow-up must complete as a message response: %v", typesOf(evs))
+	}
+
+	// A fresh user turn re-arms the tool call.
+	s.Handle(ctx, mkUserItem("item_q2", "and the weather tomorrow?"))
+	evs = s.Handle(ctx, &ClientEvent{Type: "response.create"})
+	if firstEvent(evs, "response.function_call_arguments.done") == nil {
+		t.Errorf("a new user turn must re-arm the tool call: %v", typesOf(evs))
+	}
+}
 
 // R8-1 (S2, two-lens proven): the server's own VAD end-of-turn commit must
 // never trip the 100ms CLIENT-commit floor — a short turn previously emitted

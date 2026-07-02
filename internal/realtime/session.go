@@ -213,6 +213,14 @@ type Session struct {
 	// detection (vadEndOfTurn) — client-commit validation (the 100 ms floor)
 	// does not apply to the server's own segmentation.
 	vadCommitting bool
+	// lastToolCalls fingerprints the tool calls of the most recent
+	// in-conversation response. The scenario engine re-matches on the
+	// unchanged user turn, so a follow-up right after a function_call_output
+	// would re-issue the IDENTICAL call — an SDK tool loop (answer every
+	// function_call) would never converge. Identical re-issues immediately
+	// after a tool result are consumed; a different call (a deliberate
+	// multi-step chain) still goes out.
+	lastToolCalls []string
 }
 
 // maxBufferedAudioBytes bounds the per-turn audio kept for retrieve (~40 s of
@@ -927,6 +935,21 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 	}
 
 	inputTokens := countTokens(base)
+
+	// Tool-loop convergence (round-8 R8-2, proven with the live openai-python
+	// SDK): the scenario re-matches on the unchanged user turn, so the
+	// follow-up right after a function_call_output re-issued the identical
+	// call forever. An identical re-issue directly after a tool result is
+	// consumed (the model "used" the output); a different call — a deliberate
+	// multi-step chain — still goes out.
+	if len(resp.ToolCalls) > 0 && !rc.outOfBand {
+		if len(base) > 0 && base[len(base)-1].Role == "tool" &&
+			slices.Equal(toolCallFingerprints(resp.ToolCalls), s.lastToolCalls) {
+			resp.ToolCalls = nil
+		} else {
+			s.lastToolCalls = toolCallFingerprints(resp.ToolCalls)
+		}
+	}
 
 	transcript := resp.Content
 	hasTools := len(resp.ToolCalls) > 0
@@ -1863,6 +1886,20 @@ func parseItem(raw json.RawMessage) parsedItem {
 		item.Role = "user"
 	}
 	return item
+}
+
+// toolCallFingerprints identifies a response's tool calls (name + arguments)
+// so an identical re-issue right after a tool result can be recognized.
+func toolCallFingerprints(calls []types.ToolCallSpec) []string {
+	out := make([]string, len(calls))
+	for i, tc := range calls {
+		args := tc.RawArguments
+		if args == "" {
+			args = marshalArgs(tc.Arguments)
+		}
+		out[i] = tc.Name + "\x00" + args
+	}
+	return out
 }
 
 // storedItemText joins the text-bearing payloads (text or transcript) of a
