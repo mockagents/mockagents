@@ -1,7 +1,6 @@
 package adapter
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -352,13 +351,9 @@ func formatOpenAIResponse(resp *engine.Response, promptTokens, completionTokens 
 			if i < len(resp.ToolResults) {
 				callID = resp.ToolResults[i].ID
 			}
-			// raw_arguments lets a scenario plant malformed/invalid JSON args
-			// verbatim (FB-03); otherwise marshal the structured Arguments.
-			args := tc.RawArguments
-			if args == "" {
-				argsJSON, _ := json.Marshal(tc.Arguments)
-				args = string(argsJSON)
-			}
+			// raw_arguments verbatim (FB-03) or the structured Arguments,
+			// nil coerced to "{}" — never "null" (round-9 R9-6).
+			args := tc.ArgumentsJSON()
 			toolCalls = append(toolCalls, OpenAIToolCall{
 				ID:   callID,
 				Type: "function",

@@ -58,7 +58,9 @@ func TestStreamOpenAI_SemanticModes(t *testing.T) {
 		}
 		var c ChatCompletionChunk
 		if json.Unmarshal([]byte(l), &c) == nil && len(c.Choices[0].Delta.ToolCalls) > 0 {
-			gotArgs += c.Choices[0].Delta.ToolCalls[0].Function.Arguments
+			if args := c.Choices[0].Delta.ToolCalls[0].Function.Arguments; args != nil {
+				gotArgs += *args
+			}
 		}
 	}
 	assert.Equal(t, `{"city":`, gotArgs)

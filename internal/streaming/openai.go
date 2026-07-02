@@ -3,7 +3,6 @@ package streaming
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -16,18 +15,18 @@ import (
 
 // ChatCompletionChunk is a single SSE chunk in OpenAI streaming format.
 type ChatCompletionChunk struct {
-	ID      string                `json:"id"`
-	Object  string                `json:"object"`
-	Created int64                 `json:"created"`
-	Model   string                `json:"model"`
-	Choices []ChunkChoice         `json:"choices"`
+	ID      string        `json:"id"`
+	Object  string        `json:"object"`
+	Created int64         `json:"created"`
+	Model   string        `json:"model"`
+	Choices []ChunkChoice `json:"choices"`
 }
 
 // ChunkChoice represents a single choice in a streaming chunk.
 type ChunkChoice struct {
-	Index        int          `json:"index"`
-	Delta        ChunkDelta   `json:"delta"`
-	FinishReason *string      `json:"finish_reason"`
+	Index        int        `json:"index"`
+	Delta        ChunkDelta `json:"delta"`
+	FinishReason *string    `json:"finish_reason"`
 }
 
 // ChunkDelta represents incremental content changes.
@@ -42,16 +41,19 @@ type ChunkDelta struct {
 
 // ChunkToolCall represents a tool call in a streaming chunk.
 type ChunkToolCall struct {
-	Index    int                  `json:"index"`
-	ID       string               `json:"id,omitempty"`
-	Type     string               `json:"type,omitempty"`
-	Function ChunkFunction        `json:"function"`
+	Index    int           `json:"index"`
+	ID       string        `json:"id,omitempty"`
+	Type     string        `json:"type,omitempty"`
+	Function ChunkFunction `json:"function"`
 }
 
-// ChunkFunction represents a function call chunk.
+// ChunkFunction represents a function call chunk. Arguments is a pointer so
+// the name frame can carry an explicit `"arguments": ""` (the real API's
+// first tool-call delta always includes it — round-9 R9-11) while content
+// frames omit the key entirely.
 type ChunkFunction struct {
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
+	Name      string  `json:"name,omitempty"`
+	Arguments *string `json:"arguments,omitempty"`
 }
 
 // StreamOpenAI writes an engine Response as an OpenAI-format SSE stream.
@@ -186,25 +188,23 @@ func streamOpenAIToolCalls(
 			callID = resp.ToolResults[i].ID
 		}
 
-		// Marshal arguments — unless the scenario planted raw (possibly
-		// malformed) argument bytes to emit verbatim (FB-03).
-		argsStr := tc.RawArguments
-		if argsStr == "" {
-			argsJSON, _ := json.Marshal(tc.Arguments)
-			argsStr = string(argsJSON)
-		}
+		// raw_arguments verbatim (FB-03) or the structured Arguments, nil
+		// coerced to "{}" — never "null" (round-9 R9-6).
+		argsStr := tc.ArgumentsJSON()
 
 		if err := sleepCtx(ctx, time.Duration(delayMs)*time.Millisecond); err != nil {
 			return err
 		}
 
-		// First chunk: function name.
+		// First chunk: function name + an explicit empty arguments string
+		// (the real API's name frame always carries `"arguments": ""`).
+		empty := ""
 		if err := sse.WriteData(ChatCompletionChunk{
 			ID: id, Object: "chat.completion.chunk", Created: created, Model: resp.Model,
 			Choices: []ChunkChoice{{Index: 0, Delta: ChunkDelta{
 				ToolCalls: []ChunkToolCall{{
 					Index: i, ID: callID, Type: "function",
-					Function: ChunkFunction{Name: tc.Name},
+					Function: ChunkFunction{Name: tc.Name, Arguments: &empty},
 				}},
 			}}},
 		}); err != nil {
@@ -220,12 +220,13 @@ func streamOpenAIToolCalls(
 			if delayMs > 0 {
 				time.Sleep(time.Duration(delayMs) * time.Millisecond)
 			}
+			chunk := argChunk
 			if err := sse.WriteData(ChatCompletionChunk{
 				ID: id, Object: "chat.completion.chunk", Created: created, Model: resp.Model,
 				Choices: []ChunkChoice{{Index: 0, Delta: ChunkDelta{
 					ToolCalls: []ChunkToolCall{{
 						Index:    i,
-						Function: ChunkFunction{Arguments: argChunk},
+						Function: ChunkFunction{Arguments: &chunk},
 					}},
 				}}},
 			}); err != nil {

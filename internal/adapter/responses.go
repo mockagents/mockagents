@@ -648,11 +648,7 @@ func buildResponsesOutput(resp *engine.Response) ([]any, int) {
 		if i < len(resp.ToolResults) && resp.ToolResults[i].ID != "" {
 			callID = resp.ToolResults[i].ID
 		}
-		args := tc.RawArguments
-		if args == "" {
-			argsJSON, _ := json.Marshal(tc.Arguments)
-			args = string(argsJSON)
-		}
+		args := tc.ArgumentsJSON() // raw verbatim or structured, nil → "{}" (R9-6)
 		output = append(output, responseFunctionCallItem{
 			Type:      "function_call",
 			ID:        "fc_" + generateID(),

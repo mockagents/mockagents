@@ -125,8 +125,12 @@ func TestStreamOpenAI_ToolCalls(t *testing.T) {
 				assert.Equal(t, "get_weather", tc.Function.Name)
 				assert.Equal(t, "call_abc123", tc.ID)
 			}
-			if tc.Function.Arguments != "" {
+			if tc.Function.Arguments != nil && *tc.Function.Arguments != "" {
 				hasToolCallArgs = true
+			}
+			// R9-11: the name frame carries an explicit empty arguments string.
+			if tc.Function.Name != "" {
+				require.NotNil(t, tc.Function.Arguments, "name frame must carry arguments:\"\"")
 			}
 		}
 	}

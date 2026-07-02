@@ -15,17 +15,17 @@ import (
 // Anthropic SSE event types.
 
 type anthropicMessageStart struct {
-	Type    string                  `json:"type"`
-	Message anthropicMessageHeader  `json:"message"`
+	Type    string                 `json:"type"`
+	Message anthropicMessageHeader `json:"message"`
 }
 
 type anthropicMessageHeader struct {
-	ID         string `json:"id"`
-	Type       string `json:"type"`
-	Role       string `json:"role"`
-	Content    []any  `json:"content"`
-	Model      string `json:"model"`
-	StopReason *string `json:"stop_reason"`
+	ID         string         `json:"id"`
+	Type       string         `json:"type"`
+	Role       string         `json:"role"`
+	Content    []any          `json:"content"`
+	Model      string         `json:"model"`
+	StopReason *string        `json:"stop_reason"`
 	Usage      anthropicUsage `json:"usage"`
 }
 
@@ -203,21 +203,26 @@ func StreamAnthropic(
 			return err
 		}
 
-		// input_json_delta chunks
-		argsJSON, _ := json.Marshal(tc.Arguments)
-		argChunks := chunkString(string(argsJSON), 20)
-		for _, argChunk := range argChunks {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if err := sleepCtx(ctx, time.Duration(delayMs)*time.Millisecond); err != nil {
-				return err
-			}
-			if err := sse.WriteEvent("content_block_delta", anthropicContentBlockDelta{
-				Type: "content_block_delta", Index: blockIndex,
-				Delta: anthropicInputJSONDelta{Type: "input_json_delta", PartialJSON: argChunk},
-			}); err != nil {
-				return err
+		// input_json_delta chunks. An EMPTY input streams no deltas at all —
+		// the block stays the {} from content_block_start; the real API sends
+		// nothing (round-9 R9-6: a "null" delta made SDK accumulation set the
+		// snapshot's input to None).
+		if len(tc.Arguments) > 0 {
+			argsJSON, _ := json.Marshal(tc.Arguments)
+			argChunks := chunkString(string(argsJSON), 20)
+			for _, argChunk := range argChunks {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if err := sleepCtx(ctx, time.Duration(delayMs)*time.Millisecond); err != nil {
+					return err
+				}
+				if err := sse.WriteEvent("content_block_delta", anthropicContentBlockDelta{
+					Type: "content_block_delta", Index: blockIndex,
+					Delta: anthropicInputJSONDelta{Type: "input_json_delta", PartialJSON: argChunk},
+				}); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -244,7 +249,7 @@ func StreamAnthropic(
 	}
 	outputTokens := len(resp.Content)/4 + 1
 	if err := sse.WriteEvent("message_delta", anthropicMessageDelta{
-		Type:  "message_delta",
+		Type: "message_delta",
 		Delta: struct {
 			StopReason string `json:"stop_reason"`
 		}{StopReason: stopReason},

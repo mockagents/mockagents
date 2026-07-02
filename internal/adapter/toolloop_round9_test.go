@@ -213,6 +213,50 @@ func TestToolLoop_GeminiConverges(t *testing.T) {
 	}
 }
 
+// R9-6/R9-12: a no-arg tool call renders an OBJECT everywhere — OpenAI
+// arguments "{}" (never "null"), Anthropic tool_use always carries the
+// required "input" key, Gemini functionCall carries "args": {}.
+func TestNoArgToolCallShapes(t *testing.T) {
+	mk := func(protocol, model string) *types.AgentDefinition {
+		a := toolLoopAgent(protocol, model)
+		a.Spec.Behavior.Scenarios[0].Response.ToolCalls[0].Arguments = nil
+		a.Spec.Tools[0].Name = "get_weather"
+		return a
+	}
+
+	// OpenAI: arguments "{}".
+	h := &OpenAIHandler{Engine: testEngine(mk("openai-chat-completions", "gpt-4o"))}
+	rec := doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model: "gpt-4o", Messages: []OpenAIMessage{{Role: "user", Content: "weather?"}}})
+	var resp ChatCompletionResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	require.NotEmpty(t, resp.Choices[0].Message.ToolCalls)
+	assert.Equal(t, "{}", resp.Choices[0].Message.ToolCalls[0].Function.Arguments,
+		`nil arguments must render "{}" — json.loads(...)=None crashes dispatch loops`)
+
+	// Anthropic: the REQUIRED "input" key is present as {}.
+	ah := &AnthropicHandler{Engine: testEngine(mk("anthropic-messages", "claude-3-opus"))}
+	areq := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(
+		`{"model":"claude-3-opus","max_tokens":100,"messages":[{"role":"user","content":"weather?"}]}`))
+	areq.Header.Set("Content-Type", "application/json")
+	areq.Header.Set("x-api-key", "mock-key")
+	arec := httptest.NewRecorder()
+	ah.HandleMessages(arec, areq)
+	require.Equal(t, http.StatusOK, arec.Code)
+	assert.Contains(t, arec.Body.String(), `"input":{}`,
+		"tool_use must always carry the required input key")
+
+	// Gemini: "args": {}.
+	gh := &GeminiHandler{Engine: testEngine(mk("google-gemini", "gemini-1.5-pro"))}
+	greq := httptest.NewRequest("POST", "/v1beta/models/gemini-1.5-pro:generateContent", strings.NewReader(
+		`{"contents":[{"role":"user","parts":[{"text":"weather?"}]}]}`))
+	greq.SetPathValue("modelmethod", "gemini-1.5-pro:generateContent")
+	grec := httptest.NewRecorder()
+	gh.HandleGenerate(grec, greq)
+	require.Equal(t, http.StatusOK, grec.Code)
+	assert.Contains(t, grec.Body.String(), `"args":{}`)
+}
+
 // R9-5: tool_choice "none" (and its per-provider spellings) suppresses tool
 // calls — the standard forced-final-answer escape hatch real APIs honor
 // strictly.

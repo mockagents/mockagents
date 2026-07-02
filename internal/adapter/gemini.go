@@ -69,10 +69,12 @@ type GeminiFunctionDecl struct {
 	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
-// GeminiFunctionCall is an emitted function/tool call.
+// GeminiFunctionCall is an emitted function/tool call. Args uses omitzero so
+// an emitted no-arg call renders "args": {} (real-wire shape — R9-6/R9-12)
+// while request-side echoes without args stay key-free.
 type GeminiFunctionCall struct {
 	Name string         `json:"name"`
-	Args map[string]any `json:"args,omitempty"`
+	Args map[string]any `json:"args,omitzero"`
 }
 
 // --- Gemini Response Types ---
@@ -318,7 +320,7 @@ func formatGeminiResponse(resp *engine.Response, model string, promptTokens, can
 	}
 	for _, tc := range resp.ToolCalls {
 		parts = append(parts, GeminiPart{
-			FunctionCall: &GeminiFunctionCall{Name: tc.Name, Args: tc.Arguments},
+			FunctionCall: &GeminiFunctionCall{Name: tc.Name, Args: tc.ArgumentsObject()},
 		})
 	}
 

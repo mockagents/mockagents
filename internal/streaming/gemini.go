@@ -43,7 +43,7 @@ type geminiStreamPart struct {
 
 type geminiStreamFunctionCall struct {
 	Name string         `json:"name"`
-	Args map[string]any `json:"args,omitempty"`
+	Args map[string]any `json:"args,omitzero"` // no-arg calls render "args": {} (R9-6)
 }
 
 // StreamGemini writes an engine Response as a Gemini-format SSE stream
@@ -126,7 +126,7 @@ func StreamGemini(
 		if err := sse.WriteData(geminiStreamResponse{
 			Candidates: []geminiStreamCandidate{{
 				Content: geminiStreamContent{Role: "model", Parts: []geminiStreamPart{{
-					FunctionCall: &geminiStreamFunctionCall{Name: tc.Name, Args: tc.Arguments},
+					FunctionCall: &geminiStreamFunctionCall{Name: tc.Name, Args: tc.ArgumentsObject()},
 				}}},
 				Index: 0,
 			}},

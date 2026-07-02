@@ -77,11 +77,15 @@ type AnthropicContent struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
 	// Thinking / Signature carry an extended-thinking block (type "thinking").
-	Thinking  string         `json:"thinking,omitempty"`
-	Signature string         `json:"signature,omitempty"`
-	ID        string         `json:"id,omitempty"`
-	Name      string         `json:"name,omitempty"`
-	Input     map[string]any `json:"input,omitempty"`
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	// omitzero (not omitempty): a tool_use block's `input` is a REQUIRED key
+	// — the real API always renders "input": {} for no-arg calls, and strict
+	// SDK validation rejects a missing key (round-9 R9-6). Non-tool blocks
+	// leave the map nil and the key absent.
+	Input map[string]any `json:"input,omitzero"`
 }
 
 // AnthropicUsage represents token usage. The cache_* fields are pointers so
@@ -487,7 +491,7 @@ func formatAnthropicResponse(resp *engine.Response, inputTokens, outputTokens in
 				Type:  "tool_use",
 				ID:    toolID,
 				Name:  tc.Name,
-				Input: tc.Arguments,
+				Input: tc.ArgumentsObject(), // never nil — "input" is required (R9-6)
 			})
 		}
 	}
