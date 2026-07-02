@@ -127,6 +127,31 @@ func TestPaced_BargeIn(t *testing.T) {
 	if sd["type"] != "cancelled" || sd["reason"] != "turn_detected" {
 		t.Errorf("status_details = %v, want cancelled/turn_detected", sd)
 	}
+	// The announced item is CLOSED OUT before response.done: its *.done events
+	// fire, it is re-stamped "incomplete", listed in the cancelled output, and
+	// stays in the conversation (retrieve agrees).
+	itemDone := firstEvent(evs, "response.output_item.done")
+	if itemDone == nil {
+		t.Fatalf("cancellation must close out the in-progress item; got %v", tps)
+	}
+	item := itemDone["item"].(map[string]any)
+	if item["status"] != "incomplete" {
+		t.Errorf("interrupted item status = %v, want incomplete", item["status"])
+	}
+	if firstEvent(evs, "conversation.item.done") == nil {
+		t.Error("cancellation must emit the conversation.item.done mirror")
+	}
+	if output := resp["output"].([]any); len(output) != 1 || output[0].(map[string]any)["status"] != "incomplete" {
+		t.Errorf("cancelled output = %v, want the incomplete item", resp["output"])
+	}
+	if resp["usage"] == nil {
+		t.Error("cancelled response.done must carry usage (billing survives cancellation)")
+	}
+	got := firstEvent(s.Handle(context.Background(),
+		&ClientEvent{Type: "conversation.item.retrieve", ItemID: item["id"].(string)}), "conversation.item.retrieved")
+	if got["item"].(map[string]any)["status"] != "incomplete" {
+		t.Errorf("stored item status = %v, want incomplete after cancellation", got["item"].(map[string]any)["status"])
+	}
 	if _, ok := s.NextDeadline(); ok {
 		t.Error("no deadline should survive cancellation")
 	}

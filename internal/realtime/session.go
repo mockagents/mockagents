@@ -609,10 +609,25 @@ func (s *Session) failedResponse(respID, msg string, rc *responseCtx) []Event {
 		// the human-readable detail travels on the error event above it.
 		"error": map[string]any{"type": "server_error", "code": "response_generation_failed"},
 	}
+	// Real terminal response.done events always carry usage; a failed response
+	// produced nothing, so it is all zeros.
+	failed["usage"] = zeroUsage()
 	return []Event{
 		{"type": "response.created", "response": s.responseObject(respID, "in_progress", []any{}, rc)},
 		{"type": "error", "error": s.errorBody("server_error", "response_generation_failed", msg)},
 		{"type": "response.done", "response": failed},
+	}
+}
+
+// zeroUsage is the usage block for a response that produced no billable output.
+func zeroUsage() map[string]any {
+	return map[string]any{
+		"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+		"input_token_details": map[string]any{
+			"text_tokens": 0, "audio_tokens": 0, "image_tokens": 0, "cached_tokens": 0,
+			"cached_tokens_details": map[string]any{"text_tokens": 0, "audio_tokens": 0, "image_tokens": 0},
+		},
+		"output_token_details": map[string]any{"text_tokens": 0, "audio_tokens": 0},
 	}
 }
 
