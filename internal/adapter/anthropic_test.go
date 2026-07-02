@@ -29,8 +29,8 @@ func testAnthropicAgent() *types.AgentDefinition {
 			Behavior: types.BehaviorConfig{
 				Scenarios: []types.Scenario{
 					{
-						Name:  "greeting",
-						Match: &types.MatchRule{ContentContains: "hello"},
+						Name:     "greeting",
+						Match:    &types.MatchRule{ContentContains: "hello"},
 						Response: types.ScenarioResponse{Content: "Bonjour!"},
 					},
 					{

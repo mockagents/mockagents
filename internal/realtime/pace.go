@@ -39,6 +39,14 @@ type inflightResponse struct {
 	doneItems []any  // items whose output_item.done already emitted (a cancelled response's output)
 	onDone    func() // deferred side effects (history append) — only if the response completes
 	usage     any    // the final response.done's usage block (billing survives cancellation)
+	// Emission tracking for cancellation close-out: the .done events of a
+	// cancelled item must carry exactly the concatenation of the deltas the
+	// client received (never the full never-streamed payload), a content part
+	// that never opened must not be fabricated at close-out, and usage must
+	// bill only the words that actually streamed.
+	emitted    map[string]string // item id → concatenated delta text (transcript/text/arguments)
+	partOpened map[string]bool   // item id → its content_part.added emitted
+	transcript string            // all emitted message-transcript deltas (usage on cancel)
 }
 
 // SetClock injects the time source (tests use a fake); nil/unset means
@@ -82,7 +90,34 @@ func (s *Session) Tick(ctx context.Context, now time.Time) []Event {
 		ev := inf.queue[0]
 		inf.queue = inf.queue[1:]
 		out = append(out, ev)
-		if ev["type"] == "response.output_item.done" {
+		// Emission-time conversation joins: the item becomes retrievable and the
+		// chain tail only when its announcement reaches the client (see
+		// createResponse — build no longer mutates session state).
+		switch ev["type"] {
+		case "conversation.item.added":
+			s.joinEmittedItem(ev)
+		case "conversation.item.done":
+			if item, ok := ev["item"].(map[string]any); ok {
+				s.rememberItem(item)
+			}
+		case "response.output_audio.delta":
+			s.respondedWithAudio = true // assistant audio reached the client — voice locked
+		case "response.content_part.added":
+			if id, _ := ev["item_id"].(string); id != "" {
+				inf.partOpened[id] = true
+			}
+		case "response.output_text.delta", "response.output_audio_transcript.delta":
+			if id, _ := ev["item_id"].(string); id != "" {
+				delta, _ := ev["delta"].(string)
+				inf.emitted[id] += delta
+				inf.transcript += delta
+			}
+		case "response.function_call_arguments.delta":
+			if id, _ := ev["item_id"].(string); id != "" {
+				delta, _ := ev["delta"].(string)
+				inf.emitted[id] += delta
+			}
+		case "response.output_item.done":
 			inf.doneItems = append(inf.doneItems, ev["item"])
 		}
 		if len(inf.queue) == 0 {
@@ -90,7 +125,15 @@ func (s *Session) Tick(ctx context.Context, now time.Time) []Event {
 				inf.onDone()
 			}
 			s.inflight = nil
-			s.armIdleTimer()
+			// A turn that committed while this response was in flight queued its
+			// auto-response (vadEndOfTurn); run it now that the slot is free —
+			// otherwise the guard would have silently eaten the user's reply.
+			if s.pendingResponse {
+				s.pendingResponse = false
+				out = append(out, s.createResponse(ctx, &ClientEvent{})...)
+			} else {
+				s.armIdleTimer()
+			}
 			break
 		}
 		inf.nextAt = inf.nextAt.Add(s.paceInterval)
@@ -110,8 +153,9 @@ func (s *Session) beginPacedResponse(respID string, rc *responseCtx, ladder []Ev
 	immediate, queue := ladder[:2], ladder[2:]
 	inf := &inflightResponse{
 		respID: respID, rc: rc, queue: queue,
-		nextAt: s.clock().Add(s.paceInterval),
-		onDone: onDone,
+		nextAt:  s.clock().Add(s.paceInterval),
+		onDone:  onDone,
+		emitted: map[string]string{}, partOpened: map[string]bool{},
 	}
 	// Keep the final usage block at hand: a cancelled response still bills the
 	// generated tokens, so cancelInflight reports it on its response.done.
@@ -129,31 +173,89 @@ func (s *Session) beginPacedResponse(respID string, rc *responseCtx, ladder []Ev
 // stays in the conversation with status "incomplete" (that is what a client's
 // conversation.item.truncate then targets) — and only then emits response.done
 // (status "cancelled", reason "turn_detected" for VAD barge-in or
-// "client_cancelled" for response.cancel). The mock fast-forwards: the queued
-// close-out events are emitted with the item re-stamped "incomplete" (the
-// stored item mutates too, so retrieve agrees), remaining deltas and
-// never-started items are dropped, and usage reports the generated tokens.
+// "client_cancelled" for response.cancel). The close-out honors the
+// delta-concatenation invariant: every .done payload (and the stored item, and
+// usage) carries exactly the deltas the client received — never the full
+// never-streamed content — and a content part that never opened is not
+// fabricated. Remaining deltas and never-started items are dropped.
 func (s *Session) cancelInflight(reason string) []Event {
 	inf := s.inflight
 	s.inflight = nil
+	// An interrupted response leaves no completed turn behind: a pending
+	// auto-response and an armed idle timeout both belong to the flow that was
+	// just abandoned.
+	s.pendingResponse = false
+	s.idleAt = time.Time{}
 
 	var out []Event
 drain:
 	for _, ev := range inf.queue {
 		t, _ := ev["type"].(string)
+		itemID, _ := ev["item_id"].(string)
 		switch {
 		case strings.HasSuffix(t, ".delta"):
 			continue // the cut: content past the cancel point is never emitted
 		case t == "response.output_item.added" || t == "response.done":
 			break drain // a never-started item, or the end of the ladder
+		case t == "conversation.item.added":
+			// The announced item's mirror pair still opens during close-out; the
+			// join side effects apply exactly as they would in Tick.
+			s.joinEmittedItem(ev)
+			out = append(out, ev)
+		case t == "conversation.item.done":
+			if item, ok := ev["item"].(map[string]any); ok {
+				s.rememberItem(item) // the final (now incomplete) item — retrieve agrees
+			}
+			out = append(out, ev)
+		case t == "response.content_part.added":
+			continue // a part the client never saw open is not fabricated now
+		case t == "response.output_text.done":
+			if !inf.partOpened[itemID] {
+				continue
+			}
+			ev["text"] = inf.emitted[itemID]
+			out = append(out, ev)
+		case t == "response.output_audio_transcript.done":
+			if !inf.partOpened[itemID] {
+				continue
+			}
+			ev["transcript"] = inf.emitted[itemID]
+			out = append(out, ev)
+		case t == "response.output_audio.done":
+			if !inf.partOpened[itemID] {
+				continue
+			}
+			out = append(out, ev)
+		case t == "response.content_part.done":
+			if !inf.partOpened[itemID] {
+				continue
+			}
+			rewriteContent(ev["part"], inf.emitted[itemID])
+			out = append(out, ev)
+		case t == "response.function_call_arguments.done":
+			ev["arguments"] = inf.emitted[itemID]
+			out = append(out, ev)
 		case t == "response.output_item.done":
 			if item, ok := ev["item"].(map[string]any); ok {
-				item["status"] = "incomplete" // shared with s.items — retrieve agrees
+				id, _ := item["id"].(string)
+				item["status"] = "incomplete" // same map the mirror .done carries
+				switch {
+				case item["type"] == "function_call":
+					item["arguments"] = inf.emitted[id]
+				case !inf.partOpened[id]:
+					item["content"] = []any{} // no part ever opened — nothing streamed
+				default:
+					if content, ok := item["content"].([]any); ok {
+						for _, c := range content {
+							rewriteContent(c, inf.emitted[id])
+						}
+					}
+				}
 				inf.doneItems = append(inf.doneItems, item)
 			}
 			out = append(out, ev)
 		default:
-			out = append(out, ev) // content_part/audio/transcript close-outs, item mirror
+			out = append(out, ev)
 		}
 	}
 
@@ -163,8 +265,31 @@ drain:
 	}
 	cancelled := s.responseObject(inf.respID, "cancelled", items, inf.rc)
 	cancelled["status_details"] = map[string]any{"type": "cancelled", "reason": reason}
+	// Usage bills only the transcript that actually streamed — a head-cancel
+	// produced nothing and reports zero output tokens.
 	cancelled["usage"] = inf.usage
+	if u, ok := inf.usage.(map[string]any); ok {
+		if in, ok := u["input_tokens"].(int); ok {
+			cancelled["usage"] = usageBlock(in, wordCount(inf.transcript))
+		}
+	}
 	return append(out, Event{"type": "response.done", "response": cancelled})
+}
+
+// rewriteContent replaces a content part's text/transcript payload with the
+// emitted prefix (whichever field the part carries), for cancellation
+// close-out.
+func rewriteContent(part any, prefix string) {
+	p, ok := part.(map[string]any)
+	if !ok {
+		return
+	}
+	if _, has := p["text"]; has {
+		p["text"] = prefix
+	}
+	if _, has := p["transcript"]; has {
+		p["transcript"] = prefix
+	}
 }
 
 // armIdleTimer schedules the server-VAD idle timeout after a response
@@ -196,7 +321,7 @@ func (s *Session) idleTimeout(ctx context.Context) []Event {
 	v := s.vad
 	prevItem := s.previousItemID()
 	itemID := s.nextID("item")
-	s.lastItemID = itemID
+	s.joinTail(itemID)
 	at := int(v.totalMs)
 
 	out := []Event{

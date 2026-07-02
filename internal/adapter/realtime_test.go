@@ -238,13 +238,14 @@ func TestRealtime_ClientSecretGA(t *testing.T) {
 	require.Contains(t, sess["audio"].(map[string]any), "input")
 }
 
-// The legacy POST /v1/realtime/sessions shape is the session object itself
-// (key nested at client_secret), NOT the GA {value, expires_at, session}
-// envelope — and the default expiry is the GA-documented 600 s.
+// The legacy POST /v1/realtime/sessions shape is the BETA session object
+// itself — top-level modalities / voice / input_audio_format, key nested at
+// client_secret — NOT the GA {value, expires_at, session} envelope, and the
+// beta ephemeral key expires 60 s after issuance (GA client_secrets: 600 s).
 func TestRealtime_LegacySessionsShape(t *testing.T) {
 	h := &RealtimeHandler{Engine: testEngine(testOpenAIAgent())}
 	req := httptest.NewRequest("POST", "/v1/realtime/sessions",
-		strings.NewReader(`{"session":{"model":"gpt-realtime"}}`))
+		strings.NewReader(`{"model":"gpt-4o-realtime-preview","voice":"verse","turn_detection":{"type":"server_vad"}}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	before := time.Now().Unix()
@@ -255,12 +256,24 @@ func TestRealtime_LegacySessionsShape(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &sess))
 	require.Nil(t, sess["value"], "legacy shape must not be the GA envelope")
 	require.Equal(t, "realtime.session", sess["object"])
+	require.Equal(t, "gpt-4o-realtime-preview", sess["model"])
+	// Beta-flat fields at the top level (no GA audio.* nesting).
+	require.Equal(t, "verse", sess["voice"])
+	require.Equal(t, []any{"audio", "text"}, sess["modalities"])
+	require.Equal(t, "pcm16", sess["input_audio_format"])
+	require.Equal(t, "pcm16", sess["output_audio_format"])
+	require.Equal(t, "auto", sess["tool_choice"])
+	require.Equal(t, "inf", sess["max_response_output_tokens"])
+	require.Equal(t, 0.8, sess["temperature"])
+	require.Equal(t, map[string]any{"type": "server_vad"}, sess["turn_detection"])
+	require.Nil(t, sess["audio"], "legacy shape must not carry the GA audio block")
+	require.Nil(t, sess["output_modalities"], "legacy shape must not carry GA output_modalities")
 	cs := sess["client_secret"].(map[string]any)
 	require.Regexp(t, `^ek_`, cs["value"])
-	// Default expiry is 600 s (GA: "default to 600 seconds if not specified").
+	// Beta default expiry: ~60 s after issuance.
 	expiresAt := int64(cs["expires_at"].(float64))
-	require.Greater(t, expiresAt, before+500)
-	require.LessOrEqual(t, expiresAt, before+610)
+	require.Greater(t, expiresAt, before+50)
+	require.LessOrEqual(t, expiresAt, before+70)
 }
 
 func TestRealtime_ClientSecret(t *testing.T) {

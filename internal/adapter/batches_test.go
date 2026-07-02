@@ -196,8 +196,8 @@ func TestBatch_OutputBodyIsSingleLine(t *testing.T) {
 func TestBatch_InvalidLinesGoToErrorFile(t *testing.T) {
 	rig := newBatchTestRig()
 	in := rig.uploadInput(t, "",
-		chatLine("ok-1", "hello"),               // valid
-		`{not json}`,                            // malformed
+		chatLine("ok-1", "hello"), // valid
+		`{not json}`,              // malformed
 		inputLine("dup", "/v1/chat/completions", map[string]any{"model": "gpt-4o", "messages": []any{}}), // valid line, body
 		inputLine("dup", "/v1/chat/completions", map[string]any{"model": "gpt-4o", "messages": []any{}}), // duplicate custom_id
 		inputLine("wrong-ep", "/v1/embeddings", map[string]any{"input": "x"}),                            // endpoint mismatch

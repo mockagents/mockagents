@@ -205,7 +205,9 @@ func (s *Session) vadAppend(ctx context.Context, ms, energy float64) []Event {
 	v := s.vad
 	startMs := v.totalMs
 	v.totalMs += ms
-	speech := energy >= v.cfg.Threshold*vadAmplitudeScale
+	// Strictly-positive energy is required: with threshold 0 the comparison
+	// alone would classify digital silence (energy 0) as speech forever.
+	speech := energy > 0 && energy >= v.cfg.Threshold*vadAmplitudeScale
 
 	if speech {
 		// The user is talking — reset the idle timeout and re-allow it to fire.
@@ -258,11 +260,16 @@ func (s *Session) vadEndOfTurn(ctx context.Context) []Event {
 	out := []Event{{"type": "input_audio_buffer.speech_stopped",
 		"audio_end_ms": int(endMs), "item_id": v.pendingItemID}}
 	out = append(out, s.handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"})...)
-	// Auto-respond unless disabled — or unless a response is still in flight
-	// (interrupt_response:false let it survive the barge-in; don't stack a
-	// second one on top).
-	if (v.cfg.CreateResponse == nil || *v.cfg.CreateResponse) && s.inflight == nil {
-		out = append(out, s.createResponse(ctx, &ClientEvent{})...)
+	// Auto-respond unless disabled. With a response still in flight (a
+	// mid-speech response.create, or interrupt_response:false letting one
+	// survive the barge-in) the auto-response is QUEUED, not dropped — Tick
+	// runs it when the inflight completes.
+	if v.cfg.CreateResponse == nil || *v.cfg.CreateResponse {
+		if s.inflight == nil {
+			out = append(out, s.createResponse(ctx, &ClientEvent{})...)
+		} else {
+			s.pendingResponse = true
+		}
 	}
 	return out
 }

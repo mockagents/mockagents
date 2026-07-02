@@ -15,6 +15,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,8 +41,8 @@ type Generator func(ctx context.Context, model, sessionID string, history []engi
 
 // ClientEvent is an inbound Realtime event — the subset the mock handles.
 type ClientEvent struct {
-	Type    string          `json:"type"`
-	EventID string          `json:"event_id,omitempty"`
+	Type     string          `json:"type"`
+	EventID  string          `json:"event_id,omitempty"`
 	Session  json.RawMessage `json:"session,omitempty"`  // session.update
 	Item     json.RawMessage `json:"item,omitempty"`     // conversation.item.create
 	Audio    string          `json:"audio,omitempty"`    // input_audio_buffer.append (base64)
@@ -150,7 +152,11 @@ type Session struct {
 	audioBuffer  bool
 	counter      int
 	expiresAt    int64  // unix seconds; emitted in the session object when > 0
-	lastItemID   string // id of the most recently created conversation item ("" → previous_item_id is null)
+	lastItemID   string // id of the conversation's current tail item ("" → previous_item_id is null)
+	// itemOrder is the conversation's item ids in conversation order (inserts
+	// honored), so deleting the tail item can repair lastItemID instead of
+	// leaving it dangling at an id the server itself rejects.
+	itemOrder []string
 	// lastClientEventID is the event_id of the client event currently being
 	// handled; error events echo it as error.event_id (the GA correlation handle).
 	lastClientEventID string
@@ -174,6 +180,14 @@ type Session struct {
 	// bufferedMs is the decoded duration of un-committed appended audio — the
 	// transcription usage ("duration" variant) reported on commit.
 	bufferedMs float64
+	// respondedWithAudio locks the session voice: once a response has emitted
+	// assistant audio, the real API rejects a voice change
+	// (code cannot_update_voice) — see validateVoiceChange.
+	respondedWithAudio bool
+	// pendingResponse queues the VAD auto-response for a turn that ended while
+	// a response was still in flight (a mid-speech response.create, or
+	// interrupt_response:false); Tick runs it when the inflight completes.
+	pendingResponse bool
 }
 
 // rememberItem indexes a completed conversation item for later retrieve /
@@ -183,6 +197,63 @@ func (s *Session) rememberItem(item map[string]any) map[string]any {
 		s.items[id] = item
 	}
 	return item
+}
+
+// joinTail appends a new item id at the conversation tail (the common case:
+// commits, idle turns, and response output items all join at the end).
+func (s *Session) joinTail(id string) {
+	s.itemOrder = append(s.itemOrder, id)
+	s.lastItemID = id
+}
+
+// insertItem places an item into the conversation order: after="" appends,
+// "root" inserts first, any other value inserts after that id (the caller has
+// already validated it exists). lastItemID is re-derived from the tail, so an
+// insert in the middle leaves the chain tail untouched.
+func (s *Session) insertItem(after, id string) {
+	switch after {
+	case "":
+		s.itemOrder = append(s.itemOrder, id)
+	case "root":
+		s.itemOrder = append([]string{id}, s.itemOrder...)
+	default:
+		if i := slices.Index(s.itemOrder, after); i >= 0 {
+			s.itemOrder = slices.Insert(s.itemOrder, i+1, id)
+		} else {
+			s.itemOrder = append(s.itemOrder, id)
+		}
+	}
+	s.lastItemID = s.itemOrder[len(s.itemOrder)-1]
+}
+
+// removeItem drops an item from the conversation order and repairs the chain
+// tail — deleting the tail item must not leave lastItemID dangling at an id
+// later events reference but retrieve rejects.
+func (s *Session) removeItem(id string) {
+	if i := slices.Index(s.itemOrder, id); i >= 0 {
+		s.itemOrder = slices.Delete(s.itemOrder, i, i+1)
+	}
+	if n := len(s.itemOrder); n > 0 {
+		s.lastItemID = s.itemOrder[n-1]
+	} else {
+		s.lastItemID = ""
+	}
+}
+
+// joinEmittedItem applies the conversation-join side effects when an item's
+// conversation.item.added actually reaches the client (paced emission / cancel
+// drain): the item becomes retrievable and the chain tail. Deferring the join
+// to emission is what keeps a cancelled paced response from leaving phantom
+// items — retrievable, chain-anchoring, but never announced.
+func (s *Session) joinEmittedItem(ev Event) {
+	item, ok := ev["item"].(map[string]any)
+	if !ok {
+		return
+	}
+	s.rememberItem(item)
+	if id, _ := item["id"].(string); id != "" {
+		s.joinTail(id)
+	}
 }
 
 // previousItemID returns the value for a server event's previous_item_id field:
@@ -201,7 +272,7 @@ func (s *Session) previousItemID() any {
 func (s *Session) newConversationItem() (prev any, id string) {
 	prev = s.previousItemID()
 	id = s.nextID("item")
-	s.lastItemID = id
+	s.joinTail(id)
 	return prev, id
 }
 
@@ -274,8 +345,23 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		if errEvs := s.validateTurnDetection(ce.Session); errEvs != nil {
 			return errEvs
 		}
+		// Once assistant audio exists, the voice is locked: a differing voice
+		// rejects the whole update (verbatim GA behavior), no session.updated.
+		if errEvs := s.validateVoiceChange(ce.Session); errEvs != nil {
+			return errEvs
+		}
+		if errEvs := s.validateSessionMaxOutputTokens(ce.Session); errEvs != nil {
+			return errEvs
+		}
+		oldTD := string(s.cfg.turnDetection)
 		s.applyConfig(ce.Session)
-		s.refreshVAD()
+		// Rebuild the VAD state machine only when turn_detection actually
+		// changed. Routine mid-call updates (voice, instructions, tools — e.g.
+		// Agents-SDK handoffs) must not wipe an in-progress speech cycle: doing
+		// so orphaned the speech_started item and silently dropped the turn.
+		if string(s.cfg.turnDetection) != oldTD {
+			s.refreshVAD()
+		}
 		return []Event{{"type": "session.updated", "session": s.sessionObject()}}
 
 	case "input_audio_buffer.append":
@@ -310,7 +396,7 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		var itemID string
 		if id, ok := s.vadCommitItemID(); ok {
 			prevItem, itemID = s.previousItemID(), id
-			s.lastItemID = id
+			s.joinTail(id)
 		} else {
 			prevItem, itemID = s.newConversationItem()
 		}
@@ -333,7 +419,13 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			// full transcript and a REQUIRED usage field — the "duration" variant
 			// is the honest one for a mock (derived from the decoded audio length,
 			// deterministic; ASR-token billing does not apply here).
-			for _, chunk := range chunkText(audioInputPlaceholder) {
+			// Only the gpt-4o-transcribe* models stream word deltas; whisper-1
+			// emits ONE delta carrying the full transcript (per the docs).
+			chunks := chunkText(audioInputPlaceholder)
+			if s.transcriptionModel() == "whisper-1" {
+				chunks = []string{audioInputPlaceholder}
+			}
+			for _, chunk := range chunks {
 				out = append(out, Event{"type": "conversation.item.input_audio_transcription.delta",
 					"item_id": itemID, "content_index": 0, "delta": chunk})
 			}
@@ -363,22 +455,19 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		// history stays append-order — insertion positions the event-log view,
 		// not scenario-matching order.)
 		var prevItem any
-		tail := true
 		switch ce.PreviousItemID {
 		case "":
 			prevItem = s.previousItemID()
 		case "root":
-			prevItem, tail = nil, s.lastItemID == ""
+			prevItem = nil
 		default:
 			if _, known := s.items[ce.PreviousItemID]; !known {
 				return []Event{s.errorEventParam("item_not_found",
 					fmt.Sprintf("previous_item_id %q not found", ce.PreviousItemID), "previous_item_id")}
 			}
-			prevItem, tail = ce.PreviousItemID, ce.PreviousItemID == s.lastItemID
+			prevItem = ce.PreviousItemID
 		}
-		if tail {
-			s.lastItemID = itemID
-		}
+		s.insertItem(ce.PreviousItemID, itemID)
 		switch it.Type {
 		case "function_call_output":
 			// The tool-loop reply. Same history mapping as the Responses
@@ -398,7 +487,7 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 				"id": itemID, "object": "realtime.item", "type": "function_call", "status": "completed",
 				"call_id": it.CallID, "name": it.Name, "arguments": it.Arguments,
 			}))
-		default:
+		case "message":
 			if text := it.text(); text != "" {
 				s.history = append(s.history, engine.RequestMessage{Role: it.Role, Content: text})
 			}
@@ -406,9 +495,25 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 				"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 				"role": it.Role, "content": it.echoContent(),
 			}))
+		default:
+			// An unrecognized item type (e.g. the GA MCP item family) is acked
+			// with its TRUE type echoed — warping it into {type:"message",
+			// role:"user"} misleads clients that read the ack. It carries no
+			// text the scenario engine can match, so history is untouched.
+			return conversationItemEvents(prevItem, s.rememberItem(map[string]any{
+				"id": itemID, "object": "realtime.item", "type": it.Type, "status": "completed",
+			}))
 		}
 
 	case "response.create":
+		var override struct {
+			MaxOutputTokens json.RawMessage `json:"max_output_tokens"`
+		}
+		if len(ce.Response) > 0 && json.Unmarshal(ce.Response, &override) == nil &&
+			!validMaxOutputTokens(override.MaxOutputTokens) {
+			return []Event{s.errorEventParam("invalid_value",
+				`max_output_tokens must be an integer between 1 and 4096, or "inf"`, "response.max_output_tokens")}
+		}
 		// A client-driven response is user activity (an idle-triggered one is
 		// not — idleTimeout calls createResponse directly, not through here).
 		s.idleFired = false
@@ -425,6 +530,7 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			return []Event{s.errorEvent("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID))}
 		}
 		delete(s.items, ce.ItemID)
+		s.removeItem(ce.ItemID)
 		// Mock simplification: the engine history is not rewritten — deletion
 		// affects retrieval, not scenario matching on prior turns.
 		return []Event{{"type": "conversation.item.deleted", "item_id": ce.ItemID}}
@@ -451,8 +557,11 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			}
 		}
 		if item["type"] != "message" || item["role"] != "assistant" || !hasAudio {
-			return []Event{s.errorEventParam("invalid_value",
-				"only assistant message items with audio content can be truncated", "item_id")}
+			// Real capture: code null, param null, this exact message — not an
+			// invalid_value/param-bearing rejection.
+			body := s.errorBody("invalid_request_error", "", "Only model output audio messages can be truncated")
+			body["code"] = nil
+			return []Event{{"type": "error", "error": body}}
 		}
 		if content, ok := item["content"].([]any); ok {
 			for _, c := range content {
@@ -630,14 +739,32 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 		}},
 	}
 
+	// The ladder is built with a LOCAL chain cursor — session state (lastItemID,
+	// the retrievable-items index) is only mutated when an item's announcement
+	// actually reaches the client: immediately after build for a burst response,
+	// per emitted conversation.item.added for a paced one (Tick / cancel drain).
+	// Mutating at build time left cancelled-before-emission items retrievable
+	// and chain-anchoring despite never being announced (phantom items).
 	var items []any
+	var convItems []map[string]any // in-conversation items, in emission order
+	chainPrev := s.previousItemID()
 	outputIndex := 0
 	if emitMessage {
-		items = append(items, s.appendMessageLadder(&out, respID, transcript, outputIndex, rc))
+		final := s.appendMessageLadder(&out, respID, transcript, outputIndex, rc, chainPrev)
+		items = append(items, final)
+		if !rc.outOfBand {
+			chainPrev = final["id"]
+			convItems = append(convItems, final)
+		}
 		outputIndex++
 	}
 	for _, tc := range resp.ToolCalls {
-		items = append(items, s.appendFunctionCallLadder(&out, respID, tc, outputIndex, rc))
+		final := s.appendFunctionCallLadder(&out, respID, tc, outputIndex, rc, chainPrev)
+		items = append(items, final)
+		if !rc.outOfBand {
+			chainPrev = final["id"]
+			convItems = append(convItems, final)
+		}
 		outputIndex++
 	}
 
@@ -649,18 +776,7 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 	if rc.incomplete {
 		done["status_details"] = map[string]any{"type": "incomplete", "reason": "max_output_tokens"}
 	}
-	done["usage"] = map[string]any{
-		"input_tokens":  inputTokens,
-		"output_tokens": outputTokens,
-		"total_tokens":  inputTokens + outputTokens,
-		// GA per-modality breakdown. A mock attributes everything to text (the
-		// transcript drives output; synthesized audio carries no real tokens).
-		"input_token_details": map[string]any{
-			"text_tokens": inputTokens, "audio_tokens": 0, "image_tokens": 0, "cached_tokens": 0,
-			"cached_tokens_details": map[string]any{"text_tokens": 0, "audio_tokens": 0, "image_tokens": 0},
-		},
-		"output_token_details": map[string]any{"text_tokens": outputTokens, "audio_tokens": 0},
-	}
+	done["usage"] = usageBlock(inputTokens, outputTokens)
 	out = append(out, Event{"type": "response.done", "response": done})
 
 	// Paced sessions emit response.created + rate_limits now and the rest of
@@ -672,7 +788,24 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 		return s.beginPacedResponse(respID, rc, out, appendHistory)
 	}
 	appendHistory()
-	s.armIdleTimer()
+	if emitMessage && !rc.textOnly() {
+		s.respondedWithAudio = true // this burst emitted output_audio — voice is now locked
+	}
+	// A burst response's whole ladder reaches the client now — join its items
+	// to the conversation (out-of-band items join nothing and are NOT
+	// retrievable: they belong to no conversation, so convItems excludes them).
+	for _, it := range convItems {
+		s.rememberItem(it)
+		if id, _ := it["id"].(string); id != "" {
+			s.joinTail(id)
+		}
+	}
+	// An out-of-band completion is a side-channel, not the end of the user's
+	// turn — it must not arm the idle timeout (a burst OOB response can finish
+	// while a default-conversation response is still in flight).
+	if !rc.outOfBand {
+		s.armIdleTimer()
+	}
 	return out
 }
 
@@ -699,17 +832,24 @@ func (s *Session) failedResponse(respID, msg string, rc *responseCtx) []Event {
 	}
 }
 
-// zeroUsage is the usage block for a response that produced no billable output.
-func zeroUsage() map[string]any {
+// usageBlock builds the GA usage object for a terminal response.done. The
+// per-modality breakdown attributes everything to text (the transcript drives
+// output; synthesized audio carries no real tokens).
+func usageBlock(inputTokens, outputTokens int) map[string]any {
 	return map[string]any{
-		"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+		"input_tokens":  inputTokens,
+		"output_tokens": outputTokens,
+		"total_tokens":  inputTokens + outputTokens,
 		"input_token_details": map[string]any{
-			"text_tokens": 0, "audio_tokens": 0, "image_tokens": 0, "cached_tokens": 0,
+			"text_tokens": inputTokens, "audio_tokens": 0, "image_tokens": 0, "cached_tokens": 0,
 			"cached_tokens_details": map[string]any{"text_tokens": 0, "audio_tokens": 0, "image_tokens": 0},
 		},
-		"output_token_details": map[string]any{"text_tokens": 0, "audio_tokens": 0},
+		"output_token_details": map[string]any{"text_tokens": outputTokens, "audio_tokens": 0},
 	}
 }
+
+// zeroUsage is the usage block for a response that produced no billable output.
+func zeroUsage() map[string]any { return usageBlock(0, 0) }
 
 // responseObject builds the GA `response` envelope shared by response.created and
 // response.done: id/object/status plus the GA fields a client reads off the
@@ -748,16 +888,12 @@ func (s *Session) responseObject(respID, status string, output []any, rc *respon
 // text-only mode (output_modalities without "audio") it streams
 // response.output_text.delta and an output_text content part; otherwise it
 // streams the GA audio ladder (output_audio + output_audio_transcript).
-func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, outputIndex int, rc *responseCtx) map[string]any {
+func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, outputIndex int, rc *responseCtx, prevItem any) map[string]any {
 	itemID := s.nextID("msg")
-	// A response output item joins the conversation: capture what it chains off,
-	// then record it so a later user turn's previous_item_id points at it.
-	// Out-of-band responses (conversation:"none") join nothing — no chain update
-	// and no conversation-item mirror below.
-	prevItem := s.previousItemID()
-	if !rc.outOfBand {
-		s.lastItemID = itemID
-	}
+	// prevItem is the caller's build-time chain cursor; the session-state join
+	// (rememberItem + chain tail) happens when the item's announcement is
+	// actually emitted — see createResponse. Out-of-band responses
+	// (conversation:"none") join nothing — no conversation-item mirror below.
 	// GA mirrors a response output item into the conversation: it announces
 	// conversation.item.added when generation of the item starts (in_progress)
 	// and conversation.item.done when it is finalized, alongside the
@@ -772,10 +908,10 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 		itemStatus = "incomplete" // the max_output_tokens cap trimmed this item
 	}
 	if rc.textOnly() {
-		final := s.rememberItem(map[string]any{
+		final := map[string]any{
 			"id": itemID, "object": "realtime.item", "type": "message", "status": itemStatus,
 			"role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": transcript}},
-		})
+		}
 		// NB: the content_part events' part uses the SHORT type names ("text"/
 		// "audio", per the GA Part type on ResponseContentPartAdded/DoneEvent) —
 		// only ITEM content uses "output_text"/"output_audio". The GA API is
@@ -808,10 +944,10 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 	// GA audio ladder: assistant audio is the "output_audio" content part, and the
 	// streamed events are response.output_audio*.delta/.done (not the beta
 	// response.audio*.delta names).
-	final := s.rememberItem(map[string]any{
+	final := map[string]any{
 		"id": itemID, "object": "realtime.item", "type": "message", "status": itemStatus,
 		"role": "assistant", "content": []any{map[string]any{"type": "output_audio", "transcript": transcript}},
-	})
+	}
 	*out = append(*out, Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress})
 	if !rc.outOfBand {
 		*out = append(*out, Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress})
@@ -849,16 +985,11 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 // completed item. This is what a Realtime client's tool loop consumes: it reads
 // call_id + name + assembled arguments, runs the tool, and sends the result back
 // as a conversation.item.create of type function_call_output.
-func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types.ToolCallSpec, outputIndex int, rc *responseCtx) map[string]any {
+func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types.ToolCallSpec, outputIndex int, rc *responseCtx, prevItem any) map[string]any {
 	itemID := s.nextID("fc")
 	callID := s.nextID("call")
-	// A function_call output item joins the conversation: capture what it chains
-	// off, then record it so a later user turn's previous_item_id points at it.
-	// (Out-of-band responses join nothing — see appendMessageLadder.)
-	prevItem := s.previousItemID()
-	if !rc.outOfBand {
-		s.lastItemID = itemID
-	}
+	// prevItem is the caller's build-time chain cursor; the session-state join
+	// happens at emission — see createResponse and appendMessageLadder.
 	// raw_arguments lets a scenario plant malformed/invalid JSON args verbatim
 	// (FB-03) to exercise a client's tool-arg parser; otherwise marshal the
 	// structured Arguments. Mirrors adapter/openai.go and the streaming paths.
@@ -870,10 +1001,10 @@ func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types
 	inProgress := map[string]any{
 		"id": itemID, "object": "realtime.item", "type": "function_call", "status": "in_progress",
 		"name": tc.Name, "call_id": callID, "arguments": ""}
-	final := s.rememberItem(map[string]any{
+	final := map[string]any{
 		"id": itemID, "object": "realtime.item", "type": "function_call", "status": "completed",
 		"name": tc.Name, "call_id": callID, "arguments": args,
-	})
+	}
 	// GA mirrors the item into the conversation (added at generation start, done
 	// when finalized) alongside the response.output_item.* events.
 	*out = append(*out, Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress})
@@ -967,6 +1098,62 @@ func (s *Session) sessionObject() map[string]any {
 	return obj
 }
 
+// validMaxOutputTokens checks a max_output_tokens value against the GA
+// constraint: an integer between 1 and 4096, or the string "inf" (absent is
+// fine — the field is optional).
+func validMaxOutputTokens(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == `"inf"` {
+		return true
+	}
+	var n float64
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return false
+	}
+	return n == math.Trunc(n) && n >= 1 && n <= 4096
+}
+
+// validateSessionMaxOutputTokens rejects a session.update whose
+// max_output_tokens is out of range — the mock previously echoed even
+// negative values back as the effective session config.
+func (s *Session) validateSessionMaxOutputTokens(raw json.RawMessage) []Event {
+	var upd struct {
+		MaxOutputTokens json.RawMessage `json:"max_output_tokens"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &upd) != nil {
+		return nil
+	}
+	if validMaxOutputTokens(upd.MaxOutputTokens) {
+		return nil
+	}
+	return []Event{s.errorEventParam("invalid_value",
+		`max_output_tokens must be an integer between 1 and 4096, or "inf"`, "session.max_output_tokens")}
+}
+
+// validateVoiceChange rejects a session.update that changes the effective
+// voice after a response has produced assistant audio, echoing the real API
+// verbatim: type invalid_request_error, code cannot_update_voice, param null.
+// The whole update is rejected (no session.updated). Re-sending the current
+// voice is not a change and stays accepted.
+func (s *Session) validateVoiceChange(raw json.RawMessage) []Event {
+	if !s.respondedWithAudio || len(raw) == 0 {
+		return nil
+	}
+	var u sessionUpdate
+	if json.Unmarshal(raw, &u) != nil {
+		return nil
+	}
+	voice := u.Voice // beta top-level alias
+	if u.Audio != nil && u.Audio.Output != nil && u.Audio.Output.Voice != "" {
+		voice = u.Audio.Output.Voice
+	}
+	if voice == "" || voice == s.effectiveVoice() {
+		return nil
+	}
+	return []Event{{"type": "error", "error": s.errorBody("invalid_request_error",
+		"cannot_update_voice", "Cannot update a conversation's voice if assistant audio is present.")}}
+}
+
 // effectiveVoice is the session voice with the GA default applied; shared by
 // the session object and the response envelope's audio block.
 func (s *Session) effectiveVoice() string {
@@ -993,6 +1180,18 @@ func (s *Session) outputModalities() []string {
 func (s *Session) transcriptionEnabled() bool {
 	raw := strings.TrimSpace(string(s.cfg.transcription))
 	return raw != "" && raw != "null"
+}
+
+// transcriptionModel returns the configured input transcription model ("" when
+// unset) — whisper-1 does not stream deltas, so the commit ladder needs it.
+func (s *Session) transcriptionModel() string {
+	var cfg struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(s.cfg.transcription, &cfg) != nil {
+		return ""
+	}
+	return cfg.Model
 }
 
 // applyConfig merges an inbound session.update payload into the effective
@@ -1112,8 +1311,16 @@ func (s *Session) errorBody(typ, code, msg string) map[string]any {
 }
 
 func (s *Session) nextID(prefix string) string {
-	s.counter++
-	return fmt.Sprintf("%s_%s_%d", prefix, s.id, s.counter)
+	// Mint-skip: a client-supplied item id can collide with the predictable
+	// minted sequence (item_<sess>_N) — never hand out an id that is already a
+	// conversation item (rememberItem would silently overwrite it).
+	for {
+		s.counter++
+		id := fmt.Sprintf("%s_%s_%d", prefix, s.id, s.counter)
+		if _, taken := s.items[id]; !taken {
+			return id
+		}
+	}
 }
 
 // --- helpers ---
