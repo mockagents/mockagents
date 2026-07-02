@@ -153,12 +153,23 @@ func TestTickErrorsCarryNoStaleEventID(t *testing.T) {
 	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", EventID: "evt_client_2", Audio: pcmChunk(600, quietAmp)})
 
 	evs := s.Tick(ctx, fc.advance(5*time.Second))
-	errEv := firstEvent(evs, "error")
-	if errEv == nil {
-		t.Fatalf("idle Tick with a failing engine = %v, want an error event", typesOf(evs))
+	// Round-7 R7-16: a failed response emits NO standalone error event — the
+	// detail lives in response.done status_details.error. The original R6-7
+	// concern (a stale client event id leaking into a timer-initiated error)
+	// is moot on this path; assert the failed ladder shape and that no
+	// stale-correlated error event appears.
+	done := firstEvent(evs, "response.done")
+	if done == nil {
+		t.Fatalf("idle Tick with a failing engine = %v, want the failed response.done", typesOf(evs))
 	}
-	if got := errEv["error"].(map[string]any)["event_id"]; got != nil {
-		t.Errorf("timer-initiated error.event_id = %v, want null (no causing client event)", got)
+	resp := done["response"].(map[string]any)
+	if resp["status"] != "failed" {
+		t.Errorf("status = %v, want failed", resp["status"])
+	}
+	if errEv := firstEvent(evs, "error"); errEv != nil {
+		if got := errEv["error"].(map[string]any)["event_id"]; got != nil {
+			t.Errorf("timer-initiated error.event_id = %v, want null (no causing client event)", got)
+		}
 	}
 }
 

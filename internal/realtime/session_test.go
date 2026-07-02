@@ -792,9 +792,11 @@ func TestSession_ResponseCancelNotActive(t *testing.T) {
 	}
 }
 
-// A response that cannot be generated still closes the ladder: response.done is
-// ALWAYS emitted (status "failed" + status_details.error), with a server_error
-// event carrying the detail — a client awaiting response.done must not hang.
+// A response that cannot be generated still closes the ladder: response.done
+// is ALWAYS emitted (status "failed" + status_details.error) — a client
+// awaiting response.done must not hang. Round-7 R7-16 (per GA capture): NO
+// standalone error event is emitted; the failure detail lives in
+// status_details.error with code null.
 func TestSession_GenerationFailureLadder(t *testing.T) {
 	genErr := func(_ context.Context, _, _ string, _ []engine.RequestMessage) (*engine.Response, error) {
 		return nil, errors.New("agent exploded")
@@ -805,17 +807,20 @@ func TestSession_GenerationFailureLadder(t *testing.T) {
 	if tps[0] != "response.created" || tps[len(tps)-1] != "response.done" {
 		t.Fatalf("failure ladder = %v, want response.created … response.done", tps)
 	}
+	if contains(tps, "error") {
+		t.Errorf("a failed response must not emit a standalone error event (GA capture); got %v", tps)
+	}
 	done := firstEvent(evs, "response.done")["response"].(map[string]any)
 	if done["status"] != "failed" {
 		t.Errorf("response.status = %v, want failed", done["status"])
 	}
 	sd := done["status_details"].(map[string]any)
-	if sd["type"] != "failed" || sd["error"].(map[string]any)["type"] != "server_error" {
-		t.Errorf("status_details = %v, want type failed + server_error", sd)
+	sdErr := sd["error"].(map[string]any)
+	if sd["type"] != "failed" || sdErr["type"] != "server_error" || sdErr["code"] != nil {
+		t.Errorf("status_details = %v, want type failed + server_error with code null", sd)
 	}
-	errBody := firstEvent(evs, "error")["error"].(map[string]any)
-	if errBody["type"] != "server_error" || errBody["message"] != "agent exploded" {
-		t.Errorf("error body = %v, want server_error with the engine message", errBody)
+	if sdErr["message"] != "agent exploded" {
+		t.Errorf("status_details.error.message = %v, want the engine detail", sdErr["message"])
 	}
 }
 

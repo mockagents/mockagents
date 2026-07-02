@@ -552,6 +552,9 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 	case "conversation.item.create":
 		s.idleAt, s.idleFired = time.Time{}, false // user activity resets the idle timeout
 		it := parseItem(ce.Item)
+		if errEvs := s.validateMessageItem(it); errEvs != nil {
+			return errEvs
+		}
 		// Honor a client-supplied item id (clients pre-generate ids so they can
 		// truncate/delete/retrieve their own items later); duplicates rejected.
 		itemID := it.ID
@@ -645,11 +648,11 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		if item, ok := s.items[ce.ItemID]; ok {
 			return []Event{{"type": "conversation.item.retrieved", "item": item}}
 		}
-		return []Event{s.errorEvent("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID))}
+		return []Event{s.errorEventParam("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID), "item_id")}
 
 	case "conversation.item.delete":
 		if _, ok := s.items[ce.ItemID]; !ok {
-			return []Event{s.errorEvent("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID))}
+			return []Event{s.errorEventParam("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID), "item_id")}
 		}
 		delete(s.items, ce.ItemID)
 		s.removeItem(ce.ItemID)
@@ -670,7 +673,7 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		// the transcript for the truncated span) and the ack echoes the request.
 		item, ok := s.items[ce.ItemID]
 		if !ok {
-			return []Event{s.errorEvent("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID))}
+			return []Event{s.errorEventParam("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID), "item_id")}
 		}
 		// GA: "Only assistant message items can be truncated" — and only ones
 		// with audio content. (The real API additionally rejects audio_end_ms
@@ -733,6 +736,11 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		return []Event{s.errorEvent("response_cancel_not_active", "Cancellation failed: no active response found")}
 
 	default:
+		// GA distinguishes a MISSING type (invalid_event) from a present-but-
+		// unrecognized one (unknown_event).
+		if ce.Type == "" {
+			return []Event{s.errorEvent("invalid_event", "Missing required parameter: 'type'")}
+		}
 		return []Event{s.errorEvent("unknown_event", fmt.Sprintf("unknown or unsupported event type %q", ce.Type))}
 	}
 }
@@ -997,24 +1005,23 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 }
 
 // failedResponse emits the GA failure ladder for a response that could not be
-// generated. response.done is ALWAYS emitted no matter the final state — a bare
-// error event alone would leave a client awaiting response.done hanging — so:
-// response.created → error (type server_error, carrying the detail) →
-// response.done (status "failed" + status_details.error).
+// generated: response.created → response.done (status "failed" +
+// status_details.error). GA emits NO standalone error event for a failed
+// response (per capture, SDK on-error handlers do not fire); the real failure
+// code rides in status_details.error — a mock engine failure has no GA
+// billing/quota code, so code is null, and the human-readable detail travels
+// as an extra `message` field GA parsers ignore.
 func (s *Session) failedResponse(respID, msg string, rc *responseCtx) []Event {
 	failed := s.responseObject(respID, "failed", []any{}, rc)
 	failed["status_details"] = map[string]any{
-		"type": "failed",
-		// status_details.error carries only type+code (GA RealtimeResponseStatus);
-		// the human-readable detail travels on the error event above it.
-		"error": map[string]any{"type": "server_error", "code": "response_generation_failed"},
+		"type":  "failed",
+		"error": map[string]any{"type": "server_error", "code": nil, "message": msg},
 	}
 	// Real terminal response.done events always carry usage; a failed response
 	// produced nothing, so it is all zeros.
 	failed["usage"] = zeroUsage()
 	return []Event{
 		{"type": "response.created", "response": s.responseObject(respID, "in_progress", []any{}, rc)},
-		{"type": "error", "error": s.errorBody("server_error", "response_generation_failed", msg)},
 		{"type": "response.done", "response": failed},
 	}
 }
@@ -1362,6 +1369,40 @@ func (s *Session) sessionObject() map[string]any {
 		obj["expires_at"] = s.expiresAt
 	}
 	return obj
+}
+
+// validateMessageItem rejects a conversation.item.create message whose role or
+// role/part-type combination is invalid — GA validates both instead of
+// warping them into a user message. The allowed part-type sets are a lenient
+// superset (GA's short spellings included); only clearly cross-role types are
+// rejected.
+func (s *Session) validateMessageItem(it parsedItem) []Event {
+	if it.Type != "message" {
+		return nil
+	}
+	allowed, knownRole := map[string]map[string]bool{
+		"user":      {"input_text": true, "input_audio": true, "input_image": true, "text": true},
+		"assistant": {"output_text": true, "output_audio": true, "text": true, "audio": true},
+		"system":    {"input_text": true, "text": true},
+	}[it.Role]
+	if !knownRole {
+		return []Event{s.errorEventParam("invalid_value",
+			fmt.Sprintf("invalid role %q for a message item", it.Role), "item.role")}
+	}
+	var parts []struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(it.Content, &parts) != nil {
+		return nil // absent/opaque content stays lenient
+	}
+	for i, p := range parts {
+		if p.Type != "" && !allowed[p.Type] {
+			return []Event{s.errorEventParam("invalid_value",
+				fmt.Sprintf("invalid content part type %q for role %q", p.Type, it.Role),
+				fmt.Sprintf("item.content[%d].type", i))}
+		}
+	}
+	return nil
 }
 
 // validMaxOutputTokens checks a max_output_tokens value against the GA

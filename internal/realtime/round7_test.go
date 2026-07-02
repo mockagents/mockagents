@@ -63,6 +63,44 @@ func TestResponseCreateInputNullMeansAbsent(t *testing.T) {
 	}
 }
 
+// R7-15/R7-18/R7-19 (S3): error-shape batch — missing type is invalid_event
+// (not unknown_event), message role/part-type combinations are validated, and
+// item_not_found names its param.
+func TestErrorShapeBatch(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("r715", "", fakeGen("ok"))
+
+	// Missing type → invalid_event; unrecognized type → unknown_event.
+	if e := s.Handle(ctx, &ClientEvent{})[0]["error"].(map[string]any); e["code"] != "invalid_event" {
+		t.Errorf("missing type code = %v, want invalid_event", e["code"])
+	}
+	if e := s.Handle(ctx, &ClientEvent{Type: "bogus.event"})[0]["error"].(map[string]any); e["code"] != "unknown_event" {
+		t.Errorf("unrecognized type code = %v, want unknown_event", e["code"])
+	}
+
+	// Invalid role → invalid_value on item.role.
+	evs := s.Handle(ctx, &ClientEvent{Type: "conversation.item.create",
+		Item: []byte(`{"type":"message","role":"banana","content":[{"type":"input_text","text":"x"}]}`)})
+	if e := evs[0]["error"].(map[string]any); evs[0]["type"] != "error" || e["param"] != "item.role" {
+		t.Errorf("invalid role = %v, want invalid_value on item.role", evs[0])
+	}
+	// Cross-role content part → invalid_value naming the part path.
+	evs = s.Handle(ctx, &ClientEvent{Type: "conversation.item.create",
+		Item: []byte(`{"type":"message","role":"user","content":[{"type":"output_audio","transcript":"x"}]}`)})
+	if e := evs[0]["error"].(map[string]any); evs[0]["type"] != "error" || e["param"] != "item.content[0].type" {
+		t.Errorf("cross-role part = %v, want invalid_value on item.content[0].type", evs[0])
+	}
+
+	// item_not_found carries param item_id on retrieve/delete/truncate.
+	for _, typ := range []string{"conversation.item.retrieve", "conversation.item.delete", "conversation.item.truncate"} {
+		evs := s.Handle(ctx, &ClientEvent{Type: typ, ItemID: "item_ghost"})
+		e := evs[0]["error"].(map[string]any)
+		if e["code"] != "item_not_found" || e["param"] != "item_id" {
+			t.Errorf("%s unknown id = %v, want item_not_found with param item_id", typ, e)
+		}
+	}
+}
+
 // R7-7 (S3): the committed turn's audio window is [speech_start −
 // prefix_padding_ms, end] — leading silence buffered before the turn must not
 // end up in the stored audio or the billed duration.

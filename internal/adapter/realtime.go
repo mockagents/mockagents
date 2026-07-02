@@ -406,10 +406,12 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 		case data := <-frames:
 			var ce realtime.ClientEvent
 			if err := json.Unmarshal(data, &ce); err != nil {
-				// GA error object shape: param is null and event_id (the offending
-				// client event's id) is unknowable for a body that didn't parse.
+				// GA error shape for an unparseable frame: code invalid_json;
+				// param is null and event_id (the offending client event's id)
+				// is unknowable for a body that didn't parse.
 				events = []realtime.Event{{"type": "error", "event_id": "event_" + generateID(), "error": map[string]any{
-					"type": "invalid_request_error", "message": "event is not valid JSON", "param": nil, "event_id": nil}}}
+					"type": "invalid_request_error", "code": "invalid_json",
+					"message": "Invalid event: failed to parse JSON value", "param": nil, "event_id": nil}}}
 			} else {
 				events = sess.Handle(ctx, &ce)
 			}
