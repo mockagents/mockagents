@@ -587,7 +587,15 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		// cancel-specific code that SDKs recognize and suppress (unknown_event
 		// they surface as a protocol failure).
 		if s.inflight != nil && (ce.ResponseID == "" || ce.ResponseID == s.inflight.respID) {
-			return s.cancelInflight("client_cancelled")
+			out := s.cancelInflight("client_cancelled")
+			// A turn that committed while the cancelled response was in flight
+			// still deserves its auto-response — the cancel targeted only the
+			// in-flight response, not the pending turn.
+			if s.pendingResponse {
+				s.pendingResponse = false
+				out = append(out, s.createResponse(ctx, &ClientEvent{})...)
+			}
+			return out
 		}
 		return []Event{s.errorEvent("response_cancel_not_active", "Cancellation failed: no active response found")}
 
@@ -1391,6 +1399,32 @@ func parseItem(raw json.RawMessage) parsedItem {
 		item.Role = "user"
 	}
 	return item
+}
+
+// storedItemText joins the text-bearing payloads (text or transcript) of a
+// stored conversation item's content parts — the matchable text of an item
+// addressed after the fact (cancel close-out history, response.create input
+// references).
+func storedItemText(item map[string]any) string {
+	content, ok := item["content"].([]any)
+	if !ok {
+		return ""
+	}
+	var out []string
+	for _, c := range content {
+		p, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := p["text"].(string); t != "" {
+			out = append(out, t)
+			continue
+		}
+		if t, _ := p["transcript"].(string); t != "" {
+			out = append(out, t)
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // chunkText splits a transcript into word chunks (each keeping its trailing

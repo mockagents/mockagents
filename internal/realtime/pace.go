@@ -94,6 +94,11 @@ func (s *Session) NextDeadline() (time.Time, bool) {
 // the response when the queue drains) and then, with nothing in flight, the
 // idle timeout. Like Handle, every returned event is stamped.
 func (s *Session) Tick(ctx context.Context, now time.Time) []Event {
+	// Timer-initiated flows (paced emission, idle timeout, the queued
+	// auto-response) have no causing client event: an error emitted from here
+	// must carry event_id null, not the id of whatever unrelated client event
+	// happened to be handled last.
+	s.lastClientEventID = ""
 	var out []Event
 	for s.inflight != nil && !s.inflight.nextAt.After(now) {
 		inf := s.inflight
@@ -199,10 +204,14 @@ func (s *Session) beginPacedResponse(respID string, rc *responseCtx, ladder []Ev
 func (s *Session) cancelInflight(reason string) []Event {
 	inf := s.inflight
 	s.inflight = nil
-	// An interrupted response leaves no completed turn behind: a pending
-	// auto-response and an armed idle timeout both belong to the flow that was
-	// just abandoned.
-	s.pendingResponse = false
+	// A barge-in supersedes the queued auto-response — the new turn's own end
+	// will answer. A CLIENT cancel targets only the in-flight response: the
+	// pending auto-response belongs to a different, already-committed user
+	// turn and survives (the response.cancel handler runs it right after the
+	// close-out). The idle timeout belongs to the cancelled flow either way.
+	if reason == "turn_detected" {
+		s.pendingResponse = false
+	}
 	s.idleAt = time.Time{}
 
 	var out []Event
@@ -258,6 +267,11 @@ drain:
 			rewriteContent(ev["part"], inf.emitted[itemID])
 			out = append(out, ev)
 		case t == "response.function_call_arguments.done":
+			// Same rule as unopened content parts: a stream that never emitted
+			// a delta is not fabricated a close-out.
+			if _, started := inf.emitted[itemID]; !started {
+				continue
+			}
 			ev["arguments"] = inf.emitted[itemID]
 			out = append(out, ev)
 		case t == "response.output_item.done":
@@ -281,6 +295,20 @@ drain:
 			out = append(out, ev)
 		default:
 			out = append(out, ev)
+		}
+	}
+
+	// A message item that fully streamed BEFORE the cancel is a completed
+	// conversation item the client heard in full — its transcript joins the
+	// engine history even though the response's onDone never runs (only the
+	// still-streaming tail is lost to the cancel).
+	for _, it := range inf.doneItems {
+		item, ok := it.(map[string]any)
+		if !ok || item["type"] != "message" || item["status"] != "completed" {
+			continue
+		}
+		if txt := storedItemText(item); txt != "" {
+			s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: txt})
 		}
 	}
 

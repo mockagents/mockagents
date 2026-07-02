@@ -163,6 +163,17 @@ func (s *Session) refreshVAD() {
 	nv := &vadState{cfg: cfg}
 	if s.vad != nil {
 		nv.totalMs = s.vad.totalMs
+		// A same-type reconfiguration (tuned thresholds/timeouts — or a
+		// semantically identical config re-serialized with different key
+		// order, which defeats the byte-compare skip in the session.update
+		// handler) must not drop an in-progress turn: the live speech cycle
+		// carries over. Switching detector types starts a fresh cycle.
+		if s.vad.cfg.Type == cfg.Type {
+			nv.speechActive = s.vad.speechActive
+			nv.speechStartMs = s.vad.speechStartMs
+			nv.silenceMs = s.vad.silenceMs
+			nv.pendingItemID = s.vad.pendingItemID
+		}
 	}
 	s.vad = nv
 }
