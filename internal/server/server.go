@@ -218,6 +218,11 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 	// listing and LLM resolution can be scoped to that tenant.
 	if cfg.TenancyStore != nil {
 		handler = tenancy.AuthMiddleware(cfg.TenancyStore, skipAuth)(handler)
+		// Runs BEFORE the auth middleware (wrapped outside it): browser
+		// WebSocket clients carry their key in a subprotocol offer, not a
+		// header — lift it so best-effort principal resolution can scope the
+		// realtime socket to a tenant (round-7 R7-20).
+		handler = RealtimeBrowserAuth(handler)
 	}
 	handler = MaxBodySize(cfg.MaxBodyBytes)(handler)
 	handler = CORS(cfg.CORSAllowedOrigins)(handler)
@@ -303,6 +308,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// applies, and tenant scope / ProcessRequestContext plumbing lives in
 	// the handlers, unchanged by the move.
 	for _, a := range adapter.DefaultRegistry(s.engine).Adapters() {
+		// Realtime generates responses in-process over a WebSocket, so the
+		// HTTP middleware that meters the request/response protocols never
+		// sees them — the adapter exposes per-response hooks instead.
+		if rt, ok := a.(*adapter.RealtimeHandler); ok {
+			s.wireRealtime(rt)
+		}
 		for _, route := range a.Routes() {
 			mux.HandleFunc(route.Pattern, route.Handler)
 		}

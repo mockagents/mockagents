@@ -36,6 +36,19 @@ const realtimePaceInterval = 5 * time.Millisecond
 // RealtimeHandler serves the OpenAI Realtime API.
 type RealtimeHandler struct {
 	Engine *engine.Engine
+	// CheckQuota, when set, is consulted with the connection's tenant before
+	// each response generation; a non-nil error rejects generation and the
+	// client sees the failed-response ladder (an established WebSocket cannot
+	// return HTTP 429/402 the way the request/response protocols do). nil
+	// disables quota enforcement (the single-tenant default).
+	CheckQuota func(tenantID string) error
+	// OnResponse, when set, is invoked once per generated realtime response
+	// with the tenant, model, word-count token estimates, and the engine
+	// response. Realtime generation is engine-in-process — it bypasses the
+	// HTTP middleware that meters the request/response protocols — so the
+	// server wires per-tenant spend accrual and interaction logging through
+	// this seam (round-7 R7-21).
+	OnResponse func(tenantID, model string, inputTokens, outputTokens int, resp *engine.Response)
 	// minted retains the session config supplied at ephemeral-key mint time
 	// (POST /v1/realtime/client_secrets), keyed by the ek_ value, so a connect
 	// presenting that key comes up with the configuration the client paid for
@@ -447,15 +460,31 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 }
 
 // generator adapts the engine to the realtime.Generator signature, pinning the
-// connection's tenant onto each sub-request's context.
+// connection's tenant onto each sub-request's context and running the server's
+// per-response quota/metering hooks (this is the metering seam for realtime —
+// the HTTP middleware never sees in-socket generation).
 func (h *RealtimeHandler) generator(tenant string) realtime.Generator {
 	return func(ctx context.Context, model, sessionID string, history []engine.RequestMessage) (*engine.Response, error) {
+		if h.CheckQuota != nil {
+			if err := h.CheckQuota(tenant); err != nil {
+				return nil, err
+			}
+		}
 		ctx = engine.WithTenantID(ctx, tenant)
-		return h.Engine.ProcessRequestContext(ctx, &engine.InboundRequest{
+		resp, err := h.Engine.ProcessRequestContext(ctx, &engine.InboundRequest{
 			Model:     model,
 			SessionID: sessionID,
 			Messages:  history,
 		})
+		if err == nil && resp != nil && h.OnResponse != nil {
+			// Word counts mirror the Session's own usage math.
+			inputTokens := 0
+			for _, m := range history {
+				inputTokens += len(strings.Fields(m.Content))
+			}
+			h.OnResponse(tenant, model, inputTokens, len(strings.Fields(resp.Content)), resp)
+		}
+		return resp, err
 	}
 }
 
