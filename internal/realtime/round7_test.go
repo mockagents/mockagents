@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mockagents/mockagents/internal/engine"
+	"github.com/mockagents/mockagents/internal/types"
 )
 
 // R7-1 (S2, three-lens convergence): a transcription session has no response
@@ -60,6 +61,55 @@ func TestResponseCreateInputNullMeansAbsent(t *testing.T) {
 	s.Handle(ctx, &ClientEvent{Type: "response.create", Response: []byte(`{"conversation":"none","input":[]}`)})
 	if seen != 0 {
 		t.Errorf("input:[] context size = %d, want 0", seen)
+	}
+}
+
+// R7-11/R7-12/R7-13 (S3): dangling input references error, response-generated
+// function calls join history, and the session type is immutable once set.
+func TestInputRefsHistoryAndSessionType(t *testing.T) {
+	ctx := context.Background()
+
+	// R7-11: a dangling item_reference fails the create — no response opens.
+	s := NewSession("r711", "", fakeGen("ok"))
+	evs := s.Handle(ctx, &ClientEvent{Type: "response.create",
+		Response: []byte(`{"conversation":"none","input":[{"type":"item_reference","id":"item_ghost"}]}`)})
+	e := evs[0]["error"].(map[string]any)
+	if evs[0]["type"] != "error" || e["code"] != "item_not_found" || e["param"] != "response.input" {
+		t.Errorf("dangling reference = %v, want item_not_found on response.input", evs[0])
+	}
+	if contains(typesOf(evs), "response.created") {
+		t.Error("a rejected input must not open a response")
+	}
+
+	// R7-12: the response's function_call turn joins engine history (mirrors
+	// the conversation.item.create {type:"function_call"} mapping).
+	s2 := NewSession("r712", "", fakeGenTool("checking", types.ToolCallSpec{Name: "lookup"}))
+	s2.Handle(ctx, mkUserItem("item_q", "question"))
+	s2.Handle(ctx, &ClientEvent{Type: "response.create"})
+	assistant := 0
+	for _, m := range s2.history {
+		if m.Role == "assistant" {
+			assistant++
+		}
+	}
+	if assistant != 2 {
+		t.Errorf("assistant history entries = %d, want 2 (message + function_call)", assistant)
+	}
+
+	// R7-13: the session type is immutable once set.
+	s3 := NewSession("r713", "", fakeGen("ok"))
+	s3.Handle(ctx, &ClientEvent{Type: "session.update", Session: []byte(`{"type":"transcription"}`)})
+	evs = s3.Handle(ctx, &ClientEvent{Type: "session.update", Session: []byte(`{"type":"realtime"}`)})
+	e = evs[0]["error"].(map[string]any)
+	if evs[0]["type"] != "error" || e["param"] != "session.type" {
+		t.Errorf("type flip = %v, want invalid_value on session.type", evs[0])
+	}
+	if !s3.isTranscription() {
+		t.Error("a rejected type flip must leave the session type unchanged")
+	}
+	// Re-sending the SAME type stays accepted.
+	if evs := s3.Handle(ctx, &ClientEvent{Type: "session.update", Session: []byte(`{"type":"transcription"}`)}); evs[0]["type"] != "session.updated" {
+		t.Errorf("same-type update = %v, want session.updated", typesOf(evs))
 	}
 }
 

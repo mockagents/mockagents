@@ -410,6 +410,9 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		if errEvs := s.validateSessionMaxOutputTokens(ce.Session); errEvs != nil {
 			return errEvs
 		}
+		if errEvs := s.validateSessionType(ce.Session); errEvs != nil {
+			return errEvs
+		}
 		oldTD := string(s.cfg.turnDetection)
 		s.applyConfig(ce.Session)
 		// Rebuild the VAD state machine only when turn_detection actually
@@ -784,8 +787,11 @@ type responseCtx struct {
 	// GA custom context: response.create `input` replaces the default
 	// conversation as the model's context for THIS response. hasInput
 	// distinguishes an explicit empty array (clear the context) from absent.
+	// inputErr carries a rejection (dangling item_reference) the caller must
+	// emit instead of creating the response.
 	hasInput bool
 	input    []engine.RequestMessage
+	inputErr []Event
 }
 
 func (s *Session) newResponseCtx(raw json.RawMessage) *responseCtx {
@@ -821,7 +827,11 @@ func (s *Session) newResponseCtx(raw json.RawMessage) *responseCtx {
 		// explicit array replaces the context ([] clears it). A malformed
 		// non-array is likewise treated as absent rather than clearing.
 		if trimmed := strings.TrimSpace(string(cfg.Input)); trimmed != "" && trimmed != "null" {
-			if items, ok := s.inputContext(cfg.Input); ok {
+			items, errEvs, ok := s.inputContext(cfg.Input)
+			switch {
+			case len(errEvs) > 0:
+				rc.inputErr = errEvs
+			case ok:
 				rc.hasInput = true
 				rc.input = items
 			}
@@ -853,6 +863,11 @@ func (rc *responseCtx) textOnly() bool {
 // (whose output lists every item).
 func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 	rc := s.newResponseCtx(ce.Response)
+	// A rejected `input` (dangling item_reference) fails the whole create —
+	// no response is opened.
+	if rc.inputErr != nil {
+		return rc.inputErr
+	}
 	// The voice lock covers per-response overrides too: once the conversation
 	// holds assistant audio, an in-conversation response in a DIFFERENT voice
 	// is rejected the same way a session.update would be (out-of-band
@@ -907,8 +922,17 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 	// the append is deferred to completion — a cancelled response leaves no
 	// transcript behind.
 	appendHistory := func() {
-		if emitMessage && !rc.outOfBand {
+		if rc.outOfBand {
+			return
+		}
+		if emitMessage {
 			s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: transcript})
+		}
+		// GA context includes the model's function calls; mirror the
+		// conversation.item.create {type:"function_call"} mapping — an
+		// assistant turn with no matchable text.
+		for range resp.ToolCalls {
+			s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: ""})
 		}
 	}
 	outputTokens := wordCount(transcript)
@@ -1240,24 +1264,28 @@ func engineHistory(instructions string, base []engine.RequestMessage) []engine.R
 // inputContext converts a response.create `input` array into engine messages:
 // full items map exactly like conversation.item.create (message text,
 // function_call_output → tool, function_call → assistant); item_reference
-// entries resolve against the session's stored items. Unknown types and
-// unresolvable references are skipped — a mock stays lenient about context it
-// cannot represent. ok is false when the payload is not an array (the caller
-// treats that as an absent input, not a cleared context).
-func (s *Session) inputContext(raw json.RawMessage) ([]engine.RequestMessage, bool) {
+// entries resolve against the session's stored items — a DANGLING reference
+// is rejected (errEvs), matching the adjacent Responses API. Unknown item
+// types are skipped (a mock stays lenient about context it cannot represent);
+// ok is false when the payload is not an array (the caller treats that as an
+// absent input, not a cleared context).
+func (s *Session) inputContext(raw json.RawMessage) ([]engine.RequestMessage, []Event, bool) {
 	var items []json.RawMessage
 	if json.Unmarshal(raw, &items) != nil {
-		return nil, false
+		return nil, nil, false
 	}
 	out := []engine.RequestMessage{}
 	for _, ri := range items {
 		it := parseItem(ri)
 		switch it.Type {
 		case "item_reference":
-			if stored, ok := s.items[it.ID]; ok {
-				if msg, ok2 := storedItemToMessage(stored); ok2 {
-					out = append(out, msg)
-				}
+			stored, ok := s.items[it.ID]
+			if !ok {
+				return nil, []Event{s.errorEventParam("item_not_found",
+					fmt.Sprintf("input item_reference %q not found", it.ID), "response.input")}, false
+			}
+			if msg, ok2 := storedItemToMessage(stored); ok2 {
+				out = append(out, msg)
 			}
 		case "function_call_output":
 			out = append(out, engine.RequestMessage{Role: "tool", Content: it.Output})
@@ -1269,7 +1297,7 @@ func (s *Session) inputContext(raw json.RawMessage) ([]engine.RequestMessage, bo
 			}
 		}
 	}
-	return out, true
+	return out, nil, true
 }
 
 // storedItemToMessage maps a stored conversation item (an item_reference
@@ -1369,6 +1397,23 @@ func (s *Session) sessionObject() map[string]any {
 		obj["expires_at"] = s.expiresAt
 	}
 	return obj
+}
+
+// validateSessionType rejects a session.update that changes the session's
+// union arm after it has been set — GA fixes the type at creation. The first
+// explicit set (on a fresh session) is how the mock enters transcription mode.
+func (s *Session) validateSessionType(raw json.RawMessage) []Event {
+	if s.cfg.sessionType == "" || len(raw) == 0 {
+		return nil
+	}
+	var u struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &u) != nil || u.Type == "" || u.Type == s.cfg.sessionType {
+		return nil
+	}
+	return []Event{s.errorEventParam("invalid_value",
+		fmt.Sprintf("cannot change session type from %q to %q after creation", s.cfg.sessionType, u.Type), "session.type")}
 }
 
 // validateMessageItem rejects a conversation.item.create message whose role or
