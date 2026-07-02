@@ -24,6 +24,19 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   identically.
 
 ### Added
+- **Realtime server VAD Phase 3: validation, transcription ladder, idle-loop
+  guard** — an invalid `turn_detection` config in `session.update` (unknown
+  `type`, `threshold` outside [0,1], negative durations, bad `eagerness`) now
+  **rejects the whole update** with a GA-shaped error — `code: "invalid_value"`
+  and `param` naming the exact offending field path — instead of being silently
+  stored or ignored. With input transcription enabled, a commit now streams the
+  full GA transcription ladder: `conversation.item.input_audio_transcription.delta`
+  chunks followed by `.completed`, which now carries the **required `usage`**
+  field (the `duration` variant, computed deterministically from the decoded
+  audio length). The server-VAD idle timeout fires **once per stretch of user
+  inactivity** — it does not re-arm after its own triggered response, so a
+  silent connection cannot self-prompt forever; fresh user activity re-allows
+  it.
 - **Realtime server VAD Phase 2: paced responses, barge-in, idle timeout** —
   the `Session` now exposes a deadline API (`NextDeadline()` / `Tick(ctx, now)`;
   it still never spawns a goroutine or arms a timer itself) and the WebSocket

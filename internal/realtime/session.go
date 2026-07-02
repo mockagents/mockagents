@@ -129,6 +129,13 @@ type Session struct {
 	paceInterval time.Duration
 	inflight     *inflightResponse
 	idleAt       time.Time
+	// idleFired guards the idle timeout to once per stretch of user inactivity
+	// (a deliberate mock safety: a silent connection must not self-prompt
+	// forever); cleared by user activity.
+	idleFired bool
+	// bufferedMs is the decoded duration of un-committed appended audio — the
+	// transcription usage ("duration" variant) reported on commit.
+	bufferedMs float64
 }
 
 // rememberItem indexes a completed conversation item for later retrieve /
@@ -212,22 +219,31 @@ func (s *Session) stamp(evs []Event) []Event {
 func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 	switch ce.Type {
 	case "session.update":
+		// An invalid turn_detection config rejects the WHOLE update with a GA
+		// error (code invalid_value, param naming the field) — accept-and-warp
+		// would silently corrupt the VAD state machine.
+		if errEvs := s.validateTurnDetection(ce.Session); errEvs != nil {
+			return errEvs
+		}
 		s.applyConfig(ce.Session)
 		s.refreshVAD()
 		return []Event{{"type": "session.updated", "session": s.sessionObject()}}
 
 	case "input_audio_buffer.append":
 		s.audioBuffer = true
+		ms, energy := audioEnergy(ce.Audio)
+		s.bufferedMs += ms
 		// With turn detection enabled the appended audio drives the VAD state
 		// machine (which may auto-commit and auto-respond); otherwise a mock
 		// just notes the buffer is non-empty.
 		if s.vad != nil {
-			return s.vadAppend(ctx, ce.Audio)
+			return s.vadAppend(ctx, ms, energy)
 		}
 		return nil
 
 	case "input_audio_buffer.clear":
 		s.audioBuffer = false
+		s.bufferedMs = 0
 		s.vadReset()
 		return []Event{{"type": "input_audio_buffer.cleared"}}
 
@@ -236,7 +252,9 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			return []Event{s.errorEvent("input_audio_buffer_commit_empty", "cannot commit an empty input audio buffer")}
 		}
 		s.audioBuffer = false
-		s.idleAt = time.Time{} // user activity resets the idle timeout
+		s.idleAt, s.idleFired = time.Time{}, false // user activity resets the idle timeout
+		committedSeconds := s.bufferedMs / 1000
+		s.bufferedMs = 0
 		// A VAD-detected turn pre-announced its item id on speech_started; the
 		// committed item must carry that exact id. Manual turns mint one here.
 		var prevItem any
@@ -262,15 +280,24 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			"role": "user", "content": []any{map[string]any{"type": "input_audio", "transcript": transcript}},
 		}))...)
 		if s.transcriptionEnabled() {
+			// GA streams the transcription: delta chunks, then completed with the
+			// full transcript and a REQUIRED usage field — the "duration" variant
+			// is the honest one for a mock (derived from the decoded audio length,
+			// deterministic; ASR-token billing does not apply here).
+			for _, chunk := range chunkText(audioInputPlaceholder) {
+				out = append(out, Event{"type": "conversation.item.input_audio_transcription.delta",
+					"item_id": itemID, "content_index": 0, "delta": chunk})
+			}
 			out = append(out, Event{
 				"type":    "conversation.item.input_audio_transcription.completed",
 				"item_id": itemID, "content_index": 0, "transcript": audioInputPlaceholder,
+				"usage": map[string]any{"type": "duration", "seconds": committedSeconds},
 			})
 		}
 		return out
 
 	case "conversation.item.create":
-		s.idleAt = time.Time{} // user activity resets the idle timeout
+		s.idleAt, s.idleFired = time.Time{}, false // user activity resets the idle timeout
 		it := parseItem(ce.Item)
 		prevItem, itemID := s.newConversationItem()
 		switch it.Type {
@@ -304,6 +331,9 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		}
 
 	case "response.create":
+		// A client-driven response is user activity (an idle-triggered one is
+		// not — idleTimeout calls createResponse directly, not through here).
+		s.idleFired = false
 		return s.createResponse(ctx, ce)
 
 	case "conversation.item.retrieve":
@@ -843,6 +873,14 @@ func (s *Session) applyConfig(raw json.RawMessage) {
 // which SDKs use to correlate errors to their requests.
 func (s *Session) errorEvent(code, msg string) Event {
 	return Event{"type": "error", "error": s.errorBody("invalid_request_error", code, msg)}
+}
+
+// errorEventParam is errorEvent with the GA `param` field naming the offending
+// request field (config-validation rejections point at the exact path).
+func (s *Session) errorEventParam(code, msg, param string) Event {
+	body := s.errorBody("invalid_request_error", code, msg)
+	body["param"] = param
+	return Event{"type": "error", "error": body}
 }
 
 // errorBody builds the GA error object shared by errorEvent and the failed-

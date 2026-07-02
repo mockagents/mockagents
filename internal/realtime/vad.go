@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -53,6 +54,64 @@ type vadState struct {
 	// pre-announces "the ID of the user message item that will be created when
 	// speech stops", so the eventual commit must use this exact id.
 	pendingItemID string
+}
+
+// validateTurnDetection checks a session.update's turn_detection payload
+// against the GA constraints (Phase 3). It returns the error event to reject
+// the update with — code invalid_value and param naming the offending field —
+// or nil when the payload is acceptable. Fields the mock doesn't act on stay
+// lenient; only values that would silently corrupt the VAD state machine are
+// rejected.
+func (s *Session) validateTurnDetection(sessionRaw json.RawMessage) []Event {
+	var upd struct {
+		Audio *struct {
+			Input *struct {
+				TurnDetection json.RawMessage `json:"turn_detection"`
+			} `json:"input"`
+		} `json:"audio"`
+	}
+	if len(sessionRaw) == 0 || json.Unmarshal(sessionRaw, &upd) != nil ||
+		upd.Audio == nil || upd.Audio.Input == nil {
+		return nil // no turn_detection in this update
+	}
+	raw := strings.TrimSpace(string(upd.Audio.Input.TurnDetection))
+	if raw == "" || raw == "null" {
+		return nil // absent, or explicitly turning VAD off
+	}
+
+	const p = "session.audio.input.turn_detection"
+	fail := func(field, msg string) []Event {
+		return []Event{s.errorEventParam("invalid_value", msg, p+"."+field)}
+	}
+	var cfg vadConfig
+	if err := json.Unmarshal(upd.Audio.Input.TurnDetection, &cfg); err != nil {
+		return []Event{s.errorEventParam("invalid_value", "turn_detection must be an object or null", p)}
+	}
+	switch cfg.Type {
+	case "server_vad", "semantic_vad":
+	default:
+		return fail("type", fmt.Sprintf("invalid turn_detection type %q: expected server_vad or semantic_vad", cfg.Type))
+	}
+	if cfg.Threshold < 0 || cfg.Threshold > 1 {
+		return fail("threshold", "threshold must be between 0.0 and 1.0")
+	}
+	if cfg.PrefixPaddingMs < 0 {
+		return fail("prefix_padding_ms", "prefix_padding_ms must not be negative")
+	}
+	if cfg.SilenceDurationMs < 0 {
+		return fail("silence_duration_ms", "silence_duration_ms must not be negative")
+	}
+	if cfg.IdleTimeoutMs < 0 {
+		return fail("idle_timeout_ms", "idle_timeout_ms must not be negative")
+	}
+	if cfg.Type == "semantic_vad" {
+		switch cfg.Eagerness {
+		case "", "auto", "low", "medium", "high":
+		default:
+			return fail("eagerness", fmt.Sprintf("invalid eagerness %q: expected low, medium, high, or auto", cfg.Eagerness))
+		}
+	}
+	return nil
 }
 
 // refreshVAD re-derives the VAD state machine from the session's turn_detection
@@ -122,20 +181,22 @@ func audioEnergy(b64 string) (ms, energy float64) {
 	return ms, sum / float64(n) / 32768
 }
 
-// vadAppend advances the turn-detection state machine with one append payload,
-// returning any server events the transition produces: speech_started at speech
-// onset; at end of turn (silence_duration_ms of accumulated low-energy audio)
-// speech_stopped followed by the full auto-commit — and, unless
-// create_response:false, auto-response — ladders.
-func (s *Session) vadAppend(ctx context.Context, audioB64 string) []Event {
+// vadAppend advances the turn-detection state machine with one append payload
+// (already decoded by the caller: duration + energy), returning any server
+// events the transition produces: speech_started at speech onset; at end of
+// turn (silence_duration_ms of accumulated low-energy audio) speech_stopped
+// followed by the full auto-commit — and, unless create_response:false,
+// auto-response — ladders.
+func (s *Session) vadAppend(ctx context.Context, ms, energy float64) []Event {
 	v := s.vad
-	ms, energy := audioEnergy(audioB64)
 	startMs := v.totalMs
 	v.totalMs += ms
 	speech := energy >= v.cfg.Threshold
 
 	if speech {
-		s.idleAt = time.Time{} // the user is talking — reset any idle timeout
+		// The user is talking — reset the idle timeout and re-allow it to fire.
+		s.idleAt = time.Time{}
+		s.idleFired = false
 	}
 
 	if !v.speechActive {

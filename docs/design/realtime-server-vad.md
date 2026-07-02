@@ -1,6 +1,12 @@
 # Design: Server VAD / turn detection for the mock Realtime API (F5)
 
-**Status:** Phases 1–2 implemented (`internal/realtime/vad.go`, `pace.go`) · Phase 3 proposed
+**Status:** ALL PHASES implemented (`internal/realtime/vad.go`, `pace.go`).
+**Phase-3 notes:** validation rejects the whole `session.update` (code
+`invalid_value`, `param` = field path); transcription `.completed` uses the
+`usage` "duration" variant (deterministic from decoded audio length); the idle
+timeout fires once per stretch of inactivity (deliberate guard — a silent
+connection must not self-prompt forever; real-API re-fire semantics unverified).
+Remaining follow-on: StreamingConfig TTFT/ITL pacing physics.
 **Phase-2 deviations from this design:** `Tick` takes a `ctx` (idle-triggered
 generation needs one); pacing uses a constant inter-event interval
 (`adapter.realtimePaceInterval`) — plumbing the agent's `StreamingConfig`

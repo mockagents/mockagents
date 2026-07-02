@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"strings"
 	"testing"
 )
 
@@ -195,6 +196,98 @@ func TestVAD_DisableAndClear(t *testing.T) {
 	enableVAD(t, s, vadOffJSON)
 	if evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(200, speechAmp)}); len(evs) != 0 {
 		t.Errorf("with VAD off, append must be silent; got %v", typesOf(evs))
+	}
+}
+
+// An invalid turn_detection config rejects the whole session.update with a GA
+// error — code invalid_value, param naming the offending field — and the
+// session config stays untouched.
+func TestSessionUpdate_TurnDetectionValidation(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name, td, wantParam string
+	}{
+		{"unknown type", `{"type":"bogus_vad"}`, "session.audio.input.turn_detection.type"},
+		{"missing type", `{"threshold":0.5}`, "session.audio.input.turn_detection.type"},
+		{"threshold too high", `{"type":"server_vad","threshold":1.5}`, "session.audio.input.turn_detection.threshold"},
+		{"threshold negative", `{"type":"server_vad","threshold":-0.1}`, "session.audio.input.turn_detection.threshold"},
+		{"negative prefix", `{"type":"server_vad","prefix_padding_ms":-1}`, "session.audio.input.turn_detection.prefix_padding_ms"},
+		{"negative silence", `{"type":"server_vad","silence_duration_ms":-1}`, "session.audio.input.turn_detection.silence_duration_ms"},
+		{"negative idle", `{"type":"server_vad","idle_timeout_ms":-5}`, "session.audio.input.turn_detection.idle_timeout_ms"},
+		{"bad eagerness", `{"type":"semantic_vad","eagerness":"frantic"}`, "session.audio.input.turn_detection.eagerness"},
+		{"not an object", `"server_vad"`, "session.audio.input.turn_detection"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewSession("svv", "", fakeGen("ok"))
+			evs := s.Handle(ctx, &ClientEvent{Type: "session.update", EventID: "evt_v",
+				Session: []byte(`{"audio":{"input":{"turn_detection":` + tc.td + `}}}`)})
+			if len(evs) != 1 || evs[0]["type"] != "error" {
+				t.Fatalf("events = %v, want one error", typesOf(evs))
+			}
+			e := evs[0]["error"].(map[string]any)
+			if e["code"] != "invalid_value" {
+				t.Errorf("code = %v, want invalid_value", e["code"])
+			}
+			if e["param"] != tc.wantParam {
+				t.Errorf("param = %v, want %q", e["param"], tc.wantParam)
+			}
+			if e["event_id"] != "evt_v" {
+				t.Errorf("event_id = %v, want the client event id", e["event_id"])
+			}
+			// The update was rejected wholesale: VAD stays off.
+			if s.vad != nil {
+				t.Error("rejected update must not enable VAD")
+			}
+		})
+	}
+
+	// A valid config (and an explicit null) still applies.
+	s := NewSession("svv2", "", fakeGen("ok"))
+	if evs := s.Handle(ctx, &ClientEvent{Type: "session.update",
+		Session: []byte(serverVAD)}); evs[0]["type"] != "session.updated" {
+		t.Fatalf("valid config rejected: %v", typesOf(evs))
+	}
+	if evs := s.Handle(ctx, &ClientEvent{Type: "session.update",
+		Session: []byte(vadOffJSON)}); evs[0]["type"] != "session.updated" {
+		t.Fatalf("explicit null rejected: %v", typesOf(evs))
+	}
+}
+
+// With input transcription enabled, a commit streams the GA transcription
+// ladder: delta chunks reassembling the transcript, then completed carrying the
+// REQUIRED usage field (duration variant, from the decoded audio length).
+func TestTranscription_DeltaAndUsage(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("str", "", fakeGen("ok"))
+	s.Handle(ctx, &ClientEvent{Type: "session.update",
+		Session: []byte(`{"audio":{"input":{"transcription":{"model":"whisper-1"}}}}`)})
+
+	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(480, speechAmp)})
+	evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"})
+
+	var assembled string
+	for _, e := range evs {
+		if e["type"] == "conversation.item.input_audio_transcription.delta" {
+			assembled += e["delta"].(string)
+		}
+	}
+	if assembled == "" {
+		t.Fatalf("no transcription deltas; events = %v", typesOf(evs))
+	}
+	completed := firstEvent(evs, "conversation.item.input_audio_transcription.completed")
+	if completed == nil {
+		t.Fatal("missing transcription completed event")
+	}
+	if strings.TrimSpace(assembled) != completed["transcript"] {
+		t.Errorf("deltas %q do not reassemble the transcript %q", assembled, completed["transcript"])
+	}
+	usage, _ := completed["usage"].(map[string]any)
+	if usage == nil || usage["type"] != "duration" {
+		t.Fatalf("completed usage = %v, want the duration variant", completed["usage"])
+	}
+	if usage["seconds"] != 0.48 {
+		t.Errorf("usage.seconds = %v, want 0.48 (480ms of committed audio)", usage["seconds"])
 	}
 }
 
