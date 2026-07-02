@@ -25,6 +25,11 @@ const ProtocolOpenAIRealtime = "openai-realtime"
 // a single frame so a client can't force an unbounded allocation.
 const realtimeReadLimit = 16 << 20 // 16 MiB
 
+// realtimePaceInterval is the inter-event delay for paced response emission on
+// VAD-enabled sessions (Phase 2): small enough to keep tests fast, non-zero so
+// barge-in / response.cancel have a real window to land in.
+const realtimePaceInterval = 5 * time.Millisecond
+
 // RealtimeHandler serves the OpenAI Realtime API.
 type RealtimeHandler struct {
 	Engine *engine.Engine
@@ -103,31 +108,80 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 	tenant := engine.TenantIDFromContext(ctx)
 	sess := realtime.NewSession("sess_"+generateID(), r.URL.Query().Get("model"), h.generator(tenant))
 	sess.SetExpiry(time.Now().Add(time.Hour).Unix()) // reported as session.expires_at
+	// Paced emission (Phase 2): responses on VAD-enabled sessions stream their
+	// ladder incrementally, creating the interruption window barge-in and
+	// response.cancel act in. Burst behavior is unchanged for non-VAD sessions.
+	sess.SetPacing(realtimePaceInterval)
 
 	for _, ev := range sess.Greeting() {
 		if writeEvent(ctx, c, ev) != nil {
 			return
 		}
 	}
-	for {
-		typ, data, err := c.Read(ctx)
-		if err != nil {
-			return // client closed, read limit exceeded, or context cancelled
-		}
-		if typ != websocket.MessageText {
-			continue // the Realtime protocol is JSON text frames
-		}
-		var ce realtime.ClientEvent
-		if err := json.Unmarshal(data, &ce); err != nil {
-			// GA error object shape: param is null and event_id (the offending
-			// client event's id) is unknowable for a body that didn't parse.
-			if writeEvent(ctx, c, realtime.Event{"type": "error", "event_id": "event_" + generateID(), "error": map[string]any{
-				"type": "invalid_request_error", "message": "event is not valid JSON", "param": nil, "event_id": nil}}) != nil {
+
+	// The Session is single-goroutine: only this loop touches it. A reader
+	// goroutine feeds frames through a channel so the loop can select between
+	// the client's next event and the session's next deadline (paced response
+	// emission, idle timeout).
+	done := make(chan struct{})
+	defer close(done)
+	frames := make(chan []byte)
+	readErr := make(chan error, 1)
+	go func() {
+		for {
+			typ, data, err := c.Read(ctx)
+			if err != nil {
+				readErr <- err // client closed, read limit exceeded, or context cancelled
 				return
 			}
-			continue
+			if typ != websocket.MessageText {
+				continue // the Realtime protocol is JSON text frames
+			}
+			select {
+			case frames <- data:
+			case <-done:
+				return
+			}
 		}
-		for _, ev := range sess.Handle(ctx, &ce) {
+	}()
+
+	for {
+		var timerC <-chan time.Time
+		var timer *time.Timer
+		if deadline, ok := sess.NextDeadline(); ok {
+			timer = time.NewTimer(time.Until(deadline))
+			timerC = timer.C
+		}
+
+		var events []realtime.Event
+		select {
+		case data := <-frames:
+			var ce realtime.ClientEvent
+			if err := json.Unmarshal(data, &ce); err != nil {
+				// GA error object shape: param is null and event_id (the offending
+				// client event's id) is unknowable for a body that didn't parse.
+				events = []realtime.Event{{"type": "error", "event_id": "event_" + generateID(), "error": map[string]any{
+					"type": "invalid_request_error", "message": "event is not valid JSON", "param": nil, "event_id": nil}}}
+			} else {
+				events = sess.Handle(ctx, &ce)
+			}
+		case now := <-timerC:
+			events = sess.Tick(ctx, now)
+		case <-readErr:
+			if timer != nil {
+				timer.Stop()
+			}
+			return
+		case <-ctx.Done():
+			if timer != nil {
+				timer.Stop()
+			}
+			return
+		}
+		if timer != nil {
+			timer.Stop()
+		}
+		for _, ev := range events {
 			if writeEvent(ctx, c, ev) != nil {
 				return
 			}
