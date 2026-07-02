@@ -203,6 +203,14 @@ func (h *StreamableHTTPHandler) handlePost(w http.ResponseWriter, r *http.Reques
 	}
 	defer r.Body.Close()
 
+	// A JSON array is a batch — removed from MCP in 2025-06-18, so it is an
+	// Invalid Request, not a parse error (round-10 R10-12).
+	if isBatchBody(body) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(newError(nil, ErrInvalidRequest, "JSON-RPC batching is not supported (removed in MCP 2025-06-18)", nil))
+		return
+	}
+
 	var req Request
 	if err := json.Unmarshal(body, &req); err != nil {
 		// Malformed JSON: answer with a JSON-RPC parse error so a client gets a

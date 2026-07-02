@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -147,6 +148,95 @@ func TestClientResponseBodiesNotDispatched(t *testing.T) {
 	out, _ = s.HandleBytes([]byte(`{"jsonrpc":"2.0","id":100,"error":{"code":-1,"message":"client failed"}}`))
 	if out != nil {
 		t.Errorf("error-response body earned a reply: %s", out)
+	}
+}
+
+// R10-10/11 (S2): spec error codes — unknown tool name is -32602 (the
+// METHOD exists), unknown resource URI is MCP's -32002 with data.uri.
+func TestSpecErrorCodes(t *testing.T) {
+	s := round10Server()
+
+	resp := handleJSON(t, s, `{"jsonrpc":"2.0","id":1,"method":"tools/call",
+		"params":{"name":"no-such-tool"}}`)
+	if code := resp["error"].(map[string]any)["code"]; code != float64(ErrInvalidParams) {
+		t.Errorf("unknown tool code = %v, want -32602", code)
+	}
+
+	resp = handleJSON(t, s, `{"jsonrpc":"2.0","id":2,"method":"resources/read",
+		"params":{"uri":"mock://nope"}}`)
+	errObj := resp["error"].(map[string]any)
+	if errObj["code"] != float64(ErrResourceNotFound) {
+		t.Errorf("unknown resource code = %v, want -32002", errObj["code"])
+	}
+	if data, _ := errObj["data"].(map[string]any); data["uri"] != "mock://nope" {
+		t.Errorf("unknown resource data = %v, want uri:mock://nope", errObj["data"])
+	}
+}
+
+// R10-12 (S2): a batch (JSON array) is well-formed JSON that MCP 2025-06-18
+// removed — Invalid Request (-32600), not a parse error (-32700).
+func TestBatchBodiesAreInvalidRequest(t *testing.T) {
+	s := round10Server()
+	out, err := s.HandleBytes([]byte(` [{"jsonrpc":"2.0","id":1,"method":"ping"}]`))
+	if err != nil {
+		t.Fatalf("HandleBytes: %v", err)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("bad response: %v", err)
+	}
+	if code := resp["error"].(map[string]any)["code"]; code != float64(ErrInvalidRequest) {
+		t.Errorf("batch body code = %v, want -32600", code)
+	}
+	if !strings.Contains(string(out), `"id":null`) {
+		t.Errorf("batch rejection missing id:null: %s", out)
+	}
+}
+
+// R10-14 (S2): prompts/get without a REQUIRED argument is -32602 —
+// previously the placeholder was silently left unexpanded.
+func TestPromptsGetMissingRequiredArgument(t *testing.T) {
+	s := NewServer(&types.MCPServerDefinition{
+		Kind:     types.MCPServerKind,
+		Metadata: types.Metadata{Name: "r10p"},
+		Spec: types.MCPServerSpec{
+			Prompts: []types.MCPPrompt{{
+				Name:      "greet",
+				Arguments: []types.MCPPromptArg{{Name: "who", Required: true}},
+				Messages: []types.MCPPromptMessage{{
+					Role:    "user",
+					Content: types.MCPContentBlock{Type: "text", Text: "hi {{who}}"},
+				}},
+			}},
+		},
+	})
+	resp := handleJSON(t, s, `{"jsonrpc":"2.0","id":1,"method":"prompts/get",
+		"params":{"name":"greet"}}`)
+	if code := resp["error"].(map[string]any)["code"]; code != float64(ErrInvalidParams) {
+		t.Errorf("missing required arg code = %v, want -32602", code)
+	}
+
+	// Supplying it still renders.
+	resp = handleJSON(t, s, `{"jsonrpc":"2.0","id":2,"method":"prompts/get",
+		"params":{"name":"greet","arguments":{"who":"ada"}}}`)
+	raw, _ := json.Marshal(resp["result"])
+	if !strings.Contains(string(raw), "hi ada") {
+		t.Errorf("prompt did not render: %s", raw)
+	}
+}
+
+// R10-16 (S3): the mock never issues a nextCursor, so any non-empty cursor
+// on a list method is unknown → -32602 (silently re-sending page 1 traps a
+// paginating client in an infinite loop).
+func TestUnknownListCursorRejected(t *testing.T) {
+	s := round10Server()
+	for id, method := range map[int]string{1: "tools/list", 2: "resources/list", 3: "prompts/list"} {
+		resp := handleJSON(t, s, fmt.Sprintf(
+			`{"jsonrpc":"2.0","id":%d,"method":"%s","params":{"cursor":"opaque123"}}`, id, method))
+		errObj, ok := resp["error"].(map[string]any)
+		if !ok || errObj["code"] != float64(ErrInvalidParams) {
+			t.Errorf("%s with bogus cursor = %v, want -32602", method, resp)
+		}
 	}
 }
 

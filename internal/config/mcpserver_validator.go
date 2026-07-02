@@ -169,10 +169,19 @@ func validateMCPPrompts(ctx *validationContext, def *types.MCPServerDefinition) 
 			}
 		}
 		for j, msg := range p.Messages {
-			if msg.Role == "" {
+			// The spec's PromptMessage role enum is user|assistant ONLY — no
+			// system (round-10 R10-14; a system message here breaks strict
+			// SDK clients at prompts/get time).
+			switch msg.Role {
+			case "user", "assistant":
+			case "":
 				ctx.addError(fmt.Sprintf("%s.messages[%d].role", field, j),
 					"required field missing",
-					"Set role to user, assistant, or system.")
+					"Set role to user or assistant (MCP prompts have no system role).")
+			default:
+				ctx.addError(fmt.Sprintf("%s.messages[%d].role", field, j),
+					fmt.Sprintf("invalid role %q", msg.Role),
+					"MCP prompt messages allow only user or assistant.")
 			}
 			validateMCPContentBlock(ctx, fmt.Sprintf("%s.messages[%d].content", field, j), &msg.Content)
 		}

@@ -194,6 +194,10 @@ func (s *Server) dispatch(req *Request) *Response {
 // returns the marshaled response bytes. An empty result means the
 // incoming request was a notification and no reply should be sent.
 func (s *Server) HandleBytes(body []byte) ([]byte, error) {
+	if isBatchBody(body) {
+		resp := newError(nil, ErrInvalidRequest, "JSON-RPC batching is not supported (removed in MCP 2025-06-18)", nil)
+		return json.Marshal(resp)
+	}
 	var req Request
 	if err := json.Unmarshal(body, &req); err != nil {
 		resp := newError(nil, ErrParseError, "invalid JSON", err.Error())
@@ -204,6 +208,21 @@ func (s *Server) HandleBytes(body []byte) ([]byte, error) {
 		return nil, nil
 	}
 	return json.Marshal(resp)
+}
+
+// isBatchBody reports whether a raw body is a JSON ARRAY. Batches are
+// well-formed JSON that MCP no longer accepts (batching was removed in the
+// 2025-06-18 revision) — Invalid Request (-32600), not a parse error
+// (-32700, which claims the JSON itself was malformed). Round-10 R10-12.
+func isBatchBody(body []byte) bool {
+	for _, b := range body {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		}
+		return b == '['
+	}
+	return false
 }
 
 // --- method handlers ---
@@ -280,7 +299,30 @@ func defaultedSchema(s types.JSONSchemaObject) types.JSONSchemaObject {
 	return s
 }
 
+// rejectUnknownCursor rejects any non-empty pagination cursor with Invalid
+// params. The mock returns every entry in a single page and never issues a
+// nextCursor, so all client-supplied cursors are by definition unknown —
+// which the pagination spec says is -32602 (round-10 R10-16; previously
+// cursors were silently ignored and the full list re-sent, an infinite loop
+// for a paginating client). Nil means "no cursor, proceed".
+func rejectUnknownCursor(req *Request) *Response {
+	if len(req.Params) == 0 {
+		return nil
+	}
+	var p struct {
+		Cursor string `json:"cursor"`
+	}
+	if json.Unmarshal(req.Params, &p) == nil && p.Cursor != "" {
+		return newError(req.ID, ErrInvalidParams,
+			fmt.Sprintf("unknown cursor %q (the mock returns the full list in one page and never issues one)", p.Cursor), nil)
+	}
+	return nil
+}
+
 func (s *Server) handleToolsList(req *Request) *Response {
+	if resp := rejectUnknownCursor(req); resp != nil {
+		return resp
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	tools := make([]toolListEntry, 0, len(s.def.Spec.Tools)+len(s.toolOrder))
@@ -340,7 +382,9 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 
 	tool := s.findTool(params.Name)
 	if tool == nil {
-		return newError(req.ID, ErrMethodNotFound,
+		// Spec: an unknown tool NAME is Invalid params (-32602), not
+		// method-not-found — the METHOD tools/call exists (round-10 R10-10).
+		return newError(req.ID, ErrInvalidParams,
 			fmt.Sprintf("unknown tool %q", params.Name),
 			map[string]any{"available": s.toolNames()})
 	}
@@ -422,6 +466,9 @@ type resourceListEntry struct {
 }
 
 func (s *Server) handleResourcesList(req *Request) *Response {
+	if resp := rejectUnknownCursor(req); resp != nil {
+		return resp
+	}
 	out := make([]resourceListEntry, 0, len(s.def.Spec.Resources))
 	for _, r := range s.def.Spec.Resources {
 		// `name` is REQUIRED by the spec's Resource type — a nameless YAML
@@ -470,9 +517,12 @@ func (s *Server) handleResourcesRead(req *Request) *Response {
 			}},
 		})
 	}
-	return newError(req.ID, ErrInvalidParams,
+	// Spec: an unknown URI is the MCP-specific -32002 resource-not-found with
+	// the uri in data — official SDKs key their typed exception on the code
+	// (round-10 R10-11). `available` is kept as a mock-DX extra.
+	return newError(req.ID, ErrResourceNotFound,
 		fmt.Sprintf("unknown resource %q", params.URI),
-		map[string]any{"available": s.resourceURIs()})
+		map[string]any{"uri": params.URI, "available": s.resourceURIs()})
 }
 
 type resourceSubscribeParams struct {
@@ -540,6 +590,9 @@ type promptListEntry struct {
 }
 
 func (s *Server) handlePromptsList(req *Request) *Response {
+	if resp := rejectUnknownCursor(req); resp != nil {
+		return resp
+	}
 	out := make([]promptListEntry, 0, len(s.def.Spec.Prompts))
 	for _, p := range s.def.Spec.Prompts {
 		out = append(out, promptListEntry{
@@ -564,6 +617,16 @@ func (s *Server) handlePromptsGet(req *Request) *Response {
 	for _, p := range s.def.Spec.Prompts {
 		if p.Name != params.Name {
 			continue
+		}
+		// Spec: a missing REQUIRED argument is Invalid params — previously the
+		// placeholder was silently left unexpanded (round-10 R10-14).
+		for _, a := range p.Arguments {
+			if a.Required {
+				if _, ok := params.Arguments[a.Name]; !ok {
+					return newError(req.ID, ErrInvalidParams,
+						fmt.Sprintf("missing required argument %q for prompt %q", a.Name, p.Name), nil)
+				}
+			}
 		}
 		// Expand {{arg}} placeholders inside each content block. Text
 		// blocks interpolate their text; embedded-resource blocks

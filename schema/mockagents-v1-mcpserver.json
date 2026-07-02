@@ -107,7 +107,7 @@
                   "required": ["role", "content"],
                   "additionalProperties": false,
                   "properties": {
-                    "role":    { "type": "string", "enum": ["user", "assistant", "system"] },
+                    "role":    { "type": "string", "enum": ["user", "assistant"] },
                     "content": { "$ref": "#/$defs/ContentBlock" }
                   }
                 }

@@ -19,6 +19,9 @@ const (
 	ErrMethodNotFound = -32601
 	ErrInvalidParams  = -32602
 	ErrInternal       = -32603
+	// ErrResourceNotFound is MCP's spec-specific code for resources/read
+	// against an unknown URI (round-10 R10-11).
+	ErrResourceNotFound = -32002
 )
 
 // Request is an incoming JSON-RPC 2.0 call or notification.
