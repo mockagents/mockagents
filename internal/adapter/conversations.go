@@ -513,7 +513,7 @@ func itemIDPrefix(itemType string) string {
 func conversationItemsToMessages(items []conversationItem) []engine.RequestMessage {
 	msgs := make([]engine.RequestMessage, 0, len(items))
 	for _, it := range items {
-		msgs = append(msgs, responsesItemToMessage(it.Type, it.Role, it.Content, it.Output, it.Name, it.Arguments))
+		msgs = append(msgs, responsesItemToMessage(it.Type, it.Role, it.Content, it.Output, it.Name, it.Arguments, it.CallID))
 	}
 	return msgs
 }
@@ -530,13 +530,19 @@ func assistantItemsFromResponse(resp *engine.Response) []conversationItem {
 	if resp.Content != "" {
 		out = append(out, userMessageItem("assistant", resp.Content))
 	}
-	for _, tc := range resp.ToolCalls {
+	for i, tc := range resp.ToolCalls {
 		args := tc.ArgumentsJSON() // raw verbatim or structured, nil → "{}" (R9-6)
-		out = append(out, normalizeItem(conversationItem{
+		item := conversationItem{
 			Type:      "function_call",
 			Name:      tc.Name,
 			Arguments: args,
-		}))
+		}
+		// Persist the emitted call_id (round-11) so replayed conversation
+		// items carry the round-trip id material.
+		if i < len(resp.ToolResults) {
+			item.CallID = resp.ToolResults[i].ID
+		}
+		out = append(out, normalizeItem(item))
 	}
 	return out
 }

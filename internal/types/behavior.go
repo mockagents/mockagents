@@ -4,10 +4,38 @@ import "encoding/json"
 
 // BehaviorConfig defines how an agent responds to messages.
 type BehaviorConfig struct {
-	Scenarios []Scenario       `yaml:"scenarios" json:"scenarios"`
-	Streaming *StreamingConfig `yaml:"streaming,omitempty" json:"streaming,omitempty"`
-	Chaos     *ChaosConfig     `yaml:"chaos,omitempty" json:"chaos,omitempty"`
+	Scenarios   []Scenario         `yaml:"scenarios" json:"scenarios"`
+	Streaming   *StreamingConfig   `yaml:"streaming,omitempty" json:"streaming,omitempty"`
+	Chaos       *ChaosConfig       `yaml:"chaos,omitempty" json:"chaos,omitempty"`
+	StrictTools *StrictToolsConfig `yaml:"strict_tools,omitempty" json:"strict_tools,omitempty"`
 }
+
+// StrictToolsConfig is the strict-tools knob family (round-11): opt-in
+// request-side strictness mirroring what real APIs enforce — round-trip tool
+// id validation, tool_choice required/named forcing, parallel-call caps, and
+// strict:true schema-subset validation. Lenient (off) by default so existing
+// suites keep passing; "warn" runs every check but only logs and sets the
+// X-Mockagents-Strict-Violation response header; "strict" fails the request
+// with the provider's real 400 shape. The level fills every dimension the
+// author leaves unset (the chaos.preset convention); a dimension boolean set
+// to false excludes that check. A block present without a level implies
+// "strict". Fleet default comes from MOCKAGENTS_STRICT_TOOLS (off|warn|strict).
+type StrictToolsConfig struct {
+	Level string `yaml:"level,omitempty" json:"level,omitempty"`
+	// IDs gates round-trip tool id validation: every tool result must
+	// reference a tool call echoed earlier in the request history.
+	IDs *bool `yaml:"ids,omitempty" json:"ids,omitempty"`
+	// ToolChoice gates required/named tool_choice enforcement (incl. the
+	// parallel-call cap, which real APIs apply via the same parameter family).
+	ToolChoice *bool `yaml:"tool_choice,omitempty" json:"tool_choice,omitempty"`
+	// Schemas gates strict:true function-schema subset validation.
+	Schemas *bool `yaml:"schemas,omitempty" json:"schemas,omitempty"`
+}
+
+// StrictToolLevels is the valid strict_tools.level set, mirrored in the
+// config validator and the JSON schema (keep in sync — the ChaosPresets
+// convention).
+var StrictToolLevels = []string{"off", "warn", "strict"}
 
 // Scenario defines a pattern-matched response rule.
 type Scenario struct {

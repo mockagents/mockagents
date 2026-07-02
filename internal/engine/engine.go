@@ -26,12 +26,34 @@ type InboundRequest struct {
 	SessionID string           `json:"session_id"`
 	Messages  []RequestMessage `json:"messages"`
 	Stream    bool             `json:"stream,omitempty"`
-	// ToolChoiceNone marks a request whose tool_choice explicitly forbids
-	// tool calls (OpenAI "none", Anthropic {type:"none"}, Gemini mode NONE) —
-	// the standard forced-final-answer escape hatch. The engine strips any
-	// scenario-emitted calls (round-9 R9-5). required/named-function
-	// enforcement is a separate decision (needs response synthesis).
-	ToolChoiceNone bool `json:"tool_choice_none,omitempty"`
+	// ToolChoice is the provider-neutral tool_choice contract, populated by
+	// each adapter from its wire spelling (round-11 widened round-9's
+	// none-only flag). None is always honored (R9-5); Required/Name/
+	// AllowedNames/ParallelDisabled are enforced only under the strict-tools
+	// knob (see StrictToolsFor).
+	ToolChoice ToolChoice `json:"tool_choice,omitzero"`
+}
+
+// ToolChoice is the parsed tool_choice + parallel-call contract shared by
+// every protocol: OpenAI "none"/"required"/named function (+
+// parallel_tool_calls:false), Anthropic {type: none|any|tool} (+
+// disable_parallel_tool_use), Gemini functionCallingConfig mode NONE/ANY (+
+// allowedFunctionNames).
+type ToolChoice struct {
+	// None: the client explicitly forbade tool calls.
+	None bool `json:"none,omitempty"`
+	// Required: the model MUST call at least one tool (OpenAI "required",
+	// Anthropic "any", Gemini ANY). Also set when Name forces a specific one.
+	Required bool `json:"required,omitempty"`
+	// Name forces one specific tool (OpenAI named function, Anthropic
+	// {type:"tool"}, a single-entry allowedFunctionNames).
+	Name string `json:"name,omitempty"`
+	// AllowedNames limits which tools may be called (Gemini
+	// allowedFunctionNames under mode ANY).
+	AllowedNames []string `json:"allowed_names,omitempty"`
+	// ParallelDisabled caps the response to at most one tool call
+	// (parallel_tool_calls:false / disable_parallel_tool_use:true).
+	ParallelDisabled bool `json:"parallel_disabled,omitempty"`
 }
 
 // RequestMessage is a single message from the client request.
@@ -52,6 +74,11 @@ type RequestMessage struct {
 	// the request history — the fingerprint material the convergence guard
 	// compares the newly generated calls against.
 	ToolCalls []EchoedToolCall `json:"tool_calls,omitempty"`
+	// ToolResultIDs are the tool-call ids this tool-result message references
+	// (tool_call_id / tool_use_id / call_id; the function NAME on Gemini,
+	// which has no ids). Strict-mode round-trip validation matches them
+	// against prior EchoedToolCall.IDs (round-11 R9-15).
+	ToolResultIDs []string `json:"tool_result_ids,omitempty"`
 }
 
 // EchoedToolCall is one tool call present in the request history (the client
@@ -59,6 +86,10 @@ type RequestMessage struct {
 // RawArguments keeps the verbatim string for payloads that do not parse
 // (scenario-planted malformed JSON must fingerprint verbatim).
 type EchoedToolCall struct {
+	// ID is the wire id the call was echoed under (call_/toolu_; the function
+	// NAME on Gemini, which addresses calls by name). Strict-mode round-trip
+	// validation matches tool results against these (round-11).
+	ID           string         `json:"id,omitempty"`
 	Name         string         `json:"name"`
 	Arguments    map[string]any `json:"arguments,omitempty"`
 	RawArguments string         `json:"raw_arguments,omitempty"`
@@ -252,7 +283,7 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 
 		// tool_choice "none" (round-9 R9-5): the client explicitly forbade
 		// tool calls for this request — real APIs honor it strictly.
-		if req.ToolChoiceNone && len(resp.ToolCalls) > 0 {
+		if req.ToolChoice.None && len(resp.ToolCalls) > 0 {
 			e.Logger.Info("tool_choice none: scenario tool calls suppressed",
 				"agent", agent.Metadata.Name, "scenario", scenario.Name)
 			resp.ToolCalls = nil
