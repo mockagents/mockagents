@@ -276,9 +276,10 @@ func TestSessionUpdate_TurnDetectionValidation(t *testing.T) {
 			if e["event_id"] != "evt_v" {
 				t.Errorf("event_id = %v, want the client event id", e["event_id"])
 			}
-			// The update was rejected wholesale: VAD stays off.
-			if s.vad != nil {
-				t.Error("rejected update must not enable VAD")
+			// The update was rejected wholesale: the GA-default server_vad
+			// config stays in effect (round-7 R7-4: VAD is ON by default).
+			if s.vad == nil || string(s.cfg.turnDetection) != defaultTurnDetection {
+				t.Error("rejected update must leave the default turn_detection untouched")
 			}
 		})
 	}

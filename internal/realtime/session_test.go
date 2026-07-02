@@ -140,12 +140,22 @@ func TestSession_ItemCreateThenResponseLadder(t *testing.T) {
 
 func TestSession_AudioBufferCommit(t *testing.T) {
 	s := NewSession("s3", "", fakeGen("ok"))
-	// Commit with nothing buffered is an error.
-	if got := s.Handle(context.Background(), &ClientEvent{Type: "input_audio_buffer.commit"}); got[0]["type"] != "error" {
-		t.Fatalf("empty commit should error, got %v", typesOf(got))
+	// Commit with nothing buffered is an error (GA message text).
+	got := s.Handle(context.Background(), &ClientEvent{Type: "input_audio_buffer.commit"})
+	if got[0]["type"] != "error" ||
+		got[0]["error"].(map[string]any)["message"] != "Error committing input audio buffer: the buffer is empty." {
+		t.Fatalf("empty commit = %v, want the GA empty-buffer error", got[0])
 	}
-	// Append then commit produces committed + the item added/done pair.
+	// A sub-100ms buffer is likewise rejected (round-7 R7-6, per GA captures).
 	s.Handle(context.Background(), &ClientEvent{Type: "input_audio_buffer.append", Audio: "AAAA"})
+	got = s.Handle(context.Background(), &ClientEvent{Type: "input_audio_buffer.commit"})
+	e := got[0]["error"].(map[string]any)
+	if got[0]["type"] != "error" || e["code"] != "input_audio_buffer_commit_empty" ||
+		!strings.Contains(e["message"].(string), "buffer too small. Expected at least 100ms") {
+		t.Fatalf("tiny commit = %v, want the GA buffer-too-small error", got[0])
+	}
+	// ≥100ms then commit produces committed + the item added/done pair.
+	s.Handle(context.Background(), &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(150, quietAmp)})
 	evs := s.Handle(context.Background(), &ClientEvent{Type: "input_audio_buffer.commit"})
 	for _, want := range []string{"input_audio_buffer.committed", "conversation.item.added", "conversation.item.done"} {
 		if !contains(typesOf(evs), want) {
@@ -207,7 +217,7 @@ func TestSession_PreviousItemIDChains(t *testing.T) {
 func TestSession_CommitCarriesPreviousItemID(t *testing.T) {
 	ctx := context.Background()
 	s := NewSession("sc", "", fakeGen("ok"))
-	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: "AAAA"})
+	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(150, quietAmp)})
 	evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"})
 
 	committed := firstEvent(evs, "input_audio_buffer.committed")
@@ -222,7 +232,7 @@ func TestSession_CommitCarriesPreviousItemID(t *testing.T) {
 	firstID := added["item"].(map[string]any)["id"].(string)
 
 	// A second commit chains off the first committed item.
-	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: "BBBB"})
+	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(150, quietAmp)})
 	evs2 := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"})
 	if p := firstEvent(evs2, "input_audio_buffer.committed")["previous_item_id"]; p != firstID {
 		t.Errorf("second committed previous_item_id = %v, want %q", p, firstID)
@@ -1008,7 +1018,7 @@ func TestSession_InputAudioTranscription(t *testing.T) {
 	// Without transcription configured: committed item has a null transcript and
 	// no transcription.completed event.
 	s := NewSession("s", "gpt-realtime", fakeGen("ok"))
-	s.Handle(context.Background(), &ClientEvent{Type: "input_audio_buffer.append", Audio: "AAAA"})
+	s.Handle(context.Background(), &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(150, quietAmp)})
 	ev := s.Handle(context.Background(), &ClientEvent{Type: "input_audio_buffer.commit"})
 	if contains(typesOf(ev), "conversation.item.input_audio_transcription.completed") {
 		t.Error("transcription event emitted without input_audio_transcription configured")
@@ -1017,7 +1027,7 @@ func TestSession_InputAudioTranscription(t *testing.T) {
 	// With transcription enabled: the event fires and carries the transcript.
 	s2 := NewSession("s2", "gpt-realtime", fakeGen("ok"))
 	s2.Handle(context.Background(), &ClientEvent{Type: "session.update", Session: []byte(`{"input_audio_transcription":{"model":"whisper-1"}}`)})
-	s2.Handle(context.Background(), &ClientEvent{Type: "input_audio_buffer.append", Audio: "AAAA"})
+	s2.Handle(context.Background(), &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(150, quietAmp)})
 	ev2 := s2.Handle(context.Background(), &ClientEvent{Type: "input_audio_buffer.commit"})
 	tc := firstEvent(ev2, "conversation.item.input_audio_transcription.completed")
 	if tc == nil {

@@ -306,10 +306,20 @@ func conversationItemEvents(prev any, item map[string]any) []Event {
 	}
 }
 
+// defaultTurnDetection is the GA server-VAD default: turn detection is ON out
+// of the box ("threshold 0.5, prefix_padding_ms 300, silence_duration_ms 500")
+// and `turn_detection: null` is the explicit opt-out — not the other way
+// around. Raw-WS voice clients that rely on server defaults stream audio and
+// expect detected turns without a prior session.update.
+const defaultTurnDetection = `{"type":"server_vad","threshold":0.5,"prefix_padding_ms":300,"silence_duration_ms":500,"create_response":true,"interrupt_response":true}`
+
 // NewSession builds a session with the given id (minted by the caller) and the
 // model from the connection (may be empty → DefaultModel).
 func NewSession(id, model string, gen Generator) *Session {
-	return &Session{id: id, initialModel: model, generate: gen, items: make(map[string]map[string]any)}
+	s := &Session{id: id, initialModel: model, generate: gen, items: make(map[string]map[string]any)}
+	s.cfg.turnDetection = json.RawMessage(defaultTurnDetection)
+	s.refreshVAD()
+	return s
 }
 
 // SetExpiry sets the session's expiry (unix seconds), reported as expires_at in
@@ -409,8 +419,16 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		return []Event{{"type": "input_audio_buffer.cleared"}}
 
 	case "input_audio_buffer.commit":
+		// GA rejects both empty AND sub-100 ms buffers with this code — one of
+		// the most-hit realtime errors in real integrations; message texts
+		// match the GA captures.
 		if !s.audioBuffer {
-			return []Event{s.errorEvent("input_audio_buffer_commit_empty", "cannot commit an empty input audio buffer")}
+			return []Event{s.errorEvent("input_audio_buffer_commit_empty",
+				"Error committing input audio buffer: the buffer is empty.")}
+		}
+		if s.bufferedMs < 100 {
+			return []Event{s.errorEvent("input_audio_buffer_commit_empty", fmt.Sprintf(
+				"Error committing input audio buffer: buffer too small. Expected at least 100ms of audio, but buffer only has %.2fms of audio.", s.bufferedMs))}
 		}
 		s.audioBuffer = false
 		s.idleAt, s.idleFired = time.Time{}, false // user activity resets the idle timeout

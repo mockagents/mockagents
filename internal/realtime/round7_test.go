@@ -5,6 +5,8 @@ package realtime
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,6 +59,36 @@ func TestResponseCreateInputNullMeansAbsent(t *testing.T) {
 	s.Handle(ctx, &ClientEvent{Type: "response.create", Response: []byte(`{"conversation":"none","input":[]}`)})
 	if seen != 0 {
 		t.Errorf("input:[] context size = %d, want 0", seen)
+	}
+}
+
+// R7-4 (S2): server VAD is the GA DEFAULT — a fresh session detects turns
+// without any session.update, session.created reports the server_vad object
+// (not null), and turn_detection:null is the explicit opt-out.
+func TestServerVADOnByDefault(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("r74", "gpt-realtime", fakeGen("default detected"))
+
+	td := s.Greeting()[0]["session"].(map[string]any)["audio"].(map[string]any)["input"].(map[string]any)["turn_detection"]
+	raw, _ := td.(json.RawMessage)
+	if !strings.Contains(string(raw), `"server_vad"`) {
+		t.Errorf("default session turn_detection = %s, want the GA server_vad object", raw)
+	}
+
+	// Mic audio produces a detected turn with NO prior session.update.
+	evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(200, speechAmp)})
+	if firstEvent(evs, "input_audio_buffer.speech_started") == nil {
+		t.Fatalf("default session did not detect speech: %v", typesOf(evs))
+	}
+	evs = s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(600, quietAmp)})
+	if firstEvent(evs, "input_audio_buffer.committed") == nil || firstEvent(evs, "response.done") == nil {
+		t.Errorf("default session turn-end = %v, want commit + auto-response", typesOf(evs))
+	}
+
+	// null is the explicit opt-out.
+	enableVAD(t, s, `{"audio":{"input":{"turn_detection":null}}}`)
+	if evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(200, speechAmp)}); len(evs) != 0 {
+		t.Errorf("append after opt-out emitted %v, want nothing", typesOf(evs))
 	}
 }
 
