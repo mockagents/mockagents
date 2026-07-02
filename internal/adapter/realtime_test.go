@@ -276,6 +276,61 @@ func TestRealtime_LegacySessionsShape(t *testing.T) {
 	require.LessOrEqual(t, expiresAt, before+70)
 }
 
+// Round-7 R7-5: the session config supplied at ephemeral-key mint time reaches
+// the socket — a connect presenting the ek_ (bearer or the browser
+// "openai-insecure-api-key.<key>" subprotocol) comes up configured, with no
+// session.update.
+func TestRealtime_EphemeralKeySeedsSession(t *testing.T) {
+	h := &RealtimeHandler{Engine: testEngine(testOpenAIAgent())}
+	mux := http.NewServeMux()
+	for _, rt := range h.Routes() {
+		mux.HandleFunc(rt.Pattern, rt.Handler)
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Mint with a full config.
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/realtime/client_secrets", strings.NewReader(
+		`{"session":{"model":"gpt-4o","instructions":"be brief","audio":{"output":{"voice":"verse"},"input":{"turn_detection":null}}}}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	var mint map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&mint))
+	resp.Body.Close()
+	key := mint["value"].(string)
+	require.Regexp(t, `^ek_`, key)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Connect presenting the key via the browser subprotocol offer.
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/realtime"
+	c, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		Subprotocols: []string{"realtime", "openai-insecure-api-key." + key}})
+	require.NoError(t, err)
+	defer c.CloseNow()
+
+	created := wsRead(t, ctx, c)
+	require.Equal(t, "session.created", created["type"])
+	sess := created["session"].(map[string]any)
+	require.Equal(t, "gpt-4o", sess["model"], "minted model must reach the session")
+	require.Equal(t, "be brief", sess["instructions"], "minted instructions must reach the session")
+	audio := sess["audio"].(map[string]any)
+	require.Equal(t, "verse", audio["output"].(map[string]any)["voice"], "minted voice must reach the session")
+	require.Nil(t, audio["input"].(map[string]any)["turn_detection"], "minted turn_detection:null must opt VAD out")
+
+	// A connect with an unknown key still works — it just seeds nothing.
+	c2, _, err := websocket.Dial(ctx, wsURL+"?model=gpt-4o", &websocket.DialOptions{
+		Subprotocols: []string{"realtime", "openai-insecure-api-key.ek_bogus"}})
+	require.NoError(t, err)
+	defer c2.CloseNow()
+	created2 := wsRead(t, ctx, c2)
+	require.Equal(t, "session.created", created2["type"])
+	require.Equal(t, "alloy",
+		created2["session"].(map[string]any)["audio"].(map[string]any)["output"].(map[string]any)["voice"])
+}
+
 // Round-6 R6-5: the client_secrets session is a GA discriminated union —
 // type "transcription" mints an input-transcription-only session.
 func TestRealtime_ClientSecretTranscriptionSession(t *testing.T) {

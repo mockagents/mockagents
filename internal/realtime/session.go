@@ -328,6 +328,20 @@ func NewSession(id, model string, gen Generator) *Session {
 // deterministic for tests.
 func (s *Session) SetExpiry(unix int64) { s.expiresAt = unix }
 
+// SeedConfig applies a session configuration captured OUTSIDE the socket —
+// the payload a client supplied when minting its ephemeral key
+// (POST /v1/realtime/client_secrets) — before the greeting, so the session
+// comes up with the configuration the client paid for. Accepts the same
+// payload shape as session.update; the transport calls it pre-Greeting, so no
+// validation events are emitted (mint-time payloads were already accepted).
+func (s *Session) SeedConfig(raw json.RawMessage) {
+	oldTD := string(s.cfg.turnDetection)
+	s.applyConfig(raw)
+	if string(s.cfg.turnDetection) != oldTD {
+		s.refreshVAD()
+	}
+}
+
 // sessionDefaultInstructions mirrors the real server injecting default
 // instructions when the client sets none — "visible in the session.created
 // event". Display-only: the engine receives only instructions a client set.
