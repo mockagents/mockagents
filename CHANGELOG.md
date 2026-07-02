@@ -83,7 +83,12 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   announced a new conversation item with the beta `conversation.item.created`
   event; the GA dialect replaced it with an `added` → `done` pair. Both are now
   emitted (each carrying `previous_item_id` and the completed item) after a
-  client `conversation.item.create` and on `input_audio_buffer.commit`.
+  client `conversation.item.create` and on `input_audio_buffer.commit`. Response
+  output items are mirrored too: each `response.output_item.added`/`.done` in the
+  response ladder is now followed by the matching `conversation.item.added`
+  (status `in_progress`) / `conversation.item.done` (finalized) — so a client
+  tracking the conversation from conversation-item events sees model turns as
+  well as user turns.
 - **Realtime `previous_item_id`** — the `input_audio_buffer.committed` and
   conversation-item server events now carry `previous_item_id` (the id of the
   prior conversation item, or `null` for the first item), a field GA SDKs use to

@@ -327,9 +327,18 @@ func (s *Session) responseObject(respID, status string, output []any) map[string
 // streams the GA audio ladder (output_audio + output_audio_transcript).
 func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, outputIndex int) map[string]any {
 	itemID := s.nextID("msg")
-	// A response output item joins the conversation, so a later user turn's
-	// previous_item_id chains off it.
+	// A response output item joins the conversation: capture what it chains off,
+	// then record it so a later user turn's previous_item_id points at it.
+	prevItem := s.previousItemID()
 	s.lastItemID = itemID
+	// GA mirrors a response output item into the conversation: it announces
+	// conversation.item.added when generation of the item starts (in_progress)
+	// and conversation.item.done when it is finalized, alongside the
+	// response.output_item.* events — emitted here directly after each
+	// response.output_item counterpart.
+	inProgress := map[string]any{
+		"id": itemID, "object": "realtime.item", "type": "message", "status": "in_progress",
+		"role": "assistant", "content": []any{}}
 
 	if s.textOnly() {
 		final := map[string]any{
@@ -337,9 +346,8 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 			"role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": transcript}},
 		}
 		*out = append(*out,
-			Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": map[string]any{
-				"id": itemID, "object": "realtime.item", "type": "message", "status": "in_progress",
-				"role": "assistant", "content": []any{}}},
+			Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress},
+			Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress},
 			Event{"type": "response.content_part.added", "response_id": respID, "item_id": itemID,
 				"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "output_text", "text": ""}},
 		)
@@ -353,6 +361,7 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 			Event{"type": "response.content_part.done", "response_id": respID, "item_id": itemID,
 				"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "output_text", "text": transcript}},
 			Event{"type": "response.output_item.done", "response_id": respID, "output_index": outputIndex, "item": final},
+			Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final},
 		)
 		return final
 	}
@@ -365,9 +374,8 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 		"role": "assistant", "content": []any{map[string]any{"type": "output_audio", "transcript": transcript}},
 	}
 	*out = append(*out,
-		Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": map[string]any{
-			"id": itemID, "object": "realtime.item", "type": "message", "status": "in_progress",
-			"role": "assistant", "content": []any{}}},
+		Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress},
+		Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress},
 		Event{"type": "response.content_part.added", "response_id": respID, "item_id": itemID,
 			"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "output_audio", "transcript": ""}},
 	)
@@ -386,6 +394,7 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 		Event{"type": "response.content_part.done", "response_id": respID, "item_id": itemID,
 			"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "output_audio", "transcript": transcript}},
 		Event{"type": "response.output_item.done", "response_id": respID, "output_index": outputIndex, "item": final},
+		Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final},
 	)
 	return final
 }
@@ -398,8 +407,9 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types.ToolCallSpec, outputIndex int) map[string]any {
 	itemID := s.nextID("fc")
 	callID := s.nextID("call")
-	// A function_call output item joins the conversation, so a later user turn's
-	// previous_item_id chains off it.
+	// A function_call output item joins the conversation: capture what it chains
+	// off, then record it so a later user turn's previous_item_id points at it.
+	prevItem := s.previousItemID()
 	s.lastItemID = itemID
 	// raw_arguments lets a scenario plant malformed/invalid JSON args verbatim
 	// (FB-03) to exercise a client's tool-arg parser; otherwise marshal the
@@ -409,14 +419,18 @@ func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types
 		args = marshalArgs(tc.Arguments)
 	}
 
+	inProgress := map[string]any{
+		"id": itemID, "object": "realtime.item", "type": "function_call", "status": "in_progress",
+		"name": tc.Name, "call_id": callID, "arguments": ""}
 	final := map[string]any{
 		"id": itemID, "object": "realtime.item", "type": "function_call", "status": "completed",
 		"name": tc.Name, "call_id": callID, "arguments": args,
 	}
+	// GA mirrors the item into the conversation (added at generation start, done
+	// when finalized) alongside the response.output_item.* events.
 	*out = append(*out,
-		Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": map[string]any{
-			"id": itemID, "object": "realtime.item", "type": "function_call", "status": "in_progress",
-			"name": tc.Name, "call_id": callID, "arguments": ""}},
+		Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress},
+		Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress},
 	)
 	for _, chunk := range chunkArgs(args) {
 		*out = append(*out, Event{"type": "response.function_call_arguments.delta", "response_id": respID, "item_id": itemID,
@@ -426,6 +440,7 @@ func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types
 		Event{"type": "response.function_call_arguments.done", "response_id": respID, "item_id": itemID,
 			"output_index": outputIndex, "content_index": 0, "call_id": callID, "arguments": args},
 		Event{"type": "response.output_item.done", "response_id": respID, "output_index": outputIndex, "item": final},
+		Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final},
 	)
 	return final
 }

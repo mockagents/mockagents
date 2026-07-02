@@ -227,6 +227,64 @@ func TestSession_CommitCarriesPreviousItemID(t *testing.T) {
 	}
 }
 
+// GA mirrors response output items into the conversation: each output item's
+// response.output_item.added/.done is followed by a conversation.item.added/.done
+// carrying previous_item_id, so a conversation event log chains correctly.
+func TestSession_ResponseLadder_ConversationItemMirror(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("sm", "gpt-realtime",
+		fakeGenTool("Checking.", types.ToolCallSpec{Name: "get_weather", Arguments: map[string]any{"city": "Paris"}}))
+
+	created := firstEvent(s.Handle(ctx, &ClientEvent{
+		Type: "conversation.item.create",
+		Item: []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"weather?"}]}`),
+	}), "conversation.item.added")
+	userItemID := created["item"].(map[string]any)["id"].(string)
+
+	ladder := s.Handle(ctx, &ClientEvent{Type: "response.create"})
+	tps := typesOf(ladder)
+
+	// Every response.output_item.added/.done is immediately mirrored.
+	var added, done []Event
+	for i, e := range ladder {
+		switch e["type"] {
+		case "response.output_item.added":
+			if i+1 >= len(tps) || tps[i+1] != "conversation.item.added" {
+				t.Errorf("event after output_item.added (index %d) should be conversation.item.added, ladder = %v", i, tps)
+			}
+		case "response.output_item.done":
+			if i+1 >= len(tps) || tps[i+1] != "conversation.item.done" {
+				t.Errorf("event after output_item.done (index %d) should be conversation.item.done, ladder = %v", i, tps)
+			}
+		case "conversation.item.added":
+			added = append(added, e)
+		case "conversation.item.done":
+			done = append(done, e)
+		}
+	}
+	if len(added) != 2 || len(done) != 2 {
+		t.Fatalf("mirror counts: added=%d done=%d, want 2/2 (message + function_call)", len(added), len(done))
+	}
+
+	// The message item chains off the user item; the function_call chains off the
+	// message item; done events repeat the prev id and carry the completed item.
+	msgID := added[0]["item"].(map[string]any)["id"].(string)
+	if added[0]["previous_item_id"] != userItemID {
+		t.Errorf("message mirror previous_item_id = %v, want %q", added[0]["previous_item_id"], userItemID)
+	}
+	if added[1]["previous_item_id"] != msgID {
+		t.Errorf("function_call mirror previous_item_id = %v, want %q", added[1]["previous_item_id"], msgID)
+	}
+	for i, d := range done {
+		if st := d["item"].(map[string]any)["status"]; st != "completed" {
+			t.Errorf("done[%d] item status = %v, want completed", i, st)
+		}
+		if d["previous_item_id"] != added[i]["previous_item_id"] {
+			t.Errorf("done[%d] previous_item_id = %v, want %v", i, d["previous_item_id"], added[i]["previous_item_id"])
+		}
+	}
+}
+
 func TestSession_UnknownEvent(t *testing.T) {
 	s := NewSession("s4", "", fakeGen("ok"))
 	evs := s.Handle(context.Background(), &ClientEvent{Type: "totally.bogus"})
