@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/mockagents/mockagents/internal/engine"
@@ -78,19 +79,30 @@ type anthropicMessageDelta struct {
 	Delta struct {
 		StopReason string `json:"stop_reason"`
 	} `json:"delta"`
-	Usage anthropicUsage `json:"usage"`
+	// Delta usage carries ONLY output_tokens: an input_tokens:0 here clobbers
+	// the message_start value in SDK accumulation (round-9 R9-10).
+	Usage anthropicDeltaUsage `json:"usage"`
+}
+
+// anthropicDeltaUsage is message_delta's cumulative output count.
+type anthropicDeltaUsage struct {
+	OutputTokens int `json:"output_tokens"`
 }
 
 type anthropicMessageStop struct {
 	Type string `json:"type"`
 }
 
-// StreamAnthropic writes an engine Response as an Anthropic-format SSE stream.
+// StreamAnthropic writes an engine Response as an Anthropic-format SSE
+// stream. The optional promptTokens is the computed input-token count for
+// message_start's usage (round-9 R9-10 — a hardcoded value diverged from the
+// non-streaming path); omitted, a deterministic default applies.
 func StreamAnthropic(
 	ctx context.Context,
 	w http.ResponseWriter,
 	resp *engine.Response,
 	streamCfg *types.StreamingConfig,
+	promptTokens ...int,
 ) error {
 	sse, err := NewSSEWriter(w)
 	if err != nil {
@@ -119,12 +131,16 @@ func StreamAnthropic(
 	}
 
 	// 1. message_start
+	inputTokens := 25 // deterministic default for direct callers
+	if len(promptTokens) > 0 {
+		inputTokens = promptTokens[0]
+	}
 	if err := sse.WriteEvent("message_start", anthropicMessageStart{
 		Type: "message_start",
 		Message: anthropicMessageHeader{
 			ID: msgID, Type: "message", Role: "assistant",
 			Content: []any{}, Model: resp.Model,
-			Usage: anthropicUsage{InputTokens: 25, OutputTokens: 1},
+			Usage: anthropicUsage{InputTokens: inputTokens, OutputTokens: 1},
 		},
 	}); err != nil {
 		return err
@@ -187,9 +203,11 @@ func StreamAnthropic(
 			return err
 		}
 
+		// The engine mints provider-neutral call_<hex> ids; the Anthropic wire
+		// uses toolu_ (round-9 R9-7). Reuse the hex so logs still correlate.
 		toolID := fmt.Sprintf("toolu_%s", generateAnthropicID())
-		if i < len(resp.ToolResults) {
-			toolID = resp.ToolResults[i].ID
+		if i < len(resp.ToolResults) && resp.ToolResults[i].ID != "" {
+			toolID = "toolu_" + strings.TrimPrefix(resp.ToolResults[i].ID, "call_")
 		}
 
 		// content_block_start with tool_use
@@ -253,7 +271,7 @@ func StreamAnthropic(
 		Delta: struct {
 			StopReason string `json:"stop_reason"`
 		}{StopReason: stopReason},
-		Usage: anthropicUsage{OutputTokens: outputTokens},
+		Usage: anthropicDeltaUsage{OutputTokens: outputTokens},
 	}); err != nil {
 		return err
 	}

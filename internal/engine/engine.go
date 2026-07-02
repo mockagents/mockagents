@@ -167,10 +167,13 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 	}
 
 	// 2. Extract latest user message. An image-only turn (A-05) has empty text
-	// but a non-zero image count, so it must NOT be rejected as empty.
+	// but a non-zero image count, and a tool-RESULT turn may legitimately be
+	// empty (a tool returning "" — round-9 R9-8; real APIs accept it): neither
+	// must be rejected as an empty message. An empty tool result simply falls
+	// through to the default scenario.
 	userMsg := latestUserMessage(req.Messages)
 	imageCount := latestUserImageCount(req.Messages)
-	if userMsg == "" && imageCount == 0 {
+	if userMsg == "" && imageCount == 0 && !latestUserIsToolResult(req.Messages) {
 		if traceOn {
 			observability.RecordError(span, ErrEmptyMessage)
 		}
@@ -364,6 +367,18 @@ func (e *Engine) resolveAgentForTenant(req *InboundRequest, tenantID string) (*t
 // unchanged.
 func scopedSessionKey(tenantID, agentName, sessionID string) string {
 	return tenantID + "\x00" + agentName + "\x00" + sessionID
+}
+
+// latestUserIsToolResult reports whether the latest user-role message carries
+// a tool result (Anthropic tool_result / Gemini functionResponse turns
+// flatten into user messages) — those may legitimately be empty (R9-8).
+func latestUserIsToolResult(messages []RequestMessage) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].IsToolResult
+		}
+	}
+	return false
 }
 
 // tailIsToolResult reports whether the request's last non-system message

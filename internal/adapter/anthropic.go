@@ -274,7 +274,8 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 		if agent != nil {
 			streamCfg = agent.Spec.Behavior.Streaming
 		}
-		if err := streaming.StreamAnthropic(r.Context(), w, resp, streamCfg); err != nil {
+		if err := streaming.StreamAnthropic(r.Context(), w, resp, streamCfg,
+			sumMessageTokens(inbound.Messages)); err != nil {
 			return
 		}
 		return
@@ -483,9 +484,11 @@ func formatAnthropicResponse(resp *engine.Response, inputTokens, outputTokens in
 	if len(resp.ToolCalls) > 0 {
 		stopReason = "tool_use"
 		for i, tc := range resp.ToolCalls {
+			// The engine mints provider-neutral call_<hex> ids; the Anthropic
+			// wire uses toolu_ (round-9 R9-7). Reuse the hex for correlation.
 			toolID := "toolu_" + generateID()
-			if i < len(resp.ToolResults) {
-				toolID = resp.ToolResults[i].ID
+			if i < len(resp.ToolResults) && resp.ToolResults[i].ID != "" {
+				toolID = "toolu_" + strings.TrimPrefix(resp.ToolResults[i].ID, "call_")
 			}
 			content = append(content, AnthropicContent{
 				Type:  "tool_use",

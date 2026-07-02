@@ -213,6 +213,44 @@ func TestToolLoop_GeminiConverges(t *testing.T) {
 	}
 }
 
+// R9-7/R9-8: Anthropic tool_use ids carry the toolu_ prefix (never the
+// OpenAI-family call_), and an EMPTY tool_result is accepted (real API does)
+// instead of 400ing as an empty user message.
+func TestAnthropicToolSurface(t *testing.T) {
+	h := &AnthropicHandler{Engine: testEngine(toolLoopAgent("anthropic-messages", "claude-3-opus"))}
+	post := func(body string) (*httptest.ResponseRecorder, map[string]any) {
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", "mock-key")
+		rec := httptest.NewRecorder()
+		h.HandleMessages(rec, req)
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec, out
+	}
+
+	rec, msg := post(`{"model":"claude-3-opus","max_tokens":100,
+		"messages":[{"role":"user","content":"what is the weather?"}]}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var toolUseID string
+	for _, b := range msg["content"].([]any) {
+		if m := b.(map[string]any); m["type"] == "tool_use" {
+			toolUseID = m["id"].(string)
+		}
+	}
+	require.NotEmpty(t, toolUseID)
+	assert.True(t, strings.HasPrefix(toolUseID, "toolu_"), "Anthropic tool ids use toolu_, got %q", toolUseID)
+
+	// An empty tool_result is accepted and falls through to the default
+	// scenario — not a 400 "empty user message".
+	rec, msg = post(`{"model":"claude-3-opus","max_tokens":100,"messages":[
+		{"role":"user","content":"what is the weather?"},
+		{"role":"assistant","content":[{"type":"tool_use","id":"` + toolUseID + `","name":"get_weather","input":{"city":"NYC"}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + toolUseID + `","content":""}]}]}`)
+	require.Equal(t, http.StatusOK, rec.Code, "empty tool_result must be accepted")
+	assert.Equal(t, "end_turn", msg["stop_reason"])
+}
+
 // R9-6/R9-12: a no-arg tool call renders an OBJECT everywhere — OpenAI
 // arguments "{}" (never "null"), Anthropic tool_use always carries the
 // required "input" key, Gemini functionCall carries "args": {}.
