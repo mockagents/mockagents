@@ -65,7 +65,13 @@ type RPCError struct {
 }
 
 // newError builds a Response carrying an error for the given request id.
+// JSON-RPC 2.0 requires the id member in every response; when it cannot be
+// determined (parse error, invalid request) it MUST be null — omitting it
+// entirely is invalid (round-10 R10-9).
 func newError(id json.RawMessage, code int, message string, data any) *Response {
+	if len(id) == 0 {
+		id = json.RawMessage("null")
+	}
 	return &Response{
 		JSONRPC: "2.0",
 		ID:      id,

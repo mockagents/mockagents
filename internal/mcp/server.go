@@ -130,6 +130,20 @@ func (s *Server) Handle(req *Request) *Response {
 		return nil
 	}
 
+	resp := s.dispatch(req)
+	// JSON-RPC 2.0: a request with no id is a NOTIFICATION and must never
+	// receive a response — for any method, not just unknown ones. Previously
+	// only the default branch checked, so an id-less ping/tools/list earned a
+	// reply the client had no request for (round-10 R10-8).
+	if req.IsNotification() {
+		return nil
+	}
+	return resp
+}
+
+// dispatch routes a validated request to its method handler. Callers must
+// apply the notification guard on the result (Handle does).
+func (s *Server) dispatch(req *Request) *Response {
 	switch req.Method {
 	case "initialize":
 		return s.handleInitialize(req)
@@ -172,9 +186,6 @@ func (s *Server) Handle(req *Request) *Response {
 			fmt.Sprintf("method %q is server-initiated and not supported by the mock without a bidirectional transport", req.Method),
 			map[string]any{"hint": "use Server.EmitNotification or POST /mcp/notify to drive the client side"})
 	default:
-		if req.IsNotification() {
-			return nil
-		}
 		return newError(req.ID, ErrMethodNotFound, fmt.Sprintf("method %q not supported", req.Method), nil)
 	}
 }

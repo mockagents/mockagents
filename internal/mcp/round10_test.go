@@ -149,3 +149,37 @@ func TestClientResponseBodiesNotDispatched(t *testing.T) {
 		t.Errorf("error-response body earned a reply: %s", out)
 	}
 }
+
+// R10-8 (S3): ANY id-less request is a notification and gets no reply —
+// previously only unknown methods were guarded, so an id-less ping or
+// tools/list earned an orphaned response.
+func TestKnownMethodNotificationsGetNoReply(t *testing.T) {
+	s := round10Server()
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","method":"ping"}`,
+		`{"jsonrpc":"2.0","method":"tools/list"}`,
+		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}`,
+	} {
+		out, err := s.HandleBytes([]byte(body))
+		if err != nil {
+			t.Fatalf("HandleBytes(%s): %v", body, err)
+		}
+		if out != nil {
+			t.Errorf("notification %s earned a reply: %s", body, out)
+		}
+	}
+}
+
+// R10-9 (S3): when the request id is undeterminable (parse error), the
+// error response must carry "id": null — the member is required and was
+// previously omitted entirely.
+func TestParseErrorCarriesNullID(t *testing.T) {
+	s := round10Server()
+	out, err := s.HandleBytes([]byte(`{not json`))
+	if err != nil {
+		t.Fatalf("HandleBytes: %v", err)
+	}
+	if !strings.Contains(string(out), `"id":null`) {
+		t.Errorf("parse-error response = %s, want \"id\":null present", out)
+	}
+}
