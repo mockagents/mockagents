@@ -47,6 +47,9 @@ func writeOpenAIStrictError(w http.ResponseWriter, se *engine.StrictToolError) {
 	case "unknown_tool":
 		msg = fmt.Sprintf("Tool choice '%s' not found in 'tools' parameter.", se.UnknownID)
 		param = "tool_choice"
+	case "invalid_schema":
+		msg = se.Message // already "Invalid schema for function 'x': In context=(…), …"
+		param = fmt.Sprintf("tools[%d].function.parameters", se.Index)
 	default:
 		msg = se.Message
 	}
@@ -73,6 +76,13 @@ func writeResponsesStrictError(w http.ResponseWriter, se *engine.StrictToolError
 			Type:    "invalid_request_error",
 			Message: fmt.Sprintf("Tool choice '%s' not found in 'tools' parameter.", se.UnknownID),
 			Param:   "tool_choice",
+		}})
+		return
+	case "invalid_schema":
+		writeJSON(w, http.StatusBadRequest, openAIError{Error: openAIErrorBody{
+			Type:    "invalid_request_error",
+			Message: se.Message,
+			Param:   fmt.Sprintf("tools[%d].parameters", se.Index),
 		}})
 		return
 	default:

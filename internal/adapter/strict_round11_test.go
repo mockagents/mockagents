@@ -299,6 +299,67 @@ func TestStrictToolChoice_WarnDoesNotMutate(t *testing.T) {
 	assert.Contains(t, rec.Header().Get(HeaderStrictViolation), "required but the scenario emitted no tool call")
 }
 
+// strict:true function schemas are validated at request time (R9-16b):
+// strict-incompatible schemas 400 with the real "Invalid schema for
+// function…" text; the same schema without strict passes.
+func TestStrictSchemas_OpenAI(t *testing.T) {
+	h := &OpenAIHandler{Engine: testEngine(strictAgent("openai-chat-completions", "gpt-4o", "strict"))}
+	strict := true
+	badParams := map[string]any{
+		"type": "object",
+		// no additionalProperties:false; required doesn't cover all keys
+		"required":   []any{"city"},
+		"properties": map[string]any{"city": map[string]any{"type": "string"}, "days": map[string]any{"type": "integer"}},
+	}
+
+	rec := doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model:    "gpt-4o",
+		Messages: []OpenAIMessage{{Role: "user", Content: "hello"}},
+		Tools: []OpenAITool{{Type: "function", Function: OpenAIFunction{
+			Name: "search", Parameters: badParams, Strict: &strict}}},
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "Invalid schema for function 'search': In context=(), 'additionalProperties' is required to be supplied and to be false.")
+
+	// Without strict the same schema is accepted (shallow validation only —
+	// matching the real API's strict:false leniency).
+	rec = doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model:    "gpt-4o",
+		Messages: []OpenAIMessage{{Role: "user", Content: "hello"}},
+		Tools:    []OpenAITool{{Type: "function", Function: OpenAIFunction{Name: "search", Parameters: badParams}}},
+	})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	// A conforming strict schema passes.
+	goodParams := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"city"},
+		"properties":           map[string]any{"city": map[string]any{"type": "string"}},
+	}
+	rec = doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model:    "gpt-4o",
+		Messages: []OpenAIMessage{{Role: "user", Content: "hello"}},
+		Tools: []OpenAITool{{Type: "function", Function: OpenAIFunction{
+			Name: "search", Parameters: goodParams, Strict: &strict}}},
+	})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
+// The Responses surface validates its flat strict tools the same way.
+func TestStrictSchemas_Responses(t *testing.T) {
+	h := NewResponsesHandler(testEngine(strictAgent("openai-chat-completions", "gpt-4o", "strict")), newConversationStore())
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{
+		"model":"gpt-4o","input":"hello",
+		"tools":[{"type":"function","name":"search","strict":true,
+			"parameters":{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.HandleResponses(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "Invalid schema for function 'search'")
+}
+
 // Responses: a bogus call_id 400s; the stored-state loop (previous_response_id
 // carrying the emitted call) stays legal — the real API's documented leniency.
 func TestStrictIDs_Responses(t *testing.T) {

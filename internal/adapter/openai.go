@@ -174,6 +174,7 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 		Stream:           req.Stream,
 		ToolChoice:       parseOpenAIToolChoice(req.ToolChoice, req.ParallelToolCalls),
 		RequestToolNames: openAIToolNames(req.Tools),
+		StrictFunctions:  openAIStrictFunctions(req.Tools),
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID
@@ -339,6 +340,19 @@ func openAIToolNames(tools []OpenAITool) []string {
 		}
 	}
 	return names
+}
+
+// openAIStrictFunctions collects the request's strict:true function tools
+// for structured-outputs schema-subset validation (round-11 R9-16b).
+func openAIStrictFunctions(tools []OpenAITool) []engine.StrictFunction {
+	var out []engine.StrictFunction
+	for i, t := range tools {
+		if t.Function.Strict != nil && *t.Function.Strict {
+			out = append(out, engine.StrictFunction{
+				Index: i, Name: t.Function.Name, Parameters: t.Function.Parameters})
+		}
+	}
+	return out
 }
 
 // parseOpenAIToolChoice maps the Chat Completions tool_choice (a string or a

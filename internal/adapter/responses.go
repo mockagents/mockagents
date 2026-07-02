@@ -329,6 +329,7 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 		Stream:           req.Stream,
 		ToolChoice:       parseResponsesToolChoice(req.ToolChoice, req.ParallelToolCalls),
 		RequestToolNames: responsesToolNames(req.Tools),
+		StrictFunctions:  responsesStrictFunctions(req.Tools),
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID
@@ -509,6 +510,36 @@ func responsesToolNames(tools []json.RawMessage) []string {
 		}
 	}
 	return names
+}
+
+// responsesStrictFunctions collects strict:true function tools from the raw
+// tools echoes (flat Responses form; nested Chat form tolerated) for
+// schema-subset validation (round-11 R9-16b).
+func responsesStrictFunctions(tools []json.RawMessage) []engine.StrictFunction {
+	var out []engine.StrictFunction
+	for i, raw := range tools {
+		var t struct {
+			Name       string         `json:"name"`
+			Strict     *bool          `json:"strict"`
+			Parameters map[string]any `json:"parameters"`
+			Function   *struct {
+				Name       string         `json:"name"`
+				Strict     *bool          `json:"strict"`
+				Parameters map[string]any `json:"parameters"`
+			} `json:"function"`
+		}
+		if json.Unmarshal(raw, &t) != nil {
+			continue
+		}
+		name, strict, params := t.Name, t.Strict, t.Parameters
+		if name == "" && t.Function != nil {
+			name, strict, params = t.Function.Name, t.Function.Strict, t.Function.Parameters
+		}
+		if strict != nil && *strict {
+			out = append(out, engine.StrictFunction{Index: i, Name: name, Parameters: params})
+		}
+	}
+	return out
 }
 
 // parseResponsesToolChoice maps the Responses tool_choice (a string, the flat

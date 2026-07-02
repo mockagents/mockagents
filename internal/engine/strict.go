@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/mockagents/mockagents/internal/toolschema"
 	"github.com/mockagents/mockagents/internal/types"
 )
 
@@ -264,6 +265,20 @@ func applyStrictToolChoice(tc ToolChoice, mode StrictMode, resp *Response, agent
 		}
 	}
 	return warnings
+}
+
+// validateStrictFunctionSchema checks one strict:true function tool against
+// the structured-outputs subset (R9-16b). The message mirrors the real
+// API's "Invalid schema for function 'x': In context=(…), …" text.
+func validateStrictFunctionSchema(sf StrictFunction) *StrictToolError {
+	errs := toolschema.ValidateStrictSubset(sf.Parameters)
+	if len(errs) == 0 {
+		return nil
+	}
+	return &StrictToolError{
+		Check: "schemas", Kind: "invalid_schema", Index: sf.Index, UnknownID: sf.Name,
+		Message: fmt.Sprintf("Invalid schema for function '%s': %s", sf.Name, errs[0]),
+	}
 }
 
 // firstToolName picks the synthesis target: the allowlist first, then the

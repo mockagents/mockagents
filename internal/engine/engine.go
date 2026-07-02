@@ -35,6 +35,19 @@ type InboundRequest struct {
 	// RequestToolNames are the tool/function names the REQUEST declared —
 	// what a real API validates a named tool_choice against (round-11).
 	RequestToolNames []string `json:"request_tool_names,omitempty"`
+	// StrictFunctions are the request's function tools declared with
+	// strict:true. The real API validates their schemas against the
+	// structured-outputs subset at request time; the schemas dimension of
+	// the strict-tools knob mirrors that (round-11 R9-16b).
+	StrictFunctions []StrictFunction `json:"strict_functions,omitempty"`
+}
+
+// StrictFunction is one strict:true function tool from the request: its
+// tools[] index (for the error's param path), name, and parameters schema.
+type StrictFunction struct {
+	Index      int            `json:"index"`
+	Name       string         `json:"name"`
+	Parameters map[string]any `json:"parameters,omitempty"`
 }
 
 // ToolChoice is the parsed tool_choice + parallel-call contract shared by
@@ -245,6 +258,18 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 		if v := validateToolChoiceName(req.ToolChoice, req.RequestToolNames); v != nil {
 			if err := strictViolation(v, strictModes.ToolChoice); err != nil {
 				return nil, err
+			}
+		}
+	}
+	if strictModes.Schemas != StrictOff {
+		// strict:true function schemas are validated against the
+		// structured-outputs subset at request time, exactly as the real API
+		// does (R9-16b).
+		for _, sf := range req.StrictFunctions {
+			if v := validateStrictFunctionSchema(sf); v != nil {
+				if err := strictViolation(v, strictModes.Schemas); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
