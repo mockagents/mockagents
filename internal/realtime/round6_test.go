@@ -252,6 +252,47 @@ func TestPaced_LateCancelKeepsCompletedTranscriptInHistory(t *testing.T) {
 	}
 }
 
+// R6-4 (S2): response.create `input` replaces the default conversation as the
+// model context for that response — the documented out-of-band classification
+// pattern. An explicit [] clears the context; item_reference entries resolve
+// stored items; the conversation itself is untouched.
+func TestResponseCreateInputCustomContext(t *testing.T) {
+	ctx := context.Background()
+	var seen []engine.RequestMessage
+	gen := func(_ context.Context, _, _ string, history []engine.RequestMessage) (*engine.Response, error) {
+		seen = history
+		return &engine.Response{Content: "ok"}, nil
+	}
+	s := NewSession("r64", "", gen)
+	s.Handle(ctx, mkUserItem("item_main", "main topic"))
+
+	// Custom context: the supplied items are the WHOLE context.
+	s.Handle(ctx, &ClientEvent{Type: "response.create", Response: []byte(
+		`{"conversation":"none","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"classify this"}]}]}`)})
+	if len(seen) != 1 || seen[0].Content != "classify this" {
+		t.Errorf("custom-context engine history = %+v, want exactly the supplied item", seen)
+	}
+
+	// Explicit [] clears the context entirely.
+	s.Handle(ctx, &ClientEvent{Type: "response.create", Response: []byte(`{"conversation":"none","input":[]}`)})
+	if len(seen) != 0 {
+		t.Errorf("input:[] engine history = %+v, want empty", seen)
+	}
+
+	// item_reference resolves a stored item into the context.
+	s.Handle(ctx, &ClientEvent{Type: "response.create", Response: []byte(
+		`{"conversation":"none","input":[{"type":"item_reference","id":"item_main"}]}`)})
+	if len(seen) != 1 || seen[0].Content != "main topic" {
+		t.Errorf("item_reference engine history = %+v, want the referenced turn", seen)
+	}
+
+	// Absent input still uses the conversation.
+	s.Handle(ctx, &ClientEvent{Type: "response.create", Response: []byte(`{"conversation":"none"}`)})
+	if len(seen) == 0 || seen[len(seen)-1].Content != "main topic" {
+		t.Errorf("default engine history = %+v, want the conversation", seen)
+	}
+}
+
 // R6-1 (S1): disabling turn_detection must disarm the idle timeout — a Tick
 // firing afterwards nil-dereferenced the VAD state and killed the session.
 func TestIdleTimerDisarmedWhenVADDisabled(t *testing.T) {

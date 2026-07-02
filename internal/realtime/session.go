@@ -606,10 +606,12 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 
 // responseConfig is the inline `response` payload of response.create — the GA
 // per-response overrides the mock honors: instructions, output_modalities (or
-// the beta modalities alias), metadata (echoed on the response envelope), and
-// conversation ("none" → out-of-band: the response joins no conversation).
-// Per-response tools and custom `input` context are not supported (the engine's
-// tools come from the agent definition).
+// the beta modalities alias), metadata (echoed on the response envelope),
+// conversation ("none" → out-of-band: the response joins no conversation), and
+// `input` (a custom context replacing the default conversation for this
+// response — full items or {type:"item_reference",id} pointers; an explicit []
+// clears the context). Per-response tools/tool_choice/prompt are not supported
+// (the engine's tools come from the agent definition) — documented gap.
 type responseConfig struct {
 	Instructions     string          `json:"instructions"`
 	OutputModalities []string        `json:"output_modalities"`
@@ -617,6 +619,7 @@ type responseConfig struct {
 	Metadata         json.RawMessage `json:"metadata"`
 	Conversation     string          `json:"conversation"` // "auto" (default) | "none"
 	MaxOutputTokens  json.RawMessage `json:"max_output_tokens"`
+	Input            json.RawMessage `json:"input"` // custom context (nil = use the conversation)
 	Audio            *struct {
 		Output *struct {
 			Voice  string          `json:"voice"`
@@ -637,6 +640,11 @@ type responseCtx struct {
 	maxOutputTokens json.RawMessage // echoed on the envelope (nil → "inf")
 	maxTokens       int             // decoded integer cap (0 = "inf"/unlimited)
 	incomplete      bool            // the cap trimmed the transcript → status "incomplete"
+	// GA custom context: response.create `input` replaces the default
+	// conversation as the model's context for THIS response. hasInput
+	// distinguishes an explicit empty array (clear the context) from absent.
+	hasInput bool
+	input    []engine.RequestMessage
 }
 
 func (s *Session) newResponseCtx(raw json.RawMessage) *responseCtx {
@@ -668,6 +676,10 @@ func (s *Session) newResponseCtx(raw json.RawMessage) *responseCtx {
 		}
 		rc.metadata = cfg.Metadata
 		rc.outOfBand = cfg.Conversation == "none"
+		if len(cfg.Input) > 0 {
+			rc.hasInput = true
+			rc.input = s.inputContext(cfg.Input)
+		}
 	}
 	// An integer cap is enforced (transcript trimming → status "incomplete");
 	// "inf" or absent means unlimited.
@@ -706,7 +718,15 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 	s.idleAt = time.Time{} // user activity resets the idle timeout
 	respID := s.nextID("resp")
 
-	resp, err := s.generate(ctx, s.model(), s.id, s.engineHistory(rc.instructions))
+	// GA custom context: `input` replaces the default conversation as the
+	// model's context for this response (an explicit [] clears it). The
+	// conversation itself is untouched — `conversation` alone controls where
+	// the response is written.
+	base := s.history
+	if rc.hasInput {
+		base = rc.input
+	}
+	resp, err := s.generate(ctx, s.model(), s.id, engineHistory(rc.instructions, base))
 	if err != nil {
 		return s.failedResponse(respID, err.Error(), rc)
 	}
@@ -714,7 +734,7 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 		return s.failedResponse(respID, "engine returned no response", rc)
 	}
 
-	inputTokens := countTokens(s.history)
+	inputTokens := countTokens(base)
 
 	transcript := resp.Content
 	hasTools := len(resp.ToolCalls) > 0
@@ -1044,16 +1064,73 @@ func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types
 	return final
 }
 
-// engineHistory is the conversation handed to the engine, prepended with the
-// given instructions (the response override, or the session default the caller
-// resolved) as a system message when non-empty.
-func (s *Session) engineHistory(instructions string) []engine.RequestMessage {
+// engineHistory is the context handed to the engine — the given base (the
+// session conversation, or a response.create `input` custom context) prepended
+// with the instructions (the response override, or the session default the
+// caller resolved) as a system message when non-empty.
+func engineHistory(instructions string, base []engine.RequestMessage) []engine.RequestMessage {
 	if instructions == "" {
-		return s.history
+		return base
 	}
-	out := make([]engine.RequestMessage, 0, len(s.history)+1)
+	out := make([]engine.RequestMessage, 0, len(base)+1)
 	out = append(out, engine.RequestMessage{Role: "system", Content: instructions})
-	return append(out, s.history...)
+	return append(out, base...)
+}
+
+// inputContext converts a response.create `input` array into engine messages:
+// full items map exactly like conversation.item.create (message text,
+// function_call_output → tool, function_call → assistant); item_reference
+// entries resolve against the session's stored items. Unknown types and
+// unresolvable references are skipped — a mock stays lenient about context it
+// cannot represent.
+func (s *Session) inputContext(raw json.RawMessage) []engine.RequestMessage {
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil {
+		return nil
+	}
+	out := []engine.RequestMessage{}
+	for _, ri := range items {
+		it := parseItem(ri)
+		switch it.Type {
+		case "item_reference":
+			if stored, ok := s.items[it.ID]; ok {
+				if msg, ok2 := storedItemToMessage(stored); ok2 {
+					out = append(out, msg)
+				}
+			}
+		case "function_call_output":
+			out = append(out, engine.RequestMessage{Role: "tool", Content: it.Output})
+		case "function_call":
+			out = append(out, engine.RequestMessage{Role: "assistant", Content: ""})
+		case "message":
+			if text := it.text(); text != "" {
+				out = append(out, engine.RequestMessage{Role: it.Role, Content: text})
+			}
+		}
+	}
+	return out
+}
+
+// storedItemToMessage maps a stored conversation item (an item_reference
+// target) to its engine-history message, mirroring the conversation.item.create
+// mapping.
+func storedItemToMessage(item map[string]any) (engine.RequestMessage, bool) {
+	switch item["type"] {
+	case "function_call_output":
+		output, _ := item["output"].(string)
+		return engine.RequestMessage{Role: "tool", Content: output}, true
+	case "function_call":
+		return engine.RequestMessage{Role: "assistant", Content: ""}, true
+	case "message":
+		role, _ := item["role"].(string)
+		if role == "" {
+			role = "user"
+		}
+		if txt := storedItemText(item); txt != "" {
+			return engine.RequestMessage{Role: role, Content: txt}, true
+		}
+	}
+	return engine.RequestMessage{}, false
 }
 
 func (s *Session) model() string {
