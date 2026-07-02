@@ -1,4 +1,4 @@
-package engine
+package toolschema
 
 import (
 	"testing"
@@ -18,8 +18,8 @@ func objectSchema(props map[string]any, required []any) types.JSONSchemaObject {
 	return schema
 }
 
-func TestToolValidator_ValidParams(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_ValidParams(t *testing.T) {
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{
 			"name":  map[string]any{"type": "string"},
@@ -33,8 +33,8 @@ func TestToolValidator_ValidParams(t *testing.T) {
 	assert.Empty(t, errs)
 }
 
-func TestToolValidator_MissingRequired(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_MissingRequired(t *testing.T) {
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{
 			"name": map[string]any{"type": "string"},
@@ -49,8 +49,8 @@ func TestToolValidator_MissingRequired(t *testing.T) {
 	assert.Contains(t, errs[0], "name")
 }
 
-func TestToolValidator_MultipleRequired(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_MultipleRequired(t *testing.T) {
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{
 			"a": map[string]any{"type": "string"},
@@ -64,8 +64,8 @@ func TestToolValidator_MultipleRequired(t *testing.T) {
 	assert.Len(t, errs, 2)
 }
 
-func TestToolValidator_WrongType_String(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_WrongType_String(t *testing.T) {
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{
 			"name": map[string]any{"type": "string"},
@@ -79,8 +79,8 @@ func TestToolValidator_WrongType_String(t *testing.T) {
 	assert.Contains(t, errs[0], "expected string")
 }
 
-func TestToolValidator_WrongType_Integer(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_WrongType_Integer(t *testing.T) {
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{
 			"count": map[string]any{"type": "integer"},
@@ -94,8 +94,8 @@ func TestToolValidator_WrongType_Integer(t *testing.T) {
 	assert.Contains(t, errs[0], "expected integer")
 }
 
-func TestToolValidator_WrongType_Boolean(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_WrongType_Boolean(t *testing.T) {
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{
 			"flag": map[string]any{"type": "boolean"},
@@ -109,8 +109,8 @@ func TestToolValidator_WrongType_Boolean(t *testing.T) {
 	assert.Contains(t, errs[0], "expected boolean")
 }
 
-func TestToolValidator_WrongType_Number(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_WrongType_Number(t *testing.T) {
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{
 			"value": map[string]any{"type": "number"},
@@ -124,8 +124,8 @@ func TestToolValidator_WrongType_Number(t *testing.T) {
 	assert.Contains(t, errs[0], "expected number")
 }
 
-func TestToolValidator_WrongType_Array(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_WrongType_Array(t *testing.T) {
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{
 			"items": map[string]any{"type": "array"},
@@ -139,8 +139,8 @@ func TestToolValidator_WrongType_Array(t *testing.T) {
 	assert.Contains(t, errs[0], "expected array")
 }
 
-func TestToolValidator_WrongType_Object(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_WrongType_Object(t *testing.T) {
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{
 			"nested": map[string]any{"type": "object"},
@@ -154,8 +154,8 @@ func TestToolValidator_WrongType_Object(t *testing.T) {
 	assert.Contains(t, errs[0], "expected object")
 }
 
-func TestToolValidator_EnumConstraint(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_EnumConstraint(t *testing.T) {
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{
 			"color": map[string]any{
@@ -178,20 +178,20 @@ func TestToolValidator_EnumConstraint(t *testing.T) {
 
 func TestEqualScalar_TypeAware(t *testing.T) {
 	// Numeric kinds coerce by value (YAML int vs JSON float64).
-	assert.True(t, equalScalar(1, 1.0))
-	assert.True(t, equalScalar(int64(7), 7.0))
-	assert.True(t, equalScalar(float64(3), int32(3)))
+	assert.True(t, EqualScalar(1, 1.0))
+	assert.True(t, EqualScalar(int64(7), 7.0))
+	assert.True(t, EqualScalar(float64(3), int32(3)))
 	// Cross-kind must never match (review finding X-04).
-	assert.False(t, equalScalar(1, "1"))
-	assert.False(t, equalScalar(true, "true"))
-	assert.False(t, equalScalar("red", 0))
+	assert.False(t, EqualScalar(1, "1"))
+	assert.False(t, EqualScalar(true, "true"))
+	assert.False(t, EqualScalar("red", 0))
 	// Same kind compares normally.
-	assert.True(t, equalScalar("red", "red"))
-	assert.False(t, equalScalar("red", "blue"))
+	assert.True(t, EqualScalar("red", "red"))
+	assert.False(t, EqualScalar("red", "blue"))
 }
 
-func TestToolValidator_inEnum_TypeAware(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_inEnum_TypeAware(t *testing.T) {
+	v := NewValidator()
 	// JSON-decoded float64 arg matches an int enum entry by value.
 	assert.True(t, v.inEnum(2.0, []any{1, 2, 3}))
 	// But the string "2" must NOT match a numeric enum (was a bug).
@@ -201,8 +201,8 @@ func TestToolValidator_inEnum_TypeAware(t *testing.T) {
 	assert.False(t, v.inEnum("purple", []any{"red", "green", "blue"}))
 }
 
-func TestToolValidator_StringMinMaxLength(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_StringMinMaxLength(t *testing.T) {
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{
 			"code": map[string]any{
@@ -229,8 +229,8 @@ func TestToolValidator_StringMinMaxLength(t *testing.T) {
 	assert.Empty(t, errs)
 }
 
-func TestToolValidator_AdditionalPropertiesFalse(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_AdditionalPropertiesFalse(t *testing.T) {
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{
 			"name": map[string]any{"type": "string"},
@@ -245,14 +245,14 @@ func TestToolValidator_AdditionalPropertiesFalse(t *testing.T) {
 	assert.Contains(t, errs[0], "unexpected parameter")
 }
 
-func TestToolValidator_EmptySchema(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_EmptySchema(t *testing.T) {
+	v := NewValidator()
 	errs := v.ValidateParameters(nil, map[string]any{"key": "val"})
 	assert.Empty(t, errs)
 }
 
-func TestToolValidator_EmptyArgs(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_EmptyArgs(t *testing.T) {
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{"name": map[string]any{"type": "string"}},
 		nil,
@@ -261,8 +261,8 @@ func TestToolValidator_EmptyArgs(t *testing.T) {
 	assert.Empty(t, errs)
 }
 
-func TestToolValidator_IntegerFromFloat64(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_IntegerFromFloat64(t *testing.T) {
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{
 			"count": map[string]any{"type": "integer"},
@@ -279,8 +279,8 @@ func TestToolValidator_IntegerFromFloat64(t *testing.T) {
 	assert.Contains(t, errs[0], "expected integer")
 }
 
-func TestToolValidator_MultipleErrors(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_MultipleErrors(t *testing.T) {
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{
 			"name":  map[string]any{"type": "string"},
@@ -297,10 +297,10 @@ func TestToolValidator_MultipleErrors(t *testing.T) {
 
 // --- F-TV-009: nested schemas, fall-through, malformed inputs ---
 
-func TestToolValidator_NestedObject(t *testing.T) {
+func TestValidator_NestedObject(t *testing.T) {
 	// F-TV-001: a nested object property is validated against its own
 	// required + property schema, with path-qualified messages.
-	v := NewToolValidator()
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{
 			"address": map[string]any{
@@ -334,9 +334,9 @@ func TestToolValidator_NestedObject(t *testing.T) {
 	assert.Contains(t, errs[0], "expected string")
 }
 
-func TestToolValidator_ArrayItems(t *testing.T) {
+func TestValidator_ArrayItems(t *testing.T) {
 	// F-TV-001: array elements are validated against the items subschema.
-	v := NewToolValidator()
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{
 			"tags": map[string]any{
@@ -355,10 +355,10 @@ func TestToolValidator_ArrayItems(t *testing.T) {
 	assert.Empty(t, v.ValidateParameters(schema, map[string]any{"tags": []any{"a", "b"}}))
 }
 
-func TestToolValidator_MalformedProperties_StillChecksAdditional(t *testing.T) {
+func TestValidator_MalformedProperties_StillChecksAdditional(t *testing.T) {
 	// F-TV-002: a malformed `properties` value must not skip the
 	// additionalProperties:false check (it used to early-return).
-	v := NewToolValidator()
+	v := NewValidator()
 	schema := types.JSONSchemaObject{
 		"type":                 "object",
 		"properties":           "not-a-map",
@@ -370,8 +370,8 @@ func TestToolValidator_MalformedProperties_StillChecksAdditional(t *testing.T) {
 	assert.Contains(t, errs[0], "foo")
 }
 
-func TestToolValidator_MalformedRequired_NoPanic(t *testing.T) {
-	v := NewToolValidator()
+func TestValidator_MalformedRequired_NoPanic(t *testing.T) {
+	v := NewValidator()
 	// `required` of the wrong type is ignored, not enforced or panicked on.
 	assert.NotPanics(t, func() {
 		errs := v.ValidateParameters(types.JSONSchemaObject{
@@ -391,10 +391,10 @@ func TestToolValidator_MalformedRequired_NoPanic(t *testing.T) {
 	assert.Contains(t, errs[0], "name")
 }
 
-func TestToolValidator_AdditionalPropertiesSchemaFormPermissive(t *testing.T) {
+func TestValidator_AdditionalPropertiesSchemaFormPermissive(t *testing.T) {
 	// F-TV-006: only the boolean `false` form is enforced; the schema-object
 	// form is treated as permissive, so extra properties are allowed.
-	v := NewToolValidator()
+	v := NewValidator()
 	schema := objectSchema(
 		map[string]any{"name": map[string]any{"type": "string"}},
 		nil,
