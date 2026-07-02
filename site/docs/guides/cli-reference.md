@@ -68,6 +68,13 @@ mockagents start [flags]
 
 Environment variables: `MOCKAGENTS_HOST`, `MOCKAGENTS_PORT`.
 
+Strictness knobs (round-11):
+
+| Variable | Values | Default | What it gates |
+|----------|--------|---------|---------------|
+| `MOCKAGENTS_STRICT_TOOLS` | `off` / `warn` / `strict` | `off` | Fleet default for the strict-tools family: round-trip tool id validation, `tool_choice` required/named forcing (+ parallel cap), and `strict:true` schema validation. Per-agent `spec.behavior.strict_tools` overrides it. `warn` sets the `X-Mockagents-Strict-Violation` header instead of failing. |
+| `MOCKAGENTS_REALTIME_STRICT` | `1` / `true` | off | GA-strict `session.update` field validation on the Realtime WebSocket surface (`unknown_parameter` errors with param paths). |
+
 **Examples:**
 
 ```bash

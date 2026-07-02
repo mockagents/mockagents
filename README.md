@@ -117,8 +117,17 @@ mockagents start                              # prints your base URL + a ready-t
   / `tasks/cancel` with canned, match-based task responses.
 - **Scenario matching** — route by message content, regex, or turn number;
   assert *which* path fired, not just the text.
-- **Tool-call simulation** — return canned tool calls and tool results; test your
-  agent's routing and argument handling without a live model.
+- **Tool-call simulation** — return canned tool calls on every protocol surface;
+  test your agent's routing and argument handling without a live model. (Tool
+  `responses:` tables resolve results for the test runner and MCP servers — on
+  the HTTP protocol endpoints your client executes the tools, as with real APIs.)
+- **Strict tools mode** (`strict_tools`, round-11) — opt into failing like
+  production: round-trip tool id validation (orphan/mismatched
+  `tool_call_id`/`tool_use_id`/`call_id` → the provider's real 400),
+  `tool_choice: required`/named forcing with forced-call synthesis and
+  `finish_reason: "stop"`, `parallel_tool_calls: false` capping, and
+  `strict: true` schema-subset validation — per agent or fleet-wide via
+  `MOCKAGENTS_STRICT_TOOLS=off|warn|strict` (`warn` = header-only).
 - **Agent-trajectory assertions** (`mockagents test`) — assert the *shape* of an
   agent's behavior, not just its text: `tool_call` (name + partial args),
   `tool_call_count`, `tool_call_sequence` (ordered tool names), and `node_sequence`

@@ -24,6 +24,9 @@ type ValidateReport struct {
 	// column are populated when the underlying yaml.Node tree
 	// provided a location.
 	Errors []*ValidationError `json:"errors"`
+	// Warnings are non-fatal lint findings (round-11): configuration
+	// that loads but silently does nothing on this agent's protocol.
+	Warnings []*ValidationError `json:"warnings,omitempty"`
 }
 
 // ValidateBytes parses and validates a single YAML or JSON document
@@ -83,6 +86,7 @@ func ValidateBytes(data []byte) *ValidateReport {
 		if errs := v.Validate(&def, "", &doc); errs != nil {
 			report.Errors = append(report.Errors, errs.Errors...)
 		}
+		report.Warnings = v.Lint(&def, "", &doc)
 		report.Kind = "Agent"
 	case "Pipeline":
 		var def types.PipelineDefinition

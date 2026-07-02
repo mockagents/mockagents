@@ -1205,6 +1205,10 @@ components:
           description: >
             Controls which (if any) tool is called. Can be "none", "auto",
             "required", or an object specifying a particular function.
+            "none" is always honored; "required" and named forcing (with
+            forced-call synthesis and finish_reason "stop") are enforced
+            when the agent's strict_tools knob is on (round-11) —
+            otherwise they are accepted and ignored.
           oneOf:
             - type: string
               enum: [none, auto, required]
@@ -1470,13 +1474,20 @@ components:
             $ref: "#/components/schemas/AnthropicTool"
         tool_choice:
           type: object
+          description: >
+            "none" is always honored; "any"/"tool" forcing and
+            disable_parallel_tool_use are enforced when the agent's
+            strict_tools knob is on (round-11).
           properties:
             type:
               type: string
-              enum: [auto, any, tool]
+              enum: [auto, any, tool, none]
             name:
               type: string
               description: Required when type is "tool".
+            disable_parallel_tool_use:
+              type: boolean
+              description: Cap the response to a single tool_use block.
         max_tokens:
           type: integer
           minimum: 1

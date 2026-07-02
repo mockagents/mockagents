@@ -94,11 +94,30 @@ func (v *Validator) Validate(def *types.AgentDefinition, filePath string, node *
 	v.validateCrossReferences(ctx, def)
 	v.validateChaos(ctx, def)
 	v.validateStreaming(ctx, def)
+	v.validateStrictTools(ctx, def)
 
 	if len(ctx.errors) == 0 {
 		return nil
 	}
 	return &ValidationErrorList{Errors: ctx.errors}
+}
+
+// validateStrictTools checks the strict-tools knob block (round-11): the
+// level must be one of types.StrictToolLevels (kept in sync with the JSON
+// schema enum).
+func (v *Validator) validateStrictTools(ctx *validationContext, def *types.AgentDefinition) {
+	st := def.Spec.Behavior.StrictTools
+	if st == nil || st.Level == "" {
+		return
+	}
+	for _, l := range types.StrictToolLevels {
+		if st.Level == l {
+			return
+		}
+	}
+	ctx.addError("spec.behavior.strict_tools.level",
+		fmt.Sprintf("unknown level %q", st.Level),
+		fmt.Sprintf("Use one of: %s.", strings.Join(types.StrictToolLevels, ", ")))
 }
 
 func (v *Validator) validateAPIVersion(ctx *validationContext, def *types.AgentDefinition) {
