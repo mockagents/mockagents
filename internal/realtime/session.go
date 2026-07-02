@@ -49,6 +49,9 @@ type ClientEvent struct {
 	ItemID       string `json:"item_id,omitempty"`
 	ContentIndex int    `json:"content_index,omitempty"` // truncate
 	AudioEndMs   int    `json:"audio_end_ms,omitempty"`  // truncate
+	// conversation.item.create: insert after this item ("" = append at the
+	// end; "root" = insert at the beginning).
+	PreviousItemID string `json:"previous_item_id,omitempty"`
 }
 
 // Event is an outbound server event. The Realtime protocol has dozens of event
@@ -72,6 +75,14 @@ type sessionConfig struct {
 	inputFormat      json.RawMessage // audio.input.format
 	outputFormat     json.RawMessage // audio.output.format
 	speed            float64         // audio.output.speed (default 1.0)
+	// Round-tripped verbatim (the mock stores + echoes them; only tools/
+	// turn_detection/transcription change behavior):
+	tracing           json.RawMessage // session.tracing (default null)
+	truncation        json.RawMessage // session.truncation (default "auto")
+	prompt            json.RawMessage // session.prompt (default null)
+	include           json.RawMessage // session.include (default null)
+	parallelToolCalls json.RawMessage // session.parallel_tool_calls (default true)
+	noiseReduction    json.RawMessage // audio.input.noise_reduction (default null)
 }
 
 // sessionUpdate is the inbound session.update payload. It accepts the GA shape
@@ -87,11 +98,20 @@ type sessionUpdate struct {
 	Tools                   json.RawMessage `json:"tools"`
 	ToolChoice              json.RawMessage `json:"tool_choice"`
 	MaxOutputTokens         json.RawMessage `json:"max_output_tokens"`
+	Tracing                 json.RawMessage `json:"tracing"`
+	Truncation              json.RawMessage `json:"truncation"`
+	Prompt                  json.RawMessage `json:"prompt"`
+	Include                 json.RawMessage `json:"include"`
+	ParallelToolCalls       json.RawMessage `json:"parallel_tool_calls"`
+	TurnDetection           json.RawMessage `json:"turn_detection"`      // beta top-level alias
+	InputAudioFormat        string          `json:"input_audio_format"`  // beta alias ("pcm16", "g711_ulaw", "g711_alaw")
+	OutputAudioFormat       string          `json:"output_audio_format"` // beta alias
 	Audio                   *struct {
 		Input *struct {
-			Transcription json.RawMessage `json:"transcription"`
-			TurnDetection json.RawMessage `json:"turn_detection"`
-			Format        json.RawMessage `json:"format"`
+			Transcription  json.RawMessage `json:"transcription"`
+			TurnDetection  json.RawMessage `json:"turn_detection"`
+			Format         json.RawMessage `json:"format"`
+			NoiseReduction json.RawMessage `json:"noise_reduction"`
 		} `json:"input"`
 		Output *struct {
 			Voice  string          `json:"voice"`
@@ -99,6 +119,21 @@ type sessionUpdate struct {
 			Speed  *float64        `json:"speed"`
 		} `json:"output"`
 	} `json:"audio"`
+}
+
+// betaAudioFormat translates a beta-flat format string into the GA format
+// object, so a beta-generation client's setting round-trips in GA shape.
+func betaAudioFormat(name string) json.RawMessage {
+	switch name {
+	case "pcm16":
+		return json.RawMessage(defaultAudioFormat)
+	case "g711_ulaw":
+		return json.RawMessage(`{"type":"audio/pcmu"}`)
+	case "g711_alaw":
+		return json.RawMessage(`{"type":"audio/pcma"}`)
+	default:
+		return nil // unknown names are dropped, matching the mock's leniency
+	}
 }
 
 // Session is one Realtime connection's state machine. It is NOT safe for
@@ -299,7 +334,37 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 	case "conversation.item.create":
 		s.idleAt, s.idleFired = time.Time{}, false // user activity resets the idle timeout
 		it := parseItem(ce.Item)
-		prevItem, itemID := s.newConversationItem()
+		// Honor a client-supplied item id (clients pre-generate ids so they can
+		// truncate/delete/retrieve their own items later); duplicates rejected.
+		itemID := it.ID
+		if itemID == "" {
+			itemID = s.nextID("item")
+		} else if _, exists := s.items[itemID]; exists {
+			return []Event{s.errorEventParam("invalid_value",
+				fmt.Sprintf("item with id %q already exists", itemID), "item.id")}
+		}
+		// previous_item_id places the item: "" appends, "root" inserts first, a
+		// known id inserts after it. The new item becomes the chain tail only
+		// when placed at the end. (Mock simplification, documented: engine
+		// history stays append-order — insertion positions the event-log view,
+		// not scenario-matching order.)
+		var prevItem any
+		tail := true
+		switch ce.PreviousItemID {
+		case "":
+			prevItem = s.previousItemID()
+		case "root":
+			prevItem, tail = nil, s.lastItemID == ""
+		default:
+			if _, known := s.items[ce.PreviousItemID]; !known {
+				return []Event{s.errorEventParam("item_not_found",
+					fmt.Sprintf("previous_item_id %q not found", ce.PreviousItemID), "previous_item_id")}
+			}
+			prevItem, tail = ce.PreviousItemID, ce.PreviousItemID == s.lastItemID
+		}
+		if tail {
+			s.lastItemID = itemID
+		}
 		switch it.Type {
 		case "function_call_output":
 			// The tool-loop reply. Same history mapping as the Responses
@@ -512,7 +577,10 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 		"total_tokens":  inputTokens + outputTokens,
 		// GA per-modality breakdown. A mock attributes everything to text (the
 		// transcript drives output; synthesized audio carries no real tokens).
-		"input_token_details":  map[string]any{"text_tokens": inputTokens, "audio_tokens": 0, "cached_tokens": 0},
+		"input_token_details": map[string]any{
+			"text_tokens": inputTokens, "audio_tokens": 0, "image_tokens": 0, "cached_tokens": 0,
+			"cached_tokens_details": map[string]any{"text_tokens": 0, "audio_tokens": 0, "image_tokens": 0},
+		},
 		"output_token_details": map[string]any{"text_tokens": outputTokens, "audio_tokens": 0},
 	}
 	out = append(out, Event{"type": "response.done", "response": done})
@@ -569,6 +637,13 @@ func (s *Session) responseObject(respID, status string, output []any, rc *respon
 		"output_modalities": rc.mods,
 		"conversation_id":   convID,
 		"metadata":          metadata,
+		// GA fields a strict reader expects on every envelope: usage is null
+		// until response.done overwrites it; audio echoes the effective output
+		// config; max_output_tokens mirrors the session setting.
+		"usage": nil,
+		"audio": map[string]any{"output": map[string]any{
+			"voice": s.effectiveVoice(), "format": rawOr(s.cfg.outputFormat, defaultAudioFormat)}},
+		"max_output_tokens": rawOr(s.cfg.maxOutputTokens, `"inf"`),
 	}
 }
 
@@ -752,30 +827,32 @@ func (s *Session) model() string {
 // transcription, turn_detection, voice and speed. Voice lives at
 // audio.output.voice (GA), NOT at the top level.
 func (s *Session) sessionObject() map[string]any {
-	voice := s.cfg.voice
-	if voice == "" {
-		voice = "alloy"
-	}
 	speed := s.cfg.speed
 	if speed == 0 {
 		speed = 1.0
 	}
 	obj := map[string]any{
 		"id": s.id, "object": "realtime.session", "type": "realtime", "model": s.model(),
-		"output_modalities": s.outputModalities(),
-		"instructions":      s.cfg.instructions,
-		"tools":             rawOr(s.cfg.tools, "[]"),
-		"tool_choice":       rawOr(s.cfg.toolChoice, `"auto"`),
-		"max_output_tokens": rawOr(s.cfg.maxOutputTokens, `"inf"`),
+		"output_modalities":   s.outputModalities(),
+		"instructions":        s.cfg.instructions,
+		"tools":               rawOr(s.cfg.tools, "[]"),
+		"tool_choice":         rawOr(s.cfg.toolChoice, `"auto"`),
+		"max_output_tokens":   rawOr(s.cfg.maxOutputTokens, `"inf"`),
+		"tracing":             rawOr(s.cfg.tracing, "null"),
+		"truncation":          rawOr(s.cfg.truncation, `"auto"`),
+		"prompt":              rawOr(s.cfg.prompt, "null"),
+		"include":             rawOr(s.cfg.include, "null"),
+		"parallel_tool_calls": rawOr(s.cfg.parallelToolCalls, "true"),
 		"audio": map[string]any{
 			"input": map[string]any{
-				"format":         rawOr(s.cfg.inputFormat, defaultAudioFormat),
-				"transcription":  rawOr(s.cfg.transcription, "null"),
-				"turn_detection": rawOr(s.cfg.turnDetection, "null"),
+				"format":          rawOr(s.cfg.inputFormat, defaultAudioFormat),
+				"transcription":   rawOr(s.cfg.transcription, "null"),
+				"turn_detection":  rawOr(s.cfg.turnDetection, "null"),
+				"noise_reduction": rawOr(s.cfg.noiseReduction, "null"),
 			},
 			"output": map[string]any{
 				"format": rawOr(s.cfg.outputFormat, defaultAudioFormat),
-				"voice":  voice,
+				"voice":  s.effectiveVoice(),
 				"speed":  speed,
 			},
 		},
@@ -784,6 +861,15 @@ func (s *Session) sessionObject() map[string]any {
 		obj["expires_at"] = s.expiresAt
 	}
 	return obj
+}
+
+// effectiveVoice is the session voice with the GA default applied; shared by
+// the session object and the response envelope's audio block.
+func (s *Session) effectiveVoice() string {
+	if s.cfg.voice != "" {
+		return s.cfg.voice
+	}
+	return "alloy"
 }
 
 // outputModalities resolves the effective response modalities. The GA default
@@ -841,6 +927,31 @@ func (s *Session) applyConfig(raw json.RawMessage) {
 	if len(u.MaxOutputTokens) > 0 {
 		s.cfg.maxOutputTokens = u.MaxOutputTokens
 	}
+	if len(u.Tracing) > 0 {
+		s.cfg.tracing = u.Tracing
+	}
+	if len(u.Truncation) > 0 {
+		s.cfg.truncation = u.Truncation
+	}
+	if len(u.Prompt) > 0 {
+		s.cfg.prompt = u.Prompt
+	}
+	if len(u.Include) > 0 {
+		s.cfg.include = u.Include
+	}
+	if len(u.ParallelToolCalls) > 0 {
+		s.cfg.parallelToolCalls = u.ParallelToolCalls
+	}
+	// Beta-flat aliases (GA nested wins when both are present).
+	if len(u.TurnDetection) > 0 && (u.Audio == nil || u.Audio.Input == nil || len(u.Audio.Input.TurnDetection) == 0) {
+		s.cfg.turnDetection = u.TurnDetection
+	}
+	if f := betaAudioFormat(u.InputAudioFormat); f != nil && (u.Audio == nil || u.Audio.Input == nil || len(u.Audio.Input.Format) == 0) {
+		s.cfg.inputFormat = f
+	}
+	if f := betaAudioFormat(u.OutputAudioFormat); f != nil && (u.Audio == nil || u.Audio.Output == nil || len(u.Audio.Output.Format) == 0) {
+		s.cfg.outputFormat = f
+	}
 	if u.Audio != nil {
 		if in := u.Audio.Input; in != nil {
 			if len(in.Transcription) > 0 {
@@ -851,6 +962,9 @@ func (s *Session) applyConfig(raw json.RawMessage) {
 			}
 			if len(in.Format) > 0 {
 				s.cfg.inputFormat = in.Format
+			}
+			if len(in.NoiseReduction) > 0 {
+				s.cfg.noiseReduction = in.NoiseReduction
 			}
 		}
 		if o := u.Audio.Output; o != nil {
@@ -907,6 +1021,7 @@ func (s *Session) nextID(prefix string) string {
 // responsesItemToMessage is: "message" (role + content text), "function_call"
 // (an echoed prior tool call), or "function_call_output" (the tool-loop reply).
 type parsedItem struct {
+	ID        string `json:"id"` // client-supplied item id ("" → the server mints one)
 	Type      string `json:"type"`
 	Role      string `json:"role"`
 	CallID    string `json:"call_id"`

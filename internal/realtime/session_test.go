@@ -342,6 +342,160 @@ func TestSession_FunctionCallItemEcho(t *testing.T) {
 	}
 }
 
+// F10: a client-supplied item.id is honored (pre-generated ids let clients
+// address their items later); duplicates are rejected with param item.id.
+func TestSession_ClientSuppliedItemID(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("sci", "", fakeGen("ok"))
+	create := &ClientEvent{Type: "conversation.item.create",
+		Item: []byte(`{"id":"cli_item_1","type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}`)}
+
+	added := firstEvent(s.Handle(ctx, create), "conversation.item.added")
+	if added["item"].(map[string]any)["id"] != "cli_item_1" {
+		t.Fatalf("ack item id = %v, want the client-supplied id", added["item"])
+	}
+	// Addressable by the client's own id.
+	got := s.Handle(ctx, &ClientEvent{Type: "conversation.item.retrieve", ItemID: "cli_item_1"})
+	if got[0]["type"] != "conversation.item.retrieved" {
+		t.Errorf("retrieve by client id = %v", typesOf(got))
+	}
+	// The chain runs through it.
+	next := firstEvent(s.Handle(ctx, &ClientEvent{Type: "conversation.item.create",
+		Item: []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"again"}]}`)}), "conversation.item.added")
+	if next["previous_item_id"] != "cli_item_1" {
+		t.Errorf("next item previous_item_id = %v, want cli_item_1", next["previous_item_id"])
+	}
+	// Duplicate id → invalid_value naming item.id.
+	dup := s.Handle(ctx, create)
+	if dup[0]["type"] != "error" || dup[0]["error"].(map[string]any)["param"] != "item.id" {
+		t.Errorf("duplicate id = %v, want invalid_value on item.id", dup[0])
+	}
+}
+
+// F10: previous_item_id on conversation.item.create places the item — "root"
+// inserts first, a known id inserts after it (the chain tail moves only for
+// appends), an unknown id errors.
+func TestSession_PreviousItemIDInsert(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("spi", "", fakeGen("ok"))
+	mk := func(id string) *ClientEvent {
+		return &ClientEvent{Type: "conversation.item.create",
+			Item: []byte(`{"id":"` + id + `","type":"message","role":"user","content":[{"type":"input_text","text":"x"}]}`)}
+	}
+	s.Handle(ctx, mk("item_a"))
+	s.Handle(ctx, mk("item_b")) // tail = item_b
+
+	// Insert after item_a: ack points at item_a, tail stays item_b.
+	ins := mk("item_c")
+	ins.PreviousItemID = "item_a"
+	added := firstEvent(s.Handle(ctx, ins), "conversation.item.added")
+	if added["previous_item_id"] != "item_a" {
+		t.Errorf("insert ack previous_item_id = %v, want item_a", added["previous_item_id"])
+	}
+	next := firstEvent(s.Handle(ctx, mk("item_d")), "conversation.item.added")
+	if next["previous_item_id"] != "item_b" {
+		t.Errorf("append after insert chains off %v, want the unchanged tail item_b", next["previous_item_id"])
+	}
+
+	// "root" inserts at the beginning: ack prev is null, tail unchanged.
+	root := mk("item_e")
+	root.PreviousItemID = "root"
+	added = firstEvent(s.Handle(ctx, root), "conversation.item.added")
+	if added["previous_item_id"] != nil {
+		t.Errorf("root insert previous_item_id = %v, want null", added["previous_item_id"])
+	}
+
+	// Unknown previous_item_id errors.
+	bad := mk("item_f")
+	bad.PreviousItemID = "item_nope"
+	evs := s.Handle(ctx, bad)
+	e := evs[0]["error"].(map[string]any)
+	if evs[0]["type"] != "error" || e["code"] != "item_not_found" || e["param"] != "previous_item_id" {
+		t.Errorf("unknown previous_item_id = %v, want item_not_found on previous_item_id", evs[0])
+	}
+}
+
+// F15/F16: the response envelope carries the GA fields a strict reader expects
+// (usage null on created, audio.output, max_output_tokens), and response.done's
+// usage has the full input_token_details breakdown.
+func TestResponseEnvelope_GAFields(t *testing.T) {
+	s := NewSession("sga", "gpt-realtime", fakeGen("hello"))
+	evs := s.Handle(context.Background(), &ClientEvent{Type: "response.create"})
+
+	created := firstEvent(evs, "response.created")["response"].(map[string]any)
+	if u, ok := created["usage"]; !ok || u != nil {
+		t.Errorf("created usage = %v (present=%v), want present and null", u, ok)
+	}
+	audioOut := created["audio"].(map[string]any)["output"].(map[string]any)
+	if audioOut["voice"] != "alloy" {
+		t.Errorf("envelope audio.output.voice = %v, want alloy", audioOut["voice"])
+	}
+	if _, ok := audioOut["format"]; !ok {
+		t.Error("envelope audio.output missing format")
+	}
+	if raw, _ := json.Marshal(created["max_output_tokens"]); string(raw) != `"inf"` {
+		t.Errorf("envelope max_output_tokens = %s, want \"inf\"", raw)
+	}
+
+	usage := firstEvent(evs, "response.done")["response"].(map[string]any)["usage"].(map[string]any)
+	details := usage["input_token_details"].(map[string]any)
+	if _, ok := details["image_tokens"]; !ok {
+		t.Error("input_token_details missing image_tokens")
+	}
+	cached, ok := details["cached_tokens_details"].(map[string]any)
+	if !ok {
+		t.Fatal("input_token_details missing cached_tokens_details")
+	}
+	for _, k := range []string{"text_tokens", "audio_tokens", "image_tokens"} {
+		if _, ok := cached[k]; !ok {
+			t.Errorf("cached_tokens_details missing %q", k)
+		}
+	}
+}
+
+// F17: session.update round-trips the remaining GA fields with correct
+// defaults when unset.
+func TestSessionUpdate_RoundTripsGAFields(t *testing.T) {
+	s := NewSession("srt", "", fakeGen("ok"))
+
+	// Defaults first.
+	sess := s.Greeting()[0]["session"].(map[string]any)
+	if raw, _ := json.Marshal(sess["truncation"]); string(raw) != `"auto"` {
+		t.Errorf("default truncation = %s, want \"auto\"", raw)
+	}
+	if raw, _ := json.Marshal(sess["parallel_tool_calls"]); string(raw) != "true" {
+		t.Errorf("default parallel_tool_calls = %s, want true", raw)
+	}
+	for _, k := range []string{"tracing", "prompt", "include"} {
+		if raw, _ := json.Marshal(sess[k]); string(raw) != "null" {
+			t.Errorf("default %s = %s, want null", k, raw)
+		}
+	}
+	if raw, _ := json.Marshal(sess["audio"].(map[string]any)["input"].(map[string]any)["noise_reduction"]); string(raw) != "null" {
+		t.Errorf("default noise_reduction = %s, want null", raw)
+	}
+
+	// Now set them and read them back off session.updated.
+	evs := s.Handle(context.Background(), &ClientEvent{Type: "session.update", Session: []byte(`{
+		"tracing":"auto","truncation":"disabled","prompt":{"id":"pmpt_1"},
+		"include":["item.input_audio_transcription.logprobs"],"parallel_tool_calls":false,
+		"audio":{"input":{"noise_reduction":{"type":"near_field"}}}}`)})
+	sess = evs[0]["session"].(map[string]any)
+	checks := map[string]string{
+		"tracing": `"auto"`, "truncation": `"disabled"`, "prompt": `{"id":"pmpt_1"}`,
+		"include": `["item.input_audio_transcription.logprobs"]`, "parallel_tool_calls": "false",
+	}
+	for k, want := range checks {
+		if raw, _ := json.Marshal(sess[k]); string(raw) != want {
+			t.Errorf("%s = %s, want %s", k, raw, want)
+		}
+	}
+	nr, _ := json.Marshal(sess["audio"].(map[string]any)["input"].(map[string]any)["noise_reduction"])
+	if string(nr) != `{"type":"near_field"}` {
+		t.Errorf("noise_reduction = %s", nr)
+	}
+}
+
 func TestSession_UnknownEvent(t *testing.T) {
 	s := NewSession("s4", "", fakeGen("ok"))
 	evs := s.Handle(context.Background(), &ClientEvent{Type: "totally.bogus"})

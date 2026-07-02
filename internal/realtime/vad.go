@@ -64,17 +64,22 @@ type vadState struct {
 // rejected.
 func (s *Session) validateTurnDetection(sessionRaw json.RawMessage) []Event {
 	var upd struct {
-		Audio *struct {
+		TurnDetection json.RawMessage `json:"turn_detection"` // beta-flat alias
+		Audio         *struct {
 			Input *struct {
 				TurnDetection json.RawMessage `json:"turn_detection"`
 			} `json:"input"`
 		} `json:"audio"`
 	}
-	if len(sessionRaw) == 0 || json.Unmarshal(sessionRaw, &upd) != nil ||
-		upd.Audio == nil || upd.Audio.Input == nil {
+	if len(sessionRaw) == 0 || json.Unmarshal(sessionRaw, &upd) != nil {
 		return nil // no turn_detection in this update
 	}
-	raw := strings.TrimSpace(string(upd.Audio.Input.TurnDetection))
+	// GA nested wins over the beta-flat alias, mirroring applyConfig.
+	td := upd.TurnDetection
+	if upd.Audio != nil && upd.Audio.Input != nil && len(upd.Audio.Input.TurnDetection) > 0 {
+		td = upd.Audio.Input.TurnDetection
+	}
+	raw := strings.TrimSpace(string(td))
 	if raw == "" || raw == "null" {
 		return nil // absent, or explicitly turning VAD off
 	}
@@ -84,7 +89,7 @@ func (s *Session) validateTurnDetection(sessionRaw json.RawMessage) []Event {
 		return []Event{s.errorEventParam("invalid_value", msg, p+"."+field)}
 	}
 	var cfg vadConfig
-	if err := json.Unmarshal(upd.Audio.Input.TurnDetection, &cfg); err != nil {
+	if err := json.Unmarshal(td, &cfg); err != nil {
 		return []Event{s.errorEventParam("invalid_value", "turn_detection must be an object or null", p)}
 	}
 	switch cfg.Type {
