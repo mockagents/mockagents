@@ -531,6 +531,12 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		}
 		delete(s.items, ce.ItemID)
 		s.removeItem(ce.ItemID)
+		// An announced item of the in-flight response can be deleted mid-pace;
+		// tombstone it so its still-queued conversation.item.done does not
+		// re-index it (retrievable-but-not-in-chain resurrection).
+		if s.inflight != nil {
+			s.inflight.deleted[ce.ItemID] = true
+		}
 		// Mock simplification: the engine history is not rewritten — deletion
 		// affects retrieval, not scenario matching on prior turns.
 		return []Event{{"type": "conversation.item.deleted", "item_id": ce.ItemID}}

@@ -47,6 +47,16 @@ type inflightResponse struct {
 	emitted    map[string]string // item id → concatenated delta text (transcript/text/arguments)
 	partOpened map[string]bool   // item id → its content_part.added emitted
 	transcript string            // all emitted message-transcript deltas (usage on cancel)
+	// Emission-time chain values: queued conversation.item.added events carry
+	// the BUILD-time previous_item_id, but the conversation can change while
+	// the ladder is queued (user items committed/created mid-pace, the tail
+	// deleted). The value is rewritten to the actual tail when the .added
+	// emits and remembered here so the paired .done agrees.
+	chainPrev map[string]any // item id → previous_item_id assigned at .added emission
+	// Ids deleted AFTER their announcement: the delete already removed them
+	// from the conversation, so the queued conversation.item.done must not
+	// re-index them (retrievable-but-not-in-chain resurrection).
+	deleted map[string]bool
 }
 
 // SetClock injects the time source (tests use a fake); nil/unset means
@@ -95,10 +105,17 @@ func (s *Session) Tick(ctx context.Context, now time.Time) []Event {
 		// createResponse — build no longer mutates session state).
 		switch ev["type"] {
 		case "conversation.item.added":
+			s.rewriteChainPrev(inf, ev)
 			s.joinEmittedItem(ev)
 		case "conversation.item.done":
 			if item, ok := ev["item"].(map[string]any); ok {
-				s.rememberItem(item)
+				id, _ := item["id"].(string)
+				if prev, assigned := inf.chainPrev[id]; assigned {
+					ev["previous_item_id"] = prev
+				}
+				if !inf.deleted[id] {
+					s.rememberItem(item)
+				}
 			}
 		case "response.output_audio.delta":
 			s.respondedWithAudio = true // assistant audio reached the client — voice locked
@@ -156,6 +173,7 @@ func (s *Session) beginPacedResponse(respID string, rc *responseCtx, ladder []Ev
 		nextAt:  s.clock().Add(s.paceInterval),
 		onDone:  onDone,
 		emitted: map[string]string{}, partOpened: map[string]bool{},
+		chainPrev: map[string]any{}, deleted: map[string]bool{},
 	}
 	// Keep the final usage block at hand: a cancelled response still bills the
 	// generated tokens, so cancelInflight reports it on its response.done.
@@ -200,11 +218,18 @@ drain:
 		case t == "conversation.item.added":
 			// The announced item's mirror pair still opens during close-out; the
 			// join side effects apply exactly as they would in Tick.
+			s.rewriteChainPrev(inf, ev)
 			s.joinEmittedItem(ev)
 			out = append(out, ev)
 		case t == "conversation.item.done":
 			if item, ok := ev["item"].(map[string]any); ok {
-				s.rememberItem(item) // the final (now incomplete) item — retrieve agrees
+				id, _ := item["id"].(string)
+				if prev, assigned := inf.chainPrev[id]; assigned {
+					ev["previous_item_id"] = prev
+				}
+				if !inf.deleted[id] {
+					s.rememberItem(item) // the final (now incomplete) item — retrieve agrees
+				}
 			}
 			out = append(out, ev)
 		case t == "response.content_part.added":
@@ -274,6 +299,24 @@ drain:
 		}
 	}
 	return append(out, Event{"type": "response.done", "response": cancelled})
+}
+
+// rewriteChainPrev replaces a queued conversation.item.added event's
+// build-time previous_item_id with the conversation tail AT EMISSION, and
+// records the value so the item's paired conversation.item.done matches. The
+// tail can have moved since build: a user turn committed mid-pace, a client
+// item inserted, or the previous tail deleted — the baked value would fork
+// the chain or dangle at an id the server itself rejects.
+func (s *Session) rewriteChainPrev(inf *inflightResponse, ev Event) {
+	item, ok := ev["item"].(map[string]any)
+	if !ok {
+		return
+	}
+	prev := s.previousItemID()
+	ev["previous_item_id"] = prev
+	if id, _ := item["id"].(string); id != "" {
+		inf.chainPrev[id] = prev
+	}
 }
 
 // rewriteContent replaces a content part's text/transcript payload with the
