@@ -36,9 +36,9 @@ func TestPrintStartBanner_HostDisplay(t *testing.T) {
 		{"", "http://localhost:9090"},
 		{"0.0.0.0", "http://localhost:9090"},
 		{"::", "http://localhost:9090"},
-		{"127.0.0.1", "http://127.0.0.1:9090"},        // explicit host echoed verbatim
-		{"example.com", "http://example.com:9090"},    // hostname echoed verbatim
-		{"::1", "http://[::1]:9090"},                   // IPv6 literal bracketed
+		{"127.0.0.1", "http://127.0.0.1:9090"},     // explicit host echoed verbatim
+		{"example.com", "http://example.com:9090"}, // hostname echoed verbatim
+		{"::1", "http://[::1]:9090"},               // IPv6 literal bracketed
 	}
 	for _, c := range cases {
 		var buf bytes.Buffer

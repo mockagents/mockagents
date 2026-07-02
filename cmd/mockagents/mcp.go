@@ -155,23 +155,9 @@ func buildManageRegistry(docs *config.Documents) *engine.AgentRegistry {
 }
 
 func serveMCPHTTP(server *mcp.Server, port int) error {
-	mux := http.NewServeMux()
-	// `/mcp` speaks the current Streamable HTTP transport (single endpoint:
-	// POST/GET/DELETE, Mcp-Session-Id lifecycle, SSE-on-POST, GET resumability).
-	// The legacy POST-only JSON transport is still available at `/mcp/rpc` for
-	// older clients, and `/mcp/notify` pushes a server notification onto every
-	// live streamable session's GET stream.
-	streamable := mcp.NewStreamableHTTPHandler(server)
-	mux.Handle("/mcp", streamable)
-	mux.Handle("/mcp/rpc", mcp.NewHTTPHandler(server))
-	mux.Handle("/mcp/notify", mcp.NewStreamableNotifyHandler(streamable))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "ok")
-	})
-
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", port),
-		Handler:           mux,
+		Handler:           newMCPMux(server),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -195,4 +181,35 @@ func serveMCPHTTP(server *mcp.Server, port int) error {
 		}
 		return err
 	}
+}
+
+// newMCPMux builds the full HTTP route set for `mockagents mcp` — extracted
+// so tests can assert every documented endpoint is actually mounted (R10-1:
+// the bidirectional surface existed for two releases without ever being
+// reachable from a runnable server).
+func newMCPMux(server *mcp.Server) *http.ServeMux {
+	mux := http.NewServeMux()
+	// `/mcp` speaks the current Streamable HTTP transport (single endpoint:
+	// POST/GET/DELETE, Mcp-Session-Id lifecycle, SSE-on-POST, GET resumability).
+	// The legacy POST-only JSON transport is still available at `/mcp/rpc` for
+	// older clients, and `/mcp/notify` pushes a server notification onto every
+	// live streamable session's GET stream.
+	streamable := mcp.NewStreamableHTTPHandler(server)
+	mux.Handle("/mcp", streamable)
+	mux.Handle("/mcp/rpc", mcp.NewHTTPHandler(server))
+	mux.Handle("/mcp/notify", mcp.NewStreamableNotifyHandler(streamable))
+	// The bidirectional/admin surface (v0.3): a server-initiated SSE stream +
+	// the response route back, plus the sampling/roots admin triggers. These
+	// were documented (README, api-spec, all three SDKs' McpClient) but never
+	// mounted, so every sampling/roots flow 404'd against a runnable server
+	// (round-10 R10-1). Routing sampling over the Streamable HTTP GET stream
+	// is the recorded follow-on; this makes the documented surface real.
+	mux.Handle("/mcp/events", mcp.NewEventStreamHandler(server))
+	mux.Handle("/mcp/response", mcp.NewResponseHandler(server))
+	mux.Handle("/mcp/sample", mcp.NewSendRequestHandler(server, "sampling/createMessage"))
+	mux.Handle("/mcp/roots", mcp.NewSendRequestHandler(server, "roots/list"))
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "ok")
+	})
+	return mux
 }
