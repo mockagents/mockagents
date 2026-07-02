@@ -142,6 +142,12 @@ func (s *Session) armIdleTimer() {
 	if s.vad == nil || s.vad.cfg.IdleTimeoutMs <= 0 {
 		return
 	}
+	// Once per stretch of inactivity (Phase 3): the timeout does NOT re-arm
+	// after its own triggered response, or a silent connection would self-prompt
+	// forever. Any user activity clears idleFired and re-allows it.
+	if s.idleFired {
+		return
+	}
 	s.idleAt = s.clock().Add(time.Duration(s.vad.cfg.IdleTimeoutMs) * time.Millisecond)
 }
 
@@ -151,6 +157,7 @@ func (s *Session) armIdleTimer() {
 // continue (history gains the idleTimeoutPlaceholder turn so scenarios can
 // match it).
 func (s *Session) idleTimeout(ctx context.Context) []Event {
+	s.idleFired = true
 	v := s.vad
 	prevItem := s.previousItemID()
 	itemID := s.nextID("item")

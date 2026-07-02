@@ -242,6 +242,37 @@ func TestIdleTimeout(t *testing.T) {
 	}
 }
 
+// The idle timeout fires once per stretch of inactivity: it does not re-arm
+// after its own triggered response (no infinite self-prompt loop), but fresh
+// user speech re-allows it.
+func TestIdleTimeout_FiresOncePerActivity(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("si3", "", fakeGen("still there?"))
+	fc := newFakeClock()
+	s.SetClock(fc.now)
+	enableVAD(t, s, `{"audio":{"input":{"turn_detection":{"type":"server_vad","idle_timeout_ms":5000}}}}`)
+
+	endVADTurn(t, s)
+	evs := s.Tick(ctx, fc.advance(5*time.Second))
+	if firstEvent(evs, "input_audio_buffer.timeout_triggered") == nil {
+		t.Fatalf("first idle fire missing; got %v", typesOf(evs))
+	}
+	// The idle response completed (burst) — no re-arm afterwards.
+	if dl, ok := s.NextDeadline(); ok {
+		t.Fatalf("idle timeout re-armed after its own response (deadline %v) — would self-prompt forever", dl)
+	}
+
+	// Fresh user speech re-allows the timeout.
+	endVADTurn(t, s)
+	if _, ok := s.NextDeadline(); !ok {
+		t.Fatal("idle timeout should re-arm after new user activity")
+	}
+	evs = s.Tick(ctx, fc.advance(5*time.Second))
+	if firstEvent(evs, "input_audio_buffer.timeout_triggered") == nil {
+		t.Errorf("second idle fire (after activity) missing; got %v", typesOf(evs))
+	}
+}
+
 // User activity clears an armed idle timeout.
 func TestIdleTimeout_ClearedByActivity(t *testing.T) {
 	s := NewSession("si2", "", fakeGen("ok"))
