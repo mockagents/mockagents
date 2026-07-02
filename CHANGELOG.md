@@ -133,6 +133,26 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   `ToolResults` (aggregate + final-turn) so these read real injected errors.
 
 ### Fixed
+- **Realtime polish batch (round-3 eval F10/F15–F18)** — (F10) a client-supplied
+  `item.id` on `conversation.item.create` is honored (pre-generated ids can now
+  be truncated/deleted/retrieved; duplicates rejected with `param: "item.id"`),
+  and the event's `previous_item_id` places the item: `"root"` inserts first, a
+  known id inserts after it (the `previous_item_id` chain tail only moves for
+  appends), an unknown id errors `item_not_found` — engine history stays
+  append-order (documented mock simplification). (F15) the `response` envelope
+  now carries `usage` (null until `response.done`), `audio.output`
+  (voice + format), and `max_output_tokens`. (F16) `usage.input_token_details`
+  gains `image_tokens` and `cached_tokens_details` (text/audio/image). (F17)
+  `session.update` now stores and echoes `tracing`, `truncation` (default
+  `"auto"`), `prompt`, `include`, `parallel_tool_calls` (default `true`), and
+  `audio.input.noise_reduction`, and accepts the beta-flat aliases
+  `turn_detection` (validated like the GA nested form) and
+  `input_audio_format`/`output_audio_format` (`"pcm16"`/`"g711_ulaw"`/
+  `"g711_alaw"` translated to GA format objects). (F18)
+  `POST /v1/realtime/client_secrets` reads the GA request shape —
+  `session.audio.output.voice`, `session.instructions`, and
+  `expires_after.seconds` (clamped 10–7200 s, default 60) — and returns a fuller
+  GA session stub.
 - **Realtime `response.create` inline overrides** (round-3 eval) — the inline
   `response` payload was silently ignored. The mock now honors per-response
   `instructions` (override the session system prompt for one turn),

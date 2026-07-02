@@ -55,22 +55,45 @@ func (h *RealtimeHandler) HandleClientSecret(w http.ResponseWriter, r *http.Requ
 	stampProtocol(r, ProtocolOpenAIRealtime)
 
 	var body struct {
-		Model   string `json:"model"`
-		Voice   string `json:"voice"`
+		Model        string `json:"model"` // legacy flat
+		Voice        string `json:"voice"` // legacy flat
+		ExpiresAfter *struct {
+			Anchor  string `json:"anchor"` // only "created_at" is defined
+			Seconds int    `json:"seconds"`
+		} `json:"expires_after"`
 		Session struct {
-			Model string `json:"model"`
-			Voice string `json:"voice"`
+			Type         string `json:"type"`
+			Model        string `json:"model"`
+			Voice        string `json:"voice"` // beta nested-flat
+			Instructions string `json:"instructions"`
+			Audio        *struct {
+				Output *struct {
+					Voice string `json:"voice"`
+				} `json:"output"`
+			} `json:"audio"`
 		} `json:"session"`
 	}
 	_ = decodeJSONBody(r, &body) // an empty/invalid body is tolerated (all fields optional)
 	defer r.Body.Close()
 
 	model := firstNonEmpty(body.Model, body.Session.Model, realtime.DefaultModel)
-	voice := firstNonEmpty(body.Voice, body.Session.Voice, "alloy")
+	// GA nests the voice at session.audio.output.voice; the beta nested-flat and
+	// legacy flat spellings stay accepted.
+	gaVoice := ""
+	if body.Session.Audio != nil && body.Session.Audio.Output != nil {
+		gaVoice = body.Session.Audio.Output.Voice
+	}
+	voice := firstNonEmpty(gaVoice, body.Session.Voice, body.Voice, "alloy")
+
+	// GA expires_after: {anchor:"created_at", seconds: 10..7200}, default 60 s.
+	expiresIn := 60 * time.Second
+	if body.ExpiresAfter != nil && body.ExpiresAfter.Seconds > 0 {
+		expiresIn = time.Duration(min(max(body.ExpiresAfter.Seconds, 10), 7200)) * time.Second
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"value":      "ek_" + generateID(),
-		"expires_at": time.Now().Add(60 * time.Second).Unix(),
+		"expires_at": time.Now().Add(expiresIn).Unix(),
 		"session": map[string]any{
 			// GA session shape: type:"realtime", output_modalities, and voice nested
 			// under audio.output (not a top-level field).
@@ -79,8 +102,15 @@ func (h *RealtimeHandler) HandleClientSecret(w http.ResponseWriter, r *http.Requ
 			"type":              "realtime",
 			"model":             model,
 			"output_modalities": []string{"audio"}, // GA default: ["audio"] or ["text"], never both
+			"instructions":      body.Session.Instructions,
+			"tools":             []any{},
+			"tool_choice":       "auto",
+			"max_output_tokens": "inf",
 			"audio": map[string]any{
-				"output": map[string]any{"voice": voice},
+				"output": map[string]any{
+					"voice":  voice,
+					"format": map[string]any{"type": "audio/pcm", "rate": 24000},
+				},
 			},
 		},
 	})

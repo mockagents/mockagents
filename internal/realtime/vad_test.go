@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -288,6 +289,37 @@ func TestTranscription_DeltaAndUsage(t *testing.T) {
 	}
 	if usage["seconds"] != 0.48 {
 		t.Errorf("usage.seconds = %v, want 0.48 (480ms of committed audio)", usage["seconds"])
+	}
+}
+
+// F17: the beta-flat aliases work — top-level turn_detection enables (and is
+// validated like) the GA nested form, and beta format strings translate to GA
+// format objects.
+func TestSessionUpdate_BetaAliases(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("sba", "", fakeGen("ok"))
+
+	// Beta-flat turn_detection enables VAD.
+	evs := s.Handle(ctx, &ClientEvent{Type: "session.update",
+		Session: []byte(`{"turn_detection":{"type":"server_vad"},"input_audio_format":"g711_ulaw"}`)})
+	if evs[0]["type"] != "session.updated" {
+		t.Fatalf("beta-flat update rejected: %v", typesOf(evs))
+	}
+	if got := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(200, speechAmp)}); firstEvent(got, "input_audio_buffer.speech_started") == nil {
+		t.Errorf("beta-flat turn_detection did not enable VAD; got %v", typesOf(got))
+	}
+	// The beta format string was translated to the GA object.
+	sess := evs[0]["session"].(map[string]any)
+	format, _ := json.Marshal(sess["audio"].(map[string]any)["input"].(map[string]any)["format"])
+	if string(format) != `{"type":"audio/pcmu"}` {
+		t.Errorf("input format = %s, want the translated GA object", format)
+	}
+
+	// Beta-flat turn_detection is validated too.
+	bad := s.Handle(ctx, &ClientEvent{Type: "session.update",
+		Session: []byte(`{"turn_detection":{"type":"server_vad","threshold":2}}`)})
+	if bad[0]["type"] != "error" || bad[0]["error"].(map[string]any)["code"] != "invalid_value" {
+		t.Errorf("invalid beta-flat turn_detection accepted: %v", bad[0])
 	}
 }
 

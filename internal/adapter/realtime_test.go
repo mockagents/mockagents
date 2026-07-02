@@ -198,6 +198,37 @@ done:
 	require.NoError(t, c.Close(websocket.StatusNormalClosure, ""))
 }
 
+// F18: the GA client_secrets request shape — voice at session.audio.output,
+// instructions echoed, expires_after honored.
+func TestRealtime_ClientSecretGA(t *testing.T) {
+	h := &RealtimeHandler{Engine: testEngine(testOpenAIAgent())}
+	req := httptest.NewRequest("POST", "/v1/realtime/client_secrets",
+		strings.NewReader(`{"expires_after":{"anchor":"created_at","seconds":600},
+			"session":{"type":"realtime","model":"gpt-realtime","instructions":"be kind",
+				"audio":{"output":{"voice":"marin"}}}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	before := time.Now().Unix()
+	h.HandleClientSecret(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	// expires_after.seconds honored (default is 60s; we asked for 600).
+	expiresAt := int64(body["expires_at"].(float64))
+	require.Greater(t, expiresAt, before+500)
+	require.LessOrEqual(t, expiresAt, before+610)
+
+	sess := body["session"].(map[string]any)
+	require.Equal(t, "be kind", sess["instructions"])
+	require.Equal(t, "gpt-realtime", sess["model"])
+	audioOut := sess["audio"].(map[string]any)["output"].(map[string]any)
+	require.Equal(t, "marin", audioOut["voice"])
+	require.NotNil(t, audioOut["format"])
+	require.Equal(t, "auto", sess["tool_choice"])
+	require.Equal(t, "inf", sess["max_output_tokens"])
+}
+
 func TestRealtime_ClientSecret(t *testing.T) {
 	h := &RealtimeHandler{Engine: testEngine(testOpenAIAgent())}
 	req := httptest.NewRequest("POST", "/v1/realtime/client_secrets",
