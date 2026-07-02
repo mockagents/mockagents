@@ -40,9 +40,14 @@ type Generator func(ctx context.Context, model, sessionID string, history []engi
 type ClientEvent struct {
 	Type    string          `json:"type"`
 	EventID string          `json:"event_id,omitempty"`
-	Session json.RawMessage `json:"session,omitempty"` // session.update
-	Item    json.RawMessage `json:"item,omitempty"`    // conversation.item.create
-	Audio   string          `json:"audio,omitempty"`   // input_audio_buffer.append (base64)
+	Session  json.RawMessage `json:"session,omitempty"`  // session.update
+	Item     json.RawMessage `json:"item,omitempty"`     // conversation.item.create
+	Audio    string          `json:"audio,omitempty"`    // input_audio_buffer.append (base64)
+	Response json.RawMessage `json:"response,omitempty"` // response.create inline overrides
+	// conversation.item.retrieve / delete / truncate
+	ItemID       string `json:"item_id,omitempty"`
+	ContentIndex int    `json:"content_index,omitempty"` // truncate
+	AudioEndMs   int    `json:"audio_end_ms,omitempty"`  // truncate
 }
 
 // Event is an outbound server event. The Realtime protocol has dozens of event
@@ -107,6 +112,21 @@ type Session struct {
 	counter      int
 	expiresAt    int64  // unix seconds; emitted in the session object when > 0
 	lastItemID   string // id of the most recently created conversation item ("" → previous_item_id is null)
+	// lastClientEventID is the event_id of the client event currently being
+	// handled; error events echo it as error.event_id (the GA correlation handle).
+	lastClientEventID string
+	// items indexes every completed conversation item by id so
+	// conversation.item.retrieve / delete / truncate can address them.
+	items map[string]map[string]any
+}
+
+// rememberItem indexes a completed conversation item for later retrieve /
+// delete / truncate, and returns it for inline use.
+func (s *Session) rememberItem(item map[string]any) map[string]any {
+	if id, _ := item["id"].(string); id != "" {
+		s.items[id] = item
+	}
+	return item
 }
 
 // previousItemID returns the value for a server event's previous_item_id field:
@@ -143,7 +163,7 @@ func conversationItemEvents(prev any, item map[string]any) []Event {
 // NewSession builds a session with the given id (minted by the caller) and the
 // model from the connection (may be empty → DefaultModel).
 func NewSession(id, model string, gen Generator) *Session {
-	return &Session{id: id, initialModel: model, generate: gen}
+	return &Session{id: id, initialModel: model, generate: gen, items: make(map[string]map[string]any)}
 }
 
 // SetExpiry sets the session's expiry (unix seconds), reported as expires_at in
@@ -162,6 +182,7 @@ func (s *Session) Greeting() []Event {
 // emitted event is stamped with a unique event_id (a required field on all
 // Realtime server events).
 func (s *Session) Handle(ctx context.Context, ce *ClientEvent) []Event {
+	s.lastClientEventID = ce.EventID
 	return s.stamp(s.handle(ctx, ce))
 }
 
@@ -208,10 +229,10 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		}
 		out := append([]Event{
 			{"type": "input_audio_buffer.committed", "previous_item_id": prevItem, "item_id": itemID},
-		}, conversationItemEvents(prevItem, map[string]any{
+		}, conversationItemEvents(prevItem, s.rememberItem(map[string]any{
 			"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 			"role": "user", "content": []any{map[string]any{"type": "input_audio", "transcript": transcript}},
-		})...)
+		}))...)
 		if s.transcriptionEnabled() {
 			out = append(out, Event{
 				"type":    "conversation.item.input_audio_transcription.completed",
@@ -221,22 +242,137 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		return out
 
 	case "conversation.item.create":
-		role, text := parseItem(ce.Item)
+		it := parseItem(ce.Item)
 		prevItem, itemID := s.newConversationItem()
-		if text != "" {
-			s.history = append(s.history, engine.RequestMessage{Role: role, Content: text})
+		switch it.Type {
+		case "function_call_output":
+			// The tool-loop reply. Same history mapping as the Responses
+			// adapters (responsesItemToMessage): role "tool" joins the history
+			// without becoming the matched user message, so a follow-up
+			// response.create can scenario-match on the tool result.
+			s.history = append(s.history, engine.RequestMessage{Role: "tool", Content: it.Output})
+			return conversationItemEvents(prevItem, s.rememberItem(map[string]any{
+				"id": itemID, "object": "realtime.item", "type": "function_call_output", "status": "completed",
+				"call_id": it.CallID, "output": it.Output,
+			}))
+		case "function_call":
+			// An echoed prior tool call (context replay): an assistant turn with
+			// no matchable text, acked with the real function_call item shape.
+			s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: ""})
+			return conversationItemEvents(prevItem, s.rememberItem(map[string]any{
+				"id": itemID, "object": "realtime.item", "type": "function_call", "status": "completed",
+				"call_id": it.CallID, "name": it.Name, "arguments": it.Arguments,
+			}))
+		default:
+			text := it.text()
+			if text != "" {
+				s.history = append(s.history, engine.RequestMessage{Role: it.Role, Content: text})
+			}
+			return conversationItemEvents(prevItem, s.rememberItem(map[string]any{
+				"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
+				"role": it.Role, "content": []any{map[string]any{"type": "input_text", "text": text}},
+			}))
 		}
-		return conversationItemEvents(prevItem, map[string]any{
-			"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
-			"role": role, "content": []any{map[string]any{"type": "input_text", "text": text}},
-		})
 
 	case "response.create":
-		return s.createResponse(ctx)
+		return s.createResponse(ctx, ce)
+
+	case "conversation.item.retrieve":
+		if item, ok := s.items[ce.ItemID]; ok {
+			return []Event{{"type": "conversation.item.retrieved", "item": item}}
+		}
+		return []Event{s.errorEvent("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID))}
+
+	case "conversation.item.delete":
+		if _, ok := s.items[ce.ItemID]; !ok {
+			return []Event{s.errorEvent("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID))}
+		}
+		delete(s.items, ce.ItemID)
+		// Mock simplification: the engine history is not rewritten — deletion
+		// affects retrieval, not scenario matching on prior turns.
+		return []Event{{"type": "conversation.item.deleted", "item_id": ce.ItemID}}
+
+	case "conversation.item.truncate":
+		// The barge-in primitive: a client truncates an assistant audio item at
+		// the point playback stopped. A mock has no audio timeline, so the whole
+		// synthesized transcript past the cut is dropped (real servers remove
+		// the transcript for the truncated span) and the ack echoes the request.
+		item, ok := s.items[ce.ItemID]
+		if !ok {
+			return []Event{s.errorEvent("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID))}
+		}
+		if content, ok := item["content"].([]any); ok {
+			for _, c := range content {
+				if part, ok := c.(map[string]any); ok && part["type"] == "output_audio" {
+					part["transcript"] = ""
+				}
+			}
+		}
+		return []Event{{"type": "conversation.item.truncated",
+			"item_id": ce.ItemID, "content_index": ce.ContentIndex, "audio_end_ms": ce.AudioEndMs}}
+
+	case "response.cancel":
+		// The mock generates responses atomically, so there is never an
+		// in-flight response to cancel. The real API also errors in that
+		// situation — but with this cancel-specific code, which SDKs recognize
+		// and suppress (unknown_event they surface as a protocol failure).
+		return []Event{s.errorEvent("response_cancel_not_active", "Cancellation failed: no active response found")}
 
 	default:
 		return []Event{s.errorEvent("unknown_event", fmt.Sprintf("unknown or unsupported event type %q", ce.Type))}
 	}
+}
+
+// responseConfig is the inline `response` payload of response.create — the GA
+// per-response overrides the mock honors: instructions, output_modalities (or
+// the beta modalities alias), metadata (echoed on the response envelope), and
+// conversation ("none" → out-of-band: the response joins no conversation).
+// Per-response tools and custom `input` context are not supported (the engine's
+// tools come from the agent definition).
+type responseConfig struct {
+	Instructions     string          `json:"instructions"`
+	OutputModalities []string        `json:"output_modalities"`
+	Modalities       []string        `json:"modalities"` // beta alias
+	Metadata         json.RawMessage `json:"metadata"`
+	Conversation     string          `json:"conversation"` // "auto" (default) | "none"
+}
+
+// responseCtx carries one response's effective settings through the ladder:
+// session defaults overlaid with the response.create inline overrides.
+type responseCtx struct {
+	mods         []string
+	outOfBand    bool            // conversation:"none" — no history, no conversation-item mirror, conversation_id null
+	metadata     json.RawMessage // echoed verbatim on the response envelope (nil → null)
+	instructions string
+}
+
+func (s *Session) newResponseCtx(raw json.RawMessage) *responseCtx {
+	rc := &responseCtx{mods: s.outputModalities(), instructions: s.cfg.instructions}
+	var cfg responseConfig
+	if len(raw) > 0 && json.Unmarshal(raw, &cfg) == nil {
+		if len(cfg.OutputModalities) > 0 {
+			rc.mods = cfg.OutputModalities
+		} else if len(cfg.Modalities) > 0 {
+			rc.mods = cfg.Modalities
+		}
+		if cfg.Instructions != "" {
+			rc.instructions = cfg.Instructions
+		}
+		rc.metadata = cfg.Metadata
+		rc.outOfBand = cfg.Conversation == "none"
+	}
+	return rc
+}
+
+// textOnly reports whether this response streams text (mods set and omitting
+// "audio") — mods is never empty (session default is ["audio"]).
+func (rc *responseCtx) textOnly() bool {
+	for _, m := range rc.mods {
+		if m == "audio" {
+			return false
+		}
+	}
+	return true
 }
 
 // createResponse runs the engine on the accumulated history and emits the full
@@ -246,15 +382,16 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 // the response.function_call_arguments.* events a real client drives its tool
 // loop from. The ladder opens with response.created and ends with response.done
 // (whose output lists every item).
-func (s *Session) createResponse(ctx context.Context) []Event {
+func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 	respID := s.nextID("resp")
+	rc := s.newResponseCtx(ce.Response)
 
-	resp, err := s.generate(ctx, s.model(), s.id, s.engineHistory())
+	resp, err := s.generate(ctx, s.model(), s.id, s.engineHistory(rc.instructions))
 	if err != nil {
-		return []Event{s.errorEvent("response_generation_failed", err.Error())}
+		return s.failedResponse(respID, err.Error(), rc)
 	}
 	if resp == nil {
-		return []Event{s.errorEvent("response_generation_failed", "engine returned no response")}
+		return s.failedResponse(respID, "engine returned no response", rc)
 	}
 
 	inputTokens := countTokens(s.history)
@@ -267,13 +404,15 @@ func (s *Session) createResponse(ctx context.Context) []Event {
 	if emitMessage && transcript == "" {
 		transcript = "(no content)"
 	}
-	if emitMessage {
+	// An out-of-band response never joins the default conversation, so its
+	// transcript must not become context for later turns.
+	if emitMessage && !rc.outOfBand {
 		s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: transcript})
 	}
 	outputTokens := wordCount(transcript)
 
 	out := []Event{
-		{"type": "response.created", "response": s.responseObject(respID, "in_progress", []any{})},
+		{"type": "response.created", "response": s.responseObject(respID, "in_progress", []any{}, rc)},
 		// rate_limits.updated is emitted at the start of a response (tokens are
 		// reserved on creation); synthesized deterministically.
 		{"type": "rate_limits.updated", "rate_limits": []any{
@@ -285,15 +424,15 @@ func (s *Session) createResponse(ctx context.Context) []Event {
 	var items []any
 	outputIndex := 0
 	if emitMessage {
-		items = append(items, s.appendMessageLadder(&out, respID, transcript, outputIndex))
+		items = append(items, s.appendMessageLadder(&out, respID, transcript, outputIndex, rc))
 		outputIndex++
 	}
 	for _, tc := range resp.ToolCalls {
-		items = append(items, s.appendFunctionCallLadder(&out, respID, tc, outputIndex))
+		items = append(items, s.appendFunctionCallLadder(&out, respID, tc, outputIndex, rc))
 		outputIndex++
 	}
 
-	done := s.responseObject(respID, "completed", items)
+	done := s.responseObject(respID, "completed", items, rc)
 	done["usage"] = map[string]any{
 		"input_tokens":  inputTokens,
 		"output_tokens": outputTokens,
@@ -307,16 +446,47 @@ func (s *Session) createResponse(ctx context.Context) []Event {
 	return out
 }
 
+// failedResponse emits the GA failure ladder for a response that could not be
+// generated. response.done is ALWAYS emitted no matter the final state — a bare
+// error event alone would leave a client awaiting response.done hanging — so:
+// response.created → error (type server_error, carrying the detail) →
+// response.done (status "failed" + status_details.error).
+func (s *Session) failedResponse(respID, msg string, rc *responseCtx) []Event {
+	failed := s.responseObject(respID, "failed", []any{}, rc)
+	failed["status_details"] = map[string]any{
+		"type": "failed",
+		// status_details.error carries only type+code (GA RealtimeResponseStatus);
+		// the human-readable detail travels on the error event above it.
+		"error": map[string]any{"type": "server_error", "code": "response_generation_failed"},
+	}
+	return []Event{
+		{"type": "response.created", "response": s.responseObject(respID, "in_progress", []any{}, rc)},
+		{"type": "error", "error": s.errorBody("server_error", "response_generation_failed", msg)},
+		{"type": "response.done", "response": failed},
+	}
+}
+
 // responseObject builds the GA `response` envelope shared by response.created and
 // response.done: id/object/status plus the GA fields a client reads off the
-// final event (output_modalities, conversation_id, status_details).
-func (s *Session) responseObject(respID, status string, output []any) map[string]any {
+// final event (output_modalities, conversation_id, status_details, metadata).
+// An out-of-band response (conversation:"none") carries conversation_id null —
+// the discriminator clients use to route side-responses, along with metadata.
+func (s *Session) responseObject(respID, status string, output []any, rc *responseCtx) map[string]any {
+	var convID any
+	if !rc.outOfBand {
+		convID = "conv_" + s.id
+	}
+	var metadata any
+	if len(rc.metadata) > 0 {
+		metadata = rc.metadata
+	}
 	return map[string]any{
 		"id": respID, "object": "realtime.response", "status": status,
 		"status_details":    nil,
 		"output":            output,
-		"output_modalities": s.outputModalities(),
-		"conversation_id":   "conv_" + s.id,
+		"output_modalities": rc.mods,
+		"conversation_id":   convID,
+		"metadata":          metadata,
 	}
 }
 
@@ -325,12 +495,16 @@ func (s *Session) responseObject(respID, status string, output []any) map[string
 // text-only mode (output_modalities without "audio") it streams
 // response.output_text.delta and an output_text content part; otherwise it
 // streams the GA audio ladder (output_audio + output_audio_transcript).
-func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, outputIndex int) map[string]any {
+func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, outputIndex int, rc *responseCtx) map[string]any {
 	itemID := s.nextID("msg")
 	// A response output item joins the conversation: capture what it chains off,
 	// then record it so a later user turn's previous_item_id points at it.
+	// Out-of-band responses (conversation:"none") join nothing — no chain update
+	// and no conversation-item mirror below.
 	prevItem := s.previousItemID()
-	s.lastItemID = itemID
+	if !rc.outOfBand {
+		s.lastItemID = itemID
+	}
 	// GA mirrors a response output item into the conversation: it announces
 	// conversation.item.added when generation of the item starts (in_progress)
 	// and conversation.item.done when it is finalized, alongside the
@@ -340,16 +514,22 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 		"id": itemID, "object": "realtime.item", "type": "message", "status": "in_progress",
 		"role": "assistant", "content": []any{}}
 
-	if s.textOnly() {
-		final := map[string]any{
+	if rc.textOnly() {
+		final := s.rememberItem(map[string]any{
 			"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 			"role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": transcript}},
+		})
+		// NB: the content_part events' part uses the SHORT type names ("text"/
+		// "audio", per the GA Part type on ResponseContentPartAdded/DoneEvent) —
+		// only ITEM content uses "output_text"/"output_audio". The GA API is
+		// asymmetric here; don't "fix" one to match the other.
+		*out = append(*out, Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress})
+		if !rc.outOfBand {
+			*out = append(*out, Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress})
 		}
 		*out = append(*out,
-			Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress},
-			Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress},
 			Event{"type": "response.content_part.added", "response_id": respID, "item_id": itemID,
-				"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "output_text", "text": ""}},
+				"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "text", "text": ""}},
 		)
 		for _, chunk := range chunkText(transcript) {
 			*out = append(*out, Event{"type": "response.output_text.delta", "response_id": respID, "item_id": itemID,
@@ -359,25 +539,31 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 			Event{"type": "response.output_text.done", "response_id": respID, "item_id": itemID,
 				"output_index": outputIndex, "content_index": 0, "text": transcript},
 			Event{"type": "response.content_part.done", "response_id": respID, "item_id": itemID,
-				"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "output_text", "text": transcript}},
+				"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "text", "text": transcript}},
 			Event{"type": "response.output_item.done", "response_id": respID, "output_index": outputIndex, "item": final},
-			Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final},
 		)
+		if !rc.outOfBand {
+			*out = append(*out, Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final})
+		}
 		return final
 	}
 
 	// GA audio ladder: assistant audio is the "output_audio" content part, and the
 	// streamed events are response.output_audio*.delta/.done (not the beta
 	// response.audio*.delta names).
-	final := map[string]any{
+	final := s.rememberItem(map[string]any{
 		"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 		"role": "assistant", "content": []any{map[string]any{"type": "output_audio", "transcript": transcript}},
+	})
+	*out = append(*out, Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress})
+	if !rc.outOfBand {
+		*out = append(*out, Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress})
 	}
 	*out = append(*out,
-		Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress},
-		Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress},
+		// Short part type on content_part events ("audio"), output_audio only on
+		// item content — see the note in the text branch.
 		Event{"type": "response.content_part.added", "response_id": respID, "item_id": itemID,
-			"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "output_audio", "transcript": ""}},
+			"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "audio", "transcript": ""}},
 	)
 	for _, chunk := range chunkText(transcript) {
 		*out = append(*out,
@@ -392,10 +578,12 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 		Event{"type": "response.output_audio_transcript.done", "response_id": respID, "item_id": itemID,
 			"output_index": outputIndex, "content_index": 0, "transcript": transcript},
 		Event{"type": "response.content_part.done", "response_id": respID, "item_id": itemID,
-			"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "output_audio", "transcript": transcript}},
+			"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "audio", "transcript": transcript}},
 		Event{"type": "response.output_item.done", "response_id": respID, "output_index": outputIndex, "item": final},
-		Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final},
 	)
+	if !rc.outOfBand {
+		*out = append(*out, Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final})
+	}
 	return final
 }
 
@@ -404,13 +592,16 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 // completed item. This is what a Realtime client's tool loop consumes: it reads
 // call_id + name + assembled arguments, runs the tool, and sends the result back
 // as a conversation.item.create of type function_call_output.
-func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types.ToolCallSpec, outputIndex int) map[string]any {
+func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types.ToolCallSpec, outputIndex int, rc *responseCtx) map[string]any {
 	itemID := s.nextID("fc")
 	callID := s.nextID("call")
 	// A function_call output item joins the conversation: capture what it chains
 	// off, then record it so a later user turn's previous_item_id points at it.
+	// (Out-of-band responses join nothing — see appendMessageLadder.)
 	prevItem := s.previousItemID()
-	s.lastItemID = itemID
+	if !rc.outOfBand {
+		s.lastItemID = itemID
+	}
 	// raw_arguments lets a scenario plant malformed/invalid JSON args verbatim
 	// (FB-03) to exercise a client's tool-arg parser; otherwise marshal the
 	// structured Arguments. Mirrors adapter/openai.go and the streaming paths.
@@ -422,37 +613,44 @@ func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types
 	inProgress := map[string]any{
 		"id": itemID, "object": "realtime.item", "type": "function_call", "status": "in_progress",
 		"name": tc.Name, "call_id": callID, "arguments": ""}
-	final := map[string]any{
+	final := s.rememberItem(map[string]any{
 		"id": itemID, "object": "realtime.item", "type": "function_call", "status": "completed",
 		"name": tc.Name, "call_id": callID, "arguments": args,
-	}
+	})
 	// GA mirrors the item into the conversation (added at generation start, done
 	// when finalized) alongside the response.output_item.* events.
-	*out = append(*out,
-		Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress},
-		Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress},
-	)
+	*out = append(*out, Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress})
+	if !rc.outOfBand {
+		*out = append(*out, Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress})
+	}
+	// NB: no content_index on the function_call_arguments events — a function_call
+	// item has no content parts, and the GA SDK types
+	// (ResponseFunctionCallArgumentsDelta/DoneEvent) carry only call_id/delta/
+	// arguments/item_id/output_index/response_id.
 	for _, chunk := range chunkArgs(args) {
 		*out = append(*out, Event{"type": "response.function_call_arguments.delta", "response_id": respID, "item_id": itemID,
-			"output_index": outputIndex, "content_index": 0, "call_id": callID, "delta": chunk})
+			"output_index": outputIndex, "call_id": callID, "delta": chunk})
 	}
 	*out = append(*out,
 		Event{"type": "response.function_call_arguments.done", "response_id": respID, "item_id": itemID,
-			"output_index": outputIndex, "content_index": 0, "call_id": callID, "arguments": args},
+			"output_index": outputIndex, "call_id": callID, "arguments": args},
 		Event{"type": "response.output_item.done", "response_id": respID, "output_index": outputIndex, "item": final},
-		Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final},
 	)
+	if !rc.outOfBand {
+		*out = append(*out, Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final})
+	}
 	return final
 }
 
 // engineHistory is the conversation handed to the engine, prepended with the
-// session instructions as a system message when one is set.
-func (s *Session) engineHistory() []engine.RequestMessage {
-	if s.cfg.instructions == "" {
+// given instructions (the response override, or the session default the caller
+// resolved) as a system message when non-empty.
+func (s *Session) engineHistory(instructions string) []engine.RequestMessage {
+	if instructions == "" {
 		return s.history
 	}
 	out := make([]engine.RequestMessage, 0, len(s.history)+1)
-	out = append(out, engine.RequestMessage{Role: "system", Content: s.cfg.instructions})
+	out = append(out, engine.RequestMessage{Role: "system", Content: instructions})
 	return append(out, s.history...)
 }
 
@@ -506,26 +704,15 @@ func (s *Session) sessionObject() map[string]any {
 	return obj
 }
 
-// outputModalities resolves the effective response modalities, defaulting to
-// both. (applyConfig already folds the beta `modalities` alias into this field.)
+// outputModalities resolves the effective response modalities. The GA default
+// is ["audio"] — per the GA types, output_modalities is only ever ["audio"] OR
+// ["text"], never both (audio output always includes a text transcript).
+// (applyConfig already folds the beta `modalities` alias into this field.)
 func (s *Session) outputModalities() []string {
 	if len(s.cfg.outputModalities) > 0 {
 		return s.cfg.outputModalities
 	}
-	return []string{"audio", "text"}
-}
-
-// textOnly reports whether the client asked for a text-only response (modalities
-// were set and do not include "audio").
-func (s *Session) textOnly() bool {
-	// outputModalities() never returns an empty slice (it defaults to both), so
-	// reaching here means modalities were set and omit "audio" → text-only.
-	for _, m := range s.outputModalities() {
-		if m == "audio" {
-			return false
-		}
-	}
-	return true
+	return []string{"audio"}
 }
 
 // transcriptionEnabled reports whether the client configured input audio
@@ -598,9 +785,22 @@ func (s *Session) applyConfig(raw json.RawMessage) {
 	}
 }
 
+// errorEvent builds a client-error event. The GA error object carries five
+// fields: type, code, message, param (null unless a specific field is at
+// fault), and event_id — the id of the CLIENT event that caused the error,
+// which SDKs use to correlate errors to their requests.
 func (s *Session) errorEvent(code, msg string) Event {
-	return Event{"type": "error", "error": map[string]any{
-		"type": "invalid_request_error", "code": code, "message": msg}}
+	return Event{"type": "error", "error": s.errorBody("invalid_request_error", code, msg)}
+}
+
+// errorBody builds the GA error object shared by errorEvent and the failed-
+// response ladder (which uses type "server_error").
+func (s *Session) errorBody(typ, code, msg string) map[string]any {
+	var evID any
+	if s.lastClientEventID != "" {
+		evID = s.lastClientEventID
+	}
+	return map[string]any{"type": typ, "code": code, "message": msg, "param": nil, "event_id": evID}
 }
 
 func (s *Session) nextID(prefix string) string {
@@ -612,31 +812,49 @@ func (s *Session) nextID(prefix string) string {
 
 // parseItem extracts the role and text from a conversation.item.create item. It
 // accepts the Realtime content array ([{type:input_text|text, text:"..."}]).
-func parseItem(raw json.RawMessage) (role, text string) {
-	if len(raw) == 0 {
-		return "user", ""
-	}
-	var item struct {
-		Role    string `json:"role"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(raw, &item); err != nil {
-		return "user", ""
-	}
-	role = item.Role
-	if role == "" {
-		role = "user"
-	}
+// parsedItem is the decoded subset of a conversation.item.create payload the
+// mock acts on, discriminated by Type the same way the Responses adapter's
+// responsesItemToMessage is: "message" (role + content text), "function_call"
+// (an echoed prior tool call), or "function_call_output" (the tool-loop reply).
+type parsedItem struct {
+	Type      string `json:"type"`
+	Role      string `json:"role"`
+	CallID    string `json:"call_id"`
+	Output    string `json:"output"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+	Content   []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+// text joins the item's content-part texts (the mock's matchable payload).
+func (it *parsedItem) text() string {
 	var parts []string
-	for _, c := range item.Content {
+	for _, c := range it.Content {
 		if c.Text != "" {
 			parts = append(parts, c.Text)
 		}
 	}
-	return role, strings.Join(parts, " ")
+	return strings.Join(parts, " ")
+}
+
+func parseItem(raw json.RawMessage) parsedItem {
+	item := parsedItem{Type: "message", Role: "user"}
+	if len(raw) == 0 {
+		return item
+	}
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return parsedItem{Type: "message", Role: "user"}
+	}
+	if item.Type == "" {
+		item.Type = "message"
+	}
+	if item.Role == "" {
+		item.Role = "user"
+	}
+	return item
 }
 
 // chunkText splits a transcript into word chunks (each keeping its trailing

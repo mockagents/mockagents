@@ -73,7 +73,7 @@ func (h *RealtimeHandler) HandleClientSecret(w http.ResponseWriter, r *http.Requ
 			"object":            "realtime.session",
 			"type":              "realtime",
 			"model":             model,
-			"output_modalities": []string{"audio", "text"},
+			"output_modalities": []string{"audio"}, // GA default: ["audio"] or ["text"], never both
 			"audio": map[string]any{
 				"output": map[string]any{"voice": voice},
 			},
@@ -119,8 +119,10 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 		}
 		var ce realtime.ClientEvent
 		if err := json.Unmarshal(data, &ce); err != nil {
+			// GA error object shape: param is null and event_id (the offending
+			// client event's id) is unknowable for a body that didn't parse.
 			if writeEvent(ctx, c, realtime.Event{"type": "error", "event_id": "event_" + generateID(), "error": map[string]any{
-				"type": "invalid_request_error", "message": "event is not valid JSON"}}) != nil {
+				"type": "invalid_request_error", "message": "event is not valid JSON", "param": nil, "event_id": nil}}) != nil {
 				return
 			}
 			continue
