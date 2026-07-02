@@ -285,7 +285,16 @@ func (s *Session) vadEndOfTurn(ctx context.Context) []Event {
 	endMs := v.totalMs
 	out := []Event{{"type": "input_audio_buffer.speech_stopped",
 		"audio_end_ms": int(endMs), "item_id": v.pendingItemID}}
+	s.vadCommitting = true
 	out = append(out, s.handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"})...)
+	s.vadCommitting = false
+	// Belt-and-braces: if the commit somehow failed, the speech cycle must
+	// still close — a hot cycle re-fires end-of-turn on every silent append
+	// (duplicate speech_stopped + duplicate responses for one utterance).
+	if v.speechActive {
+		s.vadReset()
+		return out
+	}
 	// A transcription-only session ends here: commit + transcription ladder,
 	// never a model response.
 	if s.isTranscription() {

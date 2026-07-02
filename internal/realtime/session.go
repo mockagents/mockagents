@@ -209,6 +209,10 @@ type Session struct {
 	// audio — the event's documented purpose. Item .added/.done events always
 	// EXCLUDE audio; only the stored item carries it.
 	audioBuf []byte
+	// vadCommitting marks a commit initiated by the server's own turn
+	// detection (vadEndOfTurn) — client-commit validation (the 100 ms floor)
+	// does not apply to the server's own segmentation.
+	vadCommitting bool
 }
 
 // maxBufferedAudioBytes bounds the per-turn audio kept for retrieve (~40 s of
@@ -462,14 +466,17 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		return []Event{{"type": "input_audio_buffer.cleared"}}
 
 	case "input_audio_buffer.commit":
-		// GA rejects both empty AND sub-100 ms buffers with this code — one of
-		// the most-hit realtime errors in real integrations; message texts
-		// match the GA captures.
+		// GA rejects both empty AND sub-100 ms CLIENT commits with this code —
+		// one of the most-hit realtime errors in real integrations; message
+		// texts match the GA captures. The server's own VAD end-of-turn commit
+		// bypasses the floor: a real server never rejects its own
+		// segmentation (round-8 R8-1 — the rejection mid-VAD-flow produced a
+		// client-shaped error, a context-free response, and a re-fired turn).
 		if !s.audioBuffer {
 			return []Event{s.errorEvent("input_audio_buffer_commit_empty",
 				"Error committing input audio buffer: the buffer is empty.")}
 		}
-		if s.bufferedMs < 100 {
+		if s.bufferedMs < 100 && !s.vadCommitting {
 			return []Event{s.errorEvent("input_audio_buffer_commit_empty", fmt.Sprintf(
 				"Error committing input audio buffer: buffer too small. Expected at least 100ms of audio, but buffer only has %.2fms of audio.", s.bufferedMs))}
 		}
