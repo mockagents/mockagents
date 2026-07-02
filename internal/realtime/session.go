@@ -221,15 +221,37 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		return out
 
 	case "conversation.item.create":
-		role, text := parseItem(ce.Item)
+		it := parseItem(ce.Item)
 		prevItem, itemID := s.newConversationItem()
-		if text != "" {
-			s.history = append(s.history, engine.RequestMessage{Role: role, Content: text})
+		switch it.Type {
+		case "function_call_output":
+			// The tool-loop reply. Same history mapping as the Responses
+			// adapters (responsesItemToMessage): role "tool" joins the history
+			// without becoming the matched user message, so a follow-up
+			// response.create can scenario-match on the tool result.
+			s.history = append(s.history, engine.RequestMessage{Role: "tool", Content: it.Output})
+			return conversationItemEvents(prevItem, map[string]any{
+				"id": itemID, "object": "realtime.item", "type": "function_call_output", "status": "completed",
+				"call_id": it.CallID, "output": it.Output,
+			})
+		case "function_call":
+			// An echoed prior tool call (context replay): an assistant turn with
+			// no matchable text, acked with the real function_call item shape.
+			s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: ""})
+			return conversationItemEvents(prevItem, map[string]any{
+				"id": itemID, "object": "realtime.item", "type": "function_call", "status": "completed",
+				"call_id": it.CallID, "name": it.Name, "arguments": it.Arguments,
+			})
+		default:
+			text := it.text()
+			if text != "" {
+				s.history = append(s.history, engine.RequestMessage{Role: it.Role, Content: text})
+			}
+			return conversationItemEvents(prevItem, map[string]any{
+				"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
+				"role": it.Role, "content": []any{map[string]any{"type": "input_text", "text": text}},
+			})
 		}
-		return conversationItemEvents(prevItem, map[string]any{
-			"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
-			"role": role, "content": []any{map[string]any{"type": "input_text", "text": text}},
-		})
 
 	case "response.create":
 		return s.createResponse(ctx)
@@ -345,11 +367,15 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 			"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 			"role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": transcript}},
 		}
+		// NB: the content_part events' part uses the SHORT type names ("text"/
+		// "audio", per the GA Part type on ResponseContentPartAdded/DoneEvent) —
+		// only ITEM content uses "output_text"/"output_audio". The GA API is
+		// asymmetric here; don't "fix" one to match the other.
 		*out = append(*out,
 			Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress},
 			Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress},
 			Event{"type": "response.content_part.added", "response_id": respID, "item_id": itemID,
-				"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "output_text", "text": ""}},
+				"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "text", "text": ""}},
 		)
 		for _, chunk := range chunkText(transcript) {
 			*out = append(*out, Event{"type": "response.output_text.delta", "response_id": respID, "item_id": itemID,
@@ -359,7 +385,7 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 			Event{"type": "response.output_text.done", "response_id": respID, "item_id": itemID,
 				"output_index": outputIndex, "content_index": 0, "text": transcript},
 			Event{"type": "response.content_part.done", "response_id": respID, "item_id": itemID,
-				"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "output_text", "text": transcript}},
+				"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "text", "text": transcript}},
 			Event{"type": "response.output_item.done", "response_id": respID, "output_index": outputIndex, "item": final},
 			Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final},
 		)
@@ -376,8 +402,10 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 	*out = append(*out,
 		Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress},
 		Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress},
+		// Short part type on content_part events ("audio"), output_audio only on
+		// item content — see the note in the text branch.
 		Event{"type": "response.content_part.added", "response_id": respID, "item_id": itemID,
-			"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "output_audio", "transcript": ""}},
+			"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "audio", "transcript": ""}},
 	)
 	for _, chunk := range chunkText(transcript) {
 		*out = append(*out,
@@ -392,7 +420,7 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 		Event{"type": "response.output_audio_transcript.done", "response_id": respID, "item_id": itemID,
 			"output_index": outputIndex, "content_index": 0, "transcript": transcript},
 		Event{"type": "response.content_part.done", "response_id": respID, "item_id": itemID,
-			"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "output_audio", "transcript": transcript}},
+			"output_index": outputIndex, "content_index": 0, "part": map[string]any{"type": "audio", "transcript": transcript}},
 		Event{"type": "response.output_item.done", "response_id": respID, "output_index": outputIndex, "item": final},
 		Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final},
 	)
@@ -432,13 +460,17 @@ func (s *Session) appendFunctionCallLadder(out *[]Event, respID string, tc types
 		Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress},
 		Event{"type": "conversation.item.added", "previous_item_id": prevItem, "item": inProgress},
 	)
+	// NB: no content_index on the function_call_arguments events — a function_call
+	// item has no content parts, and the GA SDK types
+	// (ResponseFunctionCallArgumentsDelta/DoneEvent) carry only call_id/delta/
+	// arguments/item_id/output_index/response_id.
 	for _, chunk := range chunkArgs(args) {
 		*out = append(*out, Event{"type": "response.function_call_arguments.delta", "response_id": respID, "item_id": itemID,
-			"output_index": outputIndex, "content_index": 0, "call_id": callID, "delta": chunk})
+			"output_index": outputIndex, "call_id": callID, "delta": chunk})
 	}
 	*out = append(*out,
 		Event{"type": "response.function_call_arguments.done", "response_id": respID, "item_id": itemID,
-			"output_index": outputIndex, "content_index": 0, "call_id": callID, "arguments": args},
+			"output_index": outputIndex, "call_id": callID, "arguments": args},
 		Event{"type": "response.output_item.done", "response_id": respID, "output_index": outputIndex, "item": final},
 		Event{"type": "conversation.item.done", "previous_item_id": prevItem, "item": final},
 	)
@@ -506,13 +538,15 @@ func (s *Session) sessionObject() map[string]any {
 	return obj
 }
 
-// outputModalities resolves the effective response modalities, defaulting to
-// both. (applyConfig already folds the beta `modalities` alias into this field.)
+// outputModalities resolves the effective response modalities. The GA default
+// is ["audio"] — per the GA types, output_modalities is only ever ["audio"] OR
+// ["text"], never both (audio output always includes a text transcript).
+// (applyConfig already folds the beta `modalities` alias into this field.)
 func (s *Session) outputModalities() []string {
 	if len(s.cfg.outputModalities) > 0 {
 		return s.cfg.outputModalities
 	}
-	return []string{"audio", "text"}
+	return []string{"audio"}
 }
 
 // textOnly reports whether the client asked for a text-only response (modalities
@@ -612,31 +646,49 @@ func (s *Session) nextID(prefix string) string {
 
 // parseItem extracts the role and text from a conversation.item.create item. It
 // accepts the Realtime content array ([{type:input_text|text, text:"..."}]).
-func parseItem(raw json.RawMessage) (role, text string) {
-	if len(raw) == 0 {
-		return "user", ""
-	}
-	var item struct {
-		Role    string `json:"role"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(raw, &item); err != nil {
-		return "user", ""
-	}
-	role = item.Role
-	if role == "" {
-		role = "user"
-	}
+// parsedItem is the decoded subset of a conversation.item.create payload the
+// mock acts on, discriminated by Type the same way the Responses adapter's
+// responsesItemToMessage is: "message" (role + content text), "function_call"
+// (an echoed prior tool call), or "function_call_output" (the tool-loop reply).
+type parsedItem struct {
+	Type      string `json:"type"`
+	Role      string `json:"role"`
+	CallID    string `json:"call_id"`
+	Output    string `json:"output"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+	Content   []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+// text joins the item's content-part texts (the mock's matchable payload).
+func (it *parsedItem) text() string {
 	var parts []string
-	for _, c := range item.Content {
+	for _, c := range it.Content {
 		if c.Text != "" {
 			parts = append(parts, c.Text)
 		}
 	}
-	return role, strings.Join(parts, " ")
+	return strings.Join(parts, " ")
+}
+
+func parseItem(raw json.RawMessage) parsedItem {
+	item := parsedItem{Type: "message", Role: "user"}
+	if len(raw) == 0 {
+		return item
+	}
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return parsedItem{Type: "message", Role: "user"}
+	}
+	if item.Type == "" {
+		item.Type = "message"
+	}
+	if item.Role == "" {
+		item.Role = "user"
+	}
+	return item
 }
 
 // chunkText splits a transcript into word chunks (each keeping its trailing

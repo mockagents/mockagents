@@ -73,7 +73,7 @@ func (h *RealtimeHandler) HandleClientSecret(w http.ResponseWriter, r *http.Requ
 			"object":            "realtime.session",
 			"type":              "realtime",
 			"model":             model,
-			"output_modalities": []string{"audio", "text"},
+			"output_modalities": []string{"audio"}, // GA default: ["audio"] or ["text"], never both
 			"audio": map[string]any{
 				"output": map[string]any{"voice": voice},
 			},

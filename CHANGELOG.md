@@ -79,6 +79,25 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   `ToolResults` (aggregate + final-turn) so these read real injected errors.
 
 ### Fixed
+- **Realtime tool loop: `function_call_output` items now work** (round-3 eval) —
+  a client answering a `function_call` with `conversation.item.create`
+  `{type:"function_call_output", call_id, output}` previously had the item
+  mangled into an empty user *message* (its ack carried the wrong item shape)
+  and the output never reached the engine, so follow-up scenario matching could
+  not see tool results. The item is now parsed by type (mirroring the Responses
+  adapter's mapping): the output joins history as a `tool` turn and the ack
+  echoes the real `function_call_output` item (`call_id` + `output`). Echoed
+  `function_call` items (context replay) are likewise acked with their real
+  shape instead of a message rewrite.
+- **Realtime GA wire-shape corrections** (round-3 eval, verified against the GA
+  SDK types): the `response.content_part.added`/`.done` events' `part.type` now
+  uses the GA short names `"text"`/`"audio"` (item *content* correctly keeps
+  `output_text`/`output_audio` — the GA API is asymmetric here); the default
+  `output_modalities` is now `["audio"]` (GA responses are only ever `["audio"]`
+  or `["text"]`, never both); and the spurious `content_index` field added to
+  `response.function_call_arguments.delta`/`.done` by the round-2 sweep is
+  removed (a `function_call` item has no content parts; the GA event types omit
+  it).
 - **Realtime GA `conversation.item.added` / `conversation.item.done`** — the mock
   announced a new conversation item with the beta `conversation.item.created`
   event; the GA dialect replaced it with an `added` → `done` pair. Both are now
@@ -99,9 +118,8 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   failure mid-`message/stream`, `serveStream` now aborts the SSE stream instead of
   `continue`-ing, which could emit a stream that looks complete but is missing a
   frame (including the terminal `final: true` status-update).
-- **Fidelity polish (round-2 eval, minor gaps)** — Realtime: the
-  `response.function_call_arguments.delta`/`.done` events now carry
-  `content_index`; `response.done` usage adds the GA per-modality
+- **Fidelity polish (round-2 eval, minor gaps)** — Realtime: `response.done`
+  usage adds the GA per-modality
   `input_token_details`/`output_token_details`; and the `response` envelope
   (created + done) now carries `output_modalities`, `conversation_id`, and
   `status_details`. Runner: numeric tolerance in `tool_call_args` now covers every

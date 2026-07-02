@@ -285,6 +285,62 @@ func TestSession_ResponseLadder_ConversationItemMirror(t *testing.T) {
 	}
 }
 
+// The tool loop: a client answers a function_call with a function_call_output
+// item. The ack must echo the real item shape (not a message), and the output
+// must reach engine history as a tool turn so follow-up scenario matching sees it.
+func TestSession_FunctionCallOutputItem(t *testing.T) {
+	ctx := context.Background()
+	var gotHistory []engine.RequestMessage
+	gen := func(_ context.Context, _, _ string, history []engine.RequestMessage) (*engine.Response, error) {
+		gotHistory = history
+		return &engine.Response{Content: "The weather is sunny."}, nil
+	}
+	s := NewSession("st", "gpt-realtime", gen)
+
+	evs := s.Handle(ctx, &ClientEvent{
+		Type: "conversation.item.create",
+		Item: []byte(`{"type":"function_call_output","call_id":"call_1","output":"{\"temp\":22}"}`),
+	})
+	added := firstEvent(evs, "conversation.item.added")
+	if added == nil {
+		t.Fatalf("no conversation.item.added; events = %v", typesOf(evs))
+	}
+	item := added["item"].(map[string]any)
+	if item["type"] != "function_call_output" || item["call_id"] != "call_1" || item["output"] != `{"temp":22}` {
+		t.Errorf("ack item = %v, want a function_call_output echo", item)
+	}
+	if _, hasRole := item["role"]; hasRole {
+		t.Error("function_call_output ack must not carry a message role")
+	}
+
+	// The tool result joins engine history as a tool turn (the same mapping the
+	// Responses adapters use), visible to the next response.create.
+	s.Handle(ctx, &ClientEvent{Type: "response.create"})
+	found := false
+	for _, m := range gotHistory {
+		if m.Role == "tool" && m.Content == `{"temp":22}` {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("tool output not in engine history as a tool turn: %+v", gotHistory)
+	}
+}
+
+// An echoed prior function_call item (context replay) is acked with the real
+// function_call shape, not rewritten into a message.
+func TestSession_FunctionCallItemEcho(t *testing.T) {
+	s := NewSession("sf", "", fakeGen("ok"))
+	evs := s.Handle(context.Background(), &ClientEvent{
+		Type: "conversation.item.create",
+		Item: []byte(`{"type":"function_call","call_id":"call_9","name":"get_weather","arguments":"{}"}`),
+	})
+	item := firstEvent(evs, "conversation.item.added")["item"].(map[string]any)
+	if item["type"] != "function_call" || item["name"] != "get_weather" || item["call_id"] != "call_9" {
+		t.Errorf("function_call ack item = %v", item)
+	}
+}
+
 func TestSession_UnknownEvent(t *testing.T) {
 	s := NewSession("s4", "", fakeGen("ok"))
 	evs := s.Handle(context.Background(), &ClientEvent{Type: "totally.bogus"})
@@ -407,10 +463,17 @@ func TestSession_TextOnlyModality(t *testing.T) {
 	if contains(tps, "response.output_audio.delta") {
 		t.Errorf("text-only response must not stream audio; got %v", tps)
 	}
-	// The content part is output_text.
+	// The content_part events use the SHORT part type ("text"), unlike item
+	// content which uses "output_text" — the GA API is asymmetric here.
 	part := firstEvent(ev, "response.content_part.added")["part"].(map[string]any)
-	if part["type"] != "output_text" {
-		t.Errorf("content part type = %v, want output_text", part["type"])
+	if part["type"] != "text" {
+		t.Errorf("content part type = %v, want text", part["type"])
+	}
+	// Item content keeps the long name.
+	item := firstEvent(ev, "response.output_item.done")["item"].(map[string]any)
+	content := item["content"].([]any)[0].(map[string]any)
+	if content["type"] != "output_text" {
+		t.Errorf("item content type = %v, want output_text", content["type"])
 	}
 }
 
@@ -424,6 +487,10 @@ func TestSession_GASessionObject(t *testing.T) {
 		if _, ok := sess[k]; !ok {
 			t.Errorf("GA session object missing %q", k)
 		}
+	}
+	// GA default output_modalities is ["audio"] — never ["audio","text"].
+	if mods, _ := sess["output_modalities"].([]string); len(mods) != 1 || mods[0] != "audio" {
+		t.Errorf("default output_modalities = %v, want [audio]", sess["output_modalities"])
 	}
 	// The beta top-level voice/modalities must NOT be present.
 	if _, ok := sess["voice"]; ok {
@@ -546,9 +613,13 @@ func TestSession_ResponseEnvelopeAndUsageDetails(t *testing.T) {
 	if _, ok := usage["output_token_details"]; !ok {
 		t.Error("usage missing output_token_details")
 	}
-	// Function-call argument events carry content_index.
-	d := firstEvent(ev, "response.function_call_arguments.delta")
-	if _, ok := d["content_index"]; !ok {
-		t.Error("function_call_arguments.delta missing content_index")
+	// Function-call argument events must NOT carry content_index — a
+	// function_call item has no content parts and the GA event types omit it.
+	// (Round-3 eval reversed the round-2 assumption here, verified against the
+	// GA SDK ResponseFunctionCallArgumentsDelta/DoneEvent types.)
+	for _, typ := range []string{"response.function_call_arguments.delta", "response.function_call_arguments.done"} {
+		if _, ok := firstEvent(ev, typ)["content_index"]; ok {
+			t.Errorf("%s must not carry content_index", typ)
+		}
 	}
 }
