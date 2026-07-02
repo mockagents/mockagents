@@ -208,11 +208,12 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 	// Convert to engine request.
 	convertedMsgs, imageCount := convertAnthropicMessages(req.Messages, req.System)
 	inbound := &engine.InboundRequest{
-		Model:      req.Model,
-		SessionID:  extractSessionID(r),
-		Messages:   convertedMsgs,
-		Stream:     req.Stream,
-		ToolChoice: parseAnthropicToolChoice(req.ToolChoice),
+		Model:            req.Model,
+		SessionID:        extractSessionID(r),
+		Messages:         convertedMsgs,
+		Stream:           req.Stream,
+		ToolChoice:       parseAnthropicToolChoice(req.ToolChoice),
+		RequestToolNames: anthropicToolNames(req.Tools),
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID
@@ -380,6 +381,21 @@ func convertAnthropicMessages(msgs []AnthropicMessage, system any) ([]engine.Req
 		result = append(result, rm)
 	}
 	return result, totalImages
+}
+
+// anthropicToolNames collects the request's declared tool names — the set a
+// named tool_choice is validated against (round-11).
+func anthropicToolNames(tools []AnthropicTool) []string {
+	if len(tools) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if t.Name != "" {
+			names = append(names, t.Name)
+		}
+	}
+	return names
 }
 
 // parseAnthropicToolChoice maps the Anthropic tool_choice object into the

@@ -32,6 +32,9 @@ type InboundRequest struct {
 	// AllowedNames/ParallelDisabled are enforced only under the strict-tools
 	// knob (see StrictToolsFor).
 	ToolChoice ToolChoice `json:"tool_choice,omitzero"`
+	// RequestToolNames are the tool/function names the REQUEST declared —
+	// what a real API validates a named tool_choice against (round-11).
+	RequestToolNames []string `json:"request_tool_names,omitempty"`
 }
 
 // ToolChoice is the parsed tool_choice + parallel-call contract shared by
@@ -217,17 +220,32 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 	// log) instead of failing.
 	strictModes := StrictToolsFor(agent)
 	var strictWarnings []string
+	strictViolation := func(v *StrictToolError, mode StrictMode) error {
+		if mode == StrictEnforce {
+			if traceOn {
+				observability.RecordError(span, v)
+			}
+			return v
+		}
+		strictWarnings = append(strictWarnings, v.Message)
+		e.Logger.Warn("strict-tools violation (warn mode)",
+			"agent", agent.Metadata.Name, "check", v.Check, "kind", v.Kind, "violation", v.Message)
+		return nil
+	}
 	if strictModes.IDs != StrictOff {
 		if v := validateRoundTripIDs(req.Messages); v != nil {
-			if strictModes.IDs == StrictEnforce {
-				if traceOn {
-					observability.RecordError(span, v)
-				}
-				return nil, v
+			if err := strictViolation(v, strictModes.IDs); err != nil {
+				return nil, err
 			}
-			strictWarnings = append(strictWarnings, v.Message)
-			e.Logger.Warn("strict-tools violation (warn mode)",
-				"agent", agent.Metadata.Name, "check", v.Check, "kind", v.Kind, "violation", v.Message)
+		}
+	}
+	if strictModes.ToolChoice != StrictOff {
+		// A named tool_choice must exist among the request's declared tools —
+		// real APIs 400 it before any generation.
+		if v := validateToolChoiceName(req.ToolChoice, req.RequestToolNames); v != nil {
+			if err := strictViolation(v, strictModes.ToolChoice); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -307,6 +325,21 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 			e.Logger.Info("tool_choice none: scenario tool calls suppressed",
 				"agent", agent.Metadata.Name, "scenario", scenario.Name)
 			resp.ToolCalls = nil
+		}
+
+		// Strict tool_choice forcing + parallel cap (round-11 R9-16a): under
+		// required/named forcing a real API always returns a call, so strict
+		// mode synthesizes it when the scenario didn't; warn mode only
+		// records what strict would have changed. Runs BEFORE tool
+		// processing so synthesized calls get results too.
+		if strictModes.ToolChoice != StrictOff {
+			if tcw := applyStrictToolChoice(req.ToolChoice, strictModes.ToolChoice, resp, agent, req.RequestToolNames); len(tcw) > 0 {
+				strictWarnings = append(strictWarnings, tcw...)
+				for _, wmsg := range tcw {
+					e.Logger.Warn("strict-tools violation (warn mode)",
+						"agent", agent.Metadata.Name, "check", "tool_choice", "violation", wmsg)
+				}
+			}
 		}
 
 		if traceOn {

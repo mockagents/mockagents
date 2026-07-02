@@ -323,11 +323,12 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 	}
 
 	inbound := &engine.InboundRequest{
-		Model:      req.Model,
-		SessionID:  responsesSessionID(r, req.PreviousResponseID),
-		Messages:   messages,
-		Stream:     req.Stream,
-		ToolChoice: parseResponsesToolChoice(req.ToolChoice, req.ParallelToolCalls),
+		Model:            req.Model,
+		SessionID:        responsesSessionID(r, req.PreviousResponseID),
+		Messages:         messages,
+		Stream:           req.Stream,
+		ToolChoice:       parseResponsesToolChoice(req.ToolChoice, req.ParallelToolCalls),
+		RequestToolNames: responsesToolNames(req.Tools),
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID
@@ -482,6 +483,32 @@ func parseResponsesInput(raw json.RawMessage) ([]engine.RequestMessage, error) {
 		msgs = append(msgs, responsesItemToMessage(it.Type, it.Role, it.Content, it.Output, it.Name, it.Arguments, it.CallID))
 	}
 	return msgs, nil
+}
+
+// responsesToolNames collects the request's declared function names from the
+// raw tools echoes — flat Responses form ({"type":"function","name":…}) with
+// the nested Chat form tolerated (round-11).
+func responsesToolNames(tools []json.RawMessage) []string {
+	var names []string
+	for _, raw := range tools {
+		var t struct {
+			Name     string `json:"name"`
+			Function *struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		}
+		if json.Unmarshal(raw, &t) != nil {
+			continue
+		}
+		name := t.Name
+		if name == "" && t.Function != nil {
+			name = t.Function.Name
+		}
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // parseResponsesToolChoice maps the Responses tool_choice (a string, the flat

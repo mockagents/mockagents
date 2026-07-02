@@ -44,6 +44,9 @@ func writeOpenAIStrictError(w http.ResponseWriter, se *engine.StrictToolError) {
 		}
 		msg = fmt.Sprintf("An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. The following tool_call_ids did not have response messages: %s", strings.Join(ids, ", "))
 		param = "messages"
+	case "unknown_tool":
+		msg = fmt.Sprintf("Tool choice '%s' not found in 'tools' parameter.", se.UnknownID)
+		param = "tool_choice"
 	default:
 		msg = se.Message
 	}
@@ -64,6 +67,14 @@ func writeResponsesStrictError(w http.ResponseWriter, se *engine.StrictToolError
 		msg = fmt.Sprintf("No tool call found for function call output with call_id %s.", id)
 	case "unanswered":
 		msg = fmt.Sprintf("No tool output found for function call %s.", strings.Join(se.UnansweredIDs, ", "))
+	case "unknown_tool":
+		// Verbatim capture from the round-11 eval (Responses surface).
+		writeJSON(w, http.StatusBadRequest, openAIError{Error: openAIErrorBody{
+			Type:    "invalid_request_error",
+			Message: fmt.Sprintf("Tool choice '%s' not found in 'tools' parameter.", se.UnknownID),
+			Param:   "tool_choice",
+		}})
+		return
 	default:
 		msg = se.Message
 	}
@@ -84,6 +95,8 @@ func writeAnthropicStrictError(w http.ResponseWriter, se *engine.StrictToolError
 		msg = fmt.Sprintf("messages.%d.content: unexpected `tool_use_id` found in `tool_result` blocks: %s. Each `tool_result` block must have a corresponding `tool_use` block in the previous message.", se.Index, id)
 	case "unanswered":
 		msg = fmt.Sprintf("`tool_use` ids were found without `tool_result` blocks immediately after: %s. Each `tool_use` block must have a corresponding `tool_result` block in the next message.", strings.Join(se.UnansweredIDs, ", "))
+	case "unknown_tool":
+		msg = fmt.Sprintf("tool_choice: tool name `%s` not found in `tools`.", se.UnknownID)
 	default:
 		msg = se.Message
 	}
@@ -94,9 +107,12 @@ func writeAnthropicStrictError(w http.ResponseWriter, se *engine.StrictToolError
 // structural (response parts must pair with call parts), so every id-family
 // violation maps to the widely-observed parity message.
 func writeGeminiStrictError(w http.ResponseWriter, se *engine.StrictToolError) {
-	msg := "Please ensure that the number of function response parts is equal to the number of function call parts of the function call turn."
-	if se.Check != "ids" {
-		msg = se.Message
+	msg := se.Message
+	switch {
+	case se.Check == "ids":
+		msg = "Please ensure that the number of function response parts is equal to the number of function call parts of the function call turn."
+	case se.Kind == "unknown_tool":
+		msg = fmt.Sprintf("Invalid value for allowed_function_names: function %s not declared in tools.", se.UnknownID)
 	}
 	writeGeminiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", msg)
 }

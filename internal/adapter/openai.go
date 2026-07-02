@@ -168,11 +168,12 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 	// Convert to engine request.
 	convertedMsgs, imageCount := convertOpenAIMessages(req.Messages)
 	inbound := &engine.InboundRequest{
-		Model:      req.Model,
-		SessionID:  extractSessionID(r),
-		Messages:   convertedMsgs,
-		Stream:     req.Stream,
-		ToolChoice: parseOpenAIToolChoice(req.ToolChoice, req.ParallelToolCalls),
+		Model:            req.Model,
+		SessionID:        extractSessionID(r),
+		Messages:         convertedMsgs,
+		Stream:           req.Stream,
+		ToolChoice:       parseOpenAIToolChoice(req.ToolChoice, req.ParallelToolCalls),
+		RequestToolNames: openAIToolNames(req.Tools),
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID
@@ -323,6 +324,21 @@ func convertOpenAIMessages(msgs []OpenAIMessage) ([]engine.RequestMessage, int) 
 		result = append(result, rm)
 	}
 	return result, totalImages
+}
+
+// openAIToolNames collects the request's declared function names — the set
+// a named tool_choice is validated against (round-11).
+func openAIToolNames(tools []OpenAITool) []string {
+	if len(tools) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if t.Function.Name != "" {
+			names = append(names, t.Function.Name)
+		}
+	}
+	return names
 }
 
 // parseOpenAIToolChoice maps the Chat Completions tool_choice (a string or a

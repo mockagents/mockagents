@@ -163,6 +163,142 @@ func TestStrictIDs_Gemini(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 }
 
+// tool_choice forcing (R9-16a): under strict, required/named ALWAYS yields a
+// tool call — synthesized when the scenario emitted none — with the
+// staff-confirmed finish_reason "stop" on the OpenAI family.
+func TestStrictToolChoice_OpenAIForcing(t *testing.T) {
+	h := &OpenAIHandler{Engine: testEngine(strictAgent("openai-chat-completions", "gpt-4o", "strict"))}
+	tools := []OpenAITool{{Type: "function", Function: OpenAIFunction{Name: "get_weather"}}}
+
+	// "required" on a non-tool scenario → synthesized call + finish "stop".
+	rec := doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model:      "gpt-4o",
+		Messages:   []OpenAIMessage{{Role: "user", Content: "hello"}},
+		Tools:      tools,
+		ToolChoice: "required",
+	})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var out ChatCompletionResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	require.Len(t, out.Choices[0].Message.ToolCalls, 1, "required must force a call")
+	assert.Equal(t, "get_weather", out.Choices[0].Message.ToolCalls[0].Function.Name)
+	assert.Equal(t, "stop", out.Choices[0].FinishReason, "forced calls report finish_reason stop, not tool_calls")
+
+	// Named forcing replaces a different scenario call.
+	toolsTwo := append(tools, OpenAITool{Type: "function", Function: OpenAIFunction{Name: "get_time"}})
+	rec = doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model:      "gpt-4o",
+		Messages:   []OpenAIMessage{{Role: "user", Content: "what is the weather?"}},
+		Tools:      toolsTwo,
+		ToolChoice: map[string]any{"type": "function", "function": map[string]any{"name": "get_time"}},
+	})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	out = ChatCompletionResponse{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	require.Len(t, out.Choices[0].Message.ToolCalls, 1)
+	assert.Equal(t, "get_time", out.Choices[0].Message.ToolCalls[0].Function.Name,
+		"the named tool wins over the scenario's call")
+
+	// A named tool absent from the request's tools → the verified 400.
+	rec = doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model:      "gpt-4o",
+		Messages:   []OpenAIMessage{{Role: "user", Content: "hello"}},
+		Tools:      tools,
+		ToolChoice: map[string]any{"type": "function", "function": map[string]any{"name": "no_such_tool"}},
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "Tool choice 'no_such_tool' not found in 'tools' parameter.")
+	assert.Contains(t, rec.Body.String(), `"param":"tool_choice"`)
+}
+
+// parallel_tool_calls:false caps a multi-call scenario to exactly one call.
+func TestStrictParallel_OpenAICap(t *testing.T) {
+	agent := strictAgent("openai-chat-completions", "gpt-4o", "strict")
+	agent.Spec.Behavior.Scenarios[0].Response.ToolCalls = []types.ToolCallSpec{
+		{Name: "get_weather", Arguments: map[string]any{"city": "NYC"}},
+		{Name: "get_weather", Arguments: map[string]any{"city": "LA"}},
+	}
+	h := &OpenAIHandler{Engine: testEngine(agent)}
+
+	f := false
+	rec := doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model:             "gpt-4o",
+		Messages:          []OpenAIMessage{{Role: "user", Content: "what is the weather?"}},
+		ParallelToolCalls: &f,
+	})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var out ChatCompletionResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	assert.Len(t, out.Choices[0].Message.ToolCalls, 1, "parallel_tool_calls:false = exactly zero or one")
+
+	// Without the param both calls go out.
+	rec = doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model:    "gpt-4o",
+		Messages: []OpenAIMessage{{Role: "user", Content: "what is the weather?"}},
+	})
+	out = ChatCompletionResponse{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	assert.Len(t, out.Choices[0].Message.ToolCalls, 2)
+}
+
+// Anthropic {type:"any"} forces a tool_use with stop_reason "tool_use";
+// disable_parallel_tool_use rides inside tool_choice.
+func TestStrictToolChoice_Anthropic(t *testing.T) {
+	h := &AnthropicHandler{Engine: testEngine(strictAgent("anthropic-messages", "claude-3-opus", "strict"))}
+	rec := doAnthropicRequest(t, h.HandleMessages, AnthropicRequest{
+		Model:     "claude-3-opus",
+		MaxTokens: 100,
+		Messages:  []AnthropicMessage{{Role: "user", Content: "hello"}},
+		Tools:     []AnthropicTool{{Name: "get_weather"}},
+		ToolChoice: map[string]any{
+			"type": "any",
+		},
+	})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var out AnthropicResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	assert.Equal(t, "tool_use", out.StopReason, "forced Anthropic calls report stop_reason tool_use")
+	var sawToolUse bool
+	for _, c := range out.Content {
+		if c.Type == "tool_use" {
+			sawToolUse = true
+			assert.Equal(t, "get_weather", c.Name)
+		}
+	}
+	assert.True(t, sawToolUse, "type any must force a tool_use block")
+}
+
+// Gemini mode ANY + allowedFunctionNames forces the allowed function.
+func TestStrictToolChoice_GeminiAny(t *testing.T) {
+	h := &GeminiHandler{Engine: testEngine(strictAgent("google-gemini", "gemini-2.0-flash", "strict"))}
+	rec := doGeminiRequest(t, h, "gemini-2.0-flash", "generateContent", GeminiRequest{
+		Contents: []GeminiContent{{Role: "user", Parts: []GeminiPart{{Text: "hello"}}}},
+		Tools: []GeminiToolDeclaration{{FunctionDeclarations: []GeminiFunctionDecl{
+			{Name: "get_weather"}, {Name: "get_time"}}}},
+		ToolConfig: &GeminiToolConfig{FunctionCallingConfig: &GeminiFunctionCallingConfig{
+			Mode: "ANY", AllowedFunctionNames: []string{"get_time"}}},
+	})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `"functionCall"`)
+	assert.Contains(t, rec.Body.String(), "get_time")
+}
+
+// Warn mode observes forcing without changing the response.
+func TestStrictToolChoice_WarnDoesNotMutate(t *testing.T) {
+	h := &OpenAIHandler{Engine: testEngine(strictAgent("openai-chat-completions", "gpt-4o", "warn"))}
+	rec := doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model:      "gpt-4o",
+		Messages:   []OpenAIMessage{{Role: "user", Content: "hello"}},
+		Tools:      []OpenAITool{{Type: "function", Function: OpenAIFunction{Name: "get_weather"}}},
+		ToolChoice: "required",
+	})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var out ChatCompletionResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	assert.Nil(t, out.Choices[0].Message.ToolCalls, "warn mode must not synthesize")
+	assert.Contains(t, rec.Header().Get(HeaderStrictViolation), "required but the scenario emitted no tool call")
+}
+
 // Responses: a bogus call_id 400s; the stored-state loop (previous_response_id
 // carrying the emitted call) stays legal — the real API's documented leniency.
 func TestStrictIDs_Responses(t *testing.T) {

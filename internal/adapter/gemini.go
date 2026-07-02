@@ -170,11 +170,12 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	inbound := &engine.InboundRequest{
-		Model:      model,
-		SessionID:  extractSessionID(r),
-		Messages:   convertGeminiContents(req.Contents, req.SystemInstruction),
-		Stream:     stream,
-		ToolChoice: parseGeminiToolChoice(req.ToolConfig),
+		Model:            model,
+		SessionID:        extractSessionID(r),
+		Messages:         convertGeminiContents(req.Contents, req.SystemInstruction),
+		Stream:           stream,
+		ToolChoice:       parseGeminiToolChoice(req.ToolConfig),
+		RequestToolNames: geminiToolNames(req.Tools),
 	}
 	if meta != nil {
 		meta.SessionID = inbound.SessionID
@@ -302,6 +303,20 @@ func convertGeminiContents(contents []GeminiContent, system *GeminiContent) []en
 		result = append(result, rm)
 	}
 	return result
+}
+
+// geminiToolNames flattens the request's declared function names — the set
+// allowedFunctionNames-style forcing is validated against (round-11).
+func geminiToolNames(tools []GeminiToolDeclaration) []string {
+	var names []string
+	for _, t := range tools {
+		for _, d := range t.FunctionDeclarations {
+			if d.Name != "" {
+				names = append(names, d.Name)
+			}
+		}
+	}
+	return names
 }
 
 // parseGeminiToolChoice maps functionCallingConfig into the engine's

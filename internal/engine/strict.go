@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -173,6 +174,111 @@ func validateRoundTripIDs(msgs []RequestMessage) *StrictToolError {
 		}
 	}
 	return nil
+}
+
+// validateToolChoiceName rejects a named tool_choice whose function is not
+// among the REQUEST's declared tools — real APIs 400 this (round-11 R9-16a).
+// The check keys on the request's own tools[] (what the real API validates
+// against), not the agent's YAML; a request that declared no tools is
+// skipped.
+func validateToolChoiceName(tc ToolChoice, requestToolNames []string) *StrictToolError {
+	if tc.Name == "" || len(requestToolNames) == 0 || slices.Contains(requestToolNames, tc.Name) {
+		return nil
+	}
+	return &StrictToolError{
+		Check: "tool_choice", Kind: "unknown_tool", UnknownID: tc.Name,
+		Message: fmt.Sprintf("tool_choice %q not found in the request's tools", tc.Name),
+	}
+}
+
+// applyStrictToolChoice enforces (strict) or observes (warn) the forcing
+// contract after generation: under required/named/allowed forcing a real API
+// ALWAYS returns a tool call, so strict mode synthesizes the forced call
+// (args {}) when the scenario emitted none or the wrong one — the wire
+// contract wins over the scenario. Synthesized responses drop the text
+// content (real forced responses carry no preamble). ParallelDisabled caps
+// the response to one call, mirroring "exactly zero or one". OpenAI-family
+// forced calls report finish_reason "stop", not "tool_calls"
+// (staff-confirmed round-11 ground truth). Warn mode never mutates — it
+// returns the would-have descriptions.
+func applyStrictToolChoice(tc ToolChoice, mode StrictMode, resp *Response, agent *types.AgentDefinition, requestToolNames []string) []string {
+	if tc.None || mode == StrictOff {
+		return nil
+	}
+	var warnings []string
+	warn := func(format string, args ...any) {
+		warnings = append(warnings, fmt.Sprintf(format, args...))
+	}
+	synthesize := func(name string) {
+		resp.ToolCalls = []types.ToolCallSpec{{Name: name, Arguments: map[string]any{}}}
+		resp.Content = ""
+	}
+	allowed := func(name string) bool {
+		return len(tc.AllowedNames) == 0 || slices.Contains(tc.AllowedNames, name)
+	}
+
+	if tc.Required {
+		forced := false
+		switch {
+		case tc.Name != "" && (len(resp.ToolCalls) == 0 || resp.ToolCalls[0].Name != tc.Name):
+			if mode == StrictEnforce {
+				synthesize(tc.Name)
+				forced = true
+			} else {
+				warn("tool_choice: forced tool %q was not the emitted call (strict would synthesize it)", tc.Name)
+			}
+		case tc.Name == "" && len(resp.ToolCalls) == 0:
+			name := firstToolName(tc.AllowedNames, requestToolNames, agent)
+			if name == "" {
+				warn("tool_choice: required but no tools are declared to synthesize from")
+				break
+			}
+			if mode == StrictEnforce {
+				synthesize(name)
+				forced = true
+			} else {
+				warn("tool_choice: required but the scenario emitted no tool call (strict would synthesize %q)", name)
+			}
+		case len(resp.ToolCalls) > 0 && !allowed(resp.ToolCalls[0].Name):
+			if mode == StrictEnforce {
+				synthesize(tc.AllowedNames[0])
+				forced = true
+			} else {
+				warn("tool_choice: emitted call %q is outside allowedFunctionNames (strict would synthesize %q)",
+					resp.ToolCalls[0].Name, tc.AllowedNames[0])
+			}
+		default:
+			// The scenario naturally satisfied the forcing.
+			forced = mode == StrictEnforce && len(resp.ToolCalls) > 0
+		}
+		if forced && resp.FinishReason == "" && strings.HasPrefix(agent.Spec.Protocol, "openai") {
+			resp.FinishReason = "stop"
+		}
+	}
+
+	if tc.ParallelDisabled && len(resp.ToolCalls) > 1 {
+		if mode == StrictEnforce {
+			resp.ToolCalls = resp.ToolCalls[:1]
+		} else {
+			warn("parallel: %d tool calls emitted under a parallel-disabled request (strict caps to 1)", len(resp.ToolCalls))
+		}
+	}
+	return warnings
+}
+
+// firstToolName picks the synthesis target: the allowlist first, then the
+// request's declared tools, then the agent's own tool definitions.
+func firstToolName(allowedNames, requestToolNames []string, agent *types.AgentDefinition) string {
+	if len(allowedNames) > 0 {
+		return allowedNames[0]
+	}
+	if len(requestToolNames) > 0 {
+		return requestToolNames[0]
+	}
+	if agent != nil && len(agent.Spec.Tools) > 0 {
+		return agent.Spec.Tools[0].Name
+	}
+	return ""
 }
 
 // resolveStrictTools is the pure worker (unit-testable without env
