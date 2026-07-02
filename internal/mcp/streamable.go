@@ -63,9 +63,13 @@ const (
 	maxSessionLogEvents = 1024
 	// defaultMaxSessions bounds the live session table (FIFO eviction).
 	defaultMaxSessions = 256
-	// maxSubscribersPerSession bounds concurrent GET streams sharing one session
-	// so a single session id can't be used to exhaust goroutines/memory.
-	maxSubscribersPerSession = 64
+	// maxSubscribersPerSession caps concurrent GET streams per session. The
+	// spec allows AT MOST ONE server→client stream per session and says a
+	// second concurrent GET MUST be refused with 409 Conflict (round-10
+	// R10-20; the old cap of 64 silently duplicated every event to each
+	// stream, which the spec forbids as "MUST NOT broadcast the same message
+	// on more than one stream").
+	maxSubscribersPerSession = 1
 	// subscriberChanBuffer is the per-GET-stream event channel depth; a slower
 	// consumer that overflows it recovers missed events via Last-Event-Id.
 	subscriberChanBuffer = 64
@@ -203,6 +207,14 @@ func (h *StreamableHTTPHandler) handlePost(w http.ResponseWriter, r *http.Reques
 	}
 	defer r.Body.Close()
 
+	// A JSON array is a batch — removed from MCP in 2025-06-18, so it is an
+	// Invalid Request, not a parse error (round-10 R10-12).
+	if isBatchBody(body) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(newError(nil, ErrInvalidRequest, "JSON-RPC batching is not supported (removed in MCP 2025-06-18)", nil))
+		return
+	}
+
 	var req Request
 	if err := json.Unmarshal(body, &req); err != nil {
 		// Malformed JSON: answer with a JSON-RPC parse error so a client gets a
@@ -256,18 +268,24 @@ func (h *StreamableHTTPHandler) handlePost(w http.ResponseWriter, r *http.Reques
 	}
 
 	if acceptsEventStream(r) {
-		writePostSSE(w, out)
+		// Spec: the POST stream MAY carry messages related to the request
+		// before the final response — drain the pending queue into it so
+		// notifications emitted while handling this request actually reach an
+		// SSE-mode client (round-10 R10-18; previously the drain never
+		// happened on this path despite the doc comment claiming it).
+		writePostSSE(w, h.Server.DrainNotifications(), out)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(out)
 }
 
-// writePostSSE answers a POST request as a short SSE stream carrying the single
+// writePostSSE answers a POST request as a short SSE stream: any pending
+// server notifications first (each as its own message event), then the single
 // JSON-RPC response, then closing. POST-stream events are deliberately id-less:
 // they are request-correlated and not part of the resumable server→client event
 // log (only the GET stream is resumable), so they share no id namespace with it.
-func writePostSSE(w http.ResponseWriter, response []byte) {
+func writePostSSE(w http.ResponseWriter, notifications []*Notification, response []byte) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		// No streaming support: degrade to a plain JSON response so the client
@@ -281,6 +299,9 @@ func writePostSSE(w http.ResponseWriter, response []byte) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	for _, n := range notifications {
+		_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", wireNotification(n))
+	}
 	_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", response)
 	flusher.Flush()
 }
@@ -312,10 +333,11 @@ func (h *StreamableHTTPHandler) handleGet(w http.ResponseWriter, r *http.Request
 	}
 
 	// Subscribe (and snapshot the replay set) BEFORE committing the 200 status
-	// so an at-capacity session can still be rejected with a 429.
+	// so a session that already has its one stream can still be rejected.
+	// Spec: a second concurrent GET on the same session is 409 Conflict.
 	replay, ch, cancel, atCap := sess.subscribe(after)
 	if atCap {
-		http.Error(w, "too many concurrent streams for this session", http.StatusTooManyRequests)
+		http.Error(w, "session already has an open event stream", http.StatusConflict)
 		return
 	}
 	defer cancel()
@@ -594,7 +616,7 @@ func (s *streamSession) broadcastNotification(n *Notification) {
 // after) for immediate replay, the live channel, and a cancel hook. The replay
 // snapshot and the registration happen under the same lock so no event can slip
 // through the gap. atCap is true when the session already has the maximum
-// concurrent streams (the caller should reject with 429) — no subscriber is
+// concurrent streams (the caller should reject with 409) — no subscriber is
 // registered in that case. A terminated session returns a closed channel so the
 // caller's stream loop exits immediately.
 func (s *streamSession) subscribe(after int64) (replay []loggedEvent, ch chan loggedEvent, cancel func(), atCap bool) {

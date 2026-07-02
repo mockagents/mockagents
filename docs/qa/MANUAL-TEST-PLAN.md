@@ -490,7 +490,7 @@ throughout the plan:
 |---|---|---|---|
 | **Title** | MCP over HTTP — tools/resources/prompts |
 | **Preconditions** | `weather-mcp` document available |
-| **Steps** | 1. Start `mockagents mcp --transport http --port 8081 --agents-dir /agents` (a second container or `docker compose run`).  2. `POST /mcp` JSON-RPC `initialize`, then `tools/list`, `resources/list`, `prompts/list`, `tools/call`. |
+| **Steps** | 1. Start `mockagents mcp --transport http --port 8081 --bind 0.0.0.0 --agents-dir /agents` (a second container or `docker compose run`; `--bind 0.0.0.0` is required to reach it from outside the container — the default bind is loopback-only per the MCP spec).  2. `POST /mcp` JSON-RPC `initialize`, then `tools/list`, `resources/list`, `prompts/list`, `tools/call`. |
 | **Expected** | JSON-RPC 2.0 responses with correct `id` echo; tools/resources/prompts enumerated; `tools/call` returns the canned result. |
 | **Verification** | Malformed JSON-RPC yields a proper error object with correct code. |
 

@@ -13,14 +13,14 @@ import (
 // recordingServer captures the last request the CLI sent so tests can assert
 // method/path/headers/body, and replies with a canned status + body.
 type recordingServer struct {
-	srv        *httptest.Server
-	method     string
-	path       string
-	auth       string
-	ct         string
-	body       string
-	replyCode  int
-	replyBody  string
+	srv       *httptest.Server
+	method    string
+	path      string
+	auth      string
+	ct        string
+	body      string
+	replyCode int
+	replyBody string
 }
 
 func newRecordingServer(t *testing.T, replyCode int, replyBody string) *recordingServer {

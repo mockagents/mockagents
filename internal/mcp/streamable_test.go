@@ -201,15 +201,29 @@ func TestStreamable_GetStreamBroadcastAndResume(t *testing.T) {
 		t.Fatalf("broadcast event missing id")
 	}
 
-	// Reconnect with Last-Event-Id == first event's id; only the second event
-	// should be replayed.
+	// Disconnect, then reconnect with Last-Event-Id == first event's id; only
+	// the second event should be replayed. (The session allows one stream at
+	// a time — R10-20 — so the old one must drop first; the server notices
+	// the disconnect asynchronously, hence the retry on 409.)
+	getResp.Body.Close()
 	resumeReq, _ := http.NewRequest(http.MethodGet, srv.URL+"/mcp", nil)
 	resumeReq.Header.Set("Accept", "text/event-stream")
 	resumeReq.Header.Set(headerSessionID, sid)
 	resumeReq.Header.Set(headerLastEventID, events[0].id)
-	resumeResp, err := http.DefaultClient.Do(resumeReq)
-	if err != nil {
-		t.Fatalf("resume GET: %v", err)
+	var resumeResp *http.Response
+	for i := 0; ; i++ {
+		resumeResp, err = http.DefaultClient.Do(resumeReq)
+		if err != nil {
+			t.Fatalf("resume GET: %v", err)
+		}
+		if resumeResp.StatusCode == http.StatusOK {
+			break
+		}
+		resumeResp.Body.Close()
+		if i > 100 {
+			t.Fatalf("resume GET still %d after retries, want 200", resumeResp.StatusCode)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	defer resumeResp.Body.Close()
 	replayed := readSSEEvents(t, resumeResp.Body, 1)

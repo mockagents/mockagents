@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -51,6 +53,7 @@ Examples:
 var (
 	mcpTransport  string
 	mcpPort       int
+	mcpBind       string
 	mcpServerName string
 	mcpManage     bool
 )
@@ -58,6 +61,11 @@ var (
 func init() {
 	mcpCmd.Flags().StringVar(&mcpTransport, "transport", "http", "Transport: http or stdio")
 	mcpCmd.Flags().IntVarP(&mcpPort, "port", "p", 8081, "HTTP port when --transport=http")
+	// Loopback by default: the spec's Streamable HTTP security section says
+	// local servers SHOULD bind only to 127.0.0.1 (round-10 R10-21; the
+	// server also validates Origin, but not listening on 0.0.0.0 is the
+	// primary DNS-rebinding defence).
+	mcpCmd.Flags().StringVar(&mcpBind, "bind", "127.0.0.1", "Interface to bind when --transport=http (0.0.0.0 to expose)")
 	mcpCmd.Flags().StringVar(&mcpServerName, "server", "", "Name of the MCPServer to serve (required when multiple are loaded)")
 	mcpCmd.Flags().BoolVar(&mcpManage, "manage", false, "Also expose built-in agent-management tools backed by the write API")
 	rootCmd.AddCommand(mcpCmd)
@@ -87,13 +95,16 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	if mcpManage {
 		registry := buildManageRegistry(docs)
 		mcpadmin.NewManager(registry, agentsDir, "").Register(server)
-		fmt.Printf("mockagents mcp: agent-management tools enabled (%d agents loaded from %q)\n",
+		// Stderr, NEVER stdout: on --transport stdio, stdout IS the JSON-RPC
+		// stream and the spec forbids non-MCP bytes on it — this banner on
+		// stdout corrupted the official SDK's session (round-10 R10-4).
+		fmt.Fprintf(os.Stderr, "mockagents mcp: agent-management tools enabled (%d agents loaded from %q)\n",
 			len(registry.ListForTenant("")), agentsDir)
 	}
 
 	switch mcpTransport {
 	case "http":
-		return serveMCPHTTP(server, mcpPort)
+		return serveMCPHTTP(server, mcpBind, mcpPort)
 	case "stdio":
 		return mcp.ServeStdio(server, os.Stdin, os.Stdout)
 	default:
@@ -154,28 +165,15 @@ func buildManageRegistry(docs *config.Documents) *engine.AgentRegistry {
 	return registry
 }
 
-func serveMCPHTTP(server *mcp.Server, port int) error {
-	mux := http.NewServeMux()
-	// `/mcp` speaks the current Streamable HTTP transport (single endpoint:
-	// POST/GET/DELETE, Mcp-Session-Id lifecycle, SSE-on-POST, GET resumability).
-	// The legacy POST-only JSON transport is still available at `/mcp/rpc` for
-	// older clients, and `/mcp/notify` pushes a server notification onto every
-	// live streamable session's GET stream.
-	streamable := mcp.NewStreamableHTTPHandler(server)
-	mux.Handle("/mcp", streamable)
-	mux.Handle("/mcp/rpc", mcp.NewHTTPHandler(server))
-	mux.Handle("/mcp/notify", mcp.NewStreamableNotifyHandler(streamable))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "ok")
-	})
-
+func serveMCPHTTP(server *mcp.Server, bind string, port int) error {
+	addr := net.JoinHostPort(bind, strconv.Itoa(port))
 	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", port),
-		Handler:           mux,
+		Addr:              addr,
+		Handler:           newMCPMux(server),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	fmt.Printf("mockagents mcp listening on :%d (server=%s)\n", port, server.Definition().Metadata.Name)
+	fmt.Printf("mockagents mcp listening on %s (server=%s)\n", addr, server.Definition().Metadata.Name)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
@@ -195,4 +193,35 @@ func serveMCPHTTP(server *mcp.Server, port int) error {
 		}
 		return err
 	}
+}
+
+// newMCPMux builds the full HTTP route set for `mockagents mcp` — extracted
+// so tests can assert every documented endpoint is actually mounted (R10-1:
+// the bidirectional surface existed for two releases without ever being
+// reachable from a runnable server).
+func newMCPMux(server *mcp.Server) *http.ServeMux {
+	mux := http.NewServeMux()
+	// `/mcp` speaks the current Streamable HTTP transport (single endpoint:
+	// POST/GET/DELETE, Mcp-Session-Id lifecycle, SSE-on-POST, GET resumability).
+	// The legacy POST-only JSON transport is still available at `/mcp/rpc` for
+	// older clients, and `/mcp/notify` pushes a server notification onto every
+	// live streamable session's GET stream.
+	streamable := mcp.NewStreamableHTTPHandler(server)
+	mux.Handle("/mcp", streamable)
+	mux.Handle("/mcp/rpc", mcp.NewHTTPHandler(server))
+	mux.Handle("/mcp/notify", mcp.NewStreamableNotifyHandler(streamable))
+	// The bidirectional/admin surface (v0.3): a server-initiated SSE stream +
+	// the response route back, plus the sampling/roots admin triggers. These
+	// were documented (README, api-spec, all three SDKs' McpClient) but never
+	// mounted, so every sampling/roots flow 404'd against a runnable server
+	// (round-10 R10-1). Routing sampling over the Streamable HTTP GET stream
+	// is the recorded follow-on; this makes the documented surface real.
+	mux.Handle("/mcp/events", mcp.NewEventStreamHandler(server))
+	mux.Handle("/mcp/response", mcp.NewResponseHandler(server))
+	mux.Handle("/mcp/sample", mcp.NewSendRequestHandler(server, "sampling/createMessage"))
+	mux.Handle("/mcp/roots", mcp.NewSendRequestHandler(server, "roots/list"))
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "ok")
+	})
+	return mux
 }

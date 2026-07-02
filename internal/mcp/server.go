@@ -74,6 +74,27 @@ func (s *Server) EmitNotification(method string, params map[string]any) {
 	s.pushNotification(n)
 }
 
+// PendingNotificationCount reports the queue depth without draining, so a
+// transport that cannot deliver notifications inline (legacy JSON POST) can
+// advertise them in a header while leaving the queue intact.
+func (s *Server) PendingNotificationCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.pending)
+}
+
+// wireNotification renders a queued Notification as a complete JSON-RPC 2.0
+// notification frame — the shape a real server puts on the wire. The bare
+// Notification struct (no jsonrpc member) is NOT a valid frame.
+func wireNotification(n *Notification) []byte {
+	out, _ := json.Marshal(struct {
+		JSONRPC string         `json:"jsonrpc"`
+		Method  string         `json:"method"`
+		Params  map[string]any `json:"params,omitempty"`
+	}{"2.0", n.Method, n.Params})
+	return out
+}
+
 // DrainNotifications returns any queued notifications and clears the
 // queue. Transports call this after writing a response so server
 // notifications are interleaved with request handling at the
@@ -111,6 +132,39 @@ func (s *Server) Handle(req *Request) *Response {
 		return newError(req.ID, ErrInvalidRequest, "jsonrpc must be 2.0", nil)
 	}
 
+	// A client RESPONSE (to a server-initiated request) is never answered —
+	// transports ack with 202 and no body (round-10 R10-7; previously it was
+	// dispatched as a request and earned a bogus -32601). Best-effort route
+	// it to a pending bidirectional request.
+	if req.IsResponse() {
+		resp := &Response{JSONRPC: "2.0", ID: req.ID}
+		if len(req.Result) > 0 {
+			resp.Result = req.Result
+		}
+		if len(req.RawError) > 0 {
+			var rpcErr RPCError
+			if json.Unmarshal(req.RawError, &rpcErr) == nil {
+				resp.Error = &rpcErr
+			}
+		}
+		_ = s.DeliverResponse(resp) // unknown id: nothing pending — still 202
+		return nil
+	}
+
+	resp := s.dispatch(req)
+	// JSON-RPC 2.0: a request with no id is a NOTIFICATION and must never
+	// receive a response — for any method, not just unknown ones. Previously
+	// only the default branch checked, so an id-less ping/tools/list earned a
+	// reply the client had no request for (round-10 R10-8).
+	if req.IsNotification() {
+		return nil
+	}
+	return resp
+}
+
+// dispatch routes a validated request to its method handler. Callers must
+// apply the notification guard on the result (Handle does).
+func (s *Server) dispatch(req *Request) *Response {
 	switch req.Method {
 	case "initialize":
 		return s.handleInitialize(req)
@@ -153,9 +207,6 @@ func (s *Server) Handle(req *Request) *Response {
 			fmt.Sprintf("method %q is server-initiated and not supported by the mock without a bidirectional transport", req.Method),
 			map[string]any{"hint": "use Server.EmitNotification or POST /mcp/notify to drive the client side"})
 	default:
-		if req.IsNotification() {
-			return nil
-		}
 		return newError(req.ID, ErrMethodNotFound, fmt.Sprintf("method %q not supported", req.Method), nil)
 	}
 }
@@ -164,6 +215,10 @@ func (s *Server) Handle(req *Request) *Response {
 // returns the marshaled response bytes. An empty result means the
 // incoming request was a notification and no reply should be sent.
 func (s *Server) HandleBytes(body []byte) ([]byte, error) {
+	if isBatchBody(body) {
+		resp := newError(nil, ErrInvalidRequest, "JSON-RPC batching is not supported (removed in MCP 2025-06-18)", nil)
+		return json.Marshal(resp)
+	}
 	var req Request
 	if err := json.Unmarshal(body, &req); err != nil {
 		resp := newError(nil, ErrParseError, "invalid JSON", err.Error())
@@ -174,6 +229,21 @@ func (s *Server) HandleBytes(body []byte) ([]byte, error) {
 		return nil, nil
 	}
 	return json.Marshal(resp)
+}
+
+// isBatchBody reports whether a raw body is a JSON ARRAY. Batches are
+// well-formed JSON that MCP no longer accepts (batching was removed in the
+// 2025-06-18 revision) — Invalid Request (-32600), not a parse error
+// (-32700, which claims the JSON itself was malformed). Round-10 R10-12.
+func isBatchBody(body []byte) bool {
+	for _, b := range body {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		}
+		return b == '['
+	}
+	return false
 }
 
 // --- method handlers ---
@@ -189,21 +259,39 @@ func (s *Server) handleInitialize(req *Request) *Response {
 	if pv == "" {
 		pv = types.DefaultMCPProtocolVersion
 	}
+	// Version negotiation (round-10 R10-2): "If the server supports the
+	// requested protocol version, it MUST respond with the same version."
+	// Ignoring the request made every pre-2025-11-25 official SDK hard-fail
+	// the handshake against a server that supports its revision.
+	var params struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if len(req.Params) > 0 && json.Unmarshal(req.Params, &params) == nil && params.ProtocolVersion != "" {
+		for _, v := range SupportedProtocolVersions {
+			if v == params.ProtocolVersion {
+				pv = params.ProtocolVersion
+				break
+			}
+		}
+	}
 	caps := map[string]any{}
 	if s.def.Spec.Capabilities.Tools || len(s.def.Spec.Tools) > 0 || s.hasToolHandlers() {
-		caps["tools"] = map[string]any{}
+		caps["tools"] = map[string]any{"listChanged": true}
 	}
 	if s.def.Spec.Capabilities.Resources || len(s.def.Spec.Resources) > 0 {
 		// The mock accepts resources/subscribe + resources/unsubscribe
 		// (tracking the URI set), so advertise the subscribe capability.
-		caps["resources"] = map[string]any{"subscribe": true}
+		caps["resources"] = map[string]any{"subscribe": true, "listChanged": true}
 	}
 	if s.def.Spec.Capabilities.Prompts || len(s.def.Spec.Prompts) > 0 {
-		caps["prompts"] = map[string]any{}
+		caps["prompts"] = map[string]any{"listChanged": true}
 	}
 	if s.def.Spec.Capabilities.Logging {
 		caps["logging"] = map[string]any{}
 	}
+	// completion/complete is always answered (2025-06-18: servers MUST
+	// declare the completions capability to use it) — R10-3/R10-13.
+	caps["completions"] = map[string]any{}
 	return newResult(req.ID, initializeResult{
 		ProtocolVersion: pv,
 		ServerInfo: map[string]string{
@@ -215,12 +303,47 @@ func (s *Server) handleInitialize(req *Request) *Response {
 }
 
 type toolListEntry struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description,omitempty"`
-	InputSchema types.JSONSchemaObject `json:"inputSchema,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// inputSchema is REQUIRED by the spec's Tool type — one schema-less tool
+	// previously made the ENTIRE tools/list unparseable for strict SDK
+	// clients (round-10 R10-5). Defaulted to {"type":"object"} at emission.
+	InputSchema types.JSONSchemaObject `json:"inputSchema"`
+}
+
+// defaultedSchema returns the schema, or the minimal object schema every
+// real server emits for schema-less tools.
+func defaultedSchema(s types.JSONSchemaObject) types.JSONSchemaObject {
+	if len(s) == 0 {
+		return types.JSONSchemaObject{"type": "object"}
+	}
+	return s
+}
+
+// rejectUnknownCursor rejects any non-empty pagination cursor with Invalid
+// params. The mock returns every entry in a single page and never issues a
+// nextCursor, so all client-supplied cursors are by definition unknown —
+// which the pagination spec says is -32602 (round-10 R10-16; previously
+// cursors were silently ignored and the full list re-sent, an infinite loop
+// for a paginating client). Nil means "no cursor, proceed".
+func rejectUnknownCursor(req *Request) *Response {
+	if len(req.Params) == 0 {
+		return nil
+	}
+	var p struct {
+		Cursor string `json:"cursor"`
+	}
+	if json.Unmarshal(req.Params, &p) == nil && p.Cursor != "" {
+		return newError(req.ID, ErrInvalidParams,
+			fmt.Sprintf("unknown cursor %q (the mock returns the full list in one page and never issues one)", p.Cursor), nil)
+	}
+	return nil
 }
 
 func (s *Server) handleToolsList(req *Request) *Response {
+	if resp := rejectUnknownCursor(req); resp != nil {
+		return resp
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	tools := make([]toolListEntry, 0, len(s.def.Spec.Tools)+len(s.toolOrder))
@@ -233,7 +356,7 @@ func (s *Server) handleToolsList(req *Request) *Response {
 		tools = append(tools, toolListEntry{
 			Name:        t.Name,
 			Description: t.Description,
-			InputSchema: t.InputSchema,
+			InputSchema: defaultedSchema(t.InputSchema),
 		})
 	}
 	for _, name := range s.toolOrder {
@@ -241,7 +364,7 @@ func (s *Server) handleToolsList(req *Request) *Response {
 		tools = append(tools, toolListEntry{
 			Name:        rt.spec.Name,
 			Description: rt.spec.Description,
-			InputSchema: rt.spec.InputSchema,
+			InputSchema: defaultedSchema(rt.spec.InputSchema),
 		})
 	}
 	return newResult(req.ID, map[string]any{"tools": tools})
@@ -280,7 +403,9 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 
 	tool := s.findTool(params.Name)
 	if tool == nil {
-		return newError(req.ID, ErrMethodNotFound,
+		// Spec: an unknown tool NAME is Invalid params (-32602), not
+		// method-not-found — the METHOD tools/call exists (round-10 R10-10).
+		return newError(req.ID, ErrInvalidParams,
 			fmt.Sprintf("unknown tool %q", params.Name),
 			map[string]any{"available": s.toolNames()})
 	}
@@ -362,11 +487,21 @@ type resourceListEntry struct {
 }
 
 func (s *Server) handleResourcesList(req *Request) *Response {
+	if resp := rejectUnknownCursor(req); resp != nil {
+		return resp
+	}
 	out := make([]resourceListEntry, 0, len(s.def.Spec.Resources))
 	for _, r := range s.def.Spec.Resources {
+		// `name` is REQUIRED by the spec's Resource type — a nameless YAML
+		// resource previously made the whole resources/list unparseable for
+		// strict SDK clients (round-10 R10-6). Default to the URI.
+		name := r.Name
+		if name == "" {
+			name = r.URI
+		}
 		out = append(out, resourceListEntry{
 			URI:         r.URI,
-			Name:        r.Name,
+			Name:        name,
 			Description: r.Description,
 			MimeType:    r.MimeType,
 		})
@@ -403,9 +538,12 @@ func (s *Server) handleResourcesRead(req *Request) *Response {
 			}},
 		})
 	}
-	return newError(req.ID, ErrInvalidParams,
+	// Spec: an unknown URI is the MCP-specific -32002 resource-not-found with
+	// the uri in data — official SDKs key their typed exception on the code
+	// (round-10 R10-11). `available` is kept as a mock-DX extra.
+	return newError(req.ID, ErrResourceNotFound,
 		fmt.Sprintf("unknown resource %q", params.URI),
-		map[string]any{"available": s.resourceURIs()})
+		map[string]any{"uri": params.URI, "available": s.resourceURIs()})
 }
 
 type resourceSubscribeParams struct {
@@ -473,6 +611,9 @@ type promptListEntry struct {
 }
 
 func (s *Server) handlePromptsList(req *Request) *Response {
+	if resp := rejectUnknownCursor(req); resp != nil {
+		return resp
+	}
 	out := make([]promptListEntry, 0, len(s.def.Spec.Prompts))
 	for _, p := range s.def.Spec.Prompts {
 		out = append(out, promptListEntry{
@@ -497,6 +638,16 @@ func (s *Server) handlePromptsGet(req *Request) *Response {
 	for _, p := range s.def.Spec.Prompts {
 		if p.Name != params.Name {
 			continue
+		}
+		// Spec: a missing REQUIRED argument is Invalid params — previously the
+		// placeholder was silently left unexpanded (round-10 R10-14).
+		for _, a := range p.Arguments {
+			if a.Required {
+				if _, ok := params.Arguments[a.Name]; !ok {
+					return newError(req.ID, ErrInvalidParams,
+						fmt.Sprintf("missing required argument %q for prompt %q", a.Name, p.Name), nil)
+				}
+			}
 		}
 		// Expand {{arg}} placeholders inside each content block. Text
 		// blocks interpolate their text; embedded-resource blocks
@@ -533,6 +684,10 @@ func expandArgs(s string, args map[string]string) string {
 type completionRef struct {
 	Type string `json:"type"`
 	Name string `json:"name"`
+	// URI is how spec-shaped ref/resource references address a resource
+	// (ResourceTemplateReference — round-10 R10-3); the catalog's RefName
+	// matches either spelling.
+	URI string `json:"uri"`
 }
 
 type completionArgument struct {
@@ -567,9 +722,27 @@ func (s *Server) handleCompletionComplete(req *Request) *Response {
 		return newError(req.ID, ErrInvalidParams, "argument.name is required", nil)
 	}
 
-	values := s.lookupCompletion(params.Ref.Type, params.Ref.Name, params.Argument.Name)
+	// Ref-type validation (spec: an invalid ref type is Invalid params).
+	switch params.Ref.Type {
+	case "ref/prompt", "ref/resource":
+	default:
+		return newError(req.ID, ErrInvalidParams,
+			fmt.Sprintf("invalid ref.type %q: expected ref/prompt or ref/resource", params.Ref.Type), nil)
+	}
+	// ref/resource entries are addressed by URI on the wire (round-10 R10-3);
+	// the catalog's RefName matches either spelling.
+	refName := params.Ref.Name
+	if refName == "" {
+		refName = params.Ref.URI
+	}
+	values := s.lookupCompletion(params.Ref.Type, refName, params.Argument.Name)
 	if params.Argument.Value != "" {
 		values = filterPrefix(values, params.Argument.Value)
+	}
+	// `completion.values` is a REQUIRED array — a nil catalog miss previously
+	// marshaled as null and failed strict SDK validation (round-10 R10-3).
+	if values == nil {
+		values = []string{}
 	}
 
 	// Spec caps each completion response at 100 items.

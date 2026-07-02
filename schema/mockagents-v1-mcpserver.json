@@ -107,11 +107,26 @@
                   "required": ["role", "content"],
                   "additionalProperties": false,
                   "properties": {
-                    "role":    { "type": "string", "enum": ["user", "assistant", "system"] },
+                    "role":    { "type": "string", "enum": ["user", "assistant"] },
                     "content": { "$ref": "#/$defs/ContentBlock" }
                   }
                 }
               }
+            }
+          }
+        },
+        "completions": {
+          "type": "array",
+          "description": "Autocomplete catalog answered by completion/complete. Each entry binds a (refType, refName, argName) triple to a static value list; empty refType/refName wildcard.",
+          "items": {
+            "type": "object",
+            "required": ["argName", "values"],
+            "additionalProperties": false,
+            "properties": {
+              "refType": { "type": "string", "enum": ["ref/prompt", "ref/resource"] },
+              "refName": { "type": "string" },
+              "argName": { "type": "string" },
+              "values":  { "type": "array", "items": { "type": "string" } }
             }
           }
         }
@@ -124,11 +139,12 @@
       "required": ["type"],
       "additionalProperties": false,
       "properties": {
-        "type":     { "type": "string", "enum": ["text", "image", "resource"] },
+        "type":     { "type": "string", "enum": ["text", "image", "audio", "resource"] },
         "text":     { "type": "string" },
-        "data":     { "type": "string", "description": "Base64-encoded data for image content." },
+        "data":     { "type": "string", "description": "Base64-encoded data for image/audio content." },
         "mimeType": { "type": "string" },
-        "uri":      { "type": "string" }
+        "uri":      { "type": "string" },
+        "blob":     { "type": "string", "description": "Base64-encoded contents for an embedded resource block (text XOR blob)." }
       }
     }
   }

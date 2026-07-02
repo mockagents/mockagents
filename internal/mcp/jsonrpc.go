@@ -19,6 +19,9 @@ const (
 	ErrMethodNotFound = -32601
 	ErrInvalidParams  = -32602
 	ErrInternal       = -32603
+	// ErrResourceNotFound is MCP's spec-specific code for resources/read
+	// against an unknown URI (round-10 R10-11).
+	ErrResourceNotFound = -32002
 )
 
 // Request is an incoming JSON-RPC 2.0 call or notification.
@@ -29,12 +32,24 @@ type Request struct {
 	ID      json.RawMessage `json:"id,omitempty"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
+	// Result / RawError mark a decoded message that is actually a client
+	// RESPONSE to a server-initiated request, not a request — transports may
+	// legally deliver those (Streamable HTTP: ack 202, no body — round-10
+	// R10-7).
+	Result   json.RawMessage `json:"result,omitempty"`
+	RawError json.RawMessage `json:"error,omitempty"`
 }
 
 // IsNotification returns true when the request carries no ID and must
 // not receive a response per the JSON-RPC 2.0 spec.
 func (r *Request) IsNotification() bool {
 	return len(r.ID) == 0 || string(r.ID) == "null"
+}
+
+// IsResponse reports whether the decoded message is a client response
+// (no method; a result or error member instead).
+func (r *Request) IsResponse() bool {
+	return r.Method == "" && (len(r.Result) > 0 || len(r.RawError) > 0)
 }
 
 // Response is an outgoing JSON-RPC 2.0 result or error.
@@ -53,7 +68,13 @@ type RPCError struct {
 }
 
 // newError builds a Response carrying an error for the given request id.
+// JSON-RPC 2.0 requires the id member in every response; when it cannot be
+// determined (parse error, invalid request) it MUST be null — omitting it
+// entirely is invalid (round-10 R10-9).
 func newError(id json.RawMessage, code int, message string, data any) *Response {
+	if len(id) == 0 {
+		id = json.RawMessage("null")
+	}
 	return &Response{
 		JSONRPC: "2.0",
 		ID:      id,

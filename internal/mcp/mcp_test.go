@@ -125,14 +125,16 @@ func TestToolsCallFallsBackToDefault(t *testing.T) {
 	}
 }
 
-func TestToolsCallUnknownToolReturnsMethodNotFound(t *testing.T) {
+// An unknown tool NAME is Invalid params per the spec — the METHOD
+// tools/call exists (round-10 R10-10 overturned the old -32601 here).
+func TestToolsCallUnknownToolReturnsInvalidParams(t *testing.T) {
 	srv := NewServer(testDef())
 	resp := mustHandle(t, srv, `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"nonexistent","arguments":{}}}`)
 	if resp.Error == nil {
 		t.Fatal("expected error for unknown tool")
 	}
-	if resp.Error.Code != ErrMethodNotFound {
-		t.Errorf("error code = %d, want %d", resp.Error.Code, ErrMethodNotFound)
+	if resp.Error.Code != ErrInvalidParams {
+		t.Errorf("error code = %d, want %d", resp.Error.Code, ErrInvalidParams)
 	}
 }
 

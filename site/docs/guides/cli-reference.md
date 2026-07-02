@@ -308,6 +308,10 @@ mockagents mcp --transport http --port 8081 --agents-dir examples
 mockagents mcp --transport stdio --agents-dir examples --server weather-mcp
 ```
 
+The HTTP transport binds `127.0.0.1` by default, per the MCP spec's guidance
+for local servers. Pass `--bind 0.0.0.0` to expose it beyond the host — e.g.
+when running inside a container whose port is mapped out.
+
 ---
 
 ## `mockagents contract`
