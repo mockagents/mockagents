@@ -183,6 +183,10 @@ type Session struct {
 	// assistant audio, the real API rejects a voice change
 	// (code cannot_update_voice) — see validateVoiceChange.
 	respondedWithAudio bool
+	// pendingResponse queues the VAD auto-response for a turn that ended while
+	// a response was still in flight (a mid-speech response.create, or
+	// interrupt_response:false); Tick runs it when the inflight completes.
+	pendingResponse bool
 }
 
 // rememberItem indexes a completed conversation item for later retrieve /
@@ -743,18 +747,7 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 	if rc.incomplete {
 		done["status_details"] = map[string]any{"type": "incomplete", "reason": "max_output_tokens"}
 	}
-	done["usage"] = map[string]any{
-		"input_tokens":  inputTokens,
-		"output_tokens": outputTokens,
-		"total_tokens":  inputTokens + outputTokens,
-		// GA per-modality breakdown. A mock attributes everything to text (the
-		// transcript drives output; synthesized audio carries no real tokens).
-		"input_token_details": map[string]any{
-			"text_tokens": inputTokens, "audio_tokens": 0, "image_tokens": 0, "cached_tokens": 0,
-			"cached_tokens_details": map[string]any{"text_tokens": 0, "audio_tokens": 0, "image_tokens": 0},
-		},
-		"output_token_details": map[string]any{"text_tokens": outputTokens, "audio_tokens": 0},
-	}
+	done["usage"] = usageBlock(inputTokens, outputTokens)
 	out = append(out, Event{"type": "response.done", "response": done})
 
 	// Paced sessions emit response.created + rate_limits now and the rest of
@@ -778,7 +771,12 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 			s.joinTail(id)
 		}
 	}
-	s.armIdleTimer()
+	// An out-of-band completion is a side-channel, not the end of the user's
+	// turn — it must not arm the idle timeout (a burst OOB response can finish
+	// while a default-conversation response is still in flight).
+	if !rc.outOfBand {
+		s.armIdleTimer()
+	}
 	return out
 }
 
@@ -805,17 +803,24 @@ func (s *Session) failedResponse(respID, msg string, rc *responseCtx) []Event {
 	}
 }
 
-// zeroUsage is the usage block for a response that produced no billable output.
-func zeroUsage() map[string]any {
+// usageBlock builds the GA usage object for a terminal response.done. The
+// per-modality breakdown attributes everything to text (the transcript drives
+// output; synthesized audio carries no real tokens).
+func usageBlock(inputTokens, outputTokens int) map[string]any {
 	return map[string]any{
-		"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+		"input_tokens":  inputTokens,
+		"output_tokens": outputTokens,
+		"total_tokens":  inputTokens + outputTokens,
 		"input_token_details": map[string]any{
-			"text_tokens": 0, "audio_tokens": 0, "image_tokens": 0, "cached_tokens": 0,
+			"text_tokens": inputTokens, "audio_tokens": 0, "image_tokens": 0, "cached_tokens": 0,
 			"cached_tokens_details": map[string]any{"text_tokens": 0, "audio_tokens": 0, "image_tokens": 0},
 		},
-		"output_token_details": map[string]any{"text_tokens": 0, "audio_tokens": 0},
+		"output_token_details": map[string]any{"text_tokens": outputTokens, "audio_tokens": 0},
 	}
 }
+
+// zeroUsage is the usage block for a response that produced no billable output.
+func zeroUsage() map[string]any { return usageBlock(0, 0) }
 
 // responseObject builds the GA `response` envelope shared by response.created and
 // response.done: id/object/status plus the GA fields a client reads off the

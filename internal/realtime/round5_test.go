@@ -6,6 +6,7 @@ package realtime
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func mkUserItem(id, text string) *ClientEvent {
@@ -139,6 +140,147 @@ func TestVoiceLockedAfterAudio(t *testing.T) {
 	if evs := s2.Handle(ctx, &ClientEvent{Type: "session.update",
 		Session: []byte(`{"audio":{"output":{"voice":"cedar"}}}`)}); evs[0]["type"] != "session.updated" {
 		t.Errorf("text-only session locked the voice: %v", typesOf(evs))
+	}
+}
+
+// T-F4: a response.create while VAD speech is active occupies the inflight
+// slot; when the turn then ends, the commit must not forward-reference an
+// unannounced item and the auto-response is QUEUED (not eaten) — it runs when
+// the inflight completes.
+func TestPaced_ResponseCreateMidSpeechQueuesAutoResponse(t *testing.T) {
+	ctx := context.Background()
+	s, fc := pacedSession(t, fakeGen("manual then auto"), serverVAD)
+
+	// The user starts speaking; the client fires a manual response mid-speech.
+	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(200, speechAmp)})
+	if evs := s.Handle(ctx, &ClientEvent{Type: "response.create"}); firstEvent(evs, "response.created") == nil {
+		t.Fatalf("mid-speech response.create = %v", typesOf(evs))
+	}
+
+	// The turn ends while that response is in flight.
+	evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(600, quietAmp)})
+	committed := firstEvent(evs, "input_audio_buffer.committed")
+	if committed == nil {
+		t.Fatalf("turn end = %v, want the commit ladder", typesOf(evs))
+	}
+	if committed["previous_item_id"] != nil {
+		t.Errorf("commit forward-references an unannounced item: %v", committed["previous_item_id"])
+	}
+	if contains(typesOf(evs), "response.created") {
+		t.Fatal("a second response must not stack while one is in flight")
+	}
+
+	// Draining completes the manual response AND then runs the queued
+	// auto-response for the committed turn.
+	rest := drain(t, s, fc, 300)
+	dones := 0
+	for _, ev := range rest {
+		if ev["type"] == "response.done" {
+			dones++
+		}
+	}
+	if dones != 2 {
+		t.Fatalf("drained response.done count = %d, want 2 (inflight + queued auto-response); got %v", dones, typesOf(rest))
+	}
+}
+
+// T-F5: cancellation close-out honors the delta-concatenation invariant — the
+// .done events, the stored item, and usage carry exactly the deltas the client
+// received, never the full never-streamed transcript.
+func TestPaced_CancelCloseOutCarriesEmittedPrefix(t *testing.T) {
+	ctx := context.Background()
+	s, fc := pacedSession(t, fakeGen("alpha beta gamma delta"), serverVAD)
+	endVADTurn(t, s)
+
+	// One event per tick: output_item.added, conversation.item.added,
+	// content_part.added, transcript.delta("alpha "), audio.delta.
+	var streamed string
+	for range 5 {
+		for _, ev := range s.Tick(ctx, fc.advance(10*time.Millisecond)) {
+			if ev["type"] == "response.output_audio_transcript.delta" {
+				streamed += ev["delta"].(string)
+			}
+		}
+	}
+	if streamed != "alpha " {
+		t.Fatalf("setup: streamed %q, want %q", streamed, "alpha ")
+	}
+
+	evs := s.Handle(ctx, &ClientEvent{Type: "response.cancel"})
+	if td := firstEvent(evs, "response.output_audio_transcript.done"); td == nil || td["transcript"] != streamed {
+		t.Errorf("transcript.done = %v, want the emitted prefix %q", td, streamed)
+	}
+	if pd := firstEvent(evs, "response.content_part.done"); pd == nil || pd["part"].(map[string]any)["transcript"] != streamed {
+		t.Errorf("content_part.done = %v, want part transcript %q", pd, streamed)
+	}
+	item := firstEvent(evs, "response.output_item.done")["item"].(map[string]any)
+	if got := item["content"].([]any)[0].(map[string]any)["transcript"]; got != streamed {
+		t.Errorf("item transcript = %v, want %q", got, streamed)
+	}
+	usage := firstEvent(evs, "response.done")["response"].(map[string]any)["usage"].(map[string]any)
+	if usage["output_tokens"] != 1 {
+		t.Errorf("usage output_tokens = %v, want 1 (only %q streamed)", usage["output_tokens"], streamed)
+	}
+}
+
+// T-F5: a content part whose content_part.added never emitted must not be
+// fabricated at close-out; the announced item still closes with empty content,
+// and a head-cancel bills zero output tokens.
+func TestPaced_CancelBeforePartOpenSkipsPartEvents(t *testing.T) {
+	ctx := context.Background()
+	s, fc := pacedSession(t, fakeGen("never streamed"), serverVAD)
+	endVADTurn(t, s)
+
+	// Announce the item (output_item.added, conversation.item.added) but stop
+	// before content_part.added.
+	s.Tick(ctx, fc.advance(10*time.Millisecond))
+	s.Tick(ctx, fc.advance(10*time.Millisecond))
+
+	evs := s.Handle(ctx, &ClientEvent{Type: "response.cancel"})
+	for _, typ := range []string{"response.content_part.added", "response.content_part.done",
+		"response.output_audio_transcript.done", "response.output_audio.done"} {
+		if firstEvent(evs, typ) != nil {
+			t.Errorf("fabricated %s for a part that never opened; got %v", typ, typesOf(evs))
+		}
+	}
+	itemDone := firstEvent(evs, "response.output_item.done")
+	if itemDone == nil {
+		t.Fatalf("the announced item must still close out; got %v", typesOf(evs))
+	}
+	item := itemDone["item"].(map[string]any)
+	if item["status"] != "incomplete" {
+		t.Errorf("item status = %v, want incomplete", item["status"])
+	}
+	if content := item["content"].([]any); len(content) != 0 {
+		t.Errorf("item content = %v, want empty (nothing streamed)", content)
+	}
+	usage := firstEvent(evs, "response.done")["response"].(map[string]any)["usage"].(map[string]any)
+	if usage["output_tokens"] != 0 {
+		t.Errorf("usage output_tokens = %v, want 0 (nothing streamed)", usage["output_tokens"])
+	}
+}
+
+// R4-2: an out-of-band completion is not the end of the user's turn — it must
+// not arm the idle timeout; and cancellation clears any idle deadline.
+func TestIdleTimer_OOBAndCancelHygiene(t *testing.T) {
+	ctx := context.Background()
+	idleVAD := `{"audio":{"input":{"turn_detection":{"type":"server_vad","idle_timeout_ms":5000}}}}`
+
+	s := NewSession("soi", "", fakeGen("side"))
+	fc := newFakeClock()
+	s.SetClock(fc.now)
+	enableVAD(t, s, idleVAD)
+	s.Handle(ctx, &ClientEvent{Type: "response.create", Response: []byte(`{"conversation":"none"}`)})
+	if dl, ok := s.NextDeadline(); ok {
+		t.Errorf("OOB completion armed the idle timeout (deadline %v)", dl)
+	}
+
+	s2, fc2 := pacedSession(t, fakeGen("cancel me"), idleVAD)
+	endVADTurn(t, s2)
+	s2.Tick(ctx, fc2.advance(10*time.Millisecond))
+	s2.Handle(ctx, &ClientEvent{Type: "response.cancel"})
+	if dl, ok := s2.NextDeadline(); ok {
+		t.Errorf("deadline %v survived response.cancel (would fire a spurious [silence] idle turn)", dl)
 	}
 }
 
