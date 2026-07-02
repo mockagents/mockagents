@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -51,6 +53,7 @@ Examples:
 var (
 	mcpTransport  string
 	mcpPort       int
+	mcpBind       string
 	mcpServerName string
 	mcpManage     bool
 )
@@ -58,6 +61,11 @@ var (
 func init() {
 	mcpCmd.Flags().StringVar(&mcpTransport, "transport", "http", "Transport: http or stdio")
 	mcpCmd.Flags().IntVarP(&mcpPort, "port", "p", 8081, "HTTP port when --transport=http")
+	// Loopback by default: the spec's Streamable HTTP security section says
+	// local servers SHOULD bind only to 127.0.0.1 (round-10 R10-21; the
+	// server also validates Origin, but not listening on 0.0.0.0 is the
+	// primary DNS-rebinding defence).
+	mcpCmd.Flags().StringVar(&mcpBind, "bind", "127.0.0.1", "Interface to bind when --transport=http (0.0.0.0 to expose)")
 	mcpCmd.Flags().StringVar(&mcpServerName, "server", "", "Name of the MCPServer to serve (required when multiple are loaded)")
 	mcpCmd.Flags().BoolVar(&mcpManage, "manage", false, "Also expose built-in agent-management tools backed by the write API")
 	rootCmd.AddCommand(mcpCmd)
@@ -96,7 +104,7 @@ func runMCP(cmd *cobra.Command, args []string) error {
 
 	switch mcpTransport {
 	case "http":
-		return serveMCPHTTP(server, mcpPort)
+		return serveMCPHTTP(server, mcpBind, mcpPort)
 	case "stdio":
 		return mcp.ServeStdio(server, os.Stdin, os.Stdout)
 	default:
@@ -157,14 +165,15 @@ func buildManageRegistry(docs *config.Documents) *engine.AgentRegistry {
 	return registry
 }
 
-func serveMCPHTTP(server *mcp.Server, port int) error {
+func serveMCPHTTP(server *mcp.Server, bind string, port int) error {
+	addr := net.JoinHostPort(bind, strconv.Itoa(port))
 	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", port),
+		Addr:              addr,
 		Handler:           newMCPMux(server),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	fmt.Printf("mockagents mcp listening on :%d (server=%s)\n", port, server.Definition().Metadata.Name)
+	fmt.Printf("mockagents mcp listening on %s (server=%s)\n", addr, server.Definition().Metadata.Name)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()

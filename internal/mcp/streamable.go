@@ -63,9 +63,13 @@ const (
 	maxSessionLogEvents = 1024
 	// defaultMaxSessions bounds the live session table (FIFO eviction).
 	defaultMaxSessions = 256
-	// maxSubscribersPerSession bounds concurrent GET streams sharing one session
-	// so a single session id can't be used to exhaust goroutines/memory.
-	maxSubscribersPerSession = 64
+	// maxSubscribersPerSession caps concurrent GET streams per session. The
+	// spec allows AT MOST ONE server→client stream per session and says a
+	// second concurrent GET MUST be refused with 409 Conflict (round-10
+	// R10-20; the old cap of 64 silently duplicated every event to each
+	// stream, which the spec forbids as "MUST NOT broadcast the same message
+	// on more than one stream").
+	maxSubscribersPerSession = 1
 	// subscriberChanBuffer is the per-GET-stream event channel depth; a slower
 	// consumer that overflows it recovers missed events via Last-Event-Id.
 	subscriberChanBuffer = 64
@@ -320,10 +324,11 @@ func (h *StreamableHTTPHandler) handleGet(w http.ResponseWriter, r *http.Request
 	}
 
 	// Subscribe (and snapshot the replay set) BEFORE committing the 200 status
-	// so an at-capacity session can still be rejected with a 429.
+	// so a session that already has its one stream can still be rejected.
+	// Spec: a second concurrent GET on the same session is 409 Conflict.
 	replay, ch, cancel, atCap := sess.subscribe(after)
 	if atCap {
-		http.Error(w, "too many concurrent streams for this session", http.StatusTooManyRequests)
+		http.Error(w, "session already has an open event stream", http.StatusConflict)
 		return
 	}
 	defer cancel()
@@ -602,7 +607,7 @@ func (s *streamSession) broadcastNotification(n *Notification) {
 // after) for immediate replay, the live channel, and a cancel hook. The replay
 // snapshot and the registration happen under the same lock so no event can slip
 // through the gap. atCap is true when the session already has the maximum
-// concurrent streams (the caller should reject with 429) — no subscriber is
+// concurrent streams (the caller should reject with 409) — no subscriber is
 // registered in that case. A terminated session returns a closed channel so the
 // caller's stream loop exits immediately.
 func (s *streamSession) subscribe(after int64) (replay []loggedEvent, ch chan loggedEvent, cancel func(), atCap bool) {

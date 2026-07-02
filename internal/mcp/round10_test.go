@@ -4,10 +4,13 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mockagents/mockagents/internal/types"
 )
@@ -257,6 +260,92 @@ func TestKnownMethodNotificationsGetNoReply(t *testing.T) {
 		if out != nil {
 			t.Errorf("notification %s earned a reply: %s", body, out)
 		}
+	}
+}
+
+// R10-20 (S2): the spec allows AT MOST ONE server→client GET stream per
+// session; a second concurrent GET MUST be 409 Conflict (previously up to
+// 64 streams each received a copy of every event, which the spec forbids).
+func TestStreamableSecondGetStreamIs409(t *testing.T) {
+	srv, _ := newStreamableTestServer(t)
+	sid := initSession(t, srv.URL+"/mcp")
+
+	open := func() *http.Response {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/mcp", nil)
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set(headerSessionID, sid)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET stream: %v", err)
+		}
+		return resp
+	}
+
+	first := open()
+	defer first.Body.Close()
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first GET stream status = %d, want 200", first.StatusCode)
+	}
+
+	second := open()
+	defer second.Body.Close()
+	if second.StatusCode != http.StatusConflict {
+		t.Errorf("second concurrent GET status = %d, want 409", second.StatusCode)
+	}
+
+	// Releasing the first stream frees the slot (resumability still works);
+	// the server notices the disconnect asynchronously, hence the retry.
+	first.Body.Close()
+	for i := 0; ; i++ {
+		third := open()
+		code := third.StatusCode
+		third.Body.Close()
+		if code == http.StatusOK {
+			break
+		}
+		if i > 100 {
+			t.Fatalf("GET after release still %d after retries, want 200", code)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// R10-12 on the streamable transport: a batch array POST earns -32600
+// before session validation, not a -32700 parse error.
+func TestStreamableBatchPostIsInvalidRequest(t *testing.T) {
+	srv, _ := newStreamableTestServer(t)
+	resp := postJSON(t, srv.URL+"/mcp", "", "application/json",
+		`[{"jsonrpc":"2.0","id":1,"method":"ping"}]`)
+	defer resp.Body.Close()
+	var body bytes.Buffer
+	_, _ = body.ReadFrom(resp.Body)
+	if !strings.Contains(body.String(), `-32600`) {
+		t.Errorf("batch POST body = %s, want -32600", body.String())
+	}
+}
+
+// R10-22 (S2): an over-long stdio frame earns a -32700 and the loop keeps
+// serving — previously bufio.Scanner hit ErrTooLong and the process exited,
+// killing the session.
+func TestStdioOverlongFrameRecovers(t *testing.T) {
+	s := round10Server()
+	var in bytes.Buffer
+	in.WriteString(strings.Repeat("x", maxStdioFrameBytes+2) + "\n")
+	in.WriteString(`{"jsonrpc":"2.0","id":7,"method":"ping"}` + "\n")
+
+	var out bytes.Buffer
+	if err := ServeStdio(s, &in, &out); err != nil {
+		t.Fatalf("ServeStdio: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("got %d output lines, want 2 (parse error + ping reply): %q", len(lines), out.String())
+	}
+	if !strings.Contains(lines[0], `-32700`) || !strings.Contains(lines[0], `"id":null`) {
+		t.Errorf("over-long frame reply = %s, want -32700 with id:null", lines[0])
+	}
+	if !strings.Contains(lines[1], `"id":7`) {
+		t.Errorf("follow-up ping reply = %s, want id:7 (loop must continue)", lines[1])
 	}
 }
 
