@@ -247,8 +247,9 @@ func (s *Session) vadAppend(ctx context.Context, ms, energy float64) []Event {
 		v.speechStartMs = startMs
 		v.pendingItemID = s.nextID("item")
 		// The committed turn's audio window starts prefix_padding_ms before the
-		// speech onset — drop leading silence buffered before that.
-		s.trimAudioBuffer(ms + float64(v.cfg.PrefixPaddingMs))
+		// speech onset — the VAD commit slices the buffer there (the client's
+		// buffer itself is never shrunk).
+		s.markAudioWindow(ms + float64(v.cfg.PrefixPaddingMs))
 		audioStart := v.speechStartMs - float64(v.cfg.PrefixPaddingMs)
 		if audioStart < 0 {
 			audioStart = 0
@@ -285,7 +286,16 @@ func (s *Session) vadEndOfTurn(ctx context.Context) []Event {
 	endMs := v.totalMs
 	out := []Event{{"type": "input_audio_buffer.speech_stopped",
 		"audio_end_ms": int(endMs), "item_id": v.pendingItemID}}
+	s.vadCommitting = true
 	out = append(out, s.handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"})...)
+	s.vadCommitting = false
+	// Belt-and-braces: if the commit somehow failed, the speech cycle must
+	// still close — a hot cycle re-fires end-of-turn on every silent append
+	// (duplicate speech_stopped + duplicate responses for one utterance).
+	if v.speechActive {
+		s.vadReset()
+		return out
+	}
 	// A transcription-only session ends here: commit + transcription ladder,
 	// never a model response.
 	if s.isTranscription() {

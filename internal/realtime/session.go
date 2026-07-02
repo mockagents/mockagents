@@ -87,12 +87,11 @@ type sessionConfig struct {
 	speed            float64         // audio.output.speed (default 1.0)
 	// Round-tripped verbatim (the mock stores + echoes them; only tools/
 	// turn_detection/transcription change behavior):
-	tracing           json.RawMessage // session.tracing (default null)
-	truncation        json.RawMessage // session.truncation (default "auto")
-	prompt            json.RawMessage // session.prompt (default null)
-	include           json.RawMessage // session.include (default null)
-	parallelToolCalls json.RawMessage // session.parallel_tool_calls (default true)
-	noiseReduction    json.RawMessage // audio.input.noise_reduction (default null)
+	tracing        json.RawMessage // session.tracing (default null)
+	truncation     json.RawMessage // session.truncation (default "auto")
+	prompt         json.RawMessage // session.prompt (default null)
+	include        json.RawMessage // session.include (default null)
+	noiseReduction json.RawMessage // audio.input.noise_reduction (default null)
 }
 
 // sessionUpdate is the inbound session.update payload. It accepts the GA shape
@@ -113,7 +112,6 @@ type sessionUpdate struct {
 	Truncation              json.RawMessage `json:"truncation"`
 	Prompt                  json.RawMessage `json:"prompt"`
 	Include                 json.RawMessage `json:"include"`
-	ParallelToolCalls       json.RawMessage `json:"parallel_tool_calls"`
 	TurnDetection           json.RawMessage `json:"turn_detection"`      // beta top-level alias
 	InputAudioFormat        string          `json:"input_audio_format"`  // beta alias ("pcm16", "g711_ulaw", "g711_alaw")
 	OutputAudioFormat       string          `json:"output_audio_format"` // beta alias
@@ -209,6 +207,23 @@ type Session struct {
 	// audio — the event's documented purpose. Item .added/.done events always
 	// EXCLUDE audio; only the stored item carries it.
 	audioBuf []byte
+	// vadCommitting marks a commit initiated by the server's own turn
+	// detection (vadEndOfTurn) — client-commit validation (the 100 ms floor)
+	// does not apply to the server's own segmentation.
+	vadCommitting bool
+	// lastToolCalls fingerprints the tool calls of the most recent
+	// in-conversation response. The scenario engine re-matches on the
+	// unchanged user turn, so a follow-up right after a function_call_output
+	// would re-issue the IDENTICAL call — an SDK tool loop (answer every
+	// function_call) would never converge. Identical re-issues immediately
+	// after a tool result are consumed; a different call (a deliberate
+	// multi-step chain) still goes out.
+	lastToolCalls []string
+	// audioWindowStartMs is where the detected turn's audio window begins
+	// within the buffered audio (speech onset − prefix padding). VAD commits
+	// slice the stored audio + billed duration there; manual commits use the
+	// whole client buffer.
+	audioWindowStartMs float64
 }
 
 // maxBufferedAudioBytes bounds the per-turn audio kept for retrieve (~40 s of
@@ -216,18 +231,18 @@ type Session struct {
 // their bytes are dropped.
 const maxBufferedAudioBytes = 2 << 20
 
-// trimAudioBuffer drops all but the trailing keepMs of buffered audio (and
-// duration). Called at VAD speech start: GA commits roughly
-// [speech_start − prefix_padding_ms, end], so leading silence from before the
-// turn must not end up in the stored item's audio or the billed duration.
-func (s *Session) trimAudioBuffer(keepMs float64) {
-	if s.bufferedMs <= keepMs {
-		return
+// markAudioWindow records where the detected turn's audio window begins
+// (speech onset minus prefix padding, expressed as an offset into the
+// buffered audio). A VAD-initiated commit slices the buffer there — GA
+// commits roughly [speech_start − prefix_padding_ms, end] — while the
+// CLIENT's buffer stays intact: manual commits, the 100 ms floor, and their
+// billed duration always see everything the client actually appended
+// (round-8 R8-4 — the old in-place trim made a 530 ms manual commit read as
+// "30.00ms").
+func (s *Session) markAudioWindow(keepMs float64) {
+	if start := s.bufferedMs - keepMs; start > 0 {
+		s.audioWindowStartMs = start
 	}
-	if keepBytes := int(keepMs) * 48; len(s.audioBuf) > keepBytes {
-		s.audioBuf = append([]byte(nil), s.audioBuf[len(s.audioBuf)-keepBytes:]...)
-	}
-	s.bufferedMs = keepMs
 }
 
 // rememberItem indexes a completed conversation item for later retrieve /
@@ -354,13 +369,39 @@ func (s *Session) SetExpiry(unix int64) { s.expiresAt = unix }
 // (POST /v1/realtime/client_secrets) — before the greeting, so the session
 // comes up with the configuration the client paid for. Accepts the same
 // payload shape as session.update; the transport calls it pre-Greeting, so no
-// validation events are emitted (mint-time payloads were already accepted).
+// validation events are emitted. Belt-and-braces: an invalid turn_detection
+// in the seeded payload keeps the working default instead of silently
+// disabling VAD and echoing a bogus config in session.created (the mint
+// endpoint rejects these too — round-8 R8-8).
 func (s *Session) SeedConfig(raw json.RawMessage) {
-	oldTD := string(s.cfg.turnDetection)
+	oldTD := s.cfg.turnDetection
 	s.applyConfig(raw)
-	if string(s.cfg.turnDetection) != oldTD {
+	if evs := s.validateTurnDetection(raw); evs != nil {
+		s.cfg.turnDetection = oldTD
+		return
+	}
+	if string(s.cfg.turnDetection) != string(oldTD) {
 		s.refreshVAD()
 	}
+}
+
+// ValidateSessionPayload checks a session-shaped payload (the ephemeral-key
+// mint body) against the same rules a session.update must pass, for callers
+// outside a live session. It returns the offending param path and message, or
+// ok=true.
+func ValidateSessionPayload(raw json.RawMessage) (param, msg string, ok bool) {
+	s := &Session{items: map[string]map[string]any{}}
+	for _, validate := range []func(json.RawMessage) []Event{
+		s.validateTurnDetection, s.validateSessionMaxOutputTokens,
+	} {
+		if evs := validate(raw); evs != nil {
+			body := evs[0]["error"].(map[string]any)
+			param, _ := body["param"].(string)
+			msg, _ := body["message"].(string)
+			return param, msg, false
+		}
+	}
+	return "", "", true
 }
 
 // sessionDefaultInstructions mirrors the real server injecting default
@@ -458,25 +499,41 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		s.audioBuffer = false
 		s.bufferedMs = 0
 		s.audioBuf = nil
+		s.audioWindowStartMs = 0
 		s.vadReset()
 		return []Event{{"type": "input_audio_buffer.cleared"}}
 
 	case "input_audio_buffer.commit":
-		// GA rejects both empty AND sub-100 ms buffers with this code — one of
-		// the most-hit realtime errors in real integrations; message texts
-		// match the GA captures.
+		// GA rejects both empty AND sub-100 ms CLIENT commits with this code —
+		// one of the most-hit realtime errors in real integrations; message
+		// texts match the GA captures. The server's own VAD end-of-turn commit
+		// bypasses the floor: a real server never rejects its own
+		// segmentation (round-8 R8-1 — the rejection mid-VAD-flow produced a
+		// client-shaped error, a context-free response, and a re-fired turn).
 		if !s.audioBuffer {
 			return []Event{s.errorEvent("input_audio_buffer_commit_empty",
 				"Error committing input audio buffer: the buffer is empty.")}
 		}
-		if s.bufferedMs < 100 {
+		if s.bufferedMs < 100 && !s.vadCommitting {
 			return []Event{s.errorEvent("input_audio_buffer_commit_empty", fmt.Sprintf(
 				"Error committing input audio buffer: buffer too small. Expected at least 100ms of audio, but buffer only has %.2fms of audio.", s.bufferedMs))}
 		}
 		s.audioBuffer = false
 		s.idleAt, s.idleFired = time.Time{}, false // user activity resets the idle timeout
-		committedSeconds := s.bufferedMs / 1000
-		s.bufferedMs = 0
+		// A VAD-initiated commit covers the detected turn's window
+		// [speech_start − prefix_padding_ms, end]; a manual commit covers the
+		// whole buffer the client appended.
+		committedMs, committedAudio := s.bufferedMs, s.audioBuf
+		if s.vadCommitting && s.audioWindowStartMs > 0 && s.audioWindowStartMs < committedMs {
+			committedMs -= s.audioWindowStartMs
+			if off := int(s.audioWindowStartMs) * 48; off < len(committedAudio) {
+				committedAudio = committedAudio[off:]
+			} else {
+				committedAudio = nil
+			}
+		}
+		committedSeconds := committedMs / 1000
+		s.bufferedMs, s.audioWindowStartMs = 0, 0
 		// A VAD-detected turn pre-announced its item id on speech_started; the
 		// committed item must carry that exact id. Manual turns mint one here.
 		var prevItem any
@@ -503,13 +560,13 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			{"type": "input_audio_buffer.committed", "previous_item_id": prevItem, "item_id": itemID},
 		}, conversationItemEvents(prevItem, emitted)...)
 		// GA item events exclude audio data; retrieve returns it — so the
-		// STORED item is a copy carrying the buffered audio, while the emitted
+		// STORED item is a copy carrying the committed audio, while the emitted
 		// events use the audio-free map above.
-		if len(s.audioBuf) > 0 {
+		if len(committedAudio) > 0 {
 			s.rememberItem(map[string]any{
 				"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 				"role": "user", "content": []any{map[string]any{"type": "input_audio", "transcript": transcript,
-					"audio": base64.StdEncoding.EncodeToString(s.audioBuf)}},
+					"audio": base64.StdEncoding.EncodeToString(committedAudio)}},
 			})
 		} else {
 			s.rememberItem(emitted)
@@ -804,6 +861,10 @@ type responseCtx struct {
 	hasInput bool
 	input    []engine.RequestMessage
 	inputErr []Event
+	// toolCallCount is the number of function_call items this response
+	// emitted — the truncate path rebuilds the history append and must keep
+	// one assistant entry per call (round-8 R8-3).
+	toolCallCount int
 }
 
 func (s *Session) newResponseCtx(raw json.RawMessage) *responseCtx {
@@ -921,8 +982,24 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 
 	inputTokens := countTokens(base)
 
+	// Tool-loop convergence (round-8 R8-2, proven with the live openai-python
+	// SDK): the scenario re-matches on the unchanged user turn, so the
+	// follow-up right after a function_call_output re-issued the identical
+	// call forever. An identical re-issue directly after a tool result is
+	// consumed (the model "used" the output); a different call — a deliberate
+	// multi-step chain — still goes out.
+	if len(resp.ToolCalls) > 0 && !rc.outOfBand {
+		if len(base) > 0 && base[len(base)-1].Role == "tool" &&
+			slices.Equal(toolCallFingerprints(resp.ToolCalls), s.lastToolCalls) {
+			resp.ToolCalls = nil
+		} else {
+			s.lastToolCalls = toolCallFingerprints(resp.ToolCalls)
+		}
+	}
+
 	transcript := resp.Content
 	hasTools := len(resp.ToolCalls) > 0
+	rc.toolCallCount = len(resp.ToolCalls)
 	// Emit a message item when there is content, or when there are no tool calls
 	// at all (so the ladder is never empty — a bare tool-call turn skips it).
 	emitMessage := transcript != "" || !hasTools
@@ -1004,7 +1081,7 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 	if rc.incomplete {
 		done["status_details"] = map[string]any{"type": "incomplete", "reason": "max_output_tokens"}
 	}
-	done["usage"] = usageBlock(inputTokens, outputTokens)
+	done["usage"] = usageBlock(inputTokens, outputTokens, emitMessage && !rc.textOnly())
 	out = append(out, Event{"type": "response.done", "response": done})
 
 	// Paced sessions emit response.created + rate_limits now and the rest of
@@ -1056,16 +1133,27 @@ func (s *Session) failedResponse(respID, msg string, rc *responseCtx) []Event {
 	// Real terminal response.done events always carry usage; a failed response
 	// produced nothing, so it is all zeros.
 	failed["usage"] = zeroUsage()
+	// A failed turn still ends the exchange — the idle timeout re-arms the
+	// same way it does after a successful response (round-8 R8-5: a pending
+	// or auto response that failed previously stranded silence detection).
+	if !rc.outOfBand {
+		s.armIdleTimer()
+	}
 	return []Event{
 		{"type": "response.created", "response": s.responseObject(respID, "in_progress", []any{}, rc)},
 		{"type": "response.done", "response": failed},
 	}
 }
 
-// usageBlock builds the GA usage object for a terminal response.done. The
-// per-modality breakdown attributes everything to text (the transcript drives
-// output; synthesized audio carries no real tokens).
-func usageBlock(inputTokens, outputTokens int) map[string]any {
+// usageBlock builds the GA usage object for a terminal response.done. Input
+// is attributed to text (the mock's context is textual); output goes to the
+// modality that actually streamed — GA reports an audio response's output as
+// audio tokens (round-8 R8-9), a text-only one as text tokens.
+func usageBlock(inputTokens, outputTokens int, audioOutput bool) map[string]any {
+	textOut, audioOut := outputTokens, 0
+	if audioOutput {
+		textOut, audioOut = 0, outputTokens
+	}
 	return map[string]any{
 		"input_tokens":  inputTokens,
 		"output_tokens": outputTokens,
@@ -1074,12 +1162,12 @@ func usageBlock(inputTokens, outputTokens int) map[string]any {
 			"text_tokens": inputTokens, "audio_tokens": 0, "image_tokens": 0, "cached_tokens": 0,
 			"cached_tokens_details": map[string]any{"text_tokens": 0, "audio_tokens": 0, "image_tokens": 0},
 		},
-		"output_token_details": map[string]any{"text_tokens": outputTokens, "audio_tokens": 0},
+		"output_token_details": map[string]any{"text_tokens": textOut, "audio_tokens": audioOut},
 	}
 }
 
 // zeroUsage is the usage block for a response that produced no billable output.
-func zeroUsage() map[string]any { return usageBlock(0, 0) }
+func zeroUsage() map[string]any { return usageBlock(0, 0, false) }
 
 // responseObject builds the GA `response` envelope shared by response.created and
 // response.done: id/object/status plus the GA fields a client reads off the
@@ -1381,16 +1469,15 @@ func (s *Session) sessionObject() map[string]any {
 	}
 	obj := map[string]any{
 		"id": s.id, "object": "realtime.session", "type": "realtime", "model": s.model(),
-		"output_modalities":   s.outputModalities(),
-		"instructions":        instructions,
-		"tools":               rawOr(s.cfg.tools, "[]"),
-		"tool_choice":         rawOr(s.cfg.toolChoice, `"auto"`),
-		"max_output_tokens":   rawOr(s.cfg.maxOutputTokens, `"inf"`),
-		"tracing":             rawOr(s.cfg.tracing, "null"),
-		"truncation":          rawOr(s.cfg.truncation, `"auto"`),
-		"prompt":              rawOr(s.cfg.prompt, "null"),
-		"include":             rawOr(s.cfg.include, "null"),
-		"parallel_tool_calls": rawOr(s.cfg.parallelToolCalls, "true"),
+		"output_modalities": s.outputModalities(),
+		"instructions":      instructions,
+		"tools":             rawOr(s.cfg.tools, "[]"),
+		"tool_choice":       rawOr(s.cfg.toolChoice, `"auto"`),
+		"max_output_tokens": rawOr(s.cfg.maxOutputTokens, `"inf"`),
+		"tracing":           rawOr(s.cfg.tracing, "null"),
+		"truncation":        rawOr(s.cfg.truncation, `"auto"`),
+		"prompt":            rawOr(s.cfg.prompt, "null"),
+		"include":           rawOr(s.cfg.include, "null"),
 		"audio": map[string]any{
 			"input": map[string]any{
 				"format":          rawOr(s.cfg.inputFormat, defaultAudioFormat),
@@ -1423,7 +1510,7 @@ var (
 	gaSessionKeys = map[string]bool{
 		"type": true, "model": true, "instructions": true, "output_modalities": true,
 		"tools": true, "tool_choice": true, "max_output_tokens": true, "tracing": true,
-		"truncation": true, "prompt": true, "include": true, "parallel_tool_calls": true,
+		"truncation": true, "prompt": true, "include": true,
 		"audio": true,
 	}
 	gaAudioInputKeys  = map[string]bool{"format": true, "transcription": true, "turn_detection": true, "noise_reduction": true}
@@ -1664,7 +1751,11 @@ func (s *Session) applyConfig(raw json.RawMessage) {
 	if err := json.Unmarshal(raw, &u); err != nil {
 		return
 	}
-	if u.Type == "realtime" || u.Type == "transcription" {
+	// First-set-wins: the session's union arm is fixed once set — the same
+	// rule validateSessionType enforces for session.update also covers
+	// SeedConfig, so a minted "realtime" payload cannot flip a session pinned
+	// to transcription by ?intent (round-8 R8-6).
+	if (u.Type == "realtime" || u.Type == "transcription") && s.cfg.sessionType == "" {
 		s.cfg.sessionType = u.Type
 	}
 	if u.Model != "" {
@@ -1704,9 +1795,6 @@ func (s *Session) applyConfig(raw json.RawMessage) {
 	}
 	if len(u.Include) > 0 {
 		s.cfg.include = u.Include
-	}
-	if len(u.ParallelToolCalls) > 0 {
-		s.cfg.parallelToolCalls = u.ParallelToolCalls
 	}
 	// Beta-flat aliases (GA nested wins when both are present).
 	if len(u.TurnDetection) > 0 && (u.Audio == nil || u.Audio.Input == nil || len(u.Audio.Input.TurnDetection) == 0) {
@@ -1856,6 +1944,20 @@ func parseItem(raw json.RawMessage) parsedItem {
 		item.Role = "user"
 	}
 	return item
+}
+
+// toolCallFingerprints identifies a response's tool calls (name + arguments)
+// so an identical re-issue right after a tool result can be recognized.
+func toolCallFingerprints(calls []types.ToolCallSpec) []string {
+	out := make([]string, len(calls))
+	for i, tc := range calls {
+		args := tc.RawArguments
+		if args == "" {
+			args = marshalArgs(tc.Arguments)
+		}
+		out[i] = tc.Name + "\x00" + args
+	}
+	return out
 }
 
 // storedItemText joins the text-bearing payloads (text or transcript) of a

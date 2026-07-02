@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/stretchr/testify/require"
 )
 
@@ -275,6 +276,77 @@ func TestRealtime_LegacySessionsShape(t *testing.T) {
 	require.Greater(t, expiresAt, before+50)
 	require.LessOrEqual(t, expiresAt, before+70)
 }
+
+// Round-7 R7-21: the per-response hooks meter in-socket generation — quota
+// rejection surfaces as the failed-response ladder, and OnResponse fires once
+// per generated response with word-count token estimates.
+func TestRealtime_QuotaAndMeteringHooks(t *testing.T) {
+	h := &RealtimeHandler{Engine: testEngine(testOpenAIAgent())}
+	type metered struct {
+		tenant, model string
+		in, out       int
+	}
+	var seen []metered
+	h.OnResponse = func(tenantID, model string, inputTokens, outputTokens int, resp *engine.Response) {
+		require.NotNil(t, resp)
+		seen = append(seen, metered{tenantID, model, inputTokens, outputTokens})
+	}
+	quotaErr := error(nil)
+	h.CheckQuota = func(tenantID string) error { return quotaErr }
+
+	mux := http.NewServeMux()
+	for _, rt := range h.Routes() {
+		mux.HandleFunc(rt.Pattern, rt.Handler)
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/realtime?model=gpt-4o", nil)
+	require.NoError(t, err)
+	defer c.CloseNow()
+	require.Equal(t, "session.created", wsRead(t, ctx, c)["type"])
+	require.Equal(t, "conversation.created", wsRead(t, ctx, c)["type"])
+
+	// A generated response meters once.
+	wsWrite(t, ctx, c, map[string]any{"type": "conversation.item.create", "item": map[string]any{
+		"type": "message", "role": "user",
+		"content": []map[string]any{{"type": "input_text", "text": "hello there"}}}})
+	wsWrite(t, ctx, c, map[string]any{"type": "response.create"})
+	for {
+		if wsRead(t, ctx, c)["type"] == "response.done" {
+			break
+		}
+	}
+	require.Len(t, seen, 1)
+	require.Equal(t, "gpt-4o", seen[0].model)
+	require.Equal(t, 2, seen[0].in, "input tokens = word count of the history")
+	require.Positive(t, seen[0].out)
+
+	// A quota rejection yields the failed-response ladder and no metering.
+	quotaErr = errTenantOverQuota
+	wsWrite(t, ctx, c, map[string]any{"type": "response.create"})
+	var done map[string]any
+	for {
+		ev := wsRead(t, ctx, c)
+		if ev["type"] == "response.done" {
+			done = ev
+			break
+		}
+	}
+	resp := done["response"].(map[string]any)
+	require.Equal(t, "failed", resp["status"])
+	sdErr := resp["status_details"].(map[string]any)["error"].(map[string]any)
+	require.Contains(t, sdErr["message"], "quota")
+	require.Len(t, seen, 1, "a rejected response must not meter")
+}
+
+var errTenantOverQuota = errQuota{}
+
+type errQuota struct{}
+
+func (errQuota) Error() string { return "tenant request-rate quota exceeded" }
 
 // Round-7 R7-5: the session config supplied at ephemeral-key mint time reaches
 // the socket — a connect presenting the ek_ (bearer or the browser

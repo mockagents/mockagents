@@ -36,6 +36,19 @@ const realtimePaceInterval = 5 * time.Millisecond
 // RealtimeHandler serves the OpenAI Realtime API.
 type RealtimeHandler struct {
 	Engine *engine.Engine
+	// CheckQuota, when set, is consulted with the connection's tenant before
+	// each response generation; a non-nil error rejects generation and the
+	// client sees the failed-response ladder (an established WebSocket cannot
+	// return HTTP 429/402 the way the request/response protocols do). nil
+	// disables quota enforcement (the single-tenant default).
+	CheckQuota func(tenantID string) error
+	// OnResponse, when set, is invoked once per generated realtime response
+	// with the tenant, model, word-count token estimates, and the engine
+	// response. Realtime generation is engine-in-process — it bypasses the
+	// HTTP middleware that meters the request/response protocols — so the
+	// server wires per-tenant spend accrual and interaction logging through
+	// this seam (round-7 R7-21).
+	OnResponse func(tenantID, model string, inputTokens, outputTokens int, resp *engine.Response)
 	// minted retains the session config supplied at ephemeral-key mint time
 	// (POST /v1/realtime/client_secrets), keyed by the ek_ value, so a connect
 	// presenting that key comes up with the configuration the client paid for
@@ -105,7 +118,7 @@ func (h *RealtimeHandler) Routes() []Route {
 // at session.client_secret — a required field of the GA response session). The
 // mock ignores the key on connect (it accepts any client), so this is a
 // well-formed stub the SDK can round-trip.
-func (h *RealtimeHandler) buildEphemeralSession(r *http.Request) (value string, expiresAt int64, session map[string]any) {
+func (h *RealtimeHandler) buildEphemeralSession(r *http.Request) (value string, expiresAt int64, session map[string]any, errBody map[string]any) {
 	var outer struct {
 		Model        string `json:"model"` // legacy flat
 		Voice        string `json:"voice"` // legacy flat
@@ -145,6 +158,17 @@ func (h *RealtimeHandler) buildEphemeralSession(r *http.Request) (value string, 
 	body.Model, body.Voice = outer.Model, outer.Voice
 	if len(outer.Session) > 0 {
 		_ = json.Unmarshal(outer.Session, &body.Session)
+	}
+
+	// An invalid session config is rejected at mint time (prod 400s here) —
+	// otherwise the broken payload would be retained and silently seed the
+	// connect, e.g. a typo'd turn_detection disabling the VAD default while
+	// session.created echoes the bogus object.
+	if param, msg, ok := realtime.ValidateSessionPayload(outer.Session); !ok {
+		return "", 0, nil, map[string]any{"error": map[string]any{
+			"type": "invalid_request_error", "code": "invalid_value",
+			"message": msg, "param": param,
+		}}
 	}
 
 	model := firstNonEmpty(body.Model, body.Session.Model, realtime.DefaultModel)
@@ -187,7 +211,7 @@ func (h *RealtimeHandler) buildEphemeralSession(r *http.Request) (value string, 
 				},
 			},
 		}
-		return value, expiresAt, session
+		return value, expiresAt, session, nil
 	}
 
 	mods := body.Session.OutputModalities
@@ -226,14 +250,21 @@ func (h *RealtimeHandler) buildEphemeralSession(r *http.Request) (value string, 
 			"output": map[string]any{"voice": voice, "format": pcm(), "speed": 1.0},
 		},
 	}
-	return value, expiresAt, session
+	return value, expiresAt, session, nil
 }
 
 // HandleClientSecret serves the GA POST /v1/realtime/client_secrets envelope:
-// {value, expires_at, session}.
+// {value, expires_at, session}. An invalid session payload (bad
+// turn_detection / max_output_tokens) is rejected with 400 the way prod
+// would — otherwise a broken config would be retained and silently seed the
+// connect (round-8 R8-8).
 func (h *RealtimeHandler) HandleClientSecret(w http.ResponseWriter, r *http.Request) {
 	stampProtocol(r, ProtocolOpenAIRealtime)
-	value, expiresAt, session := h.buildEphemeralSession(r)
+	value, expiresAt, session, errBody := h.buildEphemeralSession(r)
+	if errBody != nil {
+		writeJSON(w, http.StatusBadRequest, errBody)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"value": value, "expires_at": expiresAt, "session": session,
 	})
@@ -447,15 +478,31 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 }
 
 // generator adapts the engine to the realtime.Generator signature, pinning the
-// connection's tenant onto each sub-request's context.
+// connection's tenant onto each sub-request's context and running the server's
+// per-response quota/metering hooks (this is the metering seam for realtime —
+// the HTTP middleware never sees in-socket generation).
 func (h *RealtimeHandler) generator(tenant string) realtime.Generator {
 	return func(ctx context.Context, model, sessionID string, history []engine.RequestMessage) (*engine.Response, error) {
+		if h.CheckQuota != nil {
+			if err := h.CheckQuota(tenant); err != nil {
+				return nil, err
+			}
+		}
 		ctx = engine.WithTenantID(ctx, tenant)
-		return h.Engine.ProcessRequestContext(ctx, &engine.InboundRequest{
+		resp, err := h.Engine.ProcessRequestContext(ctx, &engine.InboundRequest{
 			Model:     model,
 			SessionID: sessionID,
 			Messages:  history,
 		})
+		if err == nil && resp != nil && h.OnResponse != nil {
+			// Word counts mirror the Session's own usage math.
+			inputTokens := 0
+			for _, m := range history {
+				inputTokens += len(strings.Fields(m.Content))
+			}
+			h.OnResponse(tenant, model, inputTokens, len(strings.Fields(resp.Content)), resp)
+		}
+		return resp, err
 	}
 }
 
