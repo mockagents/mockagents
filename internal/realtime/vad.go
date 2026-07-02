@@ -247,8 +247,9 @@ func (s *Session) vadAppend(ctx context.Context, ms, energy float64) []Event {
 		v.speechStartMs = startMs
 		v.pendingItemID = s.nextID("item")
 		// The committed turn's audio window starts prefix_padding_ms before the
-		// speech onset — drop leading silence buffered before that.
-		s.trimAudioBuffer(ms + float64(v.cfg.PrefixPaddingMs))
+		// speech onset — the VAD commit slices the buffer there (the client's
+		// buffer itself is never shrunk).
+		s.markAudioWindow(ms + float64(v.cfg.PrefixPaddingMs))
 		audioStart := v.speechStartMs - float64(v.cfg.PrefixPaddingMs)
 		if audioStart < 0 {
 			audioStart = 0

@@ -221,6 +221,11 @@ type Session struct {
 	// after a tool result are consumed; a different call (a deliberate
 	// multi-step chain) still goes out.
 	lastToolCalls []string
+	// audioWindowStartMs is where the detected turn's audio window begins
+	// within the buffered audio (speech onset − prefix padding). VAD commits
+	// slice the stored audio + billed duration there; manual commits use the
+	// whole client buffer.
+	audioWindowStartMs float64
 }
 
 // maxBufferedAudioBytes bounds the per-turn audio kept for retrieve (~40 s of
@@ -228,18 +233,18 @@ type Session struct {
 // their bytes are dropped.
 const maxBufferedAudioBytes = 2 << 20
 
-// trimAudioBuffer drops all but the trailing keepMs of buffered audio (and
-// duration). Called at VAD speech start: GA commits roughly
-// [speech_start − prefix_padding_ms, end], so leading silence from before the
-// turn must not end up in the stored item's audio or the billed duration.
-func (s *Session) trimAudioBuffer(keepMs float64) {
-	if s.bufferedMs <= keepMs {
-		return
+// markAudioWindow records where the detected turn's audio window begins
+// (speech onset minus prefix padding, expressed as an offset into the
+// buffered audio). A VAD-initiated commit slices the buffer there — GA
+// commits roughly [speech_start − prefix_padding_ms, end] — while the
+// CLIENT's buffer stays intact: manual commits, the 100 ms floor, and their
+// billed duration always see everything the client actually appended
+// (round-8 R8-4 — the old in-place trim made a 530 ms manual commit read as
+// "30.00ms").
+func (s *Session) markAudioWindow(keepMs float64) {
+	if start := s.bufferedMs - keepMs; start > 0 {
+		s.audioWindowStartMs = start
 	}
-	if keepBytes := int(keepMs) * 48; len(s.audioBuf) > keepBytes {
-		s.audioBuf = append([]byte(nil), s.audioBuf[len(s.audioBuf)-keepBytes:]...)
-	}
-	s.bufferedMs = keepMs
 }
 
 // rememberItem indexes a completed conversation item for later retrieve /
@@ -470,6 +475,7 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		s.audioBuffer = false
 		s.bufferedMs = 0
 		s.audioBuf = nil
+		s.audioWindowStartMs = 0
 		s.vadReset()
 		return []Event{{"type": "input_audio_buffer.cleared"}}
 
@@ -490,8 +496,20 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		}
 		s.audioBuffer = false
 		s.idleAt, s.idleFired = time.Time{}, false // user activity resets the idle timeout
-		committedSeconds := s.bufferedMs / 1000
-		s.bufferedMs = 0
+		// A VAD-initiated commit covers the detected turn's window
+		// [speech_start − prefix_padding_ms, end]; a manual commit covers the
+		// whole buffer the client appended.
+		committedMs, committedAudio := s.bufferedMs, s.audioBuf
+		if s.vadCommitting && s.audioWindowStartMs > 0 && s.audioWindowStartMs < committedMs {
+			committedMs -= s.audioWindowStartMs
+			if off := int(s.audioWindowStartMs) * 48; off < len(committedAudio) {
+				committedAudio = committedAudio[off:]
+			} else {
+				committedAudio = nil
+			}
+		}
+		committedSeconds := committedMs / 1000
+		s.bufferedMs, s.audioWindowStartMs = 0, 0
 		// A VAD-detected turn pre-announced its item id on speech_started; the
 		// committed item must carry that exact id. Manual turns mint one here.
 		var prevItem any
@@ -518,13 +536,13 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			{"type": "input_audio_buffer.committed", "previous_item_id": prevItem, "item_id": itemID},
 		}, conversationItemEvents(prevItem, emitted)...)
 		// GA item events exclude audio data; retrieve returns it — so the
-		// STORED item is a copy carrying the buffered audio, while the emitted
+		// STORED item is a copy carrying the committed audio, while the emitted
 		// events use the audio-free map above.
-		if len(s.audioBuf) > 0 {
+		if len(committedAudio) > 0 {
 			s.rememberItem(map[string]any{
 				"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 				"role": "user", "content": []any{map[string]any{"type": "input_audio", "transcript": transcript,
-					"audio": base64.StdEncoding.EncodeToString(s.audioBuf)}},
+					"audio": base64.StdEncoding.EncodeToString(committedAudio)}},
 			})
 		} else {
 			s.rememberItem(emitted)
@@ -819,6 +837,10 @@ type responseCtx struct {
 	hasInput bool
 	input    []engine.RequestMessage
 	inputErr []Event
+	// toolCallCount is the number of function_call items this response
+	// emitted — the truncate path rebuilds the history append and must keep
+	// one assistant entry per call (round-8 R8-3).
+	toolCallCount int
 }
 
 func (s *Session) newResponseCtx(raw json.RawMessage) *responseCtx {
@@ -953,6 +975,7 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 
 	transcript := resp.Content
 	hasTools := len(resp.ToolCalls) > 0
+	rc.toolCallCount = len(resp.ToolCalls)
 	// Emit a message item when there is content, or when there are no tool calls
 	// at all (so the ladder is never empty — a bare tool-call turn skips it).
 	emitMessage := transcript != "" || !hasTools
@@ -1086,6 +1109,12 @@ func (s *Session) failedResponse(respID, msg string, rc *responseCtx) []Event {
 	// Real terminal response.done events always carry usage; a failed response
 	// produced nothing, so it is all zeros.
 	failed["usage"] = zeroUsage()
+	// A failed turn still ends the exchange — the idle timeout re-arms the
+	// same way it does after a successful response (round-8 R8-5: a pending
+	// or auto response that failed previously stranded silence detection).
+	if !rc.outOfBand {
+		s.armIdleTimer()
+	}
 	return []Event{
 		{"type": "response.created", "response": s.responseObject(respID, "in_progress", []any{}, rc)},
 		{"type": "response.done", "response": failed},
@@ -1694,7 +1723,11 @@ func (s *Session) applyConfig(raw json.RawMessage) {
 	if err := json.Unmarshal(raw, &u); err != nil {
 		return
 	}
-	if u.Type == "realtime" || u.Type == "transcription" {
+	// First-set-wins: the session's union arm is fixed once set — the same
+	// rule validateSessionType enforces for session.update also covers
+	// SeedConfig, so a minted "realtime" payload cannot flip a session pinned
+	// to transcription by ?intent (round-8 R8-6).
+	if (u.Type == "realtime" || u.Type == "transcription") && s.cfg.sessionType == "" {
 		s.cfg.sessionType = u.Type
 	}
 	if u.Model != "" {

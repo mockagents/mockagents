@@ -5,11 +5,111 @@ package realtime
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/types"
 )
+
+// R8-3 (S3): truncating the streaming message must not drop the
+// function_call items' history entries (the round-7 truncate override
+// replaced the whole appendHistory closure).
+func TestTruncateKeepsFunctionCallHistory(t *testing.T) {
+	ctx := context.Background()
+	s, fc := pacedSession(t, fakeGenTool("alpha beta", types.ToolCallSpec{Name: "lookup"}), serverVAD)
+	endVADTurn(t, s)
+
+	var msgID string
+	for range 4 {
+		for _, ev := range s.Tick(ctx, fc.advance(10*time.Millisecond)) {
+			if ev["type"] == "conversation.item.added" {
+				msgID = ev["item"].(map[string]any)["id"].(string)
+			}
+		}
+	}
+	if msgID == "" {
+		t.Fatal("setup: message item not announced")
+	}
+	s.Handle(ctx, &ClientEvent{Type: "conversation.item.truncate", ItemID: msgID, AudioEndMs: 10})
+	drain(t, s, fc, 200)
+
+	assistants := 0
+	for _, m := range s.history {
+		if m.Role == "assistant" {
+			assistants++
+		}
+	}
+	if assistants != 2 {
+		t.Errorf("assistant history entries = %d, want 2 (truncated message + function_call)", assistants)
+	}
+}
+
+// R8-4 (S3): the VAD window must not shrink the CLIENT's buffer — a manual
+// commit of everything appended (530ms) passes the floor and bills/stores the
+// full buffer; the VAD's own commit still slices the window.
+func TestManualCommitSeesFullClientBuffer(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("r84", "", fakeGen("ok"))
+	enableVAD(t, s, `{"audio":{"input":{"turn_detection":{"type":"server_vad","prefix_padding_ms":0,"create_response":false},"transcription":{"model":"whisper-1"}}}}`)
+
+	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(500, quietAmp)})
+	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(30, speechAmp)})
+	evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"})
+	committed := firstEvent(evs, "input_audio_buffer.committed")
+	if committed == nil {
+		t.Fatalf("manual commit of a 530ms buffer = %v, want success", typesOf(evs))
+	}
+	// Billed duration covers the WHOLE client buffer.
+	usage := firstEvent(evs, "conversation.item.input_audio_transcription.completed")["usage"].(map[string]any)
+	if secs := usage["seconds"].(float64); secs < 0.52 || secs > 0.54 {
+		t.Errorf("billed seconds = %v, want ~0.53 (the appended buffer)", secs)
+	}
+	// Stored audio covers the whole buffer too.
+	got := firstEvent(s.Handle(ctx, &ClientEvent{Type: "conversation.item.retrieve",
+		ItemID: committed["item_id"].(string)}), "conversation.item.retrieved")
+	audio, _ := got["item"].(map[string]any)["content"].([]any)[0].(map[string]any)["audio"].(string)
+	raw, _ := base64.StdEncoding.DecodeString(audio)
+	if len(raw) != 530*48 {
+		t.Errorf("stored audio = %dms, want the full 530ms client buffer", len(raw)/48)
+	}
+}
+
+// R8-5 (S3): a FAILED response re-arms the idle timeout like a successful one
+// — a generation failure must not strand silence detection.
+func TestFailedResponseRearmsIdle(t *testing.T) {
+	gen := func(context.Context, string, string, []engine.RequestMessage) (*engine.Response, error) {
+		return nil, fmt.Errorf("engine down")
+	}
+	s := NewSession("r85", "", gen)
+	fc := newFakeClock()
+	s.SetClock(fc.now)
+	enableVAD(t, s, `{"audio":{"input":{"turn_detection":{"type":"server_vad","idle_timeout_ms":5000}}}}`)
+
+	evs := endVADTurn(t, s)
+	if st := firstEvent(evs, "response.done")["response"].(map[string]any)["status"]; st != "failed" {
+		t.Fatalf("setup: response status = %v, want failed", st)
+	}
+	if _, ok := s.NextDeadline(); !ok {
+		t.Error("idle timeout not re-armed after a failed response")
+	}
+}
+
+// R8-6 (S3): SeedConfig cannot flip a pinned session type — first-set-wins
+// covers the mint path, not just session.update.
+func TestSeedConfigRespectsPinnedSessionType(t *testing.T) {
+	s := NewSession("r86", "", fakeGen("ok"))
+	s.SetSessionType("transcription") // ?intent=transcription
+	s.SeedConfig([]byte(`{"type":"realtime","instructions":"be brief"}`))
+	if !s.isTranscription() {
+		t.Error("a minted realtime payload flipped a session pinned to transcription")
+	}
+	if s.cfg.instructions != "be brief" {
+		t.Error("the rest of the seeded config must still apply")
+	}
+}
 
 // R8-2 (S2, live-SDK proven): the tool loop must converge — a follow-up right
 // after a function_call_output must not re-issue the identical function_call

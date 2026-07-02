@@ -402,9 +402,15 @@ func (s *Session) truncateInflightItem(itemID string) {
 		}
 	}
 	if !inf.rc.outOfBand {
+		toolCalls := inf.rc.toolCallCount
 		inf.onDone = func() {
 			if prefix != "" {
 				s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: prefix})
+			}
+			// The function_call items streamed in full — their history entries
+			// survive the message truncation (round-8 R8-3).
+			for range toolCalls {
+				s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: ""})
 			}
 		}
 	}
