@@ -198,6 +198,10 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 			writeGeminiError(w, ce.StatusCode, geminiStatusFor(ce.StatusCode), ce.Message)
 			return
 		}
+		if se := engine.AsStrictToolError(err); se != nil {
+			writeGeminiStrictError(w, se)
+			return
+		}
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "not found") {
 			status = http.StatusNotFound
@@ -218,6 +222,7 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	setHallucinationHeader(w, resp)
+	setStrictViolationHeader(w, resp)
 
 	// Count prompt tokens off the already-flattened inbound.Messages (the system
 	// instruction is prepended there) rather than re-extracting req.Contents

@@ -352,6 +352,10 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 			writeErrorCode(w, ce.StatusCode, errType, code, ce.Message)
 			return
 		}
+		if se := engine.AsStrictToolError(err); se != nil {
+			writeResponsesStrictError(w, se)
+			return
+		}
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "not found") {
 			status = http.StatusNotFound
@@ -418,6 +422,7 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 	}
 
 	setHallucinationHeader(w, resp)
+	setStrictViolationHeader(w, resp)
 
 	if req.Stream {
 		streamCfg := h.streamConfigFor(r, req.Model)

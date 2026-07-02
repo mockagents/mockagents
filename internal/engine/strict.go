@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -61,6 +63,116 @@ func StrictToolsFor(agent *types.AgentDefinition) StrictToolModes {
 		cfg = agent.Spec.Behavior.StrictTools
 	}
 	return resolveStrictTools(cfg, envStrictLevel())
+}
+
+// StrictToolError is a strict-tools violation. The engine detects it
+// provider-neutrally; each adapter renders its provider's real 400 body from
+// the structured fields (the ChaosError translation precedent). Providers
+// disagree on which SIDE of an id mismatch they report — OpenAI blames the
+// unanswered call ids, Anthropic the unexpected result id — so the error
+// carries both findings and each adapter picks its rendering.
+type StrictToolError struct {
+	// Check is the knob dimension: "ids", "tool_choice", or "schemas".
+	Check string
+	// Kind is the primary violation for logs and the warn header: "orphan"
+	// (a tool result with no preceding tool calls), "unknown" (a result
+	// referencing an id never echoed), "unanswered" (echoed call ids with no
+	// results), plus tool_choice/schema kinds from later checks.
+	Kind string
+	// Index is the offending message index (orphan/unknown).
+	Index int
+	// UnknownID is the result id that matched no echoed call (unknown/orphan
+	// when the result carried one).
+	UnknownID string
+	// UnansweredIDs are echoed call ids no tool result answered.
+	UnansweredIDs []string
+	// Message is the provider-neutral text (logs + warn header).
+	Message string
+}
+
+func (e *StrictToolError) Error() string { return e.Message }
+
+// AsStrictToolError unwraps a StrictToolError, or nil.
+func AsStrictToolError(err error) *StrictToolError {
+	var se *StrictToolError
+	if errors.As(err, &se) {
+		return se
+	}
+	return nil
+}
+
+// validateRoundTripIDs enforces the round-trip tool id contract every real
+// API applies (round-11 R9-15): a tool result must respond to a tool call
+// echoed earlier in the history, and every echoed call must be answered
+// before the conversation moves on. Returns nil when the history is
+// coherent.
+//
+// Matching is by global id set (Gemini has no ids — adapters put the
+// function NAME in both ID fields, so name matching falls out). Calls echoed
+// with no id and results carrying no id are skipped — there is nothing to
+// match — except that a tool result arriving before ANY tool call is always
+// the orphan violation. A trailing assistant echo with nothing after it is
+// exempt from the unanswered check (the client answers it on the next
+// request).
+func validateRoundTripIDs(msgs []RequestMessage) *StrictToolError {
+	echoed := map[string]bool{}
+	answered := map[string]bool{}
+	var echoedOrder []string
+	anyCalls := false
+	var firstUnknown *StrictToolError
+
+	for i, m := range msgs {
+		if m.IsToolResult {
+			if !anyCalls {
+				se := &StrictToolError{
+					Check: "ids", Kind: "orphan", Index: i,
+					Message: fmt.Sprintf("messages[%d]: tool result without any preceding tool calls", i),
+				}
+				if len(m.ToolResultIDs) > 0 {
+					se.UnknownID = m.ToolResultIDs[0]
+				}
+				return se
+			}
+			for _, id := range m.ToolResultIDs {
+				answered[id] = true
+				if !echoed[id] && firstUnknown == nil {
+					firstUnknown = &StrictToolError{
+						Check: "ids", Kind: "unknown", Index: i, UnknownID: id,
+						Message: fmt.Sprintf("messages[%d]: tool result references unknown tool call id %q", i, id),
+					}
+				}
+			}
+		}
+		for _, tc := range m.ToolCalls {
+			anyCalls = true
+			if tc.ID != "" && !echoed[tc.ID] {
+				echoed[tc.ID] = true
+				// A trailing assistant echo (no messages after it) is exempt.
+				if i < len(msgs)-1 {
+					echoedOrder = append(echoedOrder, tc.ID)
+				}
+			}
+		}
+	}
+
+	var unanswered []string
+	for _, id := range echoedOrder {
+		if !answered[id] {
+			unanswered = append(unanswered, id)
+		}
+	}
+
+	switch {
+	case firstUnknown != nil:
+		firstUnknown.UnansweredIDs = unanswered
+		return firstUnknown
+	case len(unanswered) > 0:
+		return &StrictToolError{
+			Check: "ids", Kind: "unanswered", UnansweredIDs: unanswered,
+			Message: fmt.Sprintf("tool call ids without tool results: %s", strings.Join(unanswered, ", ")),
+		}
+	}
+	return nil
 }
 
 // resolveStrictTools is the pure worker (unit-testable without env

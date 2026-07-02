@@ -198,6 +198,10 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 			writeErrorCode(w, ce.StatusCode, errType, code, ce.Message)
 			return
 		}
+		if se := engine.AsStrictToolError(err); se != nil {
+			writeOpenAIStrictError(w, se)
+			return
+		}
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "not found") {
 			status = http.StatusNotFound
@@ -219,6 +223,7 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 
 	setHallucinationHeader(w, resp)
+	setStrictViolationHeader(w, resp)
 	setImageCountHeader(w, imageCount)
 
 	// Enforce response_format (structured outputs / JSON mode) on the engine

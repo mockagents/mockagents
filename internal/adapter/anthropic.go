@@ -236,6 +236,10 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 			writeAnthropicError(w, ce.StatusCode, anthropicChaosErrorType(ce.StatusCode), ce.Message)
 			return
 		}
+		if se := engine.AsStrictToolError(err); se != nil {
+			writeAnthropicStrictError(w, se)
+			return
+		}
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "not found") {
 			status = http.StatusNotFound
@@ -257,6 +261,7 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 	}
 
 	setHallucinationHeader(w, resp)
+	setStrictViolationHeader(w, resp)
 	setImageCountHeader(w, imageCount)
 
 	// Stream or JSON.

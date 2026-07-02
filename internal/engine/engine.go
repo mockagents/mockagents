@@ -211,6 +211,26 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 		return nil, ErrEmptyMessage
 	}
 
+	// Strict-tools request validation (round-11): round-trip id coherence is
+	// a request-shape check real APIs run before any generation. In warn
+	// mode the violation is collected and surfaced on the response (header +
+	// log) instead of failing.
+	strictModes := StrictToolsFor(agent)
+	var strictWarnings []string
+	if strictModes.IDs != StrictOff {
+		if v := validateRoundTripIDs(req.Messages); v != nil {
+			if strictModes.IDs == StrictEnforce {
+				if traceOn {
+					observability.RecordError(span, v)
+				}
+				return nil, v
+			}
+			strictWarnings = append(strictWarnings, v.Message)
+			e.Logger.Warn("strict-tools violation (warn mode)",
+				"agent", agent.Metadata.Name, "check", v.Check, "kind", v.Kind, "violation", v.Message)
+		}
+	}
+
 	// 3. Get or create session. Session state is namespaced by tenant and
 	// agent so neither two tenants (X-02) nor two agents (X-03) that
 	// independently pick the same client session_id share conversation
@@ -337,6 +357,9 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 		return resp.Content, toolCallMsgs, nil
 	}); err != nil {
 		return nil, err
+	}
+	if len(strictWarnings) > 0 && resp != nil {
+		resp.StrictWarnings = strictWarnings
 	}
 	// No explicit save (F-ST-004/X-06): `session` is the store's own pointer
 	// and ApplyTurn mutated it under the session lock, so the changes are
