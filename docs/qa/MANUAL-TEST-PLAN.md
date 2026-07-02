@@ -1,11 +1,17 @@
 # MockAgents — Manual QA Test Plan
 
 **Document ID:** MA-QA-TP-001
-**Version:** 1.0
-**Status:** Draft
+**Version:** 1.1
+**Status:** Ready for execution
 **Owner:** QA
-**Applies to build:** `main` (Docker image `mockagents:latest`)
-**Last updated:** 2026-07-01
+**Applies to build:** `main` @ `585d89d` or later (Docker image `mockagents:latest`)
+**Last updated:** 2026-07-02
+
+> **v1.1 changes:** Realtime suite expanded from 3 to 8 cases with copy-paste payloads (the
+> Realtime surface gained server VAD, barge-in/cancellation, item ops, ephemeral keys, and
+> session-update semantics across fidelity rounds 3–5, PRs #17–#23); §16 regression table now
+> covers rounds 2–5; concrete request bodies added to Gemini/tool-call cases; Windows shell
+> guidance added (§4.1); tracker updated with the new case rows.
 
 ---
 
@@ -66,6 +72,41 @@ GUI console; demo applications end-to-end.
 > **Note on the agents directory.** The compose file mounts `./agents`. For this plan, copy the
 > example agents into `./agents` before starting (see TC-ENV-02), so every feature agent is
 > available: `mkdir -p agents && cp examples/*.yaml agents/`.
+
+### 4.1 Shell & quoting guidance (read before executing)
+
+All commands in this plan are written for a **POSIX shell** (Git Bash on Windows, or any
+macOS/Linux shell). If you must use PowerShell:
+
+- Use `curl.exe` (not the `curl` alias for `Invoke-WebRequest`).
+- Inline JSON quoting differs; **prefer writing request bodies to files** and passing
+  `--data @body.json` — this also makes evidence capture reproducible. Example:
+  ```bash
+  cat > /tmp/chat.json <<'EOF'
+  {"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}
+  EOF
+  curl -s -X POST http://localhost:8080/v1/chat/completions \
+       -H 'Content-Type: application/json' --data @/tmp/chat.json
+  ```
+- For WebSocket cases install `websocat` (https://github.com/vi/websocat/releases — a single
+  binary; add it to PATH). `wscat` (`npm i -g wscat`) also works; the plan shows `websocat`.
+
+### 4.2 Canonical trigger phrases (example agents)
+
+Scenario matching is substring-based on the latest user message. These inputs are used
+throughout the plan:
+
+| Agent (model) | Input | Matched scenario / effect |
+|---|---|---|
+| `customer-support-agent` (`gpt-4o`) | `hello` | greeting scenario (canned text) |
+| `customer-support-agent` | `order status` | order-status scenario |
+| `weather-agent` (`gpt-4o`) | any text containing `weather` | tool-call scenario → `get_weather` |
+| `weather-agent` | anything else | default scenario (plain text) |
+| `hallucination-agent` | per-type prompts in the YAML | planted hallucination + header |
+| `chaos-agent` | any | probabilistic latency/errors |
+
+> Multiple example agents share `model: gpt-4o`; the engine picks by model **and** scenario
+> match. When a case says "the weather scenario", include the word `weather` in the message.
 
 ## 5. Test approach
 
@@ -161,7 +202,7 @@ GUI console; demo applications end-to-end.
 |---|---|---|---|
 | **Title** | Simulated tool / function call |
 | **Preconditions** | `weather-agent` (or `tool-routing-agent`) loaded |
-| **Steps** | Send a chat request whose content triggers the weather scenario, including a `tools` array with `get_weather`. |
+| **Steps** | `curl -s -X POST http://localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{"model":"gpt-4o","messages":[{"role":"user","content":"What is the weather in NYC?"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"location":{"type":"string"}}}}}]}'` |
 | **Expected** | Response `choices[0].message.tool_calls[]` with `function.name=get_weather` and a JSON `arguments` string; `finish_reason:"tool_calls"`. |
 | **Verification** | For an agent using `raw_arguments`, the emitted `arguments` string is the **verbatim** planted value (incl. malformed JSON) — cross-check with the agent YAML. |
 
@@ -216,10 +257,10 @@ GUI console; demo applications end-to-end.
 | ID | TC-GEM-01 | Priority | P2 |
 |---|---|---|---|
 | **Title** | Gemini generateContent |
-| **Preconditions** | `gemini-agent` loaded (protocol `google-gemini`) |
-| **Steps** | POST a Gemini-format request for model `gemini-2.0-flash` (via the configured Gemini route). |
-| **Expected** | Gemini-shaped response (`candidates[].content.parts[].text`, `usageMetadata`). |
-| **Verification** | Streaming variant emits Gemini stream chunks; content parity with non-stream. |
+| **Preconditions** | `gemini-agent` loaded (protocol `google-gemini`; check its `model:` in the YAML — the URL segment must match it) |
+| **Steps** | `curl -s -X POST 'http://localhost:8080/v1beta/models/<model>:generateContent' -H 'Content-Type: application/json' -d '{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}'` |
+| **Expected** | Gemini-shaped response (`candidates[].content.parts[].text`, `usageMetadata` with `promptTokenCount`/`candidatesTokenCount`). |
+| **Verification** | Streaming variant `POST .../models/<model>:streamGenerateContent` (`curl -N`) emits Gemini stream chunks; concatenated parts equal the non-stream text. |
 
 ### 7.4 Embeddings & Moderations (EMB / MOD)
 
@@ -269,27 +310,87 @@ GUI console; demo applications end-to-end.
 
 ### 8.3 Realtime WebSocket (RT)
 
+> **Driving recipe.** The Realtime API is served by the MAIN server (no separate process):
+> `websocat -t "ws://localhost:8080/v1/realtime?model=gpt-4o"` — the `model` query parameter
+> selects the agent (use `gpt-4o` so the weather/customer-support scenarios apply). Type one
+> single-line JSON event per line; server events print one per line. Keep the connection open
+> across the steps of a case.
+>
+> **Audio chunks for VAD cases.** Server VAD decides speech vs silence from decoded PCM16
+> energy. Generate base64 chunks once and reuse them (any machine with Python 3):
+> ```bash
+> python3 - <<'EOF'
+> import base64
+> mk = lambda amp, ms: base64.b64encode(
+>     amp.to_bytes(2, "little", signed=True) * (ms * 24)).decode()
+> print("SPEECH (200ms):", mk(20000, 200))
+> print("SILENCE (600ms):", mk(0, 600))
+> EOF
+> ```
+> `SPEECH` is 200 ms of loud audio (detected as speech at the default threshold 0.5);
+> `SILENCE` is 600 ms of digital silence (crosses the default 500 ms end-of-turn window).
+> Below, `<SPEECH>` / `<SILENCE>` mean those base64 strings.
+
 | ID | TC-RT-01 | Priority | P2 |
 |---|---|---|---|
-| **Title** | Realtime session establishment |
-| **Preconditions** | WebSocket client available |
-| **Steps** | Connect `ws://localhost:8080/v1/realtime` (upgrade). Observe initial events. |
-| **Expected** | `session.created` (GA session object shape); every server event carries a unique `event_id`. |
-| **Verification** | Two events → two distinct `event_id`s; session object contains the GA fields (model, voice, modalities). |
+| **Title** | Realtime session establishment (GA session object) |
+| **Preconditions** | `websocat` installed; server healthy |
+| **Steps** | 1. `websocat -t "ws://localhost:8080/v1/realtime?model=gpt-4o"`.  2. Observe the greeting events. |
+| **Expected** | First event `session.created` with the GA session object: `type:"realtime"`, `model:"gpt-4o"`, top-level `output_modalities:["audio"]`, `instructions` (server default text when unset), `tools:[]`, `tool_choice:"auto"`, `max_output_tokens:"inf"`, `expires_at` (≈ now+3600), and a nested `audio` block (`audio.output.voice:"alloy"`, `audio.output.speed:1`, `audio.input.turn_detection:null`). **No** top-level `voice`/`modalities` (beta fields). Second event `conversation.created`. Every event carries a unique `event_id`. |
+| **Verification** | Send `{"type":"session.update","session":{"instructions":"be brief"}}` → `session.updated` echoes the FULL effective session object with the new instructions. Send garbage (`not json`) → an `error` event with `type:"invalid_request_error"`, `param:null`. |
 
 | ID | TC-RT-02 | Priority | P2 |
 |---|---|---|---|
-| **Title** | Realtime mid-session function call |
-| **Steps** | Send a `response.create` that triggers a tool scenario. |
-| **Expected** | Function-call ladder: `response.output_item.added` → `response.function_call_arguments.delta`* → `.done`, then `response.done` listing the `function_call` item with `name` + `call_id` + assembled `arguments`. |
-| **Verification** | For a `raw_arguments` agent, the assembled `arguments` equals the planted verbatim string (INT-1 fix). Reassembled deltas == `.done` arguments. |
+| **Title** | Text turn + mid-session function call |
+| **Preconditions** | TC-RT-01 connection open (`model=gpt-4o`, `weather-agent` loaded) |
+| **Steps** | 1. Send `{"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":"What is the weather in NYC?"}]}}`.  2. Send `{"type":"response.create"}`. |
+| **Expected** | Step 1: `conversation.item.added` then `conversation.item.done` (GA pair), echoing the item with `previous_item_id:null` for the first item. Step 2: `response.created` → `rate_limits.updated` (exactly once) → function-call ladder `response.output_item.added` → `conversation.item.added` (mirror) → `response.function_call_arguments.delta`* → `.done` → `response.output_item.done` → `conversation.item.done`, then `response.done` whose `output` lists the `function_call` item with `name:"get_weather"`, a `call_id`, assembled `arguments`, and `usage` (input/output token details). |
+| **Verification** | Reassembled `arguments` deltas == the `.done` `arguments` string. Send the tool result back: `{"type":"conversation.item.create","item":{"type":"function_call_output","call_id":"<call_id>","output":"{\"temp\":72}"}}` then `{"type":"response.create"}` → a normal assistant message ladder follows (tool loop closes). |
 
 | ID | TC-RT-03 | Priority | P3 |
 |---|---|---|---|
-| **Title** | Realtime text-only modality |
-| **Steps** | Configure/select a text-only output modality and send a turn. |
-| **Expected** | Text ladder emitted (no audio deltas); response completes with a text item. |
-| **Verification** | Audio events absent when modality excludes audio. |
+| **Title** | Text-only modality + response.create overrides |
+| **Steps** | 1. Send `{"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}`.  2. Send `{"type":"response.create","response":{"output_modalities":["text"],"metadata":{"purpose":"qa"}}}`. |
+| **Expected** | Text ladder: `response.content_part.added` (part `type:"text"`) → `response.output_text.delta`* → `response.output_text.done` → `response.content_part.done`; **no** `response.output_audio*` events. `response.done`'s response echoes `output_modalities:["text"]` and `metadata:{"purpose":"qa"}`. |
+| **Verification** | An out-of-band variant `{"type":"response.create","response":{"conversation":"none"}}` returns a full burst ladder whose `response.done` has `conversation_id:null`, emits **no** `conversation.item.*` mirror events, and its output item is NOT retrievable via `conversation.item.retrieve` (`item_not_found`). |
+
+| ID | TC-RT-04 | Priority | P3 |
+|---|---|---|---|
+| **Title** | Ephemeral keys — GA client_secrets vs legacy sessions |
+| **Steps** | 1. `curl -s -X POST http://localhost:8080/v1/realtime/client_secrets -H 'Content-Type: application/json' -d '{"session":{"model":"gpt-realtime","audio":{"output":{"voice":"verse"}}}}'`.  2. `curl -s -X POST http://localhost:8080/v1/realtime/sessions -H 'Content-Type: application/json' -d '{"model":"gpt-4o-realtime-preview","voice":"verse"}'`. |
+| **Expected** | (1) GA envelope `{value:"ek_...", expires_at, session}` — `expires_at` ≈ now+600 s; session is GA-shaped (voice under `audio.output`, `client_secret` mirrored inside). (2) Legacy = the BETA session object itself (no envelope): top-level `voice:"verse"`, `modalities:["audio","text"]`, `input_audio_format:"pcm16"`, `temperature:0.8`, `max_response_output_tokens:"inf"`, `client_secret.expires_at` ≈ now+**60 s**; **no** GA `audio` block. |
+| **Verification** | (1) with `{"expires_after":{"anchor":"created_at","seconds":900}}` → expires_at ≈ now+900 (clamped to 10..7200). |
+
+| ID | TC-RT-05 | Priority | P2 |
+|---|---|---|---|
+| **Title** | Server VAD voice turn (turn detection end-to-end) |
+| **Preconditions** | Fresh connection (`model=gpt-4o`); `<SPEECH>`/`<SILENCE>` chunks generated (recipe above) |
+| **Steps** | 1. Send `{"type":"session.update","session":{"audio":{"input":{"turn_detection":{"type":"server_vad"}}}}}`.  2. Send `{"type":"input_audio_buffer.append","audio":"<SPEECH>"}`.  3. Send `{"type":"input_audio_buffer.append","audio":"<SILENCE>"}`. |
+| **Expected** | Step 2: `input_audio_buffer.speech_started` pre-announcing an `item_id`. Step 3 (end of turn): `input_audio_buffer.speech_stopped` → `input_audio_buffer.committed` with the SAME `item_id` → `conversation.item.added`/`.done` for the user item → the auto-response ladder (`response.created`, `rate_limits.updated`, message ladder events arriving paced, `response.done` status `completed`). |
+| **Verification** | Invalid config is rejected whole: `{"type":"session.update","session":{"audio":{"input":{"turn_detection":{"type":"server_vad","threshold":1.5}}}}}` → `error` with `code:"invalid_value"` and `param:"session.audio.input.turn_detection.threshold"`, and no `session.updated`. With `idle_timeout_ms:5000` configured, ~5 s of inactivity after a completed response fires `input_audio_buffer.timeout_triggered` + a `[silence]`-driven re-prompt response — exactly once (no self-prompt loop). |
+
+| ID | TC-RT-06 | Priority | P2 |
+|---|---|---|---|
+| **Title** | Barge-in & cancellation close-out (delta invariant) |
+| **Preconditions** | VAD session as in TC-RT-05 |
+| **Steps** | 1. Complete one voice turn (TC-RT-05 steps 2–3) but **while the response ladder is still streaming**, send `{"type":"input_audio_buffer.append","audio":"<SPEECH>"}` (barge-in). Alternatively/additionally: start another turn and send `{"type":"response.cancel"}` right after `response.created`. |
+| **Expected** | Barge-in: `input_audio_buffer.speech_started` followed by the interrupted item's close-out (`.done` events) and `response.done` with `status:"cancelled"`, `status_details.reason:"turn_detected"` (client cancel → reason `client_cancelled`). **Invariant:** every `.done` payload (`output_audio_transcript.done`, `content_part.done`, the item) carries exactly the concatenation of the deltas that were actually received — never the full unstreamed transcript; a content part whose `content_part.added` never arrived is absent from the close-out; `usage.output_tokens` counts only streamed words (0 for an immediate cancel, with `output:[]`). |
+| **Verification** | The interrupted item is retrievable with `status:"incomplete"`; the NEXT turn's `input_audio_buffer.committed` chains (`previous_item_id`) off the last item the client actually saw — never an unannounced id. `response.cancel` with nothing in flight → `error` code `response_cancel_not_active`. |
+
+| ID | TC-RT-07 | Priority | P3 |
+|---|---|---|---|
+| **Title** | Conversation item ops — client ids, delete chain repair, truncate errors |
+| **Steps** | 1. Create with a client id: `{"type":"conversation.item.create","item":{"id":"cli_1","type":"message","role":"user","content":[{"type":"input_text","text":"one"}]}}`.  2. `{"type":"conversation.item.retrieve","item_id":"cli_1"}`.  3. Create `cli_2` (same shape, text "two").  4. `{"type":"conversation.item.delete","item_id":"cli_2"}`.  5. Create `cli_3` (text "three").  6. `{"type":"conversation.item.truncate","item_id":"cli_1","content_index":0,"audio_end_ms":100}`. |
+| **Expected** | (2) `conversation.item.retrieved` echoes the item. (4) `conversation.item.deleted`. (5) `conversation.item.added` shows `previous_item_id:"cli_1"` — the chain is REPAIRED after deleting the tail, not dangling at `cli_2`. (6) `error` with `code:null`, `param:null`, message exactly `Only model output audio messages can be truncated`. |
+| **Verification** | Duplicate id (`cli_1` again) → `error` `invalid_value` with `param:"item.id"`. Unknown `previous_item_id` on create → `item_not_found` with `param:"previous_item_id"`. Retrieve of a deleted id → `item_not_found`. |
+
+| ID | TC-RT-08 | Priority | P2 |
+|---|---|---|---|
+| **Title** | session.update semantics — mid-speech safety, voice lock, validation |
+| **Preconditions** | VAD session with `<SPEECH>`/`<SILENCE>` chunks |
+| **Steps** | 1. Send `<SPEECH>` (speech_started arrives).  2. **Mid-speech**, send `{"type":"session.update","session":{"instructions":"be brief"}}`.  3. Send `<SILENCE>`.  4. After any response that produced audio, send `{"type":"session.update","session":{"audio":{"output":{"voice":"cedar"}}}}`.  5. Send `{"type":"session.update","session":{"max_output_tokens":-5}}`. |
+| **Expected** | (2) `session.updated` — and the in-progress speech cycle SURVIVES: (3) still yields `speech_stopped` + `committed` with the item id pre-announced in step 1, plus the auto-response (the turn is not dropped). (4) `error` `code:"cannot_update_voice"`, message `Cannot update a conversation's voice if assistant audio is present.`, `param:null`; NO `session.updated`; the old voice remains effective. (5) `error` `invalid_value` with `param:"session.max_output_tokens"`. |
+| **Verification** | Re-sending the SAME voice (with other fields) after audio → accepted (`session.updated`). Changing `turn_detection` itself mid-speech DOES reset the speech cycle (expected: the config changed). |
 
 ---
 
@@ -681,17 +782,23 @@ GUI console; demo applications end-to-end.
 
 ---
 
-## 16. Regression focus — round-2 fidelity fixes
+## 16. Regression focus — fidelity fixes (rounds 2–5)
 
-These target recent fixes; run them after any change to Realtime or A2A.
+These target shipped fidelity fixes; run them after any change to Realtime or A2A. Each row
+links the manual case that exercises the fix.
 
-| ID | Linked case | Focus |
+| ID | Linked case | Focus (fix round) |
 |---|---|---|
-| TC-REG-01 | TC-RT-02 | Realtime function-call honors `raw_arguments` verbatim (INT-1). |
-| TC-REG-02 | TC-A2A-04 | JSON-RPC error responses render `"id":null`; id-less `message/stream` → 204 (INT-2). |
-| TC-REG-03 | TC-RT-01 | Every Realtime event carries a unique `event_id`; GA session object shape. |
-| TC-REG-04 | TC-A2A-01 | Agent Card defaults for `version`/`description`/`skills`; `tags` never null; no clobber. |
-| TC-REG-05 | TC-RUN-02 | Runner `max_ms` (`latency_ms_lt`) requires ≥ 1; `tool_call_args` type-tolerant dotted paths. |
+| TC-REG-01 | TC-RT-02 | Realtime function-call honors `raw_arguments` verbatim (round 2, INT-1). |
+| TC-REG-02 | TC-A2A-04 | JSON-RPC error responses render `"id":null`; id-less `message/stream` → 204 (round 2, INT-2). |
+| TC-REG-03 | TC-RT-01 | Every Realtime event carries a unique `event_id`; GA session object shape; `conversation.item.added`/`.done` pair (rounds 2–3). |
+| TC-REG-04 | TC-A2A-01 | Agent Card defaults for `version`/`description`/`skills`; `tags` never null; no clobber (round 2). |
+| TC-REG-05 | TC-RUN-02 | Runner `max_ms` (`latency_ms_lt`) requires ≥ 1; `tool_call_args` type-tolerant dotted paths (round 2). |
+| TC-REG-06 | TC-RT-05 | Server VAD arc: real-audio detection at the GA threshold scale, `speech_started` pre-announces the committed item id, turn_detection validation with `param` paths, idle timeout fires once (rounds 3–4). |
+| TC-REG-07 | TC-RT-06 | Cancellation close-out: delta-concatenation invariant, no phantom/unannounced items, `usage` bills only streamed words, interrupted item retrievable as `incomplete` (rounds 4–5). |
+| TC-REG-08 | TC-RT-08 | `session.update` mid-speech keeps the turn; voice locked after assistant audio (`cannot_update_voice` verbatim); `max_output_tokens` range validation (round 5). |
+| TC-REG-09 | TC-RT-04 | Legacy `/v1/realtime/sessions` = beta-flat shape + 60 s key expiry; GA `client_secrets` envelope + 600 s default (rounds 4–5). |
+| TC-REG-10 | TC-RT-07 | Delete-tail chain repair (`previous_item_id` never dangles); truncate error shape (code null, verbatim message); OOB items not retrievable (round 5). |
 
 ---
 
@@ -714,9 +821,13 @@ Summarize each cycle here:
 ## 19. Risks & assumptions
 
 - Responses are canned; a test that asserts "LLM-quality" text is invalid — assert structure/exact content.
-- Some features (MCP/A2A/Realtime) run as **separate processes/modes**, not the default `start` server —
-  the plan calls these out; budget extra containers/commands.
+- MCP and A2A run as **separate processes/modes** (`mockagents mcp` / `mockagents a2a`), not the
+  default `start` server — budget extra containers/commands. Realtime IS part of the main server
+  (`GET /v1/realtime` on 8080).
 - WebSocket and SSE cases need a client that doesn't buffer (`curl -N`, `websocat`).
+- The mock has no STT: committed audio always becomes the fixed transcript `[audio input]`, so
+  VAD-driven turns match the agent's **default** scenario. To exercise a specific scenario over
+  Realtime, send text via `conversation.item.create` instead.
 - Multi-tenant, quota, and audit-auth cases require `MOCKAGENTS_MULTI_TENANT=1` and are skipped in single-tenant runs.
 - Timing-based cases (chaos latency, stream physics) are statistical — allow tolerance and repeat.
 
