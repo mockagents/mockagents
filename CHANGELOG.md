@@ -79,6 +79,16 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   `ToolResults` (aggregate + final-turn) so these read real injected errors.
 
 ### Fixed
+- **Realtime error fidelity** (round-3 eval) — three gaps in how failures reach
+  a GA client: (1) a response that cannot be generated now closes the ladder —
+  `response.done` is **always** emitted (status `failed` +
+  `status_details.error`, preceded by a `server_error` event carrying the
+  detail) instead of a bare error that left clients awaiting `response.done`
+  hanging; (2) `response.cancel` now returns the cancel-specific
+  `response_cancel_not_active` error (which SDKs recognize and suppress) instead
+  of `unknown_event`; (3) error objects now carry the full GA shape — `param`
+  (null) and `error.event_id` echoing the id of the client event that caused the
+  error, the correlation handle SDKs match errors to requests with.
 - **Realtime tool loop: `function_call_output` items now work** (round-3 eval) —
   a client answering a `function_call` with `conversation.item.create`
   `{type:"function_call_output", call_id, output}` previously had the item

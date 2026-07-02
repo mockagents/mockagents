@@ -3,6 +3,7 @@ package realtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -346,6 +347,70 @@ func TestSession_UnknownEvent(t *testing.T) {
 	evs := s.Handle(context.Background(), &ClientEvent{Type: "totally.bogus"})
 	if len(evs) != 1 || evs[0]["type"] != "error" {
 		t.Fatalf("unknown event should yield one error, got %v", typesOf(evs))
+	}
+}
+
+// GA error objects carry five fields; error.event_id echoes the id of the
+// client event that caused the error (the SDK correlation handle).
+func TestSession_ErrorEchoesClientEventID(t *testing.T) {
+	s := NewSession("s", "", fakeGen("ok"))
+	evs := s.Handle(context.Background(), &ClientEvent{Type: "totally.bogus", EventID: "evt_42"})
+	e := evs[0]["error"].(map[string]any)
+	if e["event_id"] != "evt_42" {
+		t.Errorf("error.event_id = %v, want evt_42", e["event_id"])
+	}
+	if p, ok := e["param"]; !ok || p != nil {
+		t.Errorf("error.param = %v (present=%v), want present and null", p, ok)
+	}
+	// Without a client event_id the echo is null, not absent.
+	evs = s.Handle(context.Background(), &ClientEvent{Type: "totally.bogus"})
+	e = evs[0]["error"].(map[string]any)
+	if id, ok := e["event_id"]; !ok || id != nil {
+		t.Errorf("error.event_id = %v (present=%v), want present and null", id, ok)
+	}
+}
+
+// response.cancel with nothing in flight mirrors the real API's cancel-specific
+// error code (which SDKs suppress), not unknown_event.
+func TestSession_ResponseCancelNotActive(t *testing.T) {
+	s := NewSession("s", "", fakeGen("ok"))
+	evs := s.Handle(context.Background(), &ClientEvent{Type: "response.cancel", EventID: "evt_9"})
+	if len(evs) != 1 || evs[0]["type"] != "error" {
+		t.Fatalf("response.cancel events = %v, want one error", typesOf(evs))
+	}
+	e := evs[0]["error"].(map[string]any)
+	if e["code"] != "response_cancel_not_active" {
+		t.Errorf("error.code = %v, want response_cancel_not_active", e["code"])
+	}
+	if e["event_id"] != "evt_9" {
+		t.Errorf("error.event_id = %v, want evt_9", e["event_id"])
+	}
+}
+
+// A response that cannot be generated still closes the ladder: response.done is
+// ALWAYS emitted (status "failed" + status_details.error), with a server_error
+// event carrying the detail — a client awaiting response.done must not hang.
+func TestSession_GenerationFailureLadder(t *testing.T) {
+	genErr := func(_ context.Context, _, _ string, _ []engine.RequestMessage) (*engine.Response, error) {
+		return nil, errors.New("agent exploded")
+	}
+	s := NewSession("s", "", genErr)
+	evs := s.Handle(context.Background(), &ClientEvent{Type: "response.create"})
+	tps := typesOf(evs)
+	if tps[0] != "response.created" || tps[len(tps)-1] != "response.done" {
+		t.Fatalf("failure ladder = %v, want response.created … response.done", tps)
+	}
+	done := firstEvent(evs, "response.done")["response"].(map[string]any)
+	if done["status"] != "failed" {
+		t.Errorf("response.status = %v, want failed", done["status"])
+	}
+	sd := done["status_details"].(map[string]any)
+	if sd["type"] != "failed" || sd["error"].(map[string]any)["type"] != "server_error" {
+		t.Errorf("status_details = %v, want type failed + server_error", sd)
+	}
+	errBody := firstEvent(evs, "error")["error"].(map[string]any)
+	if errBody["type"] != "server_error" || errBody["message"] != "agent exploded" {
+		t.Errorf("error body = %v, want server_error with the engine message", errBody)
 	}
 }
 

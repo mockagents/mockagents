@@ -107,6 +107,9 @@ type Session struct {
 	counter      int
 	expiresAt    int64  // unix seconds; emitted in the session object when > 0
 	lastItemID   string // id of the most recently created conversation item ("" → previous_item_id is null)
+	// lastClientEventID is the event_id of the client event currently being
+	// handled; error events echo it as error.event_id (the GA correlation handle).
+	lastClientEventID string
 }
 
 // previousItemID returns the value for a server event's previous_item_id field:
@@ -162,6 +165,7 @@ func (s *Session) Greeting() []Event {
 // emitted event is stamped with a unique event_id (a required field on all
 // Realtime server events).
 func (s *Session) Handle(ctx context.Context, ce *ClientEvent) []Event {
+	s.lastClientEventID = ce.EventID
 	return s.stamp(s.handle(ctx, ce))
 }
 
@@ -256,6 +260,13 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 	case "response.create":
 		return s.createResponse(ctx)
 
+	case "response.cancel":
+		// The mock generates responses atomically, so there is never an
+		// in-flight response to cancel. The real API also errors in that
+		// situation — but with this cancel-specific code, which SDKs recognize
+		// and suppress (unknown_event they surface as a protocol failure).
+		return []Event{s.errorEvent("response_cancel_not_active", "Cancellation failed: no active response found")}
+
 	default:
 		return []Event{s.errorEvent("unknown_event", fmt.Sprintf("unknown or unsupported event type %q", ce.Type))}
 	}
@@ -273,10 +284,10 @@ func (s *Session) createResponse(ctx context.Context) []Event {
 
 	resp, err := s.generate(ctx, s.model(), s.id, s.engineHistory())
 	if err != nil {
-		return []Event{s.errorEvent("response_generation_failed", err.Error())}
+		return s.failedResponse(respID, err.Error())
 	}
 	if resp == nil {
-		return []Event{s.errorEvent("response_generation_failed", "engine returned no response")}
+		return s.failedResponse(respID, "engine returned no response")
 	}
 
 	inputTokens := countTokens(s.history)
@@ -327,6 +338,26 @@ func (s *Session) createResponse(ctx context.Context) []Event {
 	}
 	out = append(out, Event{"type": "response.done", "response": done})
 	return out
+}
+
+// failedResponse emits the GA failure ladder for a response that could not be
+// generated. response.done is ALWAYS emitted no matter the final state — a bare
+// error event alone would leave a client awaiting response.done hanging — so:
+// response.created → error (type server_error, carrying the detail) →
+// response.done (status "failed" + status_details.error).
+func (s *Session) failedResponse(respID, msg string) []Event {
+	failed := s.responseObject(respID, "failed", []any{})
+	failed["status_details"] = map[string]any{
+		"type": "failed",
+		// status_details.error carries only type+code (GA RealtimeResponseStatus);
+		// the human-readable detail travels on the error event above it.
+		"error": map[string]any{"type": "server_error", "code": "response_generation_failed"},
+	}
+	return []Event{
+		{"type": "response.created", "response": s.responseObject(respID, "in_progress", []any{})},
+		{"type": "error", "error": s.errorBody("server_error", "response_generation_failed", msg)},
+		{"type": "response.done", "response": failed},
+	}
 }
 
 // responseObject builds the GA `response` envelope shared by response.created and
@@ -632,9 +663,22 @@ func (s *Session) applyConfig(raw json.RawMessage) {
 	}
 }
 
+// errorEvent builds a client-error event. The GA error object carries five
+// fields: type, code, message, param (null unless a specific field is at
+// fault), and event_id — the id of the CLIENT event that caused the error,
+// which SDKs use to correlate errors to their requests.
 func (s *Session) errorEvent(code, msg string) Event {
-	return Event{"type": "error", "error": map[string]any{
-		"type": "invalid_request_error", "code": code, "message": msg}}
+	return Event{"type": "error", "error": s.errorBody("invalid_request_error", code, msg)}
+}
+
+// errorBody builds the GA error object shared by errorEvent and the failed-
+// response ladder (which uses type "server_error").
+func (s *Session) errorBody(typ, code, msg string) map[string]any {
+	var evID any
+	if s.lastClientEventID != "" {
+		evID = s.lastClientEventID
+	}
+	return map[string]any{"type": typ, "code": code, "message": msg, "param": nil, "event_id": evID}
 }
 
 func (s *Session) nextID(prefix string) string {
