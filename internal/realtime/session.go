@@ -228,9 +228,20 @@ func NewSession(id, model string, gen Generator) *Session {
 // deterministic for tests.
 func (s *Session) SetExpiry(unix int64) { s.expiresAt = unix }
 
-// Greeting returns the events to emit immediately on connect (session.created).
+// sessionDefaultInstructions mirrors the real server injecting default
+// instructions when the client sets none — "visible in the session.created
+// event". Display-only: the engine receives only instructions a client set.
+const sessionDefaultInstructions = "You are a helpful, witty, and friendly AI. " +
+	"Act like a human. Your voice and personality should be warm and engaging."
+
+// Greeting returns the events to emit immediately on connect: session.created
+// followed by conversation.created (the default conversation's announcement).
 func (s *Session) Greeting() []Event {
-	return s.stamp([]Event{{"type": "session.created", "session": s.sessionObject()}})
+	return s.stamp([]Event{
+		{"type": "session.created", "session": s.sessionObject()},
+		{"type": "conversation.created", "conversation": map[string]any{
+			"id": "conv_" + s.id, "object": "realtime.conversation"}},
+	})
 }
 
 // Handle processes one inbound client event and returns the ordered server
@@ -388,13 +399,12 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 				"call_id": it.CallID, "name": it.Name, "arguments": it.Arguments,
 			}))
 		default:
-			text := it.text()
-			if text != "" {
+			if text := it.text(); text != "" {
 				s.history = append(s.history, engine.RequestMessage{Role: it.Role, Content: text})
 			}
 			return conversationItemEvents(prevItem, s.rememberItem(map[string]any{
 				"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
-				"role": it.Role, "content": []any{map[string]any{"type": "input_text", "text": text}},
+				"role": it.Role, "content": it.echoContent(),
 			}))
 		}
 
@@ -427,6 +437,22 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		item, ok := s.items[ce.ItemID]
 		if !ok {
 			return []Event{s.errorEvent("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID))}
+		}
+		// GA: "Only assistant message items can be truncated" — and only ones
+		// with audio content. (The real API additionally rejects audio_end_ms
+		// beyond the actual audio duration; a mock has no audio timeline, so
+		// that check is skipped — documented.)
+		hasAudio := false
+		if content, ok := item["content"].([]any); ok {
+			for _, c := range content {
+				if part, ok := c.(map[string]any); ok && part["type"] == "output_audio" {
+					hasAudio = true
+				}
+			}
+		}
+		if item["type"] != "message" || item["role"] != "assistant" || !hasAudio {
+			return []Event{s.errorEventParam("invalid_value",
+				"only assistant message items with audio content can be truncated", "item_id")}
 		}
 		if content, ok := item["content"].([]any); ok {
 			for _, c := range content {
@@ -905,10 +931,14 @@ func (s *Session) sessionObject() map[string]any {
 	if speed == 0 {
 		speed = 1.0
 	}
+	instructions := s.cfg.instructions
+	if instructions == "" {
+		instructions = sessionDefaultInstructions
+	}
 	obj := map[string]any{
 		"id": s.id, "object": "realtime.session", "type": "realtime", "model": s.model(),
 		"output_modalities":   s.outputModalities(),
-		"instructions":        s.cfg.instructions,
+		"instructions":        instructions,
 		"tools":               rawOr(s.cfg.tools, "[]"),
 		"tool_choice":         rawOr(s.cfg.toolChoice, `"auto"`),
 		"max_output_tokens":   rawOr(s.cfg.maxOutputTokens, `"inf"`),
@@ -1095,28 +1125,42 @@ func (s *Session) nextID(prefix string) string {
 // responsesItemToMessage is: "message" (role + content text), "function_call"
 // (an echoed prior tool call), or "function_call_output" (the tool-loop reply).
 type parsedItem struct {
-	ID        string `json:"id"` // client-supplied item id ("" → the server mints one)
-	Type      string `json:"type"`
-	Role      string `json:"role"`
-	CallID    string `json:"call_id"`
-	Output    string `json:"output"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-	Content   []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
+	ID        string          `json:"id"` // client-supplied item id ("" → the server mints one)
+	Type      string          `json:"type"`
+	Role      string          `json:"role"`
+	CallID    string          `json:"call_id"`
+	Output    string          `json:"output"`
+	Name      string          `json:"name"`
+	Arguments string          `json:"arguments"`
+	Content   json.RawMessage `json:"content"` // kept raw so the ack can echo it verbatim
 }
 
-// text joins the item's content-part texts (the mock's matchable payload).
+// text joins the item's text-bearing content parts (the mock's matchable payload).
 func (it *parsedItem) text() string {
-	var parts []string
-	for _, c := range it.Content {
-		if c.Text != "" {
-			parts = append(parts, c.Text)
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(it.Content, &parts) != nil {
+		return ""
+	}
+	var out []string
+	for _, p := range parts {
+		if p.Text != "" {
+			out = append(out, p.Text)
 		}
 	}
-	return strings.Join(parts, " ")
+	return strings.Join(out, " ")
+}
+
+// echoContent decodes the client's content parts for the ack. GA echoes the
+// item AS SENT — input_audio/input_image parts, multiple parts, and assistant
+// output_* parts included — it does not rebuild the content.
+func (it *parsedItem) echoContent() []any {
+	var parts []any
+	if json.Unmarshal(it.Content, &parts) != nil || parts == nil {
+		return []any{}
+	}
+	return parts
 }
 
 func parseItem(raw json.RawMessage) parsedItem {

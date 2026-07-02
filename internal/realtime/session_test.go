@@ -52,8 +52,12 @@ func contains(ss []string, want string) bool {
 func TestSession_GreetingAndUpdate(t *testing.T) {
 	s := NewSession("s1", "gpt-realtime", fakeGen("ok"))
 	g := s.Greeting()
-	if len(g) != 1 || g[0]["type"] != "session.created" {
-		t.Fatalf("greeting = %v, want session.created", typesOf(g))
+	if len(g) != 2 || g[0]["type"] != "session.created" || g[1]["type"] != "conversation.created" {
+		t.Fatalf("greeting = %v, want [session.created conversation.created]", typesOf(g))
+	}
+	conv := g[1]["conversation"].(map[string]any)
+	if conv["object"] != "realtime.conversation" || conv["id"] != "conv_s1" {
+		t.Errorf("conversation.created payload = %v", conv)
 	}
 
 	// A beta-style top-level voice is accepted and echoed at the GA location
@@ -575,6 +579,51 @@ func TestSession_OutOfBandResponse(t *testing.T) {
 		if m.Content == "side classification" {
 			t.Errorf("out-of-band response leaked into history: %+v", gotHistory)
 		}
+	}
+}
+
+// The item.create ack echoes the client's content AS SENT — input_audio and
+// multi-part content survive, and assistant items keep output_* part types.
+func TestSession_ItemCreateEchoesContent(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("sec", "", fakeGen("ok"))
+
+	evs := s.Handle(ctx, &ClientEvent{Type: "conversation.item.create",
+		Item: []byte(`{"type":"message","role":"user","content":[
+			{"type":"input_audio","transcript":"hello there"},
+			{"type":"input_text","text":"and this"}]}`)})
+	content := firstEvent(evs, "conversation.item.added")["item"].(map[string]any)["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("content parts = %d, want the 2 sent", len(content))
+	}
+	if content[0].(map[string]any)["type"] != "input_audio" || content[0].(map[string]any)["transcript"] != "hello there" {
+		t.Errorf("input_audio part not echoed: %v", content[0])
+	}
+	if content[1].(map[string]any)["type"] != "input_text" {
+		t.Errorf("second part = %v, want the input_text part", content[1])
+	}
+
+	// An assistant item keeps its output_text content type.
+	evs = s.Handle(ctx, &ClientEvent{Type: "conversation.item.create",
+		Item: []byte(`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"prior answer"}]}`)})
+	part := firstEvent(evs, "conversation.item.added")["item"].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if part["type"] != "output_text" {
+		t.Errorf("assistant ack content type = %v, want output_text (not rebuilt as input_text)", part["type"])
+	}
+}
+
+// Truncation is restricted to assistant message items with audio content.
+func TestSession_TruncateRejectsNonAssistantAudio(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("str2", "", fakeGen("spoken words here"))
+	created := firstEvent(s.Handle(ctx, &ClientEvent{Type: "conversation.item.create",
+		Item: []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}`)}), "conversation.item.added")
+	userID := created["item"].(map[string]any)["id"].(string)
+
+	evs := s.Handle(ctx, &ClientEvent{Type: "conversation.item.truncate", ItemID: userID, AudioEndMs: 100})
+	e := evs[0]["error"].(map[string]any)
+	if evs[0]["type"] != "error" || e["code"] != "invalid_value" || e["param"] != "item_id" {
+		t.Errorf("truncating a user item = %v, want invalid_value on item_id", evs[0])
 	}
 }
 

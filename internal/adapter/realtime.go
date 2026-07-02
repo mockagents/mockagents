@@ -42,18 +42,17 @@ func (h *RealtimeHandler) Name() string { return "openai-realtime" }
 func (h *RealtimeHandler) Routes() []Route {
 	return []Route{
 		{Pattern: "POST /v1/realtime/client_secrets", Handler: h.HandleClientSecret},
-		{Pattern: "POST /v1/realtime/sessions", Handler: h.HandleClientSecret},
+		{Pattern: "POST /v1/realtime/sessions", Handler: h.HandleLegacySession},
 		{Pattern: "GET /v1/realtime", Handler: h.HandleConnect},
 	}
 }
 
-// HandleClientSecret mints an ephemeral Realtime session token. A browser client
-// fetches this from its backend, then opens the WebSocket with it. The mock
-// ignores the value on connect (it accepts any client), so it is just a
+// buildEphemeralSession decodes a client_secrets/sessions request and builds
+// the ephemeral key plus the effective GA session object (which embeds the key
+// at session.client_secret — a required field of the GA response session). The
+// mock ignores the key on connect (it accepts any client), so this is a
 // well-formed stub the SDK can round-trip.
-func (h *RealtimeHandler) HandleClientSecret(w http.ResponseWriter, r *http.Request) {
-	stampProtocol(r, ProtocolOpenAIRealtime)
-
+func (h *RealtimeHandler) buildEphemeralSession(r *http.Request) (value string, expiresAt int64, session map[string]any) {
 	var body struct {
 		Model        string `json:"model"` // legacy flat
 		Voice        string `json:"voice"` // legacy flat
@@ -62,11 +61,17 @@ func (h *RealtimeHandler) HandleClientSecret(w http.ResponseWriter, r *http.Requ
 			Seconds int    `json:"seconds"`
 		} `json:"expires_after"`
 		Session struct {
-			Type         string `json:"type"`
-			Model        string `json:"model"`
-			Voice        string `json:"voice"` // beta nested-flat
-			Instructions string `json:"instructions"`
-			Audio        *struct {
+			Type             string          `json:"type"`
+			Model            string          `json:"model"`
+			Voice            string          `json:"voice"` // beta nested-flat
+			Instructions     string          `json:"instructions"`
+			OutputModalities []string        `json:"output_modalities"`
+			Tools            json.RawMessage `json:"tools"`
+			ToolChoice       json.RawMessage `json:"tool_choice"`
+			Audio            *struct {
+				Input *struct {
+					TurnDetection json.RawMessage `json:"turn_detection"`
+				} `json:"input"`
 				Output *struct {
 					Voice string `json:"voice"`
 				} `json:"output"`
@@ -80,40 +85,81 @@ func (h *RealtimeHandler) HandleClientSecret(w http.ResponseWriter, r *http.Requ
 	// GA nests the voice at session.audio.output.voice; the beta nested-flat and
 	// legacy flat spellings stay accepted.
 	gaVoice := ""
-	if body.Session.Audio != nil && body.Session.Audio.Output != nil {
-		gaVoice = body.Session.Audio.Output.Voice
+	var turnDetection any
+	if a := body.Session.Audio; a != nil {
+		if a.Output != nil {
+			gaVoice = a.Output.Voice
+		}
+		if a.Input != nil && len(a.Input.TurnDetection) > 0 {
+			turnDetection = a.Input.TurnDetection
+		}
 	}
 	voice := firstNonEmpty(gaVoice, body.Session.Voice, body.Voice, "alloy")
 
-	// GA expires_after: {anchor:"created_at", seconds: 10..7200}, default 60 s.
-	expiresIn := 60 * time.Second
+	// GA expires_after: {anchor:"created_at", seconds: 10..7200}, default 600 s.
+	expiresIn := 600 * time.Second
 	if body.ExpiresAfter != nil && body.ExpiresAfter.Seconds > 0 {
 		expiresIn = time.Duration(min(max(body.ExpiresAfter.Seconds, 10), 7200)) * time.Second
 	}
+	value = "ek_" + generateID()
+	expiresAt = time.Now().Add(expiresIn).Unix()
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"value":      "ek_" + generateID(),
-		"expires_at": time.Now().Add(expiresIn).Unix(),
-		"session": map[string]any{
-			// GA session shape: type:"realtime", output_modalities, and voice nested
-			// under audio.output (not a top-level field).
-			"id":                "sess_" + generateID(),
-			"object":            "realtime.session",
-			"type":              "realtime",
-			"model":             model,
-			"output_modalities": []string{"audio"}, // GA default: ["audio"] or ["text"], never both
-			"instructions":      body.Session.Instructions,
-			"tools":             []any{},
-			"tool_choice":       "auto",
-			"max_output_tokens": "inf",
-			"audio": map[string]any{
-				"output": map[string]any{
-					"voice":  voice,
-					"format": map[string]any{"type": "audio/pcm", "rate": 24000},
-				},
+	mods := body.Session.OutputModalities
+	if len(mods) == 0 {
+		mods = []string{"audio"} // GA default: ["audio"] or ["text"], never both
+	}
+	var tools any = []any{}
+	if len(body.Session.Tools) > 0 {
+		tools = body.Session.Tools
+	}
+	var toolChoice any = "auto"
+	if len(body.Session.ToolChoice) > 0 {
+		toolChoice = body.Session.ToolChoice
+	}
+	pcm := func() map[string]any { return map[string]any{"type": "audio/pcm", "rate": 24000} }
+
+	session = map[string]any{
+		// GA session shape: type:"realtime", voice nested under audio.output,
+		// and the ephemeral key mirrored at client_secret (required by the GA
+		// response session type).
+		"id":                "sess_" + generateID(),
+		"object":            "realtime.session",
+		"type":              "realtime",
+		"model":             model,
+		"output_modalities": mods,
+		"instructions":      body.Session.Instructions,
+		"tools":             tools,
+		"tool_choice":       toolChoice,
+		"max_output_tokens": "inf",
+		"client_secret":     map[string]any{"value": value, "expires_at": expiresAt},
+		"audio": map[string]any{
+			"input": map[string]any{
+				"format": pcm(), "transcription": nil,
+				"turn_detection": turnDetection, "noise_reduction": nil,
 			},
+			"output": map[string]any{"voice": voice, "format": pcm(), "speed": 1.0},
 		},
+	}
+	return value, expiresAt, session
+}
+
+// HandleClientSecret serves the GA POST /v1/realtime/client_secrets envelope:
+// {value, expires_at, session}.
+func (h *RealtimeHandler) HandleClientSecret(w http.ResponseWriter, r *http.Request) {
+	stampProtocol(r, ProtocolOpenAIRealtime)
+	value, expiresAt, session := h.buildEphemeralSession(r)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"value": value, "expires_at": expiresAt, "session": session,
 	})
+}
+
+// HandleLegacySession serves the pre-GA POST /v1/realtime/sessions shape: the
+// session object itself, with the ephemeral key nested at session.client_secret
+// (not the GA {value, expires_at, session} envelope).
+func (h *RealtimeHandler) HandleLegacySession(w http.ResponseWriter, r *http.Request) {
+	stampProtocol(r, ProtocolOpenAIRealtime)
+	_, _, session := h.buildEphemeralSession(r)
+	writeJSON(w, http.StatusOK, session)
 }
 
 // HandleConnect upgrades GET /v1/realtime to a WebSocket and runs the session:

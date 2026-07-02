@@ -133,6 +133,38 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   `ToolResults` (aggregate + final-turn) so these read real injected errors.
 
 ### Fixed
+- **Realtime round-4 fidelity batch** (4th adversarial eval, verified against
+  the GA SDK types) — **VAD:** the GA `threshold` scale (0..1 activation) was
+  compared directly against mean-abs PCM16 amplitude, so **real microphone
+  audio never triggered speech detection** (typical speech averages ~0.08 of
+  full scale vs the 0.5 default); a new amplitude mapping makes GA-typical
+  values work on realistic levels. `speech_stopped.audio_end_ms` now includes
+  the silence window per GA; `idle_timeout_ms` arms only under `server_vad`.
+  **Out-of-band concurrency:** GA allows `conversation:"none"` responses to run
+  in parallel with the default-conversation response — the mock rejected all
+  concurrency, breaking the guardrail/side-response pattern. OOB responses are
+  now burst-emitted, never occupy the in-flight slot, and can no longer be
+  cancelled by VAD barge-in (GA scopes `interrupt_response` to
+  default-conversation responses). `response.cancel` honors `response_id`.
+  **Cancellation:** an interrupted response now closes out its in-progress item
+  (the `*.done` events fire, the item is re-stamped `incomplete`, listed in the
+  cancelled `output`, and retrievable as incomplete) instead of dropping the
+  ladder; cancelled and failed `response.done` carry `usage`. **Responses:**
+  per-response `audio.output.{voice,format}` and `max_output_tokens` overrides
+  are honored and echoed; an integer cap is enforced (trimmed transcript,
+  status `incomplete`, `status_details.reason:"max_output_tokens"`).
+  **Items:** `conversation.item.create` acks echo the client's content **as
+  sent** (input_audio/input_image/multi-part/assistant `output_*` parts survive
+  instead of being rebuilt as a single `input_text`); truncation is restricted
+  to assistant message items with audio content. **Session/endpoints:**
+  `session.created` reports the server-default instructions when the client set
+  none; `conversation.created` is emitted after `session.created`; the
+  `client_secrets` response session embeds the required `client_secret`
+  {value, expires_at} and the `audio.input` block, echoes requested
+  `output_modalities`/`tools`/`tool_choice`/`turn_detection`, and defaults to
+  the GA-documented **600 s** expiry; legacy `POST /v1/realtime/sessions`
+  returns the pre-GA shape (the session object itself) instead of the GA
+  envelope.
 - **Realtime polish batch (round-3 eval F10/F15–F18)** — (F10) a client-supplied
   `item.id` on `conversation.item.create` is honored (pre-generated ids can now
   be truncated/deleted/retrieved; duplicates rejected with `param: "item.id"`),

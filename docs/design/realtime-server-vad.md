@@ -174,8 +174,8 @@ VAD). Recommendation:
 
 | # | Risk / question | Mitigation |
 |---|---|---|
-| 1 | Real API's exact error for manual commit under VAD (code/message) is unverified | Verify against a live endpoint or SDK conformance during Phase 1; worst case use `invalid_request_error` + descriptive code |
-| 2 | Energy VAD misclassifies compressed/no-PCM test audio | Non-PCM-decodable frames count as speech; document that silence must be near-zero PCM16 |
+| 1 | ~~Real API's exact error for manual commit under VAD~~ **SETTLED (round-4 eval):** the real API has no VAD-specific commit rejection — the only documented commit error is empty-buffer. The mock matches: VAD auto-commit empties the buffer, so a late manual commit errors `input_audio_buffer_commit_empty`; a mid-speech one commits with the pre-minted item id | — |
+| 2 | Energy VAD misclassifies compressed/no-PCM test audio | Non-PCM-decodable frames count as speech; silence must be near-zero PCM16. **Round-4 addition:** GA `threshold` values (0..1 activation scale) map to mean-abs amplitude via `vadAmplitudeScale` (0.1) so realistic mic levels (~0.02–0.15 of full scale) trigger GA-typical thresholds |
 | 3 | Pacing over WS changes event timing existing tests may assume | Pacing only when `StreamingConfig`/VAD requires it; burst mode remains the default |
 | 4 | `speech_started.item_id` pre-minting must match the eventually created item | Single mint point in the VAD state, consumed by the commit path (test-pinned) |
 | 5 | Semantic VAD is necessarily fake | Documented: eagerness→window mapping only |
