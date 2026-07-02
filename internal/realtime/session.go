@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -189,6 +190,12 @@ type Session struct {
 	// assistant audio, the real API rejects a voice change
 	// (code cannot_update_voice) — see validateVoiceChange.
 	respondedWithAudio bool
+	// strict enables GA-strict session.update validation: unknown (including
+	// beta-generation) fields are rejected with unknown_parameter + a param
+	// path, the way the real GA endpoint does — the #1 real-world beta→GA
+	// migration failure. Off by default: dual-generation leniency is the
+	// mock's documented design.
+	strict bool
 	// pendingResponse queues the VAD auto-response for a turn that ended while
 	// a response was still in flight (a mid-speech response.create, or
 	// interrupt_response:false); Tick runs it when the inflight completes.
@@ -396,6 +403,11 @@ func (s *Session) stamp(evs []Event) []Event {
 func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 	switch ce.Type {
 	case "session.update":
+		// Strict mode first: an unknown (or beta-generation) field rejects the
+		// whole update the way the GA endpoint does.
+		if errEvs := s.validateStrictUpdate(ce.Session); errEvs != nil {
+			return errEvs
+		}
 		// An invalid turn_detection config rejects the WHOLE update with a GA
 		// error (code invalid_value, param naming the field) — accept-and-warp
 		// would silently corrupt the VAD state machine.
@@ -1397,6 +1409,67 @@ func (s *Session) sessionObject() map[string]any {
 		obj["expires_at"] = s.expiresAt
 	}
 	return obj
+}
+
+// SetStrict toggles GA-strict session.update validation (the transport wires
+// it from MOCKAGENTS_REALTIME_STRICT).
+func (s *Session) SetStrict(v bool) { s.strict = v }
+
+// GA field sets for strict-mode validation. Beta-generation spellings
+// (top-level voice/modalities/input_audio_transcription/turn_detection/
+// input_audio_format/...) are deliberately NOT here — rejecting them is the
+// point: that is what the real GA endpoint does.
+var (
+	gaSessionKeys = map[string]bool{
+		"type": true, "model": true, "instructions": true, "output_modalities": true,
+		"tools": true, "tool_choice": true, "max_output_tokens": true, "tracing": true,
+		"truncation": true, "prompt": true, "include": true, "parallel_tool_calls": true,
+		"audio": true,
+	}
+	gaAudioInputKeys  = map[string]bool{"format": true, "transcription": true, "turn_detection": true, "noise_reduction": true}
+	gaAudioOutputKeys = map[string]bool{"format": true, "voice": true, "speed": true}
+)
+
+// validateStrictUpdate rejects a session.update carrying fields outside the
+// GA schema with the GA unknown_parameter error (code + param path) — active
+// only in strict mode. Keys are checked in sorted order so the reported
+// parameter is deterministic.
+func (s *Session) validateStrictUpdate(raw json.RawMessage) []Event {
+	if !s.strict || len(raw) == 0 {
+		return nil
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	unknown := func(path string) []Event {
+		return []Event{s.errorEventParam("unknown_parameter", fmt.Sprintf("Unknown parameter: '%s'.", path), path)}
+	}
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		if !gaSessionKeys[k] {
+			return unknown("session." + k)
+		}
+	}
+	var audio map[string]map[string]json.RawMessage
+	if raw, ok := m["audio"]; ok && json.Unmarshal(raw, &audio) == nil {
+		for _, section := range slices.Sorted(maps.Keys(audio)) {
+			var allowed map[string]bool
+			switch section {
+			case "input":
+				allowed = gaAudioInputKeys
+			case "output":
+				allowed = gaAudioOutputKeys
+			default:
+				return unknown("session.audio." + section)
+			}
+			for _, k := range slices.Sorted(maps.Keys(audio[section])) {
+				if !allowed[k] {
+					return unknown(fmt.Sprintf("session.audio.%s.%s", section, k))
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // validateSessionType rejects a session.update that changes the session's

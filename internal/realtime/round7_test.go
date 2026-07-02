@@ -64,6 +64,46 @@ func TestResponseCreateInputNullMeansAbsent(t *testing.T) {
 	}
 }
 
+// R7-17 (S3): opt-in strict mode rejects unknown (including beta-generation)
+// session.update fields with the GA unknown_parameter error — the #1
+// real-world beta→GA migration failure. Lenient mode stays the default.
+func TestStrictModeRejectsUnknownParameters(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("r717", "", fakeGen("ok"))
+	s.SetStrict(true)
+
+	for payload, wantParam := range map[string]string{
+		`{"voice":"verse"}`:                        "session.voice",      // beta top-level
+		`{"modalities":["text"]}`:                  "session.modalities", // beta alias
+		`{"input_audio_format":"pcm16"}`:           "session.input_audio_format",
+		`{"turn_detection":{"type":"server_vad"}}`: "session.turn_detection", // beta-flat
+		`{"audio":{"output":{"pitch":2}}}`:         "session.audio.output.pitch",
+		`{"tools":[],"metadata":{"x":1}}`:          "session.metadata",
+	} {
+		evs := s.Handle(ctx, &ClientEvent{Type: "session.update", Session: []byte(payload)})
+		if evs[0]["type"] != "error" {
+			t.Errorf("strict %s = %v, want error", payload, typesOf(evs))
+			continue
+		}
+		e := evs[0]["error"].(map[string]any)
+		if e["code"] != "unknown_parameter" || e["param"] != wantParam {
+			t.Errorf("strict %s = code %v param %v, want unknown_parameter %s", payload, e["code"], e["param"], wantParam)
+		}
+	}
+
+	// A clean GA payload passes in strict mode.
+	if evs := s.Handle(ctx, &ClientEvent{Type: "session.update", Session: []byte(
+		`{"instructions":"be brief","audio":{"output":{"voice":"verse"}}}`)}); evs[0]["type"] != "session.updated" {
+		t.Errorf("strict GA payload = %v, want session.updated", typesOf(evs))
+	}
+
+	// Lenient (default) mode still accepts the beta spellings.
+	s2 := NewSession("r717b", "", fakeGen("ok"))
+	if evs := s2.Handle(ctx, &ClientEvent{Type: "session.update", Session: []byte(`{"voice":"verse"}`)}); evs[0]["type"] != "session.updated" {
+		t.Errorf("lenient beta payload = %v, want session.updated", typesOf(evs))
+	}
+}
+
 // R7-11/R7-12/R7-13 (S3): dangling input references error, response-generated
 // function calls join history, and the session type is immutable once set.
 func TestInputRefsHistoryAndSessionType(t *testing.T) {

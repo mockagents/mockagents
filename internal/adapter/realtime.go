@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -355,6 +356,12 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 	// at POST /v1/realtime/client_secrets and sends no session.update.
 	if cfg, ok := h.mintedConfig(ephemeralKey); ok {
 		sess.SeedConfig(cfg)
+	}
+	// Opt-in GA-strict session.update validation: unknown/beta fields are
+	// rejected with unknown_parameter, the way prod does — catches the #1
+	// beta→GA migration failure. Off by default (dual-generation leniency).
+	if v := os.Getenv("MOCKAGENTS_REALTIME_STRICT"); v == "1" || strings.EqualFold(v, "true") {
+		sess.SetStrict(true)
 	}
 	// Paced emission (Phase 2): responses on VAD-enabled sessions stream their
 	// ladder incrementally, creating the interruption window barge-in and
