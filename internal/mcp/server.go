@@ -111,6 +111,25 @@ func (s *Server) Handle(req *Request) *Response {
 		return newError(req.ID, ErrInvalidRequest, "jsonrpc must be 2.0", nil)
 	}
 
+	// A client RESPONSE (to a server-initiated request) is never answered —
+	// transports ack with 202 and no body (round-10 R10-7; previously it was
+	// dispatched as a request and earned a bogus -32601). Best-effort route
+	// it to a pending bidirectional request.
+	if req.IsResponse() {
+		resp := &Response{JSONRPC: "2.0", ID: req.ID}
+		if len(req.Result) > 0 {
+			resp.Result = req.Result
+		}
+		if len(req.RawError) > 0 {
+			var rpcErr RPCError
+			if json.Unmarshal(req.RawError, &rpcErr) == nil {
+				resp.Error = &rpcErr
+			}
+		}
+		_ = s.DeliverResponse(resp) // unknown id: nothing pending — still 202
+		return nil
+	}
+
 	switch req.Method {
 	case "initialize":
 		return s.handleInitialize(req)
@@ -189,21 +208,39 @@ func (s *Server) handleInitialize(req *Request) *Response {
 	if pv == "" {
 		pv = types.DefaultMCPProtocolVersion
 	}
+	// Version negotiation (round-10 R10-2): "If the server supports the
+	// requested protocol version, it MUST respond with the same version."
+	// Ignoring the request made every pre-2025-11-25 official SDK hard-fail
+	// the handshake against a server that supports its revision.
+	var params struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if len(req.Params) > 0 && json.Unmarshal(req.Params, &params) == nil && params.ProtocolVersion != "" {
+		for _, v := range SupportedProtocolVersions {
+			if v == params.ProtocolVersion {
+				pv = params.ProtocolVersion
+				break
+			}
+		}
+	}
 	caps := map[string]any{}
 	if s.def.Spec.Capabilities.Tools || len(s.def.Spec.Tools) > 0 || s.hasToolHandlers() {
-		caps["tools"] = map[string]any{}
+		caps["tools"] = map[string]any{"listChanged": true}
 	}
 	if s.def.Spec.Capabilities.Resources || len(s.def.Spec.Resources) > 0 {
 		// The mock accepts resources/subscribe + resources/unsubscribe
 		// (tracking the URI set), so advertise the subscribe capability.
-		caps["resources"] = map[string]any{"subscribe": true}
+		caps["resources"] = map[string]any{"subscribe": true, "listChanged": true}
 	}
 	if s.def.Spec.Capabilities.Prompts || len(s.def.Spec.Prompts) > 0 {
-		caps["prompts"] = map[string]any{}
+		caps["prompts"] = map[string]any{"listChanged": true}
 	}
 	if s.def.Spec.Capabilities.Logging {
 		caps["logging"] = map[string]any{}
 	}
+	// completion/complete is always answered (2025-06-18: servers MUST
+	// declare the completions capability to use it) — R10-3/R10-13.
+	caps["completions"] = map[string]any{}
 	return newResult(req.ID, initializeResult{
 		ProtocolVersion: pv,
 		ServerInfo: map[string]string{
@@ -215,9 +252,21 @@ func (s *Server) handleInitialize(req *Request) *Response {
 }
 
 type toolListEntry struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description,omitempty"`
-	InputSchema types.JSONSchemaObject `json:"inputSchema,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// inputSchema is REQUIRED by the spec's Tool type — one schema-less tool
+	// previously made the ENTIRE tools/list unparseable for strict SDK
+	// clients (round-10 R10-5). Defaulted to {"type":"object"} at emission.
+	InputSchema types.JSONSchemaObject `json:"inputSchema"`
+}
+
+// defaultedSchema returns the schema, or the minimal object schema every
+// real server emits for schema-less tools.
+func defaultedSchema(s types.JSONSchemaObject) types.JSONSchemaObject {
+	if len(s) == 0 {
+		return types.JSONSchemaObject{"type": "object"}
+	}
+	return s
 }
 
 func (s *Server) handleToolsList(req *Request) *Response {
@@ -233,7 +282,7 @@ func (s *Server) handleToolsList(req *Request) *Response {
 		tools = append(tools, toolListEntry{
 			Name:        t.Name,
 			Description: t.Description,
-			InputSchema: t.InputSchema,
+			InputSchema: defaultedSchema(t.InputSchema),
 		})
 	}
 	for _, name := range s.toolOrder {
@@ -241,7 +290,7 @@ func (s *Server) handleToolsList(req *Request) *Response {
 		tools = append(tools, toolListEntry{
 			Name:        rt.spec.Name,
 			Description: rt.spec.Description,
-			InputSchema: rt.spec.InputSchema,
+			InputSchema: defaultedSchema(rt.spec.InputSchema),
 		})
 	}
 	return newResult(req.ID, map[string]any{"tools": tools})
@@ -364,9 +413,16 @@ type resourceListEntry struct {
 func (s *Server) handleResourcesList(req *Request) *Response {
 	out := make([]resourceListEntry, 0, len(s.def.Spec.Resources))
 	for _, r := range s.def.Spec.Resources {
+		// `name` is REQUIRED by the spec's Resource type — a nameless YAML
+		// resource previously made the whole resources/list unparseable for
+		// strict SDK clients (round-10 R10-6). Default to the URI.
+		name := r.Name
+		if name == "" {
+			name = r.URI
+		}
 		out = append(out, resourceListEntry{
 			URI:         r.URI,
-			Name:        r.Name,
+			Name:        name,
 			Description: r.Description,
 			MimeType:    r.MimeType,
 		})
@@ -533,6 +589,10 @@ func expandArgs(s string, args map[string]string) string {
 type completionRef struct {
 	Type string `json:"type"`
 	Name string `json:"name"`
+	// URI is how spec-shaped ref/resource references address a resource
+	// (ResourceTemplateReference — round-10 R10-3); the catalog's RefName
+	// matches either spelling.
+	URI string `json:"uri"`
 }
 
 type completionArgument struct {
@@ -567,9 +627,27 @@ func (s *Server) handleCompletionComplete(req *Request) *Response {
 		return newError(req.ID, ErrInvalidParams, "argument.name is required", nil)
 	}
 
-	values := s.lookupCompletion(params.Ref.Type, params.Ref.Name, params.Argument.Name)
+	// Ref-type validation (spec: an invalid ref type is Invalid params).
+	switch params.Ref.Type {
+	case "ref/prompt", "ref/resource":
+	default:
+		return newError(req.ID, ErrInvalidParams,
+			fmt.Sprintf("invalid ref.type %q: expected ref/prompt or ref/resource", params.Ref.Type), nil)
+	}
+	// ref/resource entries are addressed by URI on the wire (round-10 R10-3);
+	// the catalog's RefName matches either spelling.
+	refName := params.Ref.Name
+	if refName == "" {
+		refName = params.Ref.URI
+	}
+	values := s.lookupCompletion(params.Ref.Type, refName, params.Argument.Name)
 	if params.Argument.Value != "" {
 		values = filterPrefix(values, params.Argument.Value)
+	}
+	// `completion.values` is a REQUIRED array — a nil catalog miss previously
+	// marshaled as null and failed strict SDK validation (round-10 R10-3).
+	if values == nil {
+		values = []string{}
 	}
 
 	// Spec caps each completion response at 100 items.

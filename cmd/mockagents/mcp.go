@@ -87,7 +87,10 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	if mcpManage {
 		registry := buildManageRegistry(docs)
 		mcpadmin.NewManager(registry, agentsDir, "").Register(server)
-		fmt.Printf("mockagents mcp: agent-management tools enabled (%d agents loaded from %q)\n",
+		// Stderr, NEVER stdout: on --transport stdio, stdout IS the JSON-RPC
+		// stream and the spec forbids non-MCP bytes on it — this banner on
+		// stdout corrupted the official SDK's session (round-10 R10-4).
+		fmt.Fprintf(os.Stderr, "mockagents mcp: agent-management tools enabled (%d agents loaded from %q)\n",
 			len(registry.ListForTenant("")), agentsDir)
 	}
 
