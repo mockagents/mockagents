@@ -52,8 +52,12 @@ func contains(ss []string, want string) bool {
 func TestSession_GreetingAndUpdate(t *testing.T) {
 	s := NewSession("s1", "gpt-realtime", fakeGen("ok"))
 	g := s.Greeting()
-	if len(g) != 1 || g[0]["type"] != "session.created" {
-		t.Fatalf("greeting = %v, want session.created", typesOf(g))
+	if len(g) != 2 || g[0]["type"] != "session.created" || g[1]["type"] != "conversation.created" {
+		t.Fatalf("greeting = %v, want [session.created conversation.created]", typesOf(g))
+	}
+	conv := g[1]["conversation"].(map[string]any)
+	if conv["object"] != "realtime.conversation" || conv["id"] != "conv_s1" {
+		t.Errorf("conversation.created payload = %v", conv)
 	}
 
 	// A beta-style top-level voice is accepted and echoed at the GA location
@@ -575,6 +579,99 @@ func TestSession_OutOfBandResponse(t *testing.T) {
 		if m.Content == "side classification" {
 			t.Errorf("out-of-band response leaked into history: %+v", gotHistory)
 		}
+	}
+}
+
+// The item.create ack echoes the client's content AS SENT — input_audio and
+// multi-part content survive, and assistant items keep output_* part types.
+func TestSession_ItemCreateEchoesContent(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("sec", "", fakeGen("ok"))
+
+	evs := s.Handle(ctx, &ClientEvent{Type: "conversation.item.create",
+		Item: []byte(`{"type":"message","role":"user","content":[
+			{"type":"input_audio","transcript":"hello there"},
+			{"type":"input_text","text":"and this"}]}`)})
+	content := firstEvent(evs, "conversation.item.added")["item"].(map[string]any)["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("content parts = %d, want the 2 sent", len(content))
+	}
+	if content[0].(map[string]any)["type"] != "input_audio" || content[0].(map[string]any)["transcript"] != "hello there" {
+		t.Errorf("input_audio part not echoed: %v", content[0])
+	}
+	if content[1].(map[string]any)["type"] != "input_text" {
+		t.Errorf("second part = %v, want the input_text part", content[1])
+	}
+
+	// An assistant item keeps its output_text content type.
+	evs = s.Handle(ctx, &ClientEvent{Type: "conversation.item.create",
+		Item: []byte(`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"prior answer"}]}`)})
+	part := firstEvent(evs, "conversation.item.added")["item"].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if part["type"] != "output_text" {
+		t.Errorf("assistant ack content type = %v, want output_text (not rebuilt as input_text)", part["type"])
+	}
+}
+
+// Truncation is restricted to assistant message items with audio content.
+func TestSession_TruncateRejectsNonAssistantAudio(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("str2", "", fakeGen("spoken words here"))
+	created := firstEvent(s.Handle(ctx, &ClientEvent{Type: "conversation.item.create",
+		Item: []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}`)}), "conversation.item.added")
+	userID := created["item"].(map[string]any)["id"].(string)
+
+	evs := s.Handle(ctx, &ClientEvent{Type: "conversation.item.truncate", ItemID: userID, AudioEndMs: 100})
+	e := evs[0]["error"].(map[string]any)
+	if evs[0]["type"] != "error" || e["code"] != "invalid_value" || e["param"] != "item_id" {
+		t.Errorf("truncating a user item = %v, want invalid_value on item_id", evs[0])
+	}
+}
+
+// Per-response audio.output.voice and an integer max_output_tokens cap are
+// honored: the envelope echoes the overrides, the transcript is trimmed, and
+// the response + item end status "incomplete" / reason max_output_tokens.
+func TestResponseCreate_VoiceAndMaxTokenOverrides(t *testing.T) {
+	s := NewSession("smo", "gpt-realtime", fakeGen("one two three four five six"))
+	evs := s.Handle(context.Background(), &ClientEvent{Type: "response.create",
+		Response: []byte(`{"audio":{"output":{"voice":"cedar"}},"max_output_tokens":3}`)})
+
+	created := firstEvent(evs, "response.created")["response"].(map[string]any)
+	if v := created["audio"].(map[string]any)["output"].(map[string]any)["voice"]; v != "cedar" {
+		t.Errorf("envelope voice = %v, want the per-response override cedar", v)
+	}
+	if raw, _ := json.Marshal(created["max_output_tokens"]); string(raw) != "3" {
+		t.Errorf("envelope max_output_tokens = %s, want 3", raw)
+	}
+
+	done := firstEvent(evs, "response.done")["response"].(map[string]any)
+	if done["status"] != "incomplete" {
+		t.Fatalf("capped response status = %v, want incomplete", done["status"])
+	}
+	sd := done["status_details"].(map[string]any)
+	if sd["type"] != "incomplete" || sd["reason"] != "max_output_tokens" {
+		t.Errorf("status_details = %v, want incomplete/max_output_tokens", sd)
+	}
+	item := done["output"].([]any)[0].(map[string]any)
+	if item["status"] != "incomplete" {
+		t.Errorf("capped item status = %v, want incomplete", item["status"])
+	}
+	transcript := item["content"].([]any)[0].(map[string]any)["transcript"].(string)
+	if transcript != "one two three" {
+		t.Errorf("trimmed transcript = %q, want the first 3 words", transcript)
+	}
+	usage := done["usage"].(map[string]any)
+	if usage["output_tokens"] != 3 {
+		t.Errorf("output_tokens = %v, want the capped 3", usage["output_tokens"])
+	}
+	// The trimmed content is what entered history.
+	found := false
+	for _, m := range s.history {
+		if m.Role == "assistant" && m.Content == "one two three" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("history did not get the trimmed transcript: %+v", s.history)
 	}
 }
 

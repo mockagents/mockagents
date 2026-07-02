@@ -18,6 +18,7 @@ package realtime
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/mockagents/mockagents/internal/engine"
@@ -37,6 +38,7 @@ type inflightResponse struct {
 	nextAt    time.Time
 	doneItems []any  // items whose output_item.done already emitted (a cancelled response's output)
 	onDone    func() // deferred side effects (history append) — only if the response completes
+	usage     any    // the final response.done's usage block (billing survives cancellation)
 }
 
 // SetClock injects the time source (tests use a fake); nil/unset means
@@ -57,10 +59,6 @@ func (s *Session) clock() time.Time {
 	}
 	return time.Now()
 }
-
-// paced reports whether responses should be emitted incrementally: the
-// transport opted in AND the client enabled turn detection.
-func (s *Session) paced() bool { return s.paceInterval > 0 && s.vad != nil }
 
 // NextDeadline returns the earliest pending deadline (paced-response emission
 // or idle timeout), if any. The transport arms its timer from this.
@@ -110,28 +108,63 @@ func (s *Session) Tick(ctx context.Context, now time.Time) []Event {
 // completes — a cancelled response must not leave its transcript in history.
 func (s *Session) beginPacedResponse(respID string, rc *responseCtx, ladder []Event, onDone func()) []Event {
 	immediate, queue := ladder[:2], ladder[2:]
-	s.inflight = &inflightResponse{
+	inf := &inflightResponse{
 		respID: respID, rc: rc, queue: queue,
 		nextAt: s.clock().Add(s.paceInterval),
 		onDone: onDone,
 	}
+	// Keep the final usage block at hand: a cancelled response still bills the
+	// generated tokens, so cancelInflight reports it on its response.done.
+	if done := ladder[len(ladder)-1]; done["type"] == "response.done" {
+		if resp, ok := done["response"].(map[string]any); ok {
+			inf.usage = resp["usage"]
+		}
+	}
+	s.inflight = inf
 	return immediate
 }
 
-// cancelInflight aborts the paced response: the rest of its ladder is dropped
-// and response.done reports status "cancelled" with the given
-// status_details.reason ("turn_detected" for VAD barge-in, "client_cancelled"
-// for response.cancel). Output lists only the items that completed.
+// cancelInflight aborts the paced response. The real API first FINALIZES the
+// announced-but-unfinished item — its *.done close-out events fire and the item
+// stays in the conversation with status "incomplete" (that is what a client's
+// conversation.item.truncate then targets) — and only then emits response.done
+// (status "cancelled", reason "turn_detected" for VAD barge-in or
+// "client_cancelled" for response.cancel). The mock fast-forwards: the queued
+// close-out events are emitted with the item re-stamped "incomplete" (the
+// stored item mutates too, so retrieve agrees), remaining deltas and
+// never-started items are dropped, and usage reports the generated tokens.
 func (s *Session) cancelInflight(reason string) []Event {
 	inf := s.inflight
 	s.inflight = nil
+
+	var out []Event
+drain:
+	for _, ev := range inf.queue {
+		t, _ := ev["type"].(string)
+		switch {
+		case strings.HasSuffix(t, ".delta"):
+			continue // the cut: content past the cancel point is never emitted
+		case t == "response.output_item.added" || t == "response.done":
+			break drain // a never-started item, or the end of the ladder
+		case t == "response.output_item.done":
+			if item, ok := ev["item"].(map[string]any); ok {
+				item["status"] = "incomplete" // shared with s.items — retrieve agrees
+				inf.doneItems = append(inf.doneItems, item)
+			}
+			out = append(out, ev)
+		default:
+			out = append(out, ev) // content_part/audio/transcript close-outs, item mirror
+		}
+	}
+
 	items := inf.doneItems
 	if items == nil {
 		items = []any{}
 	}
 	cancelled := s.responseObject(inf.respID, "cancelled", items, inf.rc)
 	cancelled["status_details"] = map[string]any{"type": "cancelled", "reason": reason}
-	return []Event{{"type": "response.done", "response": cancelled}}
+	cancelled["usage"] = inf.usage
+	return append(out, Event{"type": "response.done", "response": cancelled})
 }
 
 // armIdleTimer schedules the server-VAD idle timeout after a response
@@ -139,7 +172,9 @@ func (s *Session) cancelInflight(reason string) []Event {
 // is response.done + idle_timeout_ms — the mock's synthesized audio has no real
 // playback duration to add.
 func (s *Session) armIdleTimer() {
-	if s.vad == nil || s.vad.cfg.IdleTimeoutMs <= 0 {
+	// "Idle timeout is currently only supported for server_vad mode" (GA);
+	// the SemanticVad config has no such field.
+	if s.vad == nil || s.vad.cfg.IdleTimeoutMs <= 0 || s.vad.cfg.Type != "server_vad" {
 		return
 	}
 	// Once per stretch of inactivity (Phase 3): the timeout does NOT re-arm

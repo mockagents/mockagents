@@ -71,8 +71,10 @@ func TestVAD_FullTurn(t *testing.T) {
 	if stopped == nil {
 		t.Fatalf("turn-end events = %v, want speech_stopped first", tps)
 	}
-	if stopped["audio_end_ms"] != 400 {
-		t.Errorf("audio_end_ms = %v, want 400 (speech ended where silence began)", stopped["audio_end_ms"])
+	// audio_end_ms is the stop-decision point and INCLUDES the silence window
+	// (400ms speech + 600ms silence when the 500ms window tripped) per GA.
+	if stopped["audio_end_ms"] != 1000 {
+		t.Errorf("audio_end_ms = %v, want 1000 (includes min_silence_duration_ms)", stopped["audio_end_ms"])
 	}
 	if stopped["item_id"] != itemID {
 		t.Errorf("speech_stopped item_id = %v, want %q", stopped["item_id"], itemID)
@@ -111,25 +113,63 @@ func TestVAD_CreateResponseFalse(t *testing.T) {
 	}
 }
 
-// threshold and prefix_padding_ms are honored: quiet speech below a raised
-// threshold never starts a turn, and audio_start_ms subtracts the padding.
+// threshold and prefix_padding_ms are honored on the GA threshold scale
+// (0..1 activation, mapped to mean-abs amplitude via vadAmplitudeScale so
+// realistic mic levels work): quiet audio below a raised threshold never
+// starts a turn, and audio_start_ms subtracts the padding.
 func TestVAD_ThresholdAndPrefixPadding(t *testing.T) {
 	ctx := context.Background()
 	s := NewSession("sv3", "", fakeGen("ok"))
 	enableVAD(t, s, `{"audio":{"input":{"turn_detection":{"type":"server_vad","threshold":0.8,"prefix_padding_ms":100}}}}`)
 
-	// amplitude 20000 ≈ 0.61 < 0.8 → still "silence" under the raised threshold.
-	if evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(500, speechAmp)}); len(evs) != 0 {
+	// Threshold 0.8 → effective mean-abs 0.08. Amplitude 1600 ≈ 0.049 — quiet
+	// speech that a raised threshold must ignore.
+	if evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(500, 1600)}); len(evs) != 0 {
 		t.Fatalf("sub-threshold audio started a turn: %v", typesOf(evs))
 	}
-	// Loud speech (≈0.91) after 500 ms of prior audio → start at 500-100=400.
-	evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(200, 30000)})
+	// Loud speech (5000 ≈ 0.153 > 0.08) after 500 ms of prior audio → start at 500-100=400.
+	evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(200, 5000)})
 	started := firstEvent(evs, "input_audio_buffer.speech_started")
 	if started == nil {
 		t.Fatalf("loud audio did not start a turn: %v", typesOf(evs))
 	}
 	if started["audio_start_ms"] != 400 {
 		t.Errorf("audio_start_ms = %v, want 400 (500ms in, minus 100ms padding)", started["audio_start_ms"])
+	}
+}
+
+// Realistic microphone levels trigger the DEFAULT threshold (the GA 0.5 scale
+// is not linear amplitude — real speech averages ~0.02–0.15 of full scale).
+func TestVAD_RealisticMicLevels(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("sv8", "", fakeGen("ok"))
+	enableVAD(t, s, serverVAD) // default threshold 0.5 → effective 0.05
+
+	// −18 dBFS-ish speech: amplitude 2600 ≈ 0.079 mean-abs. Must trigger.
+	evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(200, 2600)})
+	if firstEvent(evs, "input_audio_buffer.speech_started") == nil {
+		t.Fatalf("realistic speech level did not trigger the default threshold: %v", typesOf(evs))
+	}
+	// Room noise: amplitude 300 ≈ 0.009. Must count as silence and end the turn.
+	evs = s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(600, 300)})
+	if firstEvent(evs, "input_audio_buffer.speech_stopped") == nil {
+		t.Errorf("room-noise level did not read as silence: %v", typesOf(evs))
+	}
+}
+
+// idle_timeout_ms is server_vad-only (the GA SemanticVad config has no such
+// field) — a semantic_vad session must not arm the idle deadline.
+func TestIdleTimeout_ServerVADOnly(t *testing.T) {
+	s := NewSession("sv9", "", fakeGen("ok"))
+	fc := newFakeClock()
+	s.SetClock(fc.now)
+	enableVAD(t, s, `{"audio":{"input":{"turn_detection":{"type":"semantic_vad","idle_timeout_ms":5000}}}}`)
+
+	ctx := context.Background()
+	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(200, speechAmp)})
+	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(4100, quietAmp)}) // ends the turn (auto window 4000)
+	if dl, ok := s.NextDeadline(); ok {
+		t.Errorf("semantic_vad armed an idle deadline (%v); idle_timeout_ms is server_vad-only", dl)
 	}
 }
 

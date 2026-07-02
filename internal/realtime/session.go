@@ -52,6 +52,9 @@ type ClientEvent struct {
 	// conversation.item.create: insert after this item ("" = append at the
 	// end; "root" = insert at the beginning).
 	PreviousItemID string `json:"previous_item_id,omitempty"`
+	// response.cancel: target a specific response ("" = the in-progress
+	// default-conversation response).
+	ResponseID string `json:"response_id,omitempty"`
 }
 
 // Event is an outbound server event. The Realtime protocol has dozens of event
@@ -225,9 +228,20 @@ func NewSession(id, model string, gen Generator) *Session {
 // deterministic for tests.
 func (s *Session) SetExpiry(unix int64) { s.expiresAt = unix }
 
-// Greeting returns the events to emit immediately on connect (session.created).
+// sessionDefaultInstructions mirrors the real server injecting default
+// instructions when the client sets none — "visible in the session.created
+// event". Display-only: the engine receives only instructions a client set.
+const sessionDefaultInstructions = "You are a helpful, witty, and friendly AI. " +
+	"Act like a human. Your voice and personality should be warm and engaging."
+
+// Greeting returns the events to emit immediately on connect: session.created
+// followed by conversation.created (the default conversation's announcement).
 func (s *Session) Greeting() []Event {
-	return s.stamp([]Event{{"type": "session.created", "session": s.sessionObject()}})
+	return s.stamp([]Event{
+		{"type": "session.created", "session": s.sessionObject()},
+		{"type": "conversation.created", "conversation": map[string]any{
+			"id": "conv_" + s.id, "object": "realtime.conversation"}},
+	})
 }
 
 // Handle processes one inbound client event and returns the ordered server
@@ -385,13 +399,12 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 				"call_id": it.CallID, "name": it.Name, "arguments": it.Arguments,
 			}))
 		default:
-			text := it.text()
-			if text != "" {
+			if text := it.text(); text != "" {
 				s.history = append(s.history, engine.RequestMessage{Role: it.Role, Content: text})
 			}
 			return conversationItemEvents(prevItem, s.rememberItem(map[string]any{
 				"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
-				"role": it.Role, "content": []any{map[string]any{"type": "input_text", "text": text}},
+				"role": it.Role, "content": it.echoContent(),
 			}))
 		}
 
@@ -425,6 +438,22 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		if !ok {
 			return []Event{s.errorEvent("item_not_found", fmt.Sprintf("item %q not found", ce.ItemID))}
 		}
+		// GA: "Only assistant message items can be truncated" — and only ones
+		// with audio content. (The real API additionally rejects audio_end_ms
+		// beyond the actual audio duration; a mock has no audio timeline, so
+		// that check is skipped — documented.)
+		hasAudio := false
+		if content, ok := item["content"].([]any); ok {
+			for _, c := range content {
+				if part, ok := c.(map[string]any); ok && part["type"] == "output_audio" {
+					hasAudio = true
+				}
+			}
+		}
+		if item["type"] != "message" || item["role"] != "assistant" || !hasAudio {
+			return []Event{s.errorEventParam("invalid_value",
+				"only assistant message items with audio content can be truncated", "item_id")}
+		}
 		if content, ok := item["content"].([]any); ok {
 			for _, c := range content {
 				if part, ok := c.(map[string]any); ok && part["type"] == "output_audio" {
@@ -436,11 +465,13 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			"item_id": ce.ItemID, "content_index": ce.ContentIndex, "audio_end_ms": ce.AudioEndMs}}
 
 	case "response.cancel":
-		// A paced response can actually be in flight now — cancel it. Otherwise
-		// (burst mode, or nothing running) the real API also errors, with this
+		// A paced response can actually be in flight now — cancel it, honoring
+		// an explicit response_id target (GA: "a specific response ID to cancel;
+		// if not provided, will cancel an in-progress response in the default
+		// conversation"). Otherwise the real API also errors, with this
 		// cancel-specific code that SDKs recognize and suppress (unknown_event
 		// they surface as a protocol failure).
-		if s.inflight != nil {
+		if s.inflight != nil && (ce.ResponseID == "" || ce.ResponseID == s.inflight.respID) {
 			return s.cancelInflight("client_cancelled")
 		}
 		return []Event{s.errorEvent("response_cancel_not_active", "Cancellation failed: no active response found")}
@@ -462,19 +493,35 @@ type responseConfig struct {
 	Modalities       []string        `json:"modalities"` // beta alias
 	Metadata         json.RawMessage `json:"metadata"`
 	Conversation     string          `json:"conversation"` // "auto" (default) | "none"
+	MaxOutputTokens  json.RawMessage `json:"max_output_tokens"`
+	Audio            *struct {
+		Output *struct {
+			Voice  string          `json:"voice"`
+			Format json.RawMessage `json:"format"`
+		} `json:"output"`
+	} `json:"audio"`
 }
 
 // responseCtx carries one response's effective settings through the ladder:
 // session defaults overlaid with the response.create inline overrides.
 type responseCtx struct {
-	mods         []string
-	outOfBand    bool            // conversation:"none" — no history, no conversation-item mirror, conversation_id null
-	metadata     json.RawMessage // echoed verbatim on the response envelope (nil → null)
-	instructions string
+	mods            []string
+	outOfBand       bool            // conversation:"none" — no history, no conversation-item mirror, conversation_id null
+	metadata        json.RawMessage // echoed verbatim on the response envelope (nil → null)
+	instructions    string
+	voice           string          // effective audio.output.voice for this response
+	format          json.RawMessage // effective audio.output.format (nil → default)
+	maxOutputTokens json.RawMessage // echoed on the envelope (nil → "inf")
+	maxTokens       int             // decoded integer cap (0 = "inf"/unlimited)
+	incomplete      bool            // the cap trimmed the transcript → status "incomplete"
 }
 
 func (s *Session) newResponseCtx(raw json.RawMessage) *responseCtx {
-	rc := &responseCtx{mods: s.outputModalities(), instructions: s.cfg.instructions}
+	rc := &responseCtx{
+		mods: s.outputModalities(), instructions: s.cfg.instructions,
+		voice: s.effectiveVoice(), format: s.cfg.outputFormat,
+		maxOutputTokens: s.cfg.maxOutputTokens,
+	}
 	var cfg responseConfig
 	if len(raw) > 0 && json.Unmarshal(raw, &cfg) == nil {
 		if len(cfg.OutputModalities) > 0 {
@@ -485,9 +532,23 @@ func (s *Session) newResponseCtx(raw json.RawMessage) *responseCtx {
 		if cfg.Instructions != "" {
 			rc.instructions = cfg.Instructions
 		}
+		if len(cfg.MaxOutputTokens) > 0 {
+			rc.maxOutputTokens = cfg.MaxOutputTokens
+		}
+		if cfg.Audio != nil && cfg.Audio.Output != nil {
+			if cfg.Audio.Output.Voice != "" {
+				rc.voice = cfg.Audio.Output.Voice
+			}
+			if len(cfg.Audio.Output.Format) > 0 {
+				rc.format = cfg.Audio.Output.Format
+			}
+		}
 		rc.metadata = cfg.Metadata
 		rc.outOfBand = cfg.Conversation == "none"
 	}
+	// An integer cap is enforced (transcript trimming → status "incomplete");
+	// "inf" or absent means unlimited.
+	_ = json.Unmarshal(rc.maxOutputTokens, &rc.maxTokens)
 	return rc
 }
 
@@ -510,15 +571,17 @@ func (rc *responseCtx) textOnly() bool {
 // loop from. The ladder opens with response.created and ends with response.done
 // (whose output lists every item).
 func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
-	// One response at a time — the real API rejects a second response.create
-	// while one is active on the conversation.
-	if s.inflight != nil {
+	rc := s.newResponseCtx(ce.Response)
+	// Only one response may WRITE TO THE DEFAULT CONVERSATION at a time — but
+	// GA explicitly allows out-of-band responses (conversation:"none") to run
+	// in parallel; those are burst-emitted below and never occupy the inflight
+	// slot, so the guard applies to default-conversation responses only.
+	if s.inflight != nil && !rc.outOfBand {
 		return []Event{s.errorEvent("conversation_already_has_active_response",
-			"Conversation already has an active response")}
+			"Conversation already has an active response in progress")}
 	}
 	s.idleAt = time.Time{} // user activity resets the idle timeout
 	respID := s.nextID("resp")
-	rc := s.newResponseCtx(ce.Response)
 
 	resp, err := s.generate(ctx, s.model(), s.id, s.engineHistory(rc.instructions))
 	if err != nil {
@@ -548,6 +611,14 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 		}
 	}
 	outputTokens := wordCount(transcript)
+	// An integer max_output_tokens cap is enforced the way GA does it: the
+	// output is cut, the response ends status "incomplete" with reason
+	// max_output_tokens, and the message item is likewise incomplete.
+	if rc.maxTokens > 0 && outputTokens > rc.maxTokens {
+		transcript = strings.Join(strings.Fields(transcript)[:rc.maxTokens], " ")
+		outputTokens = rc.maxTokens
+		rc.incomplete = true
+	}
 
 	out := []Event{
 		{"type": "response.created", "response": s.responseObject(respID, "in_progress", []any{}, rc)},
@@ -570,7 +641,14 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 		outputIndex++
 	}
 
-	done := s.responseObject(respID, "completed", items, rc)
+	finalStatus := "completed"
+	if rc.incomplete {
+		finalStatus = "incomplete"
+	}
+	done := s.responseObject(respID, finalStatus, items, rc)
+	if rc.incomplete {
+		done["status_details"] = map[string]any{"type": "incomplete", "reason": "max_output_tokens"}
+	}
 	done["usage"] = map[string]any{
 		"input_tokens":  inputTokens,
 		"output_tokens": outputTokens,
@@ -587,8 +665,10 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 
 	// Paced sessions emit response.created + rate_limits now and the rest of
 	// the ladder against deadlines (Tick) — the interruption window barge-in
-	// and response.cancel need. Burst mode returns everything at once.
-	if s.paced() {
+	// and response.cancel need. Out-of-band responses are ALWAYS burst: GA
+	// scopes interruption to default-conversation responses, and never pacing
+	// them is what lets them run concurrently with an in-flight paced one.
+	if s.paceInterval > 0 && s.vad != nil && !rc.outOfBand {
 		return s.beginPacedResponse(respID, rc, out, appendHistory)
 	}
 	appendHistory()
@@ -609,10 +689,25 @@ func (s *Session) failedResponse(respID, msg string, rc *responseCtx) []Event {
 		// the human-readable detail travels on the error event above it.
 		"error": map[string]any{"type": "server_error", "code": "response_generation_failed"},
 	}
+	// Real terminal response.done events always carry usage; a failed response
+	// produced nothing, so it is all zeros.
+	failed["usage"] = zeroUsage()
 	return []Event{
 		{"type": "response.created", "response": s.responseObject(respID, "in_progress", []any{}, rc)},
 		{"type": "error", "error": s.errorBody("server_error", "response_generation_failed", msg)},
 		{"type": "response.done", "response": failed},
+	}
+}
+
+// zeroUsage is the usage block for a response that produced no billable output.
+func zeroUsage() map[string]any {
+	return map[string]any{
+		"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+		"input_token_details": map[string]any{
+			"text_tokens": 0, "audio_tokens": 0, "image_tokens": 0, "cached_tokens": 0,
+			"cached_tokens_details": map[string]any{"text_tokens": 0, "audio_tokens": 0, "image_tokens": 0},
+		},
+		"output_token_details": map[string]any{"text_tokens": 0, "audio_tokens": 0},
 	}
 }
 
@@ -638,12 +733,13 @@ func (s *Session) responseObject(respID, status string, output []any, rc *respon
 		"conversation_id":   convID,
 		"metadata":          metadata,
 		// GA fields a strict reader expects on every envelope: usage is null
-		// until response.done overwrites it; audio echoes the effective output
-		// config; max_output_tokens mirrors the session setting.
+		// until response.done overwrites it; audio + max_output_tokens echo the
+		// RESPONSE-effective config (session defaults overlaid with any
+		// response.create overrides).
 		"usage": nil,
 		"audio": map[string]any{"output": map[string]any{
-			"voice": s.effectiveVoice(), "format": rawOr(s.cfg.outputFormat, defaultAudioFormat)}},
-		"max_output_tokens": rawOr(s.cfg.maxOutputTokens, `"inf"`),
+			"voice": rc.voice, "format": rawOr(rc.format, defaultAudioFormat)}},
+		"max_output_tokens": rawOr(rc.maxOutputTokens, `"inf"`),
 	}
 }
 
@@ -671,9 +767,13 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 		"id": itemID, "object": "realtime.item", "type": "message", "status": "in_progress",
 		"role": "assistant", "content": []any{}}
 
+	itemStatus := "completed"
+	if rc.incomplete {
+		itemStatus = "incomplete" // the max_output_tokens cap trimmed this item
+	}
 	if rc.textOnly() {
 		final := s.rememberItem(map[string]any{
-			"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
+			"id": itemID, "object": "realtime.item", "type": "message", "status": itemStatus,
 			"role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": transcript}},
 		})
 		// NB: the content_part events' part uses the SHORT type names ("text"/
@@ -709,7 +809,7 @@ func (s *Session) appendMessageLadder(out *[]Event, respID, transcript string, o
 	// streamed events are response.output_audio*.delta/.done (not the beta
 	// response.audio*.delta names).
 	final := s.rememberItem(map[string]any{
-		"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
+		"id": itemID, "object": "realtime.item", "type": "message", "status": itemStatus,
 		"role": "assistant", "content": []any{map[string]any{"type": "output_audio", "transcript": transcript}},
 	})
 	*out = append(*out, Event{"type": "response.output_item.added", "response_id": respID, "output_index": outputIndex, "item": inProgress})
@@ -831,10 +931,14 @@ func (s *Session) sessionObject() map[string]any {
 	if speed == 0 {
 		speed = 1.0
 	}
+	instructions := s.cfg.instructions
+	if instructions == "" {
+		instructions = sessionDefaultInstructions
+	}
 	obj := map[string]any{
 		"id": s.id, "object": "realtime.session", "type": "realtime", "model": s.model(),
 		"output_modalities":   s.outputModalities(),
-		"instructions":        s.cfg.instructions,
+		"instructions":        instructions,
 		"tools":               rawOr(s.cfg.tools, "[]"),
 		"tool_choice":         rawOr(s.cfg.toolChoice, `"auto"`),
 		"max_output_tokens":   rawOr(s.cfg.maxOutputTokens, `"inf"`),
@@ -1021,28 +1125,42 @@ func (s *Session) nextID(prefix string) string {
 // responsesItemToMessage is: "message" (role + content text), "function_call"
 // (an echoed prior tool call), or "function_call_output" (the tool-loop reply).
 type parsedItem struct {
-	ID        string `json:"id"` // client-supplied item id ("" → the server mints one)
-	Type      string `json:"type"`
-	Role      string `json:"role"`
-	CallID    string `json:"call_id"`
-	Output    string `json:"output"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-	Content   []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
+	ID        string          `json:"id"` // client-supplied item id ("" → the server mints one)
+	Type      string          `json:"type"`
+	Role      string          `json:"role"`
+	CallID    string          `json:"call_id"`
+	Output    string          `json:"output"`
+	Name      string          `json:"name"`
+	Arguments string          `json:"arguments"`
+	Content   json.RawMessage `json:"content"` // kept raw so the ack can echo it verbatim
 }
 
-// text joins the item's content-part texts (the mock's matchable payload).
+// text joins the item's text-bearing content parts (the mock's matchable payload).
 func (it *parsedItem) text() string {
-	var parts []string
-	for _, c := range it.Content {
-		if c.Text != "" {
-			parts = append(parts, c.Text)
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(it.Content, &parts) != nil {
+		return ""
+	}
+	var out []string
+	for _, p := range parts {
+		if p.Text != "" {
+			out = append(out, p.Text)
 		}
 	}
-	return strings.Join(parts, " ")
+	return strings.Join(out, " ")
+}
+
+// echoContent decodes the client's content parts for the ack. GA echoes the
+// item AS SENT — input_audio/input_image parts, multiple parts, and assistant
+// output_* parts included — it does not rebuild the content.
+func (it *parsedItem) echoContent() []any {
+	var parts []any
+	if json.Unmarshal(it.Content, &parts) != nil || parts == nil {
+		return []any{}
+	}
+	return parts
 }
 
 func parseItem(raw json.RawMessage) parsedItem {

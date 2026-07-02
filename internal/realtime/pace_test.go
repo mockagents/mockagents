@@ -127,6 +127,31 @@ func TestPaced_BargeIn(t *testing.T) {
 	if sd["type"] != "cancelled" || sd["reason"] != "turn_detected" {
 		t.Errorf("status_details = %v, want cancelled/turn_detected", sd)
 	}
+	// The announced item is CLOSED OUT before response.done: its *.done events
+	// fire, it is re-stamped "incomplete", listed in the cancelled output, and
+	// stays in the conversation (retrieve agrees).
+	itemDone := firstEvent(evs, "response.output_item.done")
+	if itemDone == nil {
+		t.Fatalf("cancellation must close out the in-progress item; got %v", tps)
+	}
+	item := itemDone["item"].(map[string]any)
+	if item["status"] != "incomplete" {
+		t.Errorf("interrupted item status = %v, want incomplete", item["status"])
+	}
+	if firstEvent(evs, "conversation.item.done") == nil {
+		t.Error("cancellation must emit the conversation.item.done mirror")
+	}
+	if output := resp["output"].([]any); len(output) != 1 || output[0].(map[string]any)["status"] != "incomplete" {
+		t.Errorf("cancelled output = %v, want the incomplete item", resp["output"])
+	}
+	if resp["usage"] == nil {
+		t.Error("cancelled response.done must carry usage (billing survives cancellation)")
+	}
+	got := firstEvent(s.Handle(context.Background(),
+		&ClientEvent{Type: "conversation.item.retrieve", ItemID: item["id"].(string)}), "conversation.item.retrieved")
+	if got["item"].(map[string]any)["status"] != "incomplete" {
+		t.Errorf("stored item status = %v, want incomplete after cancellation", got["item"].(map[string]any)["status"])
+	}
 	if _, ok := s.NextDeadline(); ok {
 		t.Error("no deadline should survive cancellation")
 	}
@@ -188,6 +213,62 @@ func TestPaced_InterruptResponseFalse(t *testing.T) {
 	if st := firstEvent(rest, "response.done")["response"].(map[string]any)["status"]; st != "completed" {
 		t.Errorf("surviving response status = %v, want completed", st)
 	}
+}
+
+// GA allows out-of-band responses to run in parallel with the default-
+// conversation response: an OOB response.create during a paced response bursts
+// its full ladder immediately, leaves the in-flight response untouched, and
+// barge-in still only cancels the default one.
+func TestPaced_OutOfBandRunsConcurrently(t *testing.T) {
+	s, fc := pacedSession(t, fakeGen("main answer streaming"), serverVAD)
+	endVADTurn(t, s) // default-conversation response now in flight (paced)
+
+	evs := s.Handle(context.Background(), &ClientEvent{Type: "response.create",
+		Response: []byte(`{"conversation":"none","metadata":{"purpose":"guardrail"}}`)})
+	tps := typesOf(evs)
+	if tps[len(tps)-1] != "response.done" {
+		t.Fatalf("OOB response must burst to completion; got %v", tps)
+	}
+	done := firstEvent(evs, "response.done")["response"].(map[string]any)
+	if done["conversation_id"] != nil || done["status"] != "completed" {
+		t.Errorf("OOB done = conversation_id %v status %v", done["conversation_id"], done["status"])
+	}
+	// The paced default response is still in flight and completes normally.
+	if _, ok := s.NextDeadline(); !ok {
+		t.Fatal("the in-flight default response was disturbed by the OOB one")
+	}
+	rest := drain(t, s, fc, 100)
+	if st := firstEvent(rest, "response.done")["response"].(map[string]any)["status"]; st != "completed" {
+		t.Errorf("default response status = %v, want completed", st)
+	}
+	// A second DEFAULT create during flight is still rejected.
+	s2, _ := pacedSession(t, fakeGen("x"), serverVAD)
+	endVADTurn(t, s2)
+	evs = s2.Handle(context.Background(), &ClientEvent{Type: "response.create"})
+	if evs[0]["type"] != "error" || evs[0]["error"].(map[string]any)["code"] != "conversation_already_has_active_response" {
+		t.Errorf("concurrent default create = %v, want conversation_already_has_active_response", evs[0])
+	}
+}
+
+// response.cancel honors an explicit response_id: a mismatching id does not
+// cancel the in-flight response.
+func TestPaced_CancelTargetsResponseID(t *testing.T) {
+	s, fc := pacedSession(t, fakeGen("target practice"), serverVAD)
+	evs := endVADTurn(t, s)
+	respID := firstEvent(evs, "response.created")["response"].(map[string]any)["id"].(string)
+
+	miss := s.Handle(context.Background(), &ClientEvent{Type: "response.cancel", ResponseID: "resp_bogus"})
+	if miss[0]["type"] != "error" || miss[0]["error"].(map[string]any)["code"] != "response_cancel_not_active" {
+		t.Fatalf("mismatched response_id = %v, want response_cancel_not_active", miss[0])
+	}
+	if _, ok := s.NextDeadline(); !ok {
+		t.Fatal("a mismatched cancel must not disturb the in-flight response")
+	}
+	hit := s.Handle(context.Background(), &ClientEvent{Type: "response.cancel", ResponseID: respID})
+	if firstEvent(hit, "response.done") == nil {
+		t.Errorf("matching response_id must cancel; got %v", typesOf(hit))
+	}
+	_ = fc
 }
 
 // idle_timeout_ms: after a completed response, the deadline fires the GA idle
