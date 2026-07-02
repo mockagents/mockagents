@@ -280,6 +280,11 @@ func (s *Session) vadEndOfTurn(ctx context.Context) []Event {
 	out := []Event{{"type": "input_audio_buffer.speech_stopped",
 		"audio_end_ms": int(endMs), "item_id": v.pendingItemID}}
 	out = append(out, s.handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"})...)
+	// A transcription-only session ends here: commit + transcription ladder,
+	// never a model response.
+	if s.isTranscription() {
+		return out
+	}
 	// Auto-respond unless disabled. With a response still in flight (a
 	// mid-speech response.create, or interrupt_response:false letting one
 	// survive the barge-in) the auto-response is QUEUED, not dropped — Tick

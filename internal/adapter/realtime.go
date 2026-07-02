@@ -104,6 +104,25 @@ func (h *RealtimeHandler) buildEphemeralSession(r *http.Request) (value string, 
 	value = "ek_" + generateID()
 	expiresAt = time.Now().Add(expiresIn).Unix()
 
+	// session is a GA discriminated union: type "transcription" mints an
+	// input-transcription-only session (no output side, no tools).
+	if body.Session.Type == "transcription" {
+		session = map[string]any{
+			"id":            "sess_" + generateID(),
+			"object":        "realtime.transcription_session",
+			"type":          "transcription",
+			"include":       nil,
+			"client_secret": map[string]any{"value": value, "expires_at": expiresAt},
+			"audio": map[string]any{
+				"input": map[string]any{
+					"format": map[string]any{"type": "audio/pcm", "rate": 24000}, "transcription": nil,
+					"turn_detection": turnDetection, "noise_reduction": nil,
+				},
+			},
+		}
+		return value, expiresAt, session
+	}
+
 	mods := body.Session.OutputModalities
 	if len(mods) == 0 {
 		mods = []string{"audio"} // GA default: ["audio"] or ["text"], never both
@@ -239,6 +258,11 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 	tenant := engine.TenantIDFromContext(ctx)
 	sess := realtime.NewSession("sess_"+generateID(), r.URL.Query().Get("model"), h.generator(tenant))
 	sess.SetExpiry(time.Now().Add(time.Hour).Unix()) // reported as session.expires_at
+	// ?intent=transcription connects an input-transcription-only session (a
+	// session.update {type:"transcription"} reaches the same state).
+	if r.URL.Query().Get("intent") == "transcription" {
+		sess.SetSessionType("transcription")
+	}
 	// Paced emission (Phase 2): responses on VAD-enabled sessions stream their
 	// ladder incrementally, creating the interruption window barge-in and
 	// response.cancel act in. Burst behavior is unchanged for non-VAD sessions.

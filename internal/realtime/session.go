@@ -68,6 +68,10 @@ type Event map[string]any
 // or beta-flat) into it; raw json.RawMessage fields are stored verbatim so they
 // round-trip exactly. A zero value yields the GA defaults (see sessionObject).
 type sessionConfig struct {
+	// sessionType discriminates the GA session union: "" / "realtime" is a
+	// full conversational session; "transcription" is input-transcription-only
+	// (no responses are ever generated — see vadEndOfTurn / armIdleTimer).
+	sessionType      string
 	model            string
 	voice            string
 	instructions     string
@@ -94,6 +98,7 @@ type sessionConfig struct {
 // (audio.input/output, output_modalities) AND the beta aliases (top-level voice,
 // modalities, input_audio_transcription) so either SDK generation round-trips.
 type sessionUpdate struct {
+	Type                    string          `json:"type"` // "realtime" | "transcription"
 	Model                   string          `json:"model"`
 	Voice                   string          `json:"voice"` // beta top-level alias
 	Instructions            string          `json:"instructions"`
@@ -1149,6 +1154,27 @@ func (s *Session) model() string {
 // transcription, turn_detection, voice and speed. Voice lives at
 // audio.output.voice (GA), NOT at the top level.
 func (s *Session) sessionObject() map[string]any {
+	// A transcription session is the OTHER arm of the GA session union:
+	// type:"transcription", input-side audio config + include only — no
+	// output modalities, tools, voice, or instructions.
+	if s.isTranscription() {
+		obj := map[string]any{
+			"id": s.id, "object": "realtime.transcription_session", "type": "transcription",
+			"include": rawOr(s.cfg.include, "null"),
+			"audio": map[string]any{
+				"input": map[string]any{
+					"format":          rawOr(s.cfg.inputFormat, defaultAudioFormat),
+					"transcription":   rawOr(s.cfg.transcription, "null"),
+					"turn_detection":  rawOr(s.cfg.turnDetection, "null"),
+					"noise_reduction": rawOr(s.cfg.noiseReduction, "null"),
+				},
+			},
+		}
+		if s.expiresAt > 0 {
+			obj["expires_at"] = s.expiresAt
+		}
+		return obj
+	}
 	speed := s.cfg.speed
 	if speed == 0 {
 		speed = 1.0
@@ -1245,6 +1271,20 @@ func (s *Session) validateVoiceChange(raw json.RawMessage) []Event {
 		"cannot_update_voice", "Cannot update a conversation's voice if assistant audio is present.")}}
 }
 
+// isTranscription reports whether this is a transcription-only session
+// (session.type "transcription"): the server transcribes committed input and
+// NEVER generates responses.
+func (s *Session) isTranscription() bool { return s.cfg.sessionType == "transcription" }
+
+// SetSessionType pins the session's type at connect time (the transport maps
+// an ?intent=transcription connect or a transcription ephemeral key here).
+// Only the two GA union arms are accepted.
+func (s *Session) SetSessionType(t string) {
+	if t == "realtime" || t == "transcription" {
+		s.cfg.sessionType = t
+	}
+}
+
 // effectiveVoice is the session voice with the GA default applied; shared by
 // the session object and the response envelope's audio block.
 func (s *Session) effectiveVoice() string {
@@ -1294,6 +1334,9 @@ func (s *Session) applyConfig(raw json.RawMessage) {
 	var u sessionUpdate
 	if err := json.Unmarshal(raw, &u); err != nil {
 		return
+	}
+	if u.Type == "realtime" || u.Type == "transcription" {
+		s.cfg.sessionType = u.Type
 	}
 	if u.Model != "" {
 		s.cfg.model = u.Model

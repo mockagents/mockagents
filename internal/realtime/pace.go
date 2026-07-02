@@ -369,8 +369,9 @@ func rewriteContent(part any, prefix string) {
 // playback duration to add.
 func (s *Session) armIdleTimer() {
 	// "Idle timeout is currently only supported for server_vad mode" (GA);
-	// the SemanticVad config has no such field.
-	if s.vad == nil || s.vad.cfg.IdleTimeoutMs <= 0 || s.vad.cfg.Type != "server_vad" {
+	// the SemanticVad config has no such field. A transcription session never
+	// prompts the user — it never responds at all.
+	if s.vad == nil || s.vad.cfg.IdleTimeoutMs <= 0 || s.vad.cfg.Type != "server_vad" || s.isTranscription() {
 		return
 	}
 	// Once per stretch of inactivity (Phase 3): the timeout does NOT re-arm

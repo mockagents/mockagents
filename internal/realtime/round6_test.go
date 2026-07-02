@@ -293,6 +293,50 @@ func TestResponseCreateInputCustomContext(t *testing.T) {
 	}
 }
 
+// R6-5 (S2): session.type "transcription" is the other arm of the GA session
+// union: a transcription-shaped session object, and NO responses — a detected
+// turn produces the commit + transcription ladder only.
+func TestTranscriptionSession(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("r65", "", fakeGen("must never be spoken"))
+	fc := newFakeClock()
+	s.SetClock(fc.now)
+
+	evs := s.Handle(ctx, &ClientEvent{Type: "session.update", Session: []byte(
+		`{"type":"transcription","audio":{"input":{"transcription":{"model":"gpt-4o-transcribe"},"turn_detection":{"type":"server_vad","idle_timeout_ms":5000}}}}`)})
+	if evs[0]["type"] != "session.updated" {
+		t.Fatalf("transcription session.update = %v", typesOf(evs))
+	}
+	sess := evs[0]["session"].(map[string]any)
+	if sess["type"] != "transcription" || sess["object"] != "realtime.transcription_session" {
+		t.Errorf("session type/object = %v/%v, want transcription/realtime.transcription_session", sess["type"], sess["object"])
+	}
+	for _, absent := range []string{"output_modalities", "tools", "voice", "instructions", "max_output_tokens"} {
+		if _, ok := sess[absent]; ok {
+			t.Errorf("transcription session must not carry %q", absent)
+		}
+	}
+	if _, ok := sess["audio"].(map[string]any)["output"]; ok {
+		t.Error("transcription session must not carry audio.output")
+	}
+
+	// A detected turn transcribes but NEVER responds; the idle timer never arms.
+	evs = endVADTurn(t, s)
+	tps := typesOf(evs)
+	if !contains(tps, "input_audio_buffer.committed") ||
+		!contains(tps, "conversation.item.input_audio_transcription.completed") {
+		t.Fatalf("transcription turn = %v, want the commit + transcription ladder", tps)
+	}
+	for _, banned := range []string{"response.created", "response.done", "rate_limits.updated"} {
+		if contains(tps, banned) {
+			t.Errorf("transcription session emitted %s — it must never respond; got %v", banned, tps)
+		}
+	}
+	if dl, ok := s.NextDeadline(); ok {
+		t.Errorf("idle deadline %v armed on a transcription session (would self-prompt)", dl)
+	}
+}
+
 // R6-1 (S1): disabling turn_detection must disarm the idle timeout — a Tick
 // firing afterwards nil-dereferenced the VAD state and killed the session.
 func TestIdleTimerDisarmedWhenVADDisabled(t *testing.T) {
