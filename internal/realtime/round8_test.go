@@ -14,6 +14,60 @@ import (
 	"github.com/mockagents/mockagents/internal/types"
 )
 
+// R8-7/R8-9 (S3): parallel_tool_calls is a beta leftover — absent from the
+// session object and rejected in strict mode; audio-modality output bills as
+// audio tokens.
+func TestShapeBatch(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("r87", "", fakeGen("spoken words"))
+
+	if _, ok := s.Greeting()[0]["session"].(map[string]any)["parallel_tool_calls"]; ok {
+		t.Error("session object must not carry parallel_tool_calls")
+	}
+	s.SetStrict(true)
+	evs := s.Handle(ctx, &ClientEvent{Type: "session.update", Session: []byte(`{"parallel_tool_calls":false}`)})
+	if e := evs[0]["error"].(map[string]any); evs[0]["type"] != "error" || e["code"] != "unknown_parameter" {
+		t.Errorf("strict parallel_tool_calls = %v, want unknown_parameter", evs[0])
+	}
+	s.SetStrict(false)
+
+	// Audio response → output billed as audio tokens.
+	evs = s.Handle(ctx, &ClientEvent{Type: "response.create"})
+	usage := firstEvent(evs, "response.done")["response"].(map[string]any)["usage"].(map[string]any)
+	details := usage["output_token_details"].(map[string]any)
+	if details["audio_tokens"] != 2 || details["text_tokens"] != 0 {
+		t.Errorf("audio output details = %v, want audio_tokens=2 text_tokens=0", details)
+	}
+	// Text-only response → text tokens.
+	evs = s.Handle(ctx, &ClientEvent{Type: "response.create", Response: []byte(`{"output_modalities":["text"]}`)})
+	details = firstEvent(evs, "response.done")["response"].(map[string]any)["usage"].(map[string]any)["output_token_details"].(map[string]any)
+	if details["text_tokens"] != 2 || details["audio_tokens"] != 0 {
+		t.Errorf("text output details = %v, want text_tokens=2 audio_tokens=0", details)
+	}
+}
+
+// R8-8 (S3): an invalid mint payload must not silently seed a broken config —
+// ValidateSessionPayload rejects it (the adapter 400s), and SeedConfig keeps
+// the working turn_detection if a bad one slips through anyway.
+func TestMintValidationAndSeedFallback(t *testing.T) {
+	if param, _, ok := ValidateSessionPayload([]byte(`{"audio":{"input":{"turn_detection":{"type":"server-vad"}}}}`)); ok ||
+		param != "session.audio.input.turn_detection.type" {
+		t.Errorf("typo'd turn_detection: param=%q ok=%v, want rejection naming the type", param, ok)
+	}
+	if _, _, ok := ValidateSessionPayload([]byte(`{"audio":{"output":{"voice":"verse"}}}`)); !ok {
+		t.Error("a clean payload must validate")
+	}
+
+	s := NewSession("r88", "", fakeGen("ok"))
+	s.SeedConfig([]byte(`{"instructions":"be brief","audio":{"input":{"turn_detection":{"type":"server-vad"}}}}`))
+	if s.vad == nil {
+		t.Error("an invalid seeded turn_detection must keep the working default, not disable VAD")
+	}
+	if s.cfg.instructions != "be brief" {
+		t.Error("the valid parts of the seeded config must still apply")
+	}
+}
+
 // R8-3 (S3): truncating the streaming message must not drop the
 // function_call items' history entries (the round-7 truncate override
 // replaced the whole appendHistory closure).

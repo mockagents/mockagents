@@ -118,7 +118,7 @@ func (h *RealtimeHandler) Routes() []Route {
 // at session.client_secret — a required field of the GA response session). The
 // mock ignores the key on connect (it accepts any client), so this is a
 // well-formed stub the SDK can round-trip.
-func (h *RealtimeHandler) buildEphemeralSession(r *http.Request) (value string, expiresAt int64, session map[string]any) {
+func (h *RealtimeHandler) buildEphemeralSession(r *http.Request) (value string, expiresAt int64, session map[string]any, errBody map[string]any) {
 	var outer struct {
 		Model        string `json:"model"` // legacy flat
 		Voice        string `json:"voice"` // legacy flat
@@ -158,6 +158,17 @@ func (h *RealtimeHandler) buildEphemeralSession(r *http.Request) (value string, 
 	body.Model, body.Voice = outer.Model, outer.Voice
 	if len(outer.Session) > 0 {
 		_ = json.Unmarshal(outer.Session, &body.Session)
+	}
+
+	// An invalid session config is rejected at mint time (prod 400s here) —
+	// otherwise the broken payload would be retained and silently seed the
+	// connect, e.g. a typo'd turn_detection disabling the VAD default while
+	// session.created echoes the bogus object.
+	if param, msg, ok := realtime.ValidateSessionPayload(outer.Session); !ok {
+		return "", 0, nil, map[string]any{"error": map[string]any{
+			"type": "invalid_request_error", "code": "invalid_value",
+			"message": msg, "param": param,
+		}}
 	}
 
 	model := firstNonEmpty(body.Model, body.Session.Model, realtime.DefaultModel)
@@ -200,7 +211,7 @@ func (h *RealtimeHandler) buildEphemeralSession(r *http.Request) (value string, 
 				},
 			},
 		}
-		return value, expiresAt, session
+		return value, expiresAt, session, nil
 	}
 
 	mods := body.Session.OutputModalities
@@ -239,14 +250,21 @@ func (h *RealtimeHandler) buildEphemeralSession(r *http.Request) (value string, 
 			"output": map[string]any{"voice": voice, "format": pcm(), "speed": 1.0},
 		},
 	}
-	return value, expiresAt, session
+	return value, expiresAt, session, nil
 }
 
 // HandleClientSecret serves the GA POST /v1/realtime/client_secrets envelope:
-// {value, expires_at, session}.
+// {value, expires_at, session}. An invalid session payload (bad
+// turn_detection / max_output_tokens) is rejected with 400 the way prod
+// would — otherwise a broken config would be retained and silently seed the
+// connect (round-8 R8-8).
 func (h *RealtimeHandler) HandleClientSecret(w http.ResponseWriter, r *http.Request) {
 	stampProtocol(r, ProtocolOpenAIRealtime)
-	value, expiresAt, session := h.buildEphemeralSession(r)
+	value, expiresAt, session, errBody := h.buildEphemeralSession(r)
+	if errBody != nil {
+		writeJSON(w, http.StatusBadRequest, errBody)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"value": value, "expires_at": expiresAt, "session": session,
 	})

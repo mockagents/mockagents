@@ -332,7 +332,7 @@ drain:
 	cancelled["usage"] = inf.usage
 	if u, ok := inf.usage.(map[string]any); ok {
 		if in, ok := u["input_tokens"].(int); ok {
-			cancelled["usage"] = usageBlock(in, wordCount(inf.transcript))
+			cancelled["usage"] = usageBlock(in, wordCount(inf.transcript), !inf.rc.textOnly())
 		}
 	}
 	return append(out, Event{"type": "response.done", "response": cancelled})
@@ -396,7 +396,7 @@ func (s *Session) truncateInflightItem(itemID string) {
 		if resp, ok := ev["response"].(map[string]any); ok {
 			if u, ok2 := resp["usage"].(map[string]any); ok2 {
 				if in, ok3 := u["input_tokens"].(int); ok3 {
-					resp["usage"] = usageBlock(in, wordCount(prefix))
+					resp["usage"] = usageBlock(in, wordCount(prefix), !inf.rc.textOnly())
 				}
 			}
 		}

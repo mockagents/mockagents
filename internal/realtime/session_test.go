@@ -477,8 +477,10 @@ func TestSessionUpdate_RoundTripsGAFields(t *testing.T) {
 	if raw, _ := json.Marshal(sess["truncation"]); string(raw) != `"auto"` {
 		t.Errorf("default truncation = %s, want \"auto\"", raw)
 	}
-	if raw, _ := json.Marshal(sess["parallel_tool_calls"]); string(raw) != "true" {
-		t.Errorf("default parallel_tool_calls = %s, want true", raw)
+	// Round-8 R8-7 (GA schema + live-SDK convergence): parallel_tool_calls is
+	// NOT a GA realtime session field — the session object must not carry it.
+	if _, ok := sess["parallel_tool_calls"]; ok {
+		t.Error("session object must not carry the beta parallel_tool_calls leftover")
 	}
 	for _, k := range []string{"tracing", "prompt", "include"} {
 		if raw, _ := json.Marshal(sess[k]); string(raw) != "null" {
@@ -492,12 +494,12 @@ func TestSessionUpdate_RoundTripsGAFields(t *testing.T) {
 	// Now set them and read them back off session.updated.
 	evs := s.Handle(context.Background(), &ClientEvent{Type: "session.update", Session: []byte(`{
 		"tracing":"auto","truncation":"disabled","prompt":{"id":"pmpt_1"},
-		"include":["item.input_audio_transcription.logprobs"],"parallel_tool_calls":false,
+		"include":["item.input_audio_transcription.logprobs"],
 		"audio":{"input":{"noise_reduction":{"type":"near_field"}}}}`)})
 	sess = evs[0]["session"].(map[string]any)
 	checks := map[string]string{
 		"tracing": `"auto"`, "truncation": `"disabled"`, "prompt": `{"id":"pmpt_1"}`,
-		"include": `["item.input_audio_transcription.logprobs"]`, "parallel_tool_calls": "false",
+		"include": `["item.input_audio_transcription.logprobs"]`,
 	}
 	for k, want := range checks {
 		if raw, _ := json.Marshal(sess[k]); string(raw) != want {

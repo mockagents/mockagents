@@ -17,6 +17,22 @@ spec:
   systemPrompt: |
     You are a friendly voice assistant.
 
+  tools:
+    - name: get_weather
+      description: Get the current weather for a location
+      parameters:
+        type: object
+        properties:
+          location:
+            type: string
+            description: City name
+        required: [location]
+      responses:
+        - default: true
+          response:
+            temperature: 72
+            condition: sunny
+
   behavior:
     scenarios:
       - name: greeting
@@ -25,11 +41,18 @@ spec:
         response:
           content: "Hi! Great to hear your voice — how can I help today?"
 
+      # The Realtime tool loop, reachable out of the box: ask about the
+      # weather over a text item, answer the function_call with a
+      # function_call_output item, and the follow-up response consumes it.
       - name: weather
         match:
           content_contains: "weather"
         response:
-          content: "It's a beautiful sunny day — 72 degrees and clear skies."
+          content: "Let me check that for you."
+          tool_calls:
+            - name: get_weather
+              arguments:
+                location: "NYC"
 
       # VAD-committed audio always transcribes to the fixed "[audio input]"
       # placeholder (the mock has no STT), so voice turns land here.
