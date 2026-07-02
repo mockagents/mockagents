@@ -209,6 +209,20 @@ type Session struct {
 // their bytes are dropped.
 const maxBufferedAudioBytes = 2 << 20
 
+// trimAudioBuffer drops all but the trailing keepMs of buffered audio (and
+// duration). Called at VAD speech start: GA commits roughly
+// [speech_start − prefix_padding_ms, end], so leading silence from before the
+// turn must not end up in the stored item's audio or the billed duration.
+func (s *Session) trimAudioBuffer(keepMs float64) {
+	if s.bufferedMs <= keepMs {
+		return
+	}
+	if keepBytes := int(keepMs) * 48; len(s.audioBuf) > keepBytes {
+		s.audioBuf = append([]byte(nil), s.audioBuf[len(s.audioBuf)-keepBytes:]...)
+	}
+	s.bufferedMs = keepMs
+}
+
 // rememberItem indexes a completed conversation item for later retrieve /
 // delete / truncate, and returns it for inline use.
 func (s *Session) rememberItem(item map[string]any) map[string]any {
@@ -682,7 +696,13 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			body["code"] = nil
 			return []Event{{"type": "error", "error": body}}
 		}
-		if content, ok := item["content"].([]any); ok {
+		if inProgressAudio {
+			// Truncating the item the response is still streaming CUTS the
+			// stream: remaining deltas are dropped and the queued close-outs
+			// rewritten to the emitted prefix (an acked truncation must not be
+			// a no-op — round-7 R7-8).
+			s.truncateInflightItem(ce.ItemID)
+		} else if content, ok := item["content"].([]any); ok {
 			for _, c := range content {
 				if part, ok := c.(map[string]any); ok && part["type"] == "output_audio" {
 					part["transcript"] = ""
@@ -841,7 +861,11 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 		return []Event{s.errorEvent("conversation_already_has_active_response",
 			"Conversation already has an active response in progress")}
 	}
-	s.idleAt = time.Time{} // user activity resets the idle timeout
+	// User activity resets the idle timeout — but an out-of-band side-response
+	// is not the user's turn: it must neither arm NOR disarm the idle timer.
+	if !rc.outOfBand {
+		s.idleAt = time.Time{}
+	}
 	respID := s.nextID("resp")
 
 	// GA custom context: `input` replaces the default conversation as the

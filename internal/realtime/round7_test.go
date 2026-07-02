@@ -5,6 +5,7 @@ package realtime
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -59,6 +60,154 @@ func TestResponseCreateInputNullMeansAbsent(t *testing.T) {
 	s.Handle(ctx, &ClientEvent{Type: "response.create", Response: []byte(`{"conversation":"none","input":[]}`)})
 	if seen != 0 {
 		t.Errorf("input:[] context size = %d, want 0", seen)
+	}
+}
+
+// R7-7 (S3): the committed turn's audio window is [speech_start −
+// prefix_padding_ms, end] — leading silence buffered before the turn must not
+// end up in the stored audio or the billed duration.
+func TestStoredAudioExcludesLeadingSilence(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("r77", "", fakeGen("ok"))
+	// Default server_vad (prefix 300ms). 1000ms silence, 200ms speech, 600ms
+	// decision silence → window = 300 + 200 + 600 = 1100ms.
+	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(1000, quietAmp)})
+	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(200, speechAmp)})
+	evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(600, quietAmp)})
+	committed := firstEvent(evs, "input_audio_buffer.committed")
+	if committed == nil {
+		t.Fatalf("turn did not commit: %v", typesOf(evs))
+	}
+
+	got := firstEvent(s.Handle(ctx, &ClientEvent{Type: "conversation.item.retrieve",
+		ItemID: committed["item_id"].(string)}), "conversation.item.retrieved")
+	audio, _ := got["item"].(map[string]any)["content"].([]any)[0].(map[string]any)["audio"].(string)
+	raw, err := base64.StdEncoding.DecodeString(audio)
+	if err != nil {
+		t.Fatalf("stored audio not base64: %v", err)
+	}
+	if wantBytes := 1100 * 48; len(raw) != wantBytes {
+		t.Errorf("stored audio = %dms, want 1100ms (prefix+speech+decision window)", len(raw)/48)
+	}
+}
+
+// R7-8 (S3): truncating the item the response is still streaming CUTS the
+// stream — no further deltas, close-outs/retrieve/usage/history all carry the
+// emitted prefix, not the full transcript.
+func TestTruncateInflightItemCutsTheStream(t *testing.T) {
+	ctx := context.Background()
+	s, fc := pacedSession(t, fakeGen("alpha beta gamma delta"), serverVAD)
+	endVADTurn(t, s)
+
+	// Emit through the first transcript delta ("alpha ").
+	var msgID, streamed string
+	for range 4 {
+		for _, ev := range s.Tick(ctx, fc.advance(10*time.Millisecond)) {
+			switch ev["type"] {
+			case "conversation.item.added":
+				msgID = ev["item"].(map[string]any)["id"].(string)
+			case "response.output_audio_transcript.delta":
+				streamed += ev["delta"].(string)
+			}
+		}
+	}
+	if msgID == "" || streamed != "alpha " {
+		t.Fatalf("setup: msgID=%q streamed=%q", msgID, streamed)
+	}
+
+	if evs := s.Handle(ctx, &ClientEvent{Type: "conversation.item.truncate",
+		ItemID: msgID, ContentIndex: 0, AudioEndMs: 20}); evs[0]["type"] != "conversation.item.truncated" {
+		t.Fatalf("truncate = %v", typesOf(evs))
+	}
+
+	rest := drain(t, s, fc, 100)
+	for _, ev := range rest {
+		if ev["type"] == "response.output_audio_transcript.delta" {
+			t.Fatalf("delta streamed past the truncation: %v", ev)
+		}
+	}
+	if td := firstEvent(rest, "response.output_audio_transcript.done"); td == nil || td["transcript"] != streamed {
+		t.Errorf("transcript.done = %v, want the emitted prefix %q", td, streamed)
+	}
+	usage := firstEvent(rest, "response.done")["response"].(map[string]any)["usage"].(map[string]any)
+	if usage["output_tokens"] != 1 {
+		t.Errorf("usage output_tokens = %v, want 1 (truncated to %q)", usage["output_tokens"], streamed)
+	}
+	got := firstEvent(s.Handle(ctx, &ClientEvent{Type: "conversation.item.retrieve", ItemID: msgID}), "conversation.item.retrieved")
+	if tr := got["item"].(map[string]any)["content"].([]any)[0].(map[string]any)["transcript"]; tr != streamed {
+		t.Errorf("retrieved transcript = %v, want %q", tr, streamed)
+	}
+	for _, m := range s.history {
+		if m.Role == "assistant" && m.Content != streamed {
+			t.Errorf("history got %q, want the truncated %q", m.Content, streamed)
+		}
+	}
+}
+
+// R7-9 (S3): an out-of-band side-response is not the user's turn — it must
+// not DISARM an armed idle timeout (round 5 pinned only that it must not arm
+// one).
+func TestOOBDoesNotDisarmIdle(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("r79", "", fakeGen("ok"))
+	fc := newFakeClock()
+	s.SetClock(fc.now)
+	enableVAD(t, s, `{"audio":{"input":{"turn_detection":{"type":"server_vad","idle_timeout_ms":5000}}}}`)
+	endVADTurn(t, s)
+	if _, ok := s.NextDeadline(); !ok {
+		t.Fatal("setup: idle deadline should be armed")
+	}
+
+	s.Handle(ctx, &ClientEvent{Type: "response.create", Response: []byte(`{"conversation":"none"}`)})
+	if _, ok := s.NextDeadline(); !ok {
+		t.Error("an OOB response disarmed the armed idle timeout")
+	}
+}
+
+// R7-10 (S3): a deleted (tombstoned) in-flight item gets no conversation
+// mirror close-out — the client was told it is deleted; only the
+// response-scoped output_item.done still emits.
+func TestDeletedInflightItemGetsNoMirrorDone(t *testing.T) {
+	ctx := context.Background()
+	s, fc := pacedSession(t, fakeGen("short reply"), serverVAD)
+	endVADTurn(t, s)
+
+	var msgID string
+	for range 3 {
+		for _, ev := range s.Tick(ctx, fc.advance(10*time.Millisecond)) {
+			if ev["type"] == "conversation.item.added" {
+				msgID = ev["item"].(map[string]any)["id"].(string)
+			}
+		}
+	}
+	if msgID == "" {
+		t.Fatal("setup: item not announced")
+	}
+	s.Handle(ctx, &ClientEvent{Type: "conversation.item.delete", ItemID: msgID})
+
+	rest := drain(t, s, fc, 100)
+	if firstEvent(rest, "conversation.item.done") != nil {
+		t.Errorf("deleted item received a conversation mirror .done: %v", typesOf(rest))
+	}
+	if firstEvent(rest, "response.output_item.done") == nil {
+		t.Errorf("the response-scoped output_item.done must still emit: %v", typesOf(rest))
+	}
+
+	// Same via the CANCEL drain.
+	s2, fc2 := pacedSession(t, fakeGen("short reply"), serverVAD)
+	endVADTurn(t, s2)
+	msgID = ""
+	for range 3 {
+		for _, ev := range s2.Tick(ctx, fc2.advance(10*time.Millisecond)) {
+			if ev["type"] == "conversation.item.added" {
+				msgID = ev["item"].(map[string]any)["id"].(string)
+			}
+		}
+	}
+	s2.Handle(ctx, &ClientEvent{Type: "conversation.item.delete", ItemID: msgID})
+	cancel := s2.Handle(ctx, &ClientEvent{Type: "response.cancel"})
+	if firstEvent(cancel, "conversation.item.done") != nil {
+		t.Errorf("cancel drain emitted a mirror .done for the deleted item: %v", typesOf(cancel))
 	}
 }
 
