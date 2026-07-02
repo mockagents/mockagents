@@ -158,6 +158,15 @@ func (s *Session) refreshVAD() {
 	s.vad = nv
 }
 
+// vadAmplitudeScale maps the GA `threshold` scale onto mean-absolute PCM16
+// amplitude. GA's 0..1 threshold is a detector-activation scale, NOT linear
+// amplitude: real microphone speech averages only ~0.02–0.15 of full scale
+// (−18 dBFS ≈ 0.08), so comparing the raw mean against a GA-typical 0.5 would
+// never trigger on real audio. Scaling by 0.1 puts the GA default (0.5 →
+// 0.045 mean-abs) below typical speech and above room noise, and preserves
+// "a higher threshold requires louder audio".
+const vadAmplitudeScale = 0.1
+
 // audioEnergy decodes a base64 PCM16LE append payload and returns its duration
 // (ms at 24 kHz mono: 48 bytes/ms) and normalized mean-absolute energy (0..1).
 // Payloads that don't decode as base64 count as full-energy speech of an
@@ -196,7 +205,7 @@ func (s *Session) vadAppend(ctx context.Context, ms, energy float64) []Event {
 	v := s.vad
 	startMs := v.totalMs
 	v.totalMs += ms
-	speech := energy >= v.cfg.Threshold
+	speech := energy >= v.cfg.Threshold*vadAmplitudeScale
 
 	if speech {
 		// The user is talking — reset the idle timeout and re-allow it to fire.
@@ -242,7 +251,10 @@ func (s *Session) vadAppend(ctx context.Context, ms, energy float64) []Event {
 // that handler, which adopts pendingItemID), then the auto-response.
 func (s *Session) vadEndOfTurn(ctx context.Context) []Event {
 	v := s.vad
-	endMs := v.totalMs - v.silenceMs // speech ended where the silence began
+	// audio_end_ms "corresponds to the end of audio sent to the model, and thus
+	// includes the min_silence_duration_ms" (GA speech_stopped) — the stop
+	// DECISION point, not where the silence began.
+	endMs := v.totalMs
 	out := []Event{{"type": "input_audio_buffer.speech_stopped",
 		"audio_end_ms": int(endMs), "item_id": v.pendingItemID}}
 	out = append(out, s.handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"})...)

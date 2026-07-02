@@ -139,7 +139,9 @@ func (s *Session) cancelInflight(reason string) []Event {
 // is response.done + idle_timeout_ms — the mock's synthesized audio has no real
 // playback duration to add.
 func (s *Session) armIdleTimer() {
-	if s.vad == nil || s.vad.cfg.IdleTimeoutMs <= 0 {
+	// "Idle timeout is currently only supported for server_vad mode" (GA);
+	// the SemanticVad config has no such field.
+	if s.vad == nil || s.vad.cfg.IdleTimeoutMs <= 0 || s.vad.cfg.Type != "server_vad" {
 		return
 	}
 	// Once per stretch of inactivity (Phase 3): the timeout does NOT re-arm
