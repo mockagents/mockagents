@@ -78,15 +78,23 @@ func TestSessionUpdateMidSpeechKeepsTurn(t *testing.T) {
 		t.Errorf("turn-end must auto-respond; got %v", typesOf(evs))
 	}
 
-	// Changing turn_detection itself still rebuilds the state machine.
+	// Changing turn_detection applies the new config; a SAME-TYPE change
+	// carries the live speech cycle over (round-6 R6-9 — dropping the turn on
+	// a tuning tweak was the T-F2 bug in another coat). Switching detector
+	// types starts a fresh cycle.
 	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(200, speechAmp)})
 	s.Handle(ctx, &ClientEvent{Type: "session.update",
 		Session: []byte(`{"audio":{"input":{"turn_detection":{"type":"server_vad","silence_duration_ms":900}}}}`)})
 	if s.vad == nil || s.vad.cfg.SilenceDurationMs != 900 {
 		t.Errorf("changed turn_detection not applied: %+v", s.vad)
 	}
-	if s.vad.speechActive {
-		t.Error("a changed turn_detection config rebuilds the speech cycle")
+	if !s.vad.speechActive {
+		t.Error("a same-type turn_detection change must preserve the speech cycle")
+	}
+	s.Handle(ctx, &ClientEvent{Type: "session.update",
+		Session: []byte(`{"audio":{"input":{"turn_detection":{"type":"semantic_vad"}}}}`)})
+	if s.vad == nil || s.vad.speechActive {
+		t.Error("switching detector types must start a fresh speech cycle")
 	}
 }
 

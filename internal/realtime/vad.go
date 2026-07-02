@@ -120,9 +120,18 @@ func (s *Session) validateTurnDetection(sessionRaw json.RawMessage) []Event {
 }
 
 // refreshVAD re-derives the VAD state machine from the session's turn_detection
-// config (called after every session.update). A null/absent/unknown config
-// disables VAD; cumulative audio time survives reconfiguration.
+// config (called when a session.update actually changes it). A null/absent/
+// unknown config disables VAD; cumulative audio time survives reconfiguration,
+// and an in-progress speech cycle survives a same-type reconfiguration.
+// Disabling VAD also disarms the idle timeout — idleTimeout dereferences the
+// VAD state, so a deadline left armed after `turn_detection: null` would panic
+// when the transport's timer fires.
 func (s *Session) refreshVAD() {
+	defer func() {
+		if s.vad == nil {
+			s.idleAt, s.idleFired = time.Time{}, false
+		}
+	}()
 	raw := strings.TrimSpace(string(s.cfg.turnDetection))
 	if raw == "" || raw == "null" {
 		s.vad = nil
@@ -154,6 +163,17 @@ func (s *Session) refreshVAD() {
 	nv := &vadState{cfg: cfg}
 	if s.vad != nil {
 		nv.totalMs = s.vad.totalMs
+		// A same-type reconfiguration (tuned thresholds/timeouts — or a
+		// semantically identical config re-serialized with different key
+		// order, which defeats the byte-compare skip in the session.update
+		// handler) must not drop an in-progress turn: the live speech cycle
+		// carries over. Switching detector types starts a fresh cycle.
+		if s.vad.cfg.Type == cfg.Type {
+			nv.speechActive = s.vad.speechActive
+			nv.speechStartMs = s.vad.speechStartMs
+			nv.silenceMs = s.vad.silenceMs
+			nv.pendingItemID = s.vad.pendingItemID
+		}
 	}
 	s.vad = nv
 }
@@ -260,6 +280,11 @@ func (s *Session) vadEndOfTurn(ctx context.Context) []Event {
 	out := []Event{{"type": "input_audio_buffer.speech_stopped",
 		"audio_end_ms": int(endMs), "item_id": v.pendingItemID}}
 	out = append(out, s.handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"})...)
+	// A transcription-only session ends here: commit + transcription ladder,
+	// never a model response.
+	if s.isTranscription() {
+		return out
+	}
 	// Auto-respond unless disabled. With a response still in flight (a
 	// mid-speech response.create, or interrupt_response:false letting one
 	// survive the barge-in) the auto-response is QUEUED, not dropped — Tick

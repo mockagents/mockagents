@@ -276,6 +276,30 @@ func TestRealtime_LegacySessionsShape(t *testing.T) {
 	require.LessOrEqual(t, expiresAt, before+70)
 }
 
+// Round-6 R6-5: the client_secrets session is a GA discriminated union —
+// type "transcription" mints an input-transcription-only session.
+func TestRealtime_ClientSecretTranscriptionSession(t *testing.T) {
+	h := &RealtimeHandler{Engine: testEngine(testOpenAIAgent())}
+	req := httptest.NewRequest("POST", "/v1/realtime/client_secrets",
+		strings.NewReader(`{"session":{"type":"transcription"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.HandleClientSecret(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	sess := body["session"].(map[string]any)
+	require.Equal(t, "transcription", sess["type"])
+	require.Equal(t, "realtime.transcription_session", sess["object"])
+	require.Nil(t, sess["output_modalities"], "transcription session has no output side")
+	require.Nil(t, sess["tools"])
+	audio := sess["audio"].(map[string]any)
+	require.Contains(t, audio, "input")
+	require.NotContains(t, audio, "output")
+	require.Regexp(t, `^ek_`, sess["client_secret"].(map[string]any)["value"])
+}
+
 func TestRealtime_ClientSecret(t *testing.T) {
 	h := &RealtimeHandler{Engine: testEngine(testOpenAIAgent())}
 	req := httptest.NewRequest("POST", "/v1/realtime/client_secrets",

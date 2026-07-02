@@ -47,6 +47,16 @@ type inflightResponse struct {
 	emitted    map[string]string // item id → concatenated delta text (transcript/text/arguments)
 	partOpened map[string]bool   // item id → its content_part.added emitted
 	transcript string            // all emitted message-transcript deltas (usage on cancel)
+	// Emission-time chain values: queued conversation.item.added events carry
+	// the BUILD-time previous_item_id, but the conversation can change while
+	// the ladder is queued (user items committed/created mid-pace, the tail
+	// deleted). The value is rewritten to the actual tail when the .added
+	// emits and remembered here so the paired .done agrees.
+	chainPrev map[string]any // item id → previous_item_id assigned at .added emission
+	// Ids deleted AFTER their announcement: the delete already removed them
+	// from the conversation, so the queued conversation.item.done must not
+	// re-index them (retrievable-but-not-in-chain resurrection).
+	deleted map[string]bool
 }
 
 // SetClock injects the time source (tests use a fake); nil/unset means
@@ -84,6 +94,11 @@ func (s *Session) NextDeadline() (time.Time, bool) {
 // the response when the queue drains) and then, with nothing in flight, the
 // idle timeout. Like Handle, every returned event is stamped.
 func (s *Session) Tick(ctx context.Context, now time.Time) []Event {
+	// Timer-initiated flows (paced emission, idle timeout, the queued
+	// auto-response) have no causing client event: an error emitted from here
+	// must carry event_id null, not the id of whatever unrelated client event
+	// happened to be handled last.
+	s.lastClientEventID = ""
 	var out []Event
 	for s.inflight != nil && !s.inflight.nextAt.After(now) {
 		inf := s.inflight
@@ -95,10 +110,17 @@ func (s *Session) Tick(ctx context.Context, now time.Time) []Event {
 		// createResponse — build no longer mutates session state).
 		switch ev["type"] {
 		case "conversation.item.added":
+			s.rewriteChainPrev(inf, ev)
 			s.joinEmittedItem(ev)
 		case "conversation.item.done":
 			if item, ok := ev["item"].(map[string]any); ok {
-				s.rememberItem(item)
+				id, _ := item["id"].(string)
+				if prev, assigned := inf.chainPrev[id]; assigned {
+					ev["previous_item_id"] = prev
+				}
+				if !inf.deleted[id] {
+					s.rememberItem(item)
+				}
 			}
 		case "response.output_audio.delta":
 			s.respondedWithAudio = true // assistant audio reached the client — voice locked
@@ -156,6 +178,7 @@ func (s *Session) beginPacedResponse(respID string, rc *responseCtx, ladder []Ev
 		nextAt:  s.clock().Add(s.paceInterval),
 		onDone:  onDone,
 		emitted: map[string]string{}, partOpened: map[string]bool{},
+		chainPrev: map[string]any{}, deleted: map[string]bool{},
 	}
 	// Keep the final usage block at hand: a cancelled response still bills the
 	// generated tokens, so cancelInflight reports it on its response.done.
@@ -181,10 +204,14 @@ func (s *Session) beginPacedResponse(respID string, rc *responseCtx, ladder []Ev
 func (s *Session) cancelInflight(reason string) []Event {
 	inf := s.inflight
 	s.inflight = nil
-	// An interrupted response leaves no completed turn behind: a pending
-	// auto-response and an armed idle timeout both belong to the flow that was
-	// just abandoned.
-	s.pendingResponse = false
+	// A barge-in supersedes the queued auto-response — the new turn's own end
+	// will answer. A CLIENT cancel targets only the in-flight response: the
+	// pending auto-response belongs to a different, already-committed user
+	// turn and survives (the response.cancel handler runs it right after the
+	// close-out). The idle timeout belongs to the cancelled flow either way.
+	if reason == "turn_detected" {
+		s.pendingResponse = false
+	}
 	s.idleAt = time.Time{}
 
 	var out []Event
@@ -200,11 +227,18 @@ drain:
 		case t == "conversation.item.added":
 			// The announced item's mirror pair still opens during close-out; the
 			// join side effects apply exactly as they would in Tick.
+			s.rewriteChainPrev(inf, ev)
 			s.joinEmittedItem(ev)
 			out = append(out, ev)
 		case t == "conversation.item.done":
 			if item, ok := ev["item"].(map[string]any); ok {
-				s.rememberItem(item) // the final (now incomplete) item — retrieve agrees
+				id, _ := item["id"].(string)
+				if prev, assigned := inf.chainPrev[id]; assigned {
+					ev["previous_item_id"] = prev
+				}
+				if !inf.deleted[id] {
+					s.rememberItem(item) // the final (now incomplete) item — retrieve agrees
+				}
 			}
 			out = append(out, ev)
 		case t == "response.content_part.added":
@@ -233,6 +267,11 @@ drain:
 			rewriteContent(ev["part"], inf.emitted[itemID])
 			out = append(out, ev)
 		case t == "response.function_call_arguments.done":
+			// Same rule as unopened content parts: a stream that never emitted
+			// a delta is not fabricated a close-out.
+			if _, started := inf.emitted[itemID]; !started {
+				continue
+			}
 			ev["arguments"] = inf.emitted[itemID]
 			out = append(out, ev)
 		case t == "response.output_item.done":
@@ -259,6 +298,20 @@ drain:
 		}
 	}
 
+	// A message item that fully streamed BEFORE the cancel is a completed
+	// conversation item the client heard in full — its transcript joins the
+	// engine history even though the response's onDone never runs (only the
+	// still-streaming tail is lost to the cancel).
+	for _, it := range inf.doneItems {
+		item, ok := it.(map[string]any)
+		if !ok || item["type"] != "message" || item["status"] != "completed" {
+			continue
+		}
+		if txt := storedItemText(item); txt != "" {
+			s.history = append(s.history, engine.RequestMessage{Role: "assistant", Content: txt})
+		}
+	}
+
 	items := inf.doneItems
 	if items == nil {
 		items = []any{}
@@ -274,6 +327,24 @@ drain:
 		}
 	}
 	return append(out, Event{"type": "response.done", "response": cancelled})
+}
+
+// rewriteChainPrev replaces a queued conversation.item.added event's
+// build-time previous_item_id with the conversation tail AT EMISSION, and
+// records the value so the item's paired conversation.item.done matches. The
+// tail can have moved since build: a user turn committed mid-pace, a client
+// item inserted, or the previous tail deleted — the baked value would fork
+// the chain or dangle at an id the server itself rejects.
+func (s *Session) rewriteChainPrev(inf *inflightResponse, ev Event) {
+	item, ok := ev["item"].(map[string]any)
+	if !ok {
+		return
+	}
+	prev := s.previousItemID()
+	ev["previous_item_id"] = prev
+	if id, _ := item["id"].(string); id != "" {
+		inf.chainPrev[id] = prev
+	}
 }
 
 // rewriteContent replaces a content part's text/transcript payload with the
@@ -298,8 +369,9 @@ func rewriteContent(part any, prefix string) {
 // playback duration to add.
 func (s *Session) armIdleTimer() {
 	// "Idle timeout is currently only supported for server_vad mode" (GA);
-	// the SemanticVad config has no such field.
-	if s.vad == nil || s.vad.cfg.IdleTimeoutMs <= 0 || s.vad.cfg.Type != "server_vad" {
+	// the SemanticVad config has no such field. A transcription session never
+	// prompts the user — it never responds at all.
+	if s.vad == nil || s.vad.cfg.IdleTimeoutMs <= 0 || s.vad.cfg.Type != "server_vad" || s.isTranscription() {
 		return
 	}
 	// Once per stretch of inactivity (Phase 3): the timeout does NOT re-arm
@@ -317,6 +389,11 @@ func (s *Session) armIdleTimer() {
 // continue (history gains the idleTimeoutPlaceholder turn so scenarios can
 // match it).
 func (s *Session) idleTimeout(ctx context.Context) []Event {
+	// Belt-and-braces: refreshVAD disarms the idle deadline when VAD is
+	// disabled, but a nil VAD state must never panic the read loop.
+	if s.vad == nil {
+		return nil
+	}
 	s.idleFired = true
 	v := s.vad
 	prevItem := s.previousItemID()
