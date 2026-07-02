@@ -26,6 +26,14 @@ type ChatCompletionRequest struct {
 	Temperature    *float64        `json:"temperature,omitempty"`
 	MaxTokens      *int            `json:"max_tokens,omitempty"`
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+	// StreamOptions carries include_usage — the final streaming chunk then
+	// reports usage (round-9 R9-9).
+	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
+}
+
+// StreamOptions is the Chat Completions streaming-options object.
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // OpenAIMessage represents a message in an OpenAI request/response.
@@ -226,7 +234,14 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 		if agent != nil {
 			streamCfg = agent.Spec.Behavior.Streaming
 		}
-		if err := streaming.StreamOpenAI(r.Context(), w, resp, streamCfg); err != nil {
+		// stream_options {include_usage:true} appends the final usage chunk
+		// (empty choices) before [DONE] — token-accounting callbacks
+		// (LangChain, Agents SDK) read usage only from that chunk (R9-9).
+		var usageTokens []int
+		if req.StreamOptions != nil && req.StreamOptions.IncludeUsage {
+			usageTokens = []int{sumMessageTokens(inbound.Messages), EstimateTokens(resp.Content)}
+		}
+		if err := streaming.StreamOpenAI(r.Context(), w, resp, streamCfg, usageTokens...); err != nil {
 			// Already started streaming; can't write error JSON.
 			return
 		}
@@ -447,6 +462,9 @@ type openAIError struct {
 type openAIErrorBody struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
+	// Param is always rendered (null when no specific field is at fault) —
+	// the real error envelope carries it on every error (round-9 R9-14).
+	Param any `json:"param"`
 	// Code is OpenAI's stable machine-readable error code (e.g. invalid_api_key,
 	// rate_limit_exceeded). Omitted when empty so non-chaos errors are unchanged.
 	Code string `json:"code,omitempty"`

@@ -213,6 +213,30 @@ func TestToolLoop_GeminiConverges(t *testing.T) {
 	}
 }
 
+// R9-9: stream_options {include_usage:true} emits the final empty-choices
+// usage chunk before [DONE]; without it, no usage chunk appears.
+func TestStreamOptionsIncludeUsage(t *testing.T) {
+	h := &OpenAIHandler{Engine: testEngine(toolLoopAgent("openai-chat-completions", "gpt-4o"))}
+	do := func(body string) string {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.HandleChatCompletions(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+		return rec.Body.String()
+	}
+
+	with := do(`{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":true},
+		"messages":[{"role":"user","content":"say hi"}]}`)
+	require.Contains(t, with, `"usage":{"prompt_tokens":`)
+	// The usage chunk carries empty choices and precedes [DONE].
+	require.Contains(t, with, `"choices":[],"usage"`)
+
+	without := do(`{"model":"gpt-4o","stream":true,
+		"messages":[{"role":"user","content":"say hi"}]}`)
+	assert.NotContains(t, without, `"usage"`)
+}
+
 // R9-7/R9-8: Anthropic tool_use ids carry the toolu_ prefix (never the
 // OpenAI-family call_), and an EMPTY tool_result is accepted (real API does)
 // instead of 400ing as an empty user message.

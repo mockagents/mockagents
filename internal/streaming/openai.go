@@ -20,6 +20,16 @@ type ChatCompletionChunk struct {
 	Created int64         `json:"created"`
 	Model   string        `json:"model"`
 	Choices []ChunkChoice `json:"choices"`
+	// Usage rides only the final empty-choices chunk when the request set
+	// stream_options {include_usage:true} (round-9 R9-9).
+	Usage *ChunkUsage `json:"usage,omitempty"`
+}
+
+// ChunkUsage is the final streaming chunk's usage block.
+type ChunkUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 // ChunkChoice represents a single choice in a streaming chunk.
@@ -56,12 +66,16 @@ type ChunkFunction struct {
 	Arguments *string `json:"arguments,omitempty"`
 }
 
-// StreamOpenAI writes an engine Response as an OpenAI-format SSE stream.
+// StreamOpenAI writes an engine Response as an OpenAI-format SSE stream. The
+// optional usageTokens (prompt, completion) enables the stream_options
+// include_usage behavior: a final empty-choices chunk carrying usage is
+// emitted before [DONE] (round-9 R9-9).
 func StreamOpenAI(
 	ctx context.Context,
 	w http.ResponseWriter,
 	resp *engine.Response,
 	streamCfg *types.StreamingConfig,
+	usageTokens ...int,
 ) error {
 	sse, err := NewSSEWriter(w)
 	if err != nil {
@@ -165,7 +179,22 @@ func StreamOpenAI(
 		return err
 	}
 
-	// 5. [DONE] sentinel.
+	// 5. stream_options include_usage: the final empty-choices usage chunk.
+	if len(usageTokens) >= 2 {
+		if err := sse.WriteData(ChatCompletionChunk{
+			ID: id, Object: "chat.completion.chunk", Created: created, Model: resp.Model,
+			Choices: []ChunkChoice{},
+			Usage: &ChunkUsage{
+				PromptTokens:     usageTokens[0],
+				CompletionTokens: usageTokens[1],
+				TotalTokens:      usageTokens[0] + usageTokens[1],
+			},
+		}); err != nil {
+			return err
+		}
+	}
+
+	// 6. [DONE] sentinel.
 	return sse.WriteRaw("[DONE]")
 }
 
