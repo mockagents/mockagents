@@ -256,7 +256,20 @@ func convertGeminiContents(contents []GeminiContent, system *GeminiContent) []en
 		if role == "model" {
 			role = "assistant"
 		}
-		result = append(result, engine.RequestMessage{Role: role, Content: joinGeminiParts(c.Parts)})
+		rm := engine.RequestMessage{Role: role, Content: joinGeminiParts(c.Parts)}
+		// Convergence-guard signals (round-9): a functionResponse part in ANY
+		// role (older clients use role:"function") marks a tool-result turn;
+		// functionCall parts are the echoed fingerprint material.
+		for _, p := range c.Parts {
+			if p.FunctionResponse != nil {
+				rm.IsToolResult = true
+			}
+			if p.FunctionCall != nil {
+				rm.ToolCalls = append(rm.ToolCalls, engine.EchoedToolCall{
+					Name: p.FunctionCall.Name, Arguments: p.FunctionCall.Args})
+			}
+		}
+		result = append(result, rm)
 	}
 	return result
 }
@@ -267,16 +280,15 @@ func joinGeminiParts(parts []GeminiPart) string {
 		if p.Text != "" {
 			out = append(out, p.Text)
 		}
-		// Surface tool-result content so scenario matching sees tool-result
-		// follow-up turns (mirrors the OpenAI/Anthropic tool_result handling).
-		if p.FunctionResponse != nil {
-			if p.FunctionResponse.Name != "" {
-				out = append(out, p.FunctionResponse.Name)
-			}
-			if len(p.FunctionResponse.Response) > 0 {
-				if b, err := json.Marshal(p.FunctionResponse.Response); err == nil {
-					out = append(out, string(b))
-				}
+		// Surface tool-result CONTENT so scenario matching sees tool-result
+		// follow-up turns (mirrors the Anthropic tool_result flattening). The
+		// tool NAME is deliberately excluded (round-9 R9-4): tools are named
+		// after their trigger keyword almost universally (get_weather /
+		// "weather"), so injecting the name re-fired the same scenario on
+		// every follow-up and the loop never converged.
+		if p.FunctionResponse != nil && len(p.FunctionResponse.Response) > 0 {
+			if b, err := json.Marshal(p.FunctionResponse.Response); err == nil {
+				out = append(out, string(b))
 			}
 		}
 	}

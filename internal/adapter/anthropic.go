@@ -329,11 +329,33 @@ func convertAnthropicMessages(msgs []AnthropicMessage, system any) ([]engine.Req
 	for _, m := range msgs {
 		content, imgCount := extractAnthropicContentWithImages(m.Content)
 		totalImages += imgCount
-		result = append(result, engine.RequestMessage{
+		rm := engine.RequestMessage{
 			Role:       m.Role,
 			Content:    content,
 			ImageCount: imgCount,
-		})
+		}
+		// Convergence-guard signals (round-9), carried OUT-OF-BAND: the text
+		// flattening above stays exactly as it was — scenario authors match
+		// on tool_result markers and that must keep working. tool_result
+		// blocks mark the message as a tool result; tool_use blocks are the
+		// echoed fingerprint material.
+		if blocks, ok := m.Content.([]any); ok {
+			for _, block := range blocks {
+				bm, ok := block.(map[string]any)
+				if !ok {
+					continue
+				}
+				switch bm["type"] {
+				case "tool_result":
+					rm.IsToolResult = true
+				case "tool_use":
+					name, _ := bm["name"].(string)
+					args, _ := bm["input"].(map[string]any)
+					rm.ToolCalls = append(rm.ToolCalls, engine.EchoedToolCall{Name: name, Arguments: args})
+				}
+			}
+		}
+		result = append(result, rm)
 	}
 	return result, totalImages
 }

@@ -150,8 +150,10 @@ func TestGemini_StreamGenerateContent_NonSSE(t *testing.T) {
 	assert.Equal(t, "Hi there!", arr[0].Candidates[0].Content.Parts[0].Text)
 }
 
-// A functionResponse-only follow-up turn contributes matchable content so
-// scenario matching still routes correctly.
+// A functionResponse-only follow-up turn contributes matchable CONTENT —
+// but NOT the tool name (round-9 R9-4: tools are named after their trigger
+// keyword, so the name re-fired the same scenario and the loop never
+// converged).
 func TestGemini_FunctionResponsePartMatches(t *testing.T) {
 	contents := []GeminiContent{
 		{Role: "user", Parts: []GeminiPart{{Text: "what's the weather"}}},
@@ -161,7 +163,7 @@ func TestGemini_FunctionResponsePartMatches(t *testing.T) {
 		}}}},
 	}
 	got := joinGeminiParts(contents[2].Parts)
-	assert.Contains(t, got, "get_weather")
+	assert.NotContains(t, got, "get_weather", "the tool name must not become matchable text")
 	assert.Contains(t, got, "sunny")
 }
 

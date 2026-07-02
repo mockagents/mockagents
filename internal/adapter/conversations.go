@@ -513,7 +513,7 @@ func itemIDPrefix(itemType string) string {
 func conversationItemsToMessages(items []conversationItem) []engine.RequestMessage {
 	msgs := make([]engine.RequestMessage, 0, len(items))
 	for _, it := range items {
-		msgs = append(msgs, responsesItemToMessage(it.Type, it.Role, it.Content, it.Output))
+		msgs = append(msgs, responsesItemToMessage(it.Type, it.Role, it.Content, it.Output, it.Name, it.Arguments))
 	}
 	return msgs
 }

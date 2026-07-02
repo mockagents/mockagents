@@ -274,11 +274,19 @@ func convertOpenAIMessages(msgs []OpenAIMessage) ([]engine.RequestMessage, int) 
 	for _, m := range msgs {
 		content, imgCount := extractStringContentWithImages(m.Content)
 		totalImages += imgCount
-		result = append(result, engine.RequestMessage{
+		rm := engine.RequestMessage{
 			Role:       m.Role,
 			Content:    content,
 			ImageCount: imgCount,
-		})
+			// Convergence-guard signals (round-9): a role:"tool" message is a
+			// tool result; an assistant message's echoed tool_calls are the
+			// fingerprint material — previously both were dropped here.
+			IsToolResult: m.Role == "tool",
+		}
+		for _, tc := range m.ToolCalls {
+			rm.ToolCalls = append(rm.ToolCalls, engine.EchoToolCall(tc.Function.Name, tc.Function.Arguments))
+		}
+		result = append(result, rm)
 	}
 	return result, totalImages
 }

@@ -2,9 +2,11 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 
 	"github.com/mockagents/mockagents/internal/engine/state"
 	"github.com/mockagents/mockagents/internal/observability"
@@ -34,6 +36,38 @@ type RequestMessage struct {
 	// (A-05). It is carried out-of-band so the flattened Content text stays pure
 	// (no markers leaking into regex matching, templates, or token counts).
 	ImageCount int `json:"image_count,omitempty"`
+	// IsToolResult marks a message that carries a tool result back to the
+	// model (role:"tool", an Anthropic tool_result block, a Gemini
+	// functionResponse part, a Responses function_call_output item). Carried
+	// out-of-band so each adapter's matchable-text flattening stays untouched
+	// — the tool-loop convergence guard keys on it (round-9).
+	IsToolResult bool `json:"is_tool_result,omitempty"`
+	// ToolCalls carries the tool calls an assistant message ECHOED BACK in
+	// the request history — the fingerprint material the convergence guard
+	// compares the newly generated calls against.
+	ToolCalls []EchoedToolCall `json:"tool_calls,omitempty"`
+}
+
+// EchoedToolCall is one tool call present in the request history (the client
+// echoing what the model previously called). Arguments is the parsed object;
+// RawArguments keeps the verbatim string for payloads that do not parse
+// (scenario-planted malformed JSON must fingerprint verbatim).
+type EchoedToolCall struct {
+	Name         string         `json:"name"`
+	Arguments    map[string]any `json:"arguments,omitempty"`
+	RawArguments string         `json:"raw_arguments,omitempty"`
+}
+
+// EchoToolCall builds an EchoedToolCall from the wire's name + arguments
+// string, parsing the arguments and keeping the raw form for unparseable
+// payloads. Shared by every adapter that echoes assistant tool calls.
+func EchoToolCall(name, rawArgs string) EchoedToolCall {
+	e := EchoedToolCall{Name: name, RawArguments: rawArgs}
+	var m map[string]any
+	if rawArgs != "" && json.Unmarshal([]byte(rawArgs), &m) == nil {
+		e.Arguments = m
+	}
+	return e
 }
 
 // Engine orchestrates the mock agent request processing pipeline.
@@ -192,6 +226,21 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 			return "", nil, wrapped
 		}
 		resp = generated
+
+		// Tool-loop convergence (round-9): scenario matching keys on the last
+		// USER message, so a request whose tail is a tool result would receive
+		// the IDENTICAL tool calls again — a client agent loop (answer every
+		// call) would never converge on any HTTP surface. An identical
+		// re-issue directly after a tool result is consumed (the model "used"
+		// the output — the reply becomes content-only); a DIFFERENT call, a
+		// deliberate multi-step chain, still goes out.
+		if len(resp.ToolCalls) > 0 && tailIsToolResult(req.Messages) &&
+			sameToolCalls(resp.ToolCalls, lastEchoedToolCalls(req.Messages)) {
+			e.Logger.Info("tool-loop convergence: identical re-issue after a tool result consumed",
+				"agent", agent.Metadata.Name, "scenario", scenario.Name)
+			resp.ToolCalls = nil
+		}
+
 		if traceOn {
 			span.SetAttributes(
 				attribute.String("agent.scenario", scenario.Name),
@@ -301,6 +350,86 @@ func (e *Engine) resolveAgentForTenant(req *InboundRequest, tenantID string) (*t
 // unchanged.
 func scopedSessionKey(tenantID, agentName, sessionID string) string {
 	return tenantID + "\x00" + agentName + "\x00" + sessionID
+}
+
+// tailIsToolResult reports whether the request's last non-system message
+// carries a tool result — the trigger condition for the convergence guard.
+func tailIsToolResult(messages []RequestMessage) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "system" {
+			continue
+		}
+		return messages[i].IsToolResult
+	}
+	return false
+}
+
+// lastEchoedToolCalls returns the most recent assistant-echoed tool calls in
+// the request history (fingerprint material for the convergence guard).
+func lastEchoedToolCalls(messages []RequestMessage) []EchoedToolCall {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if len(messages[i].ToolCalls) > 0 {
+			return messages[i].ToolCalls
+		}
+	}
+	return nil
+}
+
+// sameToolCalls compares generated tool calls against the client's echo.
+// Names must match in order; arguments compare PARSED and JSON-normalized
+// (one side is a client echo — whitespace/key order/number typing must not
+// defeat the comparison), except scenario-planted RawArguments (malformed by
+// design), which compare verbatim.
+func sameToolCalls(gen []types.ToolCallSpec, echoed []EchoedToolCall) bool {
+	if len(echoed) == 0 || len(gen) != len(echoed) {
+		return false
+	}
+	for i, g := range gen {
+		e := echoed[i]
+		if g.Name != e.Name {
+			return false
+		}
+		if g.RawArguments != "" {
+			var m map[string]any
+			if json.Unmarshal([]byte(g.RawArguments), &m) != nil {
+				// Unparseable by design: verbatim comparison only.
+				if g.RawArguments != e.RawArguments {
+					return false
+				}
+				continue
+			}
+			if !equalArgs(m, e.Arguments) {
+				return false
+			}
+			continue
+		}
+		if !equalArgs(g.Arguments, e.Arguments) {
+			return false
+		}
+	}
+	return true
+}
+
+// equalArgs compares two argument maps after a JSON round-trip normalization
+// (YAML-decoded scenario args carry int values where a JSON echo carries
+// float64 — reflect.DeepEqual alone would never match).
+func equalArgs(a, b map[string]any) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	return reflect.DeepEqual(normalizeArgs(a), normalizeArgs(b))
+}
+
+func normalizeArgs(m map[string]any) map[string]any {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return m
+	}
+	var out map[string]any
+	if json.Unmarshal(b, &out) != nil {
+		return m
+	}
+	return out
 }
 
 func latestUserMessage(messages []RequestMessage) string {

@@ -204,7 +204,7 @@ func TestEngineIntegration_ToolValidation_InvalidParams(t *testing.T) {
 			Behavior: types.BehaviorConfig{
 				Scenarios: []types.Scenario{
 					{
-						Name: "call-strict",
+						Name:  "call-strict",
 						Match: &types.MatchRule{ContentContains: "test"},
 						Response: types.ScenarioResponse{
 							Content: "calling...",
