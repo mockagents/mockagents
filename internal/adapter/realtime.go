@@ -154,12 +154,67 @@ func (h *RealtimeHandler) HandleClientSecret(w http.ResponseWriter, r *http.Requ
 }
 
 // HandleLegacySession serves the pre-GA POST /v1/realtime/sessions shape: the
-// session object itself, with the ephemeral key nested at session.client_secret
-// (not the GA {value, expires_at, session} envelope).
+// BETA session object itself — top-level modalities / voice /
+// input_audio_format etc., with the ephemeral key nested at
+// session.client_secret (not the GA {value, expires_at, session} envelope).
+// Beta ephemeral keys "expire one minute after issuance", so the default
+// expiry here is 60 s (the GA client_secrets default is 600 s).
 func (h *RealtimeHandler) HandleLegacySession(w http.ResponseWriter, r *http.Request) {
 	stampProtocol(r, ProtocolOpenAIRealtime)
-	_, _, session := h.buildEphemeralSession(r)
-	writeJSON(w, http.StatusOK, session)
+	var body struct {
+		Model                   string          `json:"model"`
+		Voice                   string          `json:"voice"`
+		Instructions            string          `json:"instructions"`
+		Modalities              []string        `json:"modalities"`
+		InputAudioFormat        string          `json:"input_audio_format"`
+		OutputAudioFormat       string          `json:"output_audio_format"`
+		InputAudioTranscription json.RawMessage `json:"input_audio_transcription"`
+		TurnDetection           json.RawMessage `json:"turn_detection"`
+		Tools                   json.RawMessage `json:"tools"`
+		ToolChoice              json.RawMessage `json:"tool_choice"`
+		Temperature             *float64        `json:"temperature"`
+		MaxResponseOutputTokens json.RawMessage `json:"max_response_output_tokens"`
+		Session                 struct {
+			Model string `json:"model"` // tolerated GA-style nesting
+			Voice string `json:"voice"`
+		} `json:"session"`
+	}
+	_ = decodeJSONBody(r, &body) // an empty/invalid body is tolerated (all fields optional)
+	defer r.Body.Close()
+
+	orRaw := func(raw json.RawMessage, def any) any {
+		if len(raw) > 0 {
+			return raw
+		}
+		return def
+	}
+	mods := body.Modalities
+	if len(mods) == 0 {
+		mods = []string{"audio", "text"} // beta default: both
+	}
+	temperature := 0.8
+	if body.Temperature != nil {
+		temperature = *body.Temperature
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":                         "sess_" + generateID(),
+		"object":                     "realtime.session",
+		"model":                      firstNonEmpty(body.Model, body.Session.Model, realtime.DefaultModel),
+		"modalities":                 mods,
+		"instructions":               body.Instructions,
+		"voice":                      firstNonEmpty(body.Voice, body.Session.Voice, "alloy"),
+		"input_audio_format":         firstNonEmpty(body.InputAudioFormat, "pcm16"),
+		"output_audio_format":        firstNonEmpty(body.OutputAudioFormat, "pcm16"),
+		"input_audio_transcription":  orRaw(body.InputAudioTranscription, nil),
+		"turn_detection":             orRaw(body.TurnDetection, nil),
+		"tools":                      orRaw(body.Tools, []any{}),
+		"tool_choice":                orRaw(body.ToolChoice, "auto"),
+		"temperature":                temperature,
+		"max_response_output_tokens": orRaw(body.MaxResponseOutputTokens, "inf"),
+		"client_secret": map[string]any{
+			"value": "ek_" + generateID(), "expires_at": time.Now().Add(60 * time.Second).Unix(),
+		},
+	})
 }
 
 // HandleConnect upgrades GET /v1/realtime to a WebSocket and runs the session:

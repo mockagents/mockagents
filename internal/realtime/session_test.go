@@ -622,8 +622,10 @@ func TestSession_TruncateRejectsNonAssistantAudio(t *testing.T) {
 
 	evs := s.Handle(ctx, &ClientEvent{Type: "conversation.item.truncate", ItemID: userID, AudioEndMs: 100})
 	e := evs[0]["error"].(map[string]any)
-	if evs[0]["type"] != "error" || e["code"] != "invalid_value" || e["param"] != "item_id" {
-		t.Errorf("truncating a user item = %v, want invalid_value on item_id", evs[0])
+	// Round-5 ERR-1 (real capture): code null, param null, this exact message.
+	if evs[0]["type"] != "error" || e["code"] != nil || e["param"] != nil ||
+		e["message"] != "Only model output audio messages can be truncated" {
+		t.Errorf("truncating a user item = %v, want the captured null-code error shape", evs[0])
 	}
 }
 

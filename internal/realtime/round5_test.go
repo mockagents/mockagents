@@ -5,6 +5,7 @@ package realtime
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -281,6 +282,131 @@ func TestIdleTimer_OOBAndCancelHygiene(t *testing.T) {
 	s2.Handle(ctx, &ClientEvent{Type: "response.cancel"})
 	if dl, ok := s2.NextDeadline(); ok {
 		t.Errorf("deadline %v survived response.cancel (would fire a spurious [silence] idle turn)", dl)
+	}
+}
+
+// R4-5: max_output_tokens is range-validated (GA: an integer 1..4096 or
+// "inf") on both session.update and response.create — negatives and
+// out-of-range values were previously echoed back as effective config.
+func TestMaxOutputTokensValidated(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("smt", "", fakeGen("ok"))
+
+	for _, bad := range []string{`{"max_output_tokens":-5}`, `{"max_output_tokens":0}`,
+		`{"max_output_tokens":4097}`, `{"max_output_tokens":2.5}`, `{"max_output_tokens":"lots"}`} {
+		evs := s.Handle(ctx, &ClientEvent{Type: "session.update", Session: []byte(bad)})
+		if evs[0]["type"] != "error" || evs[0]["error"].(map[string]any)["param"] != "session.max_output_tokens" {
+			t.Errorf("session.update %s = %v, want invalid_value on session.max_output_tokens", bad, evs[0])
+		}
+	}
+	for _, good := range []string{`{"max_output_tokens":1}`, `{"max_output_tokens":4096}`, `{"max_output_tokens":"inf"}`} {
+		if evs := s.Handle(ctx, &ClientEvent{Type: "session.update", Session: []byte(good)}); evs[0]["type"] != "session.updated" {
+			t.Errorf("session.update %s = %v, want session.updated", good, typesOf(evs))
+		}
+	}
+
+	evs := s.Handle(ctx, &ClientEvent{Type: "response.create", Response: []byte(`{"max_output_tokens":-1}`)})
+	if evs[0]["type"] != "error" || evs[0]["error"].(map[string]any)["param"] != "response.max_output_tokens" {
+		t.Errorf("response.create override = %v, want invalid_value on response.max_output_tokens", evs[0])
+	}
+}
+
+// R4-6: minted ids skip client-supplied collisions — a client item occupying
+// the next id in the predictable minted sequence must not be overwritten.
+func TestNextIDSkipsClientCollisions(t *testing.T) {
+	s := NewSession("sm", "", fakeGen("ok"))
+	for i := 1; i <= 5; i++ {
+		s.items[fmt.Sprintf("item_sm_%d", i)] = map[string]any{}
+	}
+	id := s.nextID("item")
+	if _, taken := s.items[id]; taken {
+		t.Fatalf("nextID returned an id that already exists: %q", id)
+	}
+	if id != "item_sm_6" {
+		t.Errorf("id = %q, want item_sm_6 (skip past the occupied sequence)", id)
+	}
+}
+
+// R4-7: threshold 0 must not classify digital silence as speech (0 >= 0 held
+// forever under the old comparison).
+func TestVADThresholdZeroSilenceIsNotSpeech(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("sz", "", fakeGen("ok"))
+	enableVAD(t, s, `{"audio":{"input":{"turn_detection":{"type":"server_vad","threshold":0}}}}`)
+	evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(400, quietAmp)})
+	if firstEvent(evs, "input_audio_buffer.speech_started") != nil {
+		t.Error("digital silence classified as speech at threshold 0")
+	}
+	// Real audio still triggers at threshold 0.
+	if evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(400, speechAmp)}); firstEvent(evs, "input_audio_buffer.speech_started") == nil {
+		t.Error("speech not detected at threshold 0")
+	}
+}
+
+// TR-1: whisper-1 does not stream — it emits ONE transcription delta carrying
+// the full transcript; the gpt-4o-transcribe models stream word deltas.
+func TestTranscriptionDeltaGranularity(t *testing.T) {
+	ctx := context.Background()
+	countDeltas := func(model string) (n int, last string) {
+		s := NewSession("st", "", fakeGen("ok"))
+		s.Handle(ctx, &ClientEvent{Type: "session.update",
+			Session: []byte(`{"audio":{"input":{"transcription":{"model":"` + model + `"}}}}`)})
+		s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(100, speechAmp)})
+		for _, ev := range s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.commit"}) {
+			if ev["type"] == "conversation.item.input_audio_transcription.delta" {
+				n++
+				last, _ = ev["delta"].(string)
+			}
+		}
+		return n, last
+	}
+	if n, last := countDeltas("whisper-1"); n != 1 || last != audioInputPlaceholder {
+		t.Errorf("whisper-1 deltas = %d (last %q), want exactly 1 carrying the full transcript", n, last)
+	}
+	if n, _ := countDeltas("gpt-4o-transcribe"); n < 2 {
+		t.Errorf("gpt-4o-transcribe deltas = %d, want streamed word chunks", n)
+	}
+}
+
+// ERR-1: truncating a non-assistant-audio item errors with the real capture's
+// shape — code null, param null, this exact message.
+func TestTruncateNonAssistantErrorShape(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("str", "", fakeGen("ok"))
+	s.Handle(ctx, mkUserItem("item_u1", "hello"))
+	evs := s.Handle(ctx, &ClientEvent{Type: "conversation.item.truncate", ItemID: "item_u1"})
+	if evs[0]["type"] != "error" {
+		t.Fatalf("truncate user item = %v, want error", typesOf(evs))
+	}
+	errObj := evs[0]["error"].(map[string]any)
+	if errObj["code"] != nil {
+		t.Errorf("code = %v, want null (real capture)", errObj["code"])
+	}
+	if errObj["message"] != "Only model output audio messages can be truncated" {
+		t.Errorf("message = %q, want the verbatim capture", errObj["message"])
+	}
+	if errObj["param"] != nil {
+		t.Errorf("param = %v, want null", errObj["param"])
+	}
+}
+
+// MCP mis-ack: an unrecognized item type (the GA MCP item family) is acked
+// with its TRUE type — not warped into {type:"message", role:"user"}.
+func TestUnrecognizedItemTypeEchoed(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("smc", "", fakeGen("ok"))
+	evs := s.Handle(ctx, &ClientEvent{Type: "conversation.item.create",
+		Item: []byte(`{"type":"mcp_list_tools","id":"mcpl_1"}`)})
+	added := firstEvent(evs, "conversation.item.added")
+	if added == nil {
+		t.Fatalf("MCP item create = %v", typesOf(evs))
+	}
+	item := added["item"].(map[string]any)
+	if item["type"] != "mcp_list_tools" {
+		t.Errorf("acked type = %v, want mcp_list_tools", item["type"])
+	}
+	if _, hasRole := item["role"]; hasRole {
+		t.Errorf("acked MCP item must not carry a role: %v", item)
 	}
 }
 

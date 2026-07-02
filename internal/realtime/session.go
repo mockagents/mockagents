@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -349,6 +350,9 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		if errEvs := s.validateVoiceChange(ce.Session); errEvs != nil {
 			return errEvs
 		}
+		if errEvs := s.validateSessionMaxOutputTokens(ce.Session); errEvs != nil {
+			return errEvs
+		}
 		oldTD := string(s.cfg.turnDetection)
 		s.applyConfig(ce.Session)
 		// Rebuild the VAD state machine only when turn_detection actually
@@ -415,7 +419,13 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			// full transcript and a REQUIRED usage field — the "duration" variant
 			// is the honest one for a mock (derived from the decoded audio length,
 			// deterministic; ASR-token billing does not apply here).
-			for _, chunk := range chunkText(audioInputPlaceholder) {
+			// Only the gpt-4o-transcribe* models stream word deltas; whisper-1
+			// emits ONE delta carrying the full transcript (per the docs).
+			chunks := chunkText(audioInputPlaceholder)
+			if s.transcriptionModel() == "whisper-1" {
+				chunks = []string{audioInputPlaceholder}
+			}
+			for _, chunk := range chunks {
 				out = append(out, Event{"type": "conversation.item.input_audio_transcription.delta",
 					"item_id": itemID, "content_index": 0, "delta": chunk})
 			}
@@ -477,7 +487,7 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 				"id": itemID, "object": "realtime.item", "type": "function_call", "status": "completed",
 				"call_id": it.CallID, "name": it.Name, "arguments": it.Arguments,
 			}))
-		default:
+		case "message":
 			if text := it.text(); text != "" {
 				s.history = append(s.history, engine.RequestMessage{Role: it.Role, Content: text})
 			}
@@ -485,9 +495,25 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 				"id": itemID, "object": "realtime.item", "type": "message", "status": "completed",
 				"role": it.Role, "content": it.echoContent(),
 			}))
+		default:
+			// An unrecognized item type (e.g. the GA MCP item family) is acked
+			// with its TRUE type echoed — warping it into {type:"message",
+			// role:"user"} misleads clients that read the ack. It carries no
+			// text the scenario engine can match, so history is untouched.
+			return conversationItemEvents(prevItem, s.rememberItem(map[string]any{
+				"id": itemID, "object": "realtime.item", "type": it.Type, "status": "completed",
+			}))
 		}
 
 	case "response.create":
+		var override struct {
+			MaxOutputTokens json.RawMessage `json:"max_output_tokens"`
+		}
+		if len(ce.Response) > 0 && json.Unmarshal(ce.Response, &override) == nil &&
+			!validMaxOutputTokens(override.MaxOutputTokens) {
+			return []Event{s.errorEventParam("invalid_value",
+				`max_output_tokens must be an integer between 1 and 4096, or "inf"`, "response.max_output_tokens")}
+		}
 		// A client-driven response is user activity (an idle-triggered one is
 		// not — idleTimeout calls createResponse directly, not through here).
 		s.idleFired = false
@@ -531,8 +557,11 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			}
 		}
 		if item["type"] != "message" || item["role"] != "assistant" || !hasAudio {
-			return []Event{s.errorEventParam("invalid_value",
-				"only assistant message items with audio content can be truncated", "item_id")}
+			// Real capture: code null, param null, this exact message — not an
+			// invalid_value/param-bearing rejection.
+			body := s.errorBody("invalid_request_error", "", "Only model output audio messages can be truncated")
+			body["code"] = nil
+			return []Event{{"type": "error", "error": body}}
 		}
 		if content, ok := item["content"].([]any); ok {
 			for _, c := range content {
@@ -1069,6 +1098,38 @@ func (s *Session) sessionObject() map[string]any {
 	return obj
 }
 
+// validMaxOutputTokens checks a max_output_tokens value against the GA
+// constraint: an integer between 1 and 4096, or the string "inf" (absent is
+// fine — the field is optional).
+func validMaxOutputTokens(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == `"inf"` {
+		return true
+	}
+	var n float64
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return false
+	}
+	return n == math.Trunc(n) && n >= 1 && n <= 4096
+}
+
+// validateSessionMaxOutputTokens rejects a session.update whose
+// max_output_tokens is out of range — the mock previously echoed even
+// negative values back as the effective session config.
+func (s *Session) validateSessionMaxOutputTokens(raw json.RawMessage) []Event {
+	var upd struct {
+		MaxOutputTokens json.RawMessage `json:"max_output_tokens"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &upd) != nil {
+		return nil
+	}
+	if validMaxOutputTokens(upd.MaxOutputTokens) {
+		return nil
+	}
+	return []Event{s.errorEventParam("invalid_value",
+		`max_output_tokens must be an integer between 1 and 4096, or "inf"`, "session.max_output_tokens")}
+}
+
 // validateVoiceChange rejects a session.update that changes the effective
 // voice after a response has produced assistant audio, echoing the real API
 // verbatim: type invalid_request_error, code cannot_update_voice, param null.
@@ -1119,6 +1180,18 @@ func (s *Session) outputModalities() []string {
 func (s *Session) transcriptionEnabled() bool {
 	raw := strings.TrimSpace(string(s.cfg.transcription))
 	return raw != "" && raw != "null"
+}
+
+// transcriptionModel returns the configured input transcription model ("" when
+// unset) — whisper-1 does not stream deltas, so the commit ladder needs it.
+func (s *Session) transcriptionModel() string {
+	var cfg struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(s.cfg.transcription, &cfg) != nil {
+		return ""
+	}
+	return cfg.Model
 }
 
 // applyConfig merges an inbound session.update payload into the effective
@@ -1238,8 +1311,16 @@ func (s *Session) errorBody(typ, code, msg string) map[string]any {
 }
 
 func (s *Session) nextID(prefix string) string {
-	s.counter++
-	return fmt.Sprintf("%s_%s_%d", prefix, s.id, s.counter)
+	// Mint-skip: a client-supplied item id can collide with the predictable
+	// minted sequence (item_<sess>_N) — never hand out an id that is already a
+	// conversation item (rememberItem would silently overwrite it).
+	for {
+		s.counter++
+		id := fmt.Sprintf("%s_%s_%d", prefix, s.id, s.counter)
+		if _, taken := s.items[id]; !taken {
+			return id
+		}
+	}
 }
 
 // --- helpers ---
