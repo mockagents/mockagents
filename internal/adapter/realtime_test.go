@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -41,6 +42,58 @@ func wsRead(t *testing.T, ctx context.Context, c *websocket.Conn) map[string]any
 	var ev map[string]any
 	require.NoError(t, json.Unmarshal(data, &ev))
 	return ev
+}
+
+// pcmB64 builds ms milliseconds of constant-amplitude PCM16LE @ 24 kHz base64
+// (0 = silence; large amplitudes read as speech to the server VAD).
+func pcmB64(ms int, amplitude int16) string {
+	samples := ms * 24
+	buf := make([]byte, samples*2)
+	for i := 0; i < samples; i++ {
+		buf[i*2] = byte(uint16(amplitude))
+		buf[i*2+1] = byte(uint16(amplitude) >> 8)
+	}
+	return base64.StdEncoding.EncodeToString(buf)
+}
+
+// A server-VAD voice turn over the wire: enable turn detection, stream speech
+// then silence, and receive speech_started → speech_stopped → auto-commit →
+// auto-response without ever sending commit or response.create.
+func TestRealtime_WebSocketServerVADTurn(t *testing.T) {
+	base, closeFn := realtimeServer(t)
+	defer closeFn()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(base, "http") + "/v1/realtime?model=gpt-4o"
+	c, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{Subprotocols: []string{"realtime"}})
+	require.NoError(t, err)
+	defer c.CloseNow()
+
+	require.Equal(t, "session.created", wsRead(t, ctx, c)["type"])
+	wsWrite(t, ctx, c, map[string]any{"type": "session.update", "session": map[string]any{
+		"audio": map[string]any{"input": map[string]any{"turn_detection": map[string]any{"type": "server_vad"}}}}})
+	require.Equal(t, "session.updated", wsRead(t, ctx, c)["type"])
+
+	// Speech, then enough silence to end the turn. No commit, no response.create.
+	wsWrite(t, ctx, c, map[string]any{"type": "input_audio_buffer.append", "audio": pcmB64(400, 20000)})
+	require.Equal(t, "input_audio_buffer.speech_started", wsRead(t, ctx, c)["type"])
+	wsWrite(t, ctx, c, map[string]any{"type": "input_audio_buffer.append", "audio": pcmB64(600, 0)})
+
+	var seen []string
+	for {
+		ev := wsRead(t, ctx, c)
+		seen = append(seen, ev["type"].(string))
+		if ev["type"] == "response.done" {
+			break
+		}
+	}
+	for _, want := range []string{"input_audio_buffer.speech_stopped", "input_audio_buffer.committed",
+		"conversation.item.added", "response.created"} {
+		require.Contains(t, seen, want)
+	}
+	require.NoError(t, c.Close(websocket.StatusNormalClosure, ""))
 }
 
 func TestRealtime_WebSocketEndToEnd(t *testing.T) {

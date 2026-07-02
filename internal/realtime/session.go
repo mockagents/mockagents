@@ -118,6 +118,9 @@ type Session struct {
 	// items indexes every completed conversation item by id so
 	// conversation.item.retrieve / delete / truncate can address them.
 	items map[string]map[string]any
+	// vad is the server turn-detection state machine (vad.go); nil when the
+	// client has not enabled turn_detection.
+	vad *vadState
 }
 
 // rememberItem indexes a completed conversation item for later retrieve /
@@ -202,15 +205,22 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 	switch ce.Type {
 	case "session.update":
 		s.applyConfig(ce.Session)
+		s.refreshVAD()
 		return []Event{{"type": "session.updated", "session": s.sessionObject()}}
 
 	case "input_audio_buffer.append":
-		// A mock does not decode audio; just note the buffer is non-empty.
 		s.audioBuffer = true
+		// With turn detection enabled the appended audio drives the VAD state
+		// machine (which may auto-commit and auto-respond); otherwise a mock
+		// just notes the buffer is non-empty.
+		if s.vad != nil {
+			return s.vadAppend(ctx, ce.Audio)
+		}
 		return nil
 
 	case "input_audio_buffer.clear":
 		s.audioBuffer = false
+		s.vadReset()
 		return []Event{{"type": "input_audio_buffer.cleared"}}
 
 	case "input_audio_buffer.commit":
@@ -218,7 +228,16 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 			return []Event{s.errorEvent("input_audio_buffer_commit_empty", "cannot commit an empty input audio buffer")}
 		}
 		s.audioBuffer = false
-		prevItem, itemID := s.newConversationItem()
+		// A VAD-detected turn pre-announced its item id on speech_started; the
+		// committed item must carry that exact id. Manual turns mint one here.
+		var prevItem any
+		var itemID string
+		if id, ok := s.vadCommitItemID(); ok {
+			prevItem, itemID = s.previousItemID(), id
+			s.lastItemID = id
+		} else {
+			prevItem, itemID = s.newConversationItem()
+		}
 		s.history = append(s.history, engine.RequestMessage{Role: "user", Content: audioInputPlaceholder})
 		// The committed item only carries a transcript when the client enabled
 		// input_audio_transcription; otherwise it is null (a mock has no STT, so

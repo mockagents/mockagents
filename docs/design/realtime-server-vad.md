@@ -1,6 +1,7 @@
 # Design: Server VAD / turn detection for the mock Realtime API (F5)
 
-**Status:** proposed · **Origin:** round-3 fidelity eval, finding F5 (S1, architectural)
+**Status:** Phase 1 implemented (`internal/realtime/vad.go`) · Phases 2–3 proposed
+**Origin:** round-3 fidelity eval, finding F5 (S1, architectural)
 **Scope:** `internal/realtime` + `internal/adapter/realtime.go`
 
 ## 1. Problem
