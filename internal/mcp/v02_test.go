@@ -177,7 +177,10 @@ func TestEmitNotification_QueuesAndDrains(t *testing.T) {
 	}
 }
 
-func TestHTTPHandler_BundlesPendingNotifications(t *testing.T) {
+// Round-10 R10-15 replaced the invalid {response,notifications} envelope:
+// a regular request advertises pending notifications via header only, and a
+// follow-up notification POST drains them as the array body.
+func TestHTTPHandler_HeaderAdvertisesThenNotificationPostDrains(t *testing.T) {
 	srv := NewServer(v02Def())
 	srv.EmitNotification("notifications/tools/list_changed", nil)
 
@@ -192,15 +195,26 @@ func TestHTTPHandler_BundlesPendingNotifications(t *testing.T) {
 	if rec.Header().Get("X-MCP-Pending-Notifications") != "1" {
 		t.Errorf("header = %q, want 1", rec.Header().Get("X-MCP-Pending-Notifications"))
 	}
-	var envelope struct {
-		Response      json.RawMessage `json:"response"`
-		Notifications []*Notification `json:"notifications"`
-	}
-	if err := json.NewDecoder(rec.Body).Decode(&envelope); err != nil {
+	// The body is exactly the JSON-RPC ping response; the queue is intact.
+	var resp Response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(envelope.Notifications) != 1 {
-		t.Errorf("notifications = %d, want 1", len(envelope.Notifications))
+	if resp.JSONRPC != "2.0" || resp.Error != nil {
+		t.Errorf("body is not the plain ping response: %+v", resp)
+	}
+
+	// The client polls with a notification POST and receives the array body.
+	req2 := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
+	rec2 := httptest.NewRecorder()
+	NewHTTPHandler(srv).ServeHTTP(rec2, req2)
+	var notifs []*Notification
+	if err := json.NewDecoder(rec2.Body).Decode(&notifs); err != nil {
+		t.Fatalf("decode notifications: %v", err)
+	}
+	if len(notifs) != 1 || notifs[0].Method != "notifications/tools/list_changed" {
+		t.Errorf("drained notifications = %+v, want the queued list_changed", notifs)
 	}
 }
 

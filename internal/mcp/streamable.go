@@ -268,18 +268,24 @@ func (h *StreamableHTTPHandler) handlePost(w http.ResponseWriter, r *http.Reques
 	}
 
 	if acceptsEventStream(r) {
-		writePostSSE(w, out)
+		// Spec: the POST stream MAY carry messages related to the request
+		// before the final response — drain the pending queue into it so
+		// notifications emitted while handling this request actually reach an
+		// SSE-mode client (round-10 R10-18; previously the drain never
+		// happened on this path despite the doc comment claiming it).
+		writePostSSE(w, h.Server.DrainNotifications(), out)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(out)
 }
 
-// writePostSSE answers a POST request as a short SSE stream carrying the single
+// writePostSSE answers a POST request as a short SSE stream: any pending
+// server notifications first (each as its own message event), then the single
 // JSON-RPC response, then closing. POST-stream events are deliberately id-less:
 // they are request-correlated and not part of the resumable server→client event
 // log (only the GET stream is resumable), so they share no id namespace with it.
-func writePostSSE(w http.ResponseWriter, response []byte) {
+func writePostSSE(w http.ResponseWriter, notifications []*Notification, response []byte) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		// No streaming support: degrade to a plain JSON response so the client
@@ -293,6 +299,9 @@ func writePostSSE(w http.ResponseWriter, response []byte) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	for _, n := range notifications {
+		_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", wireNotification(n))
+	}
 	_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", response)
 	flusher.Flush()
 }

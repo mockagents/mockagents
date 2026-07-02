@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -346,6 +347,83 @@ func TestStdioOverlongFrameRecovers(t *testing.T) {
 	}
 	if !strings.Contains(lines[1], `"id":7`) {
 		t.Errorf("follow-up ping reply = %s, want id:7 (loop must continue)", lines[1])
+	}
+}
+
+// R10-15 (S2): the legacy /mcp/rpc transport answers a regular request with
+// EXACTLY the JSON-RPC response even when notifications are pending — the
+// old {response, notifications} envelope was not a valid JSON-RPC message.
+// The pending queue is advertised via header and left intact.
+func TestLegacyHTTPNoEnvelope(t *testing.T) {
+	s := round10Server()
+	s.EmitNotification("notifications/tools/list_changed", nil)
+
+	h := NewHTTPHandler(s)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/rpc",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("body not JSON: %v (%s)", err, rec.Body.String())
+	}
+	if _, isEnvelope := resp["response"]; isEnvelope {
+		t.Errorf("body is the invalid {response,notifications} envelope: %s", rec.Body.String())
+	}
+	if resp["jsonrpc"] != "2.0" || resp["id"] != float64(1) {
+		t.Errorf("body is not the plain JSON-RPC response: %s", rec.Body.String())
+	}
+	if got := rec.Header().Get("X-MCP-Pending-Notifications"); got != "1" {
+		t.Errorf("pending header = %q, want 1", got)
+	}
+	if s.PendingNotificationCount() != 1 {
+		t.Errorf("queue drained by a regular request; want it left intact")
+	}
+}
+
+// R10-17 (S3): stdio actually delivers queued server notifications as their
+// own JSON-RPC frames after the response — previously the queue was never
+// drained on this transport.
+func TestStdioDrainsNotifications(t *testing.T) {
+	s := round10Server()
+	s.EmitNotification("notifications/tools/list_changed", nil)
+
+	var in, out bytes.Buffer
+	in.WriteString(`{"jsonrpc":"2.0","id":3,"method":"ping"}` + "\n")
+	if err := ServeStdio(s, &in, &out); err != nil {
+		t.Fatalf("ServeStdio: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want 2 (response + notification): %q", len(lines), out.String())
+	}
+	if !strings.Contains(lines[1], `"jsonrpc":"2.0"`) ||
+		!strings.Contains(lines[1], `notifications/tools/list_changed`) {
+		t.Errorf("notification frame = %s, want full JSON-RPC notification", lines[1])
+	}
+}
+
+// R10-18 (S3): the streamable POST-SSE path carries pending notifications on
+// the stream before the response, as its doc comment always claimed.
+func TestStreamablePostSSECarriesNotifications(t *testing.T) {
+	srv, h := newStreamableTestServer(t)
+	sid := initSession(t, srv.URL+"/mcp")
+	h.Server.EmitNotification("notifications/resources/list_changed", nil)
+
+	resp := postJSON(t, srv.URL+"/mcp", sid, "text/event-stream",
+		`{"jsonrpc":"2.0","id":4,"method":"ping"}`)
+	defer resp.Body.Close()
+	var body bytes.Buffer
+	_, _ = body.ReadFrom(resp.Body)
+	text := body.String()
+	notifIdx := strings.Index(text, "notifications/resources/list_changed")
+	respIdx := strings.Index(text, `"id":4`)
+	if notifIdx < 0 {
+		t.Fatalf("POST SSE stream missing the pending notification: %s", text)
+	}
+	if respIdx < 0 || notifIdx > respIdx {
+		t.Errorf("notification must precede the response on the POST stream: %s", text)
 	}
 }
 

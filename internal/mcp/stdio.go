@@ -57,6 +57,16 @@ func ServeStdio(s *Server, r io.Reader, w io.Writer) error {
 						return werr
 					}
 				}
+				// Deliver any queued server-initiated notifications as their
+				// own JSON-RPC frames — stdio is bidirectional by nature, and
+				// previously the queue was never drained here so an emitted
+				// list_changed was invisible to stdio clients (round-10
+				// R10-17).
+				for _, n := range s.DrainNotifications() {
+					if werr := write(wireNotification(n)); werr != nil {
+						return werr
+					}
+				}
 			}
 		}
 		if err != nil {

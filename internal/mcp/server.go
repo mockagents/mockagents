@@ -74,6 +74,27 @@ func (s *Server) EmitNotification(method string, params map[string]any) {
 	s.pushNotification(n)
 }
 
+// PendingNotificationCount reports the queue depth without draining, so a
+// transport that cannot deliver notifications inline (legacy JSON POST) can
+// advertise them in a header while leaving the queue intact.
+func (s *Server) PendingNotificationCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.pending)
+}
+
+// wireNotification renders a queued Notification as a complete JSON-RPC 2.0
+// notification frame — the shape a real server puts on the wire. The bare
+// Notification struct (no jsonrpc member) is NOT a valid frame.
+func wireNotification(n *Notification) []byte {
+	out, _ := json.Marshal(struct {
+		JSONRPC string         `json:"jsonrpc"`
+		Method  string         `json:"method"`
+		Params  map[string]any `json:"params,omitempty"`
+	}{"2.0", n.Method, n.Params})
+	return out
+}
+
 // DrainNotifications returns any queued notifications and clears the
 // queue. Transports call this after writing a response so server
 // notifications are interleaved with request handling at the

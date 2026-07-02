@@ -27,11 +27,14 @@ func readCapStatus(err error) int {
 // JSON-RPC request per POST and writes the JSON-RPC response. Notifications
 // return 204 No Content as per the MCP Streamable HTTP convention.
 //
-// v0.2 additions:
+// v0.2 additions (revised in round-10 R10-15):
 //   - Any pending server-emitted notifications (queued via
-//     Server.EmitNotification) are surfaced in the response headers as
-//     `X-MCP-Pending-Notifications: N` and as a JSON array body when
-//     the inbound request was itself a notification.
+//     Server.EmitNotification) are surfaced as an
+//     `X-MCP-Pending-Notifications: N` response header. When the inbound
+//     request was itself a notification the queue is drained into a JSON
+//     array body; for regular requests the body is exactly the JSON-RPC
+//     response and the queue is left intact (the old {response,
+//     notifications} envelope was not a valid JSON-RPC message).
 //   - The companion NotifyHandler exposes a small admin endpoint
 //     (POST /mcp/notify) so test harnesses can drive the queue from
 //     outside the server process.
@@ -65,17 +68,15 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Drain any notifications the request handler emitted (or that an
-	// out-of-band POST /mcp/notify queued earlier) so clients never
-	// have to poll a separate endpoint.
-	notifications := h.Server.DrainNotifications()
-	if len(notifications) > 0 {
-		w.Header().Set("X-MCP-Pending-Notifications", itoa(len(notifications)))
-	}
-
 	if out == nil {
-		// Notification request: write any queued server notifications
-		// as a JSON array body, otherwise 204.
+		// Notification request: drain and deliver any queued server
+		// notifications as a JSON array body, otherwise 204. The array is a
+		// documented legacy-transport polling convention (the request itself
+		// expects no JSON-RPC reply, so the body is free for this).
+		notifications := h.Server.DrainNotifications()
+		if len(notifications) > 0 {
+			w.Header().Set("X-MCP-Pending-Notifications", itoa(len(notifications)))
+		}
 		if len(notifications) == 0 {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -85,23 +86,16 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if len(notifications) > 0 {
-		// Multipart-ish bundling: response first, then a server-sent
-		// `notifications` envelope appended after a record separator.
-		// Clients that want notifications opt in by parsing the
-		// X-MCP-Pending-Notifications header. For everyone else the
-		// leading bytes are still a valid JSON-RPC response.
-		envelope := struct {
-			Response      json.RawMessage `json:"response"`
-			Notifications []*Notification `json:"notifications"`
-		}{
-			Response:      out,
-			Notifications: notifications,
-		}
-		_ = json.NewEncoder(w).Encode(envelope)
-		return
+	// Regular request: the body is EXACTLY the JSON-RPC response. The old
+	// {response, notifications} envelope was not a valid JSON-RPC message and
+	// broke every conforming client the moment a notification was pending
+	// (round-10 R10-15). Pending notifications stay QUEUED — the header
+	// advertises the depth and a follow-up notification POST (or the
+	// streamable transport's GET stream) delivers them.
+	if n := h.Server.PendingNotificationCount(); n > 0 {
+		w.Header().Set("X-MCP-Pending-Notifications", itoa(n))
 	}
+	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(out)
 }
 
