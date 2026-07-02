@@ -92,6 +92,8 @@ func (s *Session) Tick(ctx context.Context, now time.Time) []Event {
 			if item, ok := ev["item"].(map[string]any); ok {
 				s.rememberItem(item)
 			}
+		case "response.output_audio.delta":
+			s.respondedWithAudio = true // assistant audio reached the client — voice locked
 		case "response.output_item.done":
 			inf.doneItems = append(inf.doneItems, ev["item"])
 		}

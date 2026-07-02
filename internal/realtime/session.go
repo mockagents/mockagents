@@ -179,6 +179,10 @@ type Session struct {
 	// bufferedMs is the decoded duration of un-committed appended audio — the
 	// transcription usage ("duration" variant) reported on commit.
 	bufferedMs float64
+	// respondedWithAudio locks the session voice: once a response has emitted
+	// assistant audio, the real API rejects a voice change
+	// (code cannot_update_voice) — see validateVoiceChange.
+	respondedWithAudio bool
 }
 
 // rememberItem indexes a completed conversation item for later retrieve /
@@ -336,8 +340,20 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		if errEvs := s.validateTurnDetection(ce.Session); errEvs != nil {
 			return errEvs
 		}
+		// Once assistant audio exists, the voice is locked: a differing voice
+		// rejects the whole update (verbatim GA behavior), no session.updated.
+		if errEvs := s.validateVoiceChange(ce.Session); errEvs != nil {
+			return errEvs
+		}
+		oldTD := string(s.cfg.turnDetection)
 		s.applyConfig(ce.Session)
-		s.refreshVAD()
+		// Rebuild the VAD state machine only when turn_detection actually
+		// changed. Routine mid-call updates (voice, instructions, tools — e.g.
+		// Agents-SDK handoffs) must not wipe an in-progress speech cycle: doing
+		// so orphaned the speech_started item and silently dropped the turn.
+		if string(s.cfg.turnDetection) != oldTD {
+			s.refreshVAD()
+		}
 		return []Event{{"type": "session.updated", "session": s.sessionObject()}}
 
 	case "input_audio_buffer.append":
@@ -750,6 +766,9 @@ func (s *Session) createResponse(ctx context.Context, ce *ClientEvent) []Event {
 		return s.beginPacedResponse(respID, rc, out, appendHistory)
 	}
 	appendHistory()
+	if emitMessage && !rc.textOnly() {
+		s.respondedWithAudio = true // this burst emitted output_audio — voice is now locked
+	}
 	// A burst response's whole ladder reaches the client now — join its items
 	// to the conversation (out-of-band items join nothing and are NOT
 	// retrievable: they belong to no conversation, so convItems excludes them).
@@ -1043,6 +1062,30 @@ func (s *Session) sessionObject() map[string]any {
 		obj["expires_at"] = s.expiresAt
 	}
 	return obj
+}
+
+// validateVoiceChange rejects a session.update that changes the effective
+// voice after a response has produced assistant audio, echoing the real API
+// verbatim: type invalid_request_error, code cannot_update_voice, param null.
+// The whole update is rejected (no session.updated). Re-sending the current
+// voice is not a change and stays accepted.
+func (s *Session) validateVoiceChange(raw json.RawMessage) []Event {
+	if !s.respondedWithAudio || len(raw) == 0 {
+		return nil
+	}
+	var u sessionUpdate
+	if json.Unmarshal(raw, &u) != nil {
+		return nil
+	}
+	voice := u.Voice // beta top-level alias
+	if u.Audio != nil && u.Audio.Output != nil && u.Audio.Output.Voice != "" {
+		voice = u.Audio.Output.Voice
+	}
+	if voice == "" || voice == s.effectiveVoice() {
+		return nil
+	}
+	return []Event{{"type": "error", "error": s.errorBody("invalid_request_error",
+		"cannot_update_voice", "Cannot update a conversation's voice if assistant audio is present.")}}
 }
 
 // effectiveVoice is the session voice with the GA default applied; shared by

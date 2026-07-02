@@ -38,6 +38,110 @@ func TestDeleteTailRepairsChain(t *testing.T) {
 	}
 }
 
+// T-F2 (S1): a session.update that does not change turn_detection (voice,
+// instructions, tools — routine mid-call, e.g. Agents-SDK handoffs) must not
+// wipe an in-progress speech cycle: the turn still commits with the
+// pre-announced item id and gets its auto-response.
+func TestSessionUpdateMidSpeechKeepsTurn(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("su", "gpt-realtime", fakeGen("still with you"))
+	enableVAD(t, s, serverVAD)
+
+	evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(200, speechAmp)})
+	started := firstEvent(evs, "input_audio_buffer.speech_started")
+	if started == nil {
+		t.Fatalf("speech append = %v, want speech_started", typesOf(evs))
+	}
+	pending := started["item_id"].(string)
+
+	// Mid-speech instructions update — turn_detection untouched.
+	upd := s.Handle(ctx, &ClientEvent{Type: "session.update",
+		Session: []byte(`{"instructions":"be brief"}`)})
+	if upd[0]["type"] != "session.updated" {
+		t.Fatalf("session.update = %v", typesOf(upd))
+	}
+
+	// Silence ends the turn: it must still commit with the pre-announced id and
+	// auto-respond — under the old code the speech cycle was wiped and the
+	// silence appends returned nothing (turn dropped).
+	evs = s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(600, quietAmp)})
+	committed := firstEvent(evs, "input_audio_buffer.committed")
+	if committed == nil {
+		t.Fatalf("turn-end after mid-speech update = %v, want the commit ladder", typesOf(evs))
+	}
+	if committed["item_id"] != pending {
+		t.Errorf("committed item_id = %v, want the pre-announced %q", committed["item_id"], pending)
+	}
+	if firstEvent(evs, "response.done") == nil {
+		t.Errorf("turn-end must auto-respond; got %v", typesOf(evs))
+	}
+
+	// Changing turn_detection itself still rebuilds the state machine.
+	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(200, speechAmp)})
+	s.Handle(ctx, &ClientEvent{Type: "session.update",
+		Session: []byte(`{"audio":{"input":{"turn_detection":{"type":"server_vad","silence_duration_ms":900}}}}`)})
+	if s.vad == nil || s.vad.cfg.SilenceDurationMs != 900 {
+		t.Errorf("changed turn_detection not applied: %+v", s.vad)
+	}
+	if s.vad.speechActive {
+		t.Error("a changed turn_detection config rebuilds the speech cycle")
+	}
+}
+
+// LC-1: after a response has produced assistant audio the voice is locked —
+// a differing voice rejects the WHOLE session.update with the verbatim GA
+// error; re-sending the current voice stays accepted.
+func TestVoiceLockedAfterAudio(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("sv5", "", fakeGen("spoken answer"))
+
+	// Before any audio: voice changes freely.
+	if evs := s.Handle(ctx, &ClientEvent{Type: "session.update",
+		Session: []byte(`{"audio":{"output":{"voice":"marin"}}}`)}); evs[0]["type"] != "session.updated" {
+		t.Fatalf("pre-audio voice change = %v", typesOf(evs))
+	}
+
+	s.Handle(ctx, &ClientEvent{Type: "response.create"}) // default modalities → audio
+
+	evs := s.Handle(ctx, &ClientEvent{Type: "session.update",
+		Session: []byte(`{"audio":{"output":{"voice":"cedar"}}}`)})
+	if evs[0]["type"] != "error" {
+		t.Fatalf("post-audio voice change = %v, want error", typesOf(evs))
+	}
+	errObj := evs[0]["error"].(map[string]any)
+	if errObj["code"] != "cannot_update_voice" || errObj["type"] != "invalid_request_error" {
+		t.Errorf("error = %v, want invalid_request_error/cannot_update_voice", errObj)
+	}
+	if errObj["message"] != "Cannot update a conversation's voice if assistant audio is present." {
+		t.Errorf("message = %q, want the verbatim GA capture", errObj["message"])
+	}
+	if errObj["param"] != nil {
+		t.Errorf("param = %v, want null", errObj["param"])
+	}
+	if contains(typesOf(evs), "session.updated") {
+		t.Error("a rejected update must not emit session.updated")
+	}
+	if s.effectiveVoice() != "marin" {
+		t.Errorf("voice = %q, want the locked marin", s.effectiveVoice())
+	}
+
+	// Re-sending the SAME voice (plus other fields) is not a change.
+	evs = s.Handle(ctx, &ClientEvent{Type: "session.update",
+		Session: []byte(`{"instructions":"shorter","audio":{"output":{"voice":"marin"}}}`)})
+	if evs[0]["type"] != "session.updated" {
+		t.Errorf("same-voice update = %v, want session.updated", typesOf(evs))
+	}
+
+	// A text-only session never locks.
+	s2 := NewSession("sv6", "", fakeGen("typed answer"))
+	s2.Handle(ctx, &ClientEvent{Type: "session.update", Session: []byte(`{"output_modalities":["text"]}`)})
+	s2.Handle(ctx, &ClientEvent{Type: "response.create"})
+	if evs := s2.Handle(ctx, &ClientEvent{Type: "session.update",
+		Session: []byte(`{"audio":{"output":{"voice":"cedar"}}}`)}); evs[0]["type"] != "session.updated" {
+		t.Errorf("text-only session locked the voice: %v", typesOf(evs))
+	}
+}
+
 // T-F6: an out-of-band response's items belong to no conversation — they are
 // listed in ITS response.done output but must not be retrievable or anchor the
 // conversation chain.
