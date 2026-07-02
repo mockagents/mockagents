@@ -24,6 +24,24 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   identically.
 
 ### Added
+- **Realtime server VAD / turn detection (Phase 1)** — when a client enables
+  `turn_detection` via `session.update`, the appended audio now drives a real
+  (deterministic, pure-Go) energy detector over the PCM16 payload: speech onset
+  emits `input_audio_buffer.speech_started` (with `audio_start_ms` net of
+  `prefix_padding_ms`, pre-announcing the future item id), and
+  `silence_duration_ms` of accumulated low-energy audio ends the turn —
+  `input_audio_buffer.speech_stopped`, the same auto-commit ladder a manual
+  commit produces (carrying the pre-announced item id), and, unless
+  `create_response:false`, the auto-response. `threshold` is honored (mean
+  absolute PCM16 amplitude, 0..1); `semantic_vad` maps `eagerness` to the
+  silence window via the documented max timeouts (high 2 s, auto/medium 4 s,
+  low 8 s); non-PCM payloads count as speech so synthetic test audio always
+  "speaks". A stock GA voice client that only streams audio now gets the full
+  server-driven turn loop instead of hanging. Deviations (documented in
+  `docs/design/realtime-server-vad.md`): the session default remains
+  `turn_detection: null` (GA defaults VAD on — flipping would break
+  manual-commit flows), and `interrupt_response` / `idle_timeout_ms` are
+  accepted but inert until the Phase 2 deadline-driven model.
 - **A2A streaming + richer messages** (NF-04 depth) — the mock A2A server now
   serves **`message/stream`** over Server-Sent Events (it previously returned
   `-32601` and the Agent Card force-disabled streaming): a request streams a
