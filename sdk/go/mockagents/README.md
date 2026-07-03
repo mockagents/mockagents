@@ -68,15 +68,15 @@ func TestOrderLookupHappyPath(t *testing.T) {
 | `Expect` / `ExpectScenario`                   | `testing.TB`-integrated fluent matchers: `ToHaveContentContaining`, `ToHaveFinishReason`, `ToHaveStatusCode`, `ToHaveLatencyLessThanMs`, `ToHaveToolCallCount`, `ToHaveToolCall`. |
 | `FindFreePort` / `FindBinary`                 | Helpers exposed for advanced use cases and custom test harnesses.                               |
 
-## Known v1 limitations
+## Known limitations
 
-- **No streaming wrapper yet** — call `/v1/chat/completions` with `stream: true`
-  directly if you need SSE today. Parity with the Python SDK helpers is on
-  the roadmap.
-- **No in-process mode** — the SDK always spawns a subprocess. An embedded
-  mode that skips the binary (useful for sub-millisecond test loops) is
-  planned but out of scope for v1.
-- **No framework adapters yet** — because Go applications typically call
+- **No framework adapters** — because Go applications typically call
   OpenAI/Anthropic APIs directly, there is no equivalent to the LangChain
   or CrewAI adapters shipped by the Python and TS SDKs. The `Client` type
   is already the only surface you need.
+
+Two former v1 limitations are gone: streaming **is** wrapped (`IterStream`
+yields protocol-agnostic `StreamChunk`s), and **in-process mode exists** —
+`NewInProcessClient` spins up an engine + `httptest.Server` inline with no
+subprocess (chat protocols + `/v1/models` + health). See the
+[Go SDK guide](https://mockagents.github.io/mockagents/sdk/go-sdk/).

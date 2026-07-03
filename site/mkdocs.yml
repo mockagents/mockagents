@@ -38,22 +38,34 @@ nav:
     - Testing with Agent Frameworks: guides/framework-testing.md
     - Scenario Packs: guides/scenario-packs.md
     - Hallucination Testing: guides/hallucination-testing.md
+    - Chaos & Fault Injection: guides/chaos.md
     - Load Testing: guides/load-testing.md
+    - Strict Tools: guides/strict-tools.md
+    - Realtime API (Voice): guides/realtime.md
+    - MCP Servers: guides/mcp.md
+    - A2A Agents: guides/a2a.md
     - Drop-in Recipes: guides/drop-in-recipes.md
     - Record & Replay: guides/record-replay.md
     - CLI Reference: guides/cli-reference.md
     - YAML Schema: guides/yaml-schema.md
     - Management API: guides/management-api.md
-  - Python SDK:
-    - Usage Guide: sdk/python-sdk.md
+  - SDKs:
+    - Python SDK: sdk/python-sdk.md
+    - TypeScript SDK: sdk/typescript-sdk.md
+    - Go SDK: sdk/go-sdk.md
   - Reference:
     - Agent Definition: reference/agent-definition.md
+    - Architecture: reference/architecture.md
   - Contributing: contributing.md
 
 markdown_extensions:
   - admonition
   - pymdownx.details
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite

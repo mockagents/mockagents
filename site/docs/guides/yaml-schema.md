@@ -2,7 +2,7 @@
 
 Agent definitions are YAML files that configure mock agent behavior.
 
-> This page documents `kind: Agent`. MockAgents loads four document kinds from
+> This page documents `kind: Agent`. MockAgents loads five document kinds from
 > `--agents-dir`, each with its own schema under
 > [`schema/`](https://github.com/mockagents/mockagents/tree/main/schema):
 >
@@ -12,8 +12,9 @@ Agent definitions are YAML files that configure mock agent behavior.
 > | `Pipeline` | Multi-agent topology — `sequential`, `parallel`, or `graph` with conditional edges |
 > | `TestSuite` | Declarative test cases (`tool_call`, `tool_call_args`, `no_tool_call`, `tool_error`, `handles_tool_error`, `response_contains`, `response_matches`, `scenario_matched`, `refusal`, `latency_ms_lt`, `tool_call_count`, `tool_call_sequence`, `node_sequence`) run by `mockagents test` |
 > | `MCPServer` | A mock Model Context Protocol server (tools, resources, prompts) served by `mockagents mcp` |
+> | `A2AServer` | A mock Agent2Agent server (agent card + task responses) served by `mockagents a2a` — see the [A2A guide](a2a.md) |
 >
-> All four validate under `mockagents validate` and `POST /api/v1/config/validate`.
+> All five validate under `mockagents validate` and `POST /api/v1/config/validate`.
 
 ## Top-Level Structure
 
@@ -97,7 +98,9 @@ tools:
 ## `spec.behavior.strict_tools`
 
 Opt-in request-side strictness that mirrors what real APIs enforce (and the
-mock is otherwise lenient about). Fail-like-production for CI:
+mock is otherwise lenient about). Fail-like-production for CI — the
+[Strict Tools guide](strict-tools.md) covers what each dimension enforces and
+a migration recipe:
 
 ```yaml
 behavior:
@@ -134,6 +137,7 @@ scenarios:
       content_contains: "hello" # Case-insensitive substring.
       content_regex: "..."      # Regex pattern. Named groups available in templates.
       turn_number: 1            # Match on conversation turn (1-indexed).
+      has_image: true           # Latest user turn carries (or not) an image part.
     response:                   # Required.
       content: "Hello!"         # One of content / refusal / tool_calls (supports templates).
       tool_calls:               # Optional. Tool calls to simulate.
@@ -149,8 +153,11 @@ scenarios:
 | `content_contains` | Case-insensitive substring match on user message |
 | `content_regex` | Regex match. Named captures available as `{{ index .Match "name" }}` |
 | `turn_number` | Matches specific conversation turn (1-indexed) |
+| `has_image` | `true`: latest user turn has ≥1 image part (OpenAI `image_url`, Anthropic image blocks); `false`: none |
 
 All rules use **AND logic** — all specified conditions must be true.
+`content_contains` and `content_regex` are mutually exclusive per match rule
+(the validator rejects both together).
 
 ### Template Expressions
 
@@ -196,6 +203,9 @@ streaming:
 ```
 
 ## `spec.behavior.chaos`
+
+Fault injection — the [Chaos guide](chaos.md) is the task-oriented tour; the
+reference is below.
 
 ```yaml
 chaos:
@@ -289,7 +299,7 @@ for `{mode: reset, rate: 1.0}`. See
 ## Semantic error modes
 
 Beyond HTTP/chaos faults, a **scenario response** can plant a *well-formed but
-wrong* output — where real agent code actually breaks (FB-03):
+wrong* output — where real agent code actually breaks:
 
 ```yaml
 scenarios:

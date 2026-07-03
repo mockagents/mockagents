@@ -22,9 +22,15 @@ mockagents init [project-name] [flags]
 
 **Flags:**
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--force` | `false` | Overwrite existing files |
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--force` | | `false` | Overwrite existing files |
+| `--template` | `-t` | `basic` | Starter pack to scaffold (see `--list-templates`) |
+| `--list-templates` | | `false` | List available starter packs and exit |
+
+Available templates: `basic`, `customer-support`, `rag`, `coding-agent`,
+`planner` — each ships an agent plus a passing TestSuite
+(see [Scenario Packs](scenario-packs.md#scaffold-a-starter-pack)).
 
 **Examples:**
 
@@ -34,6 +40,9 @@ mockagents init my-project
 
 # Scaffold in current directory
 mockagents init .
+
+# Start from a curated pack
+mockagents init my-bot --template customer-support
 
 # Overwrite existing files
 mockagents init my-project --force
@@ -65,10 +74,11 @@ mockagents start [flags]
 | `--host` | | `127.0.0.1` | HTTP server bind address |
 | `--port` | `-p` | `8080` | HTTP server port |
 | `--json-logs` | | `false` | Output logs in JSON format |
+| `--watch` | `-w` | `false` | Auto-reload agent YAML files on change (fsnotify) |
 
 Environment variables: `MOCKAGENTS_HOST`, `MOCKAGENTS_PORT`.
 
-Strictness knobs (round-11):
+Strictness knobs:
 
 | Variable | Values | Default | What it gates |
 |----------|--------|---------|---------------|
@@ -91,18 +101,28 @@ mockagents start --host 0.0.0.0
 mockagents start --json-logs --log-level warn
 ```
 
-**Endpoints registered:**
+**Endpoints registered** (protocol surface):
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions |
+| `POST` | `/v1/responses` | OpenAI Responses API |
+| `POST`/`GET`/`DELETE` | `/v1/conversations[/{id}[/items…]]` | OpenAI Conversations API |
+| `POST` | `/v1/embeddings` | OpenAI Embeddings |
+| `POST` | `/v1/moderations` | OpenAI Moderations |
+| `POST`/`GET` | `/v1/files…`, `/v1/batches…` | OpenAI Files + Batch API |
+| `GET` | `/v1/realtime` | OpenAI Realtime (WebSocket) — see the [Realtime guide](realtime.md) |
+| `POST` | `/v1/realtime/client_secrets`, `/v1/realtime/sessions` | Realtime ephemeral keys |
+| `POST` | `/openai/deployments/{deployment}/…`, `/openai/v1/…` | Azure OpenAI URL shapes |
 | `POST` | `/v1/messages` | Anthropic Messages |
+| `POST` | `/v1/messages/count_tokens` | Anthropic token counting |
+| `POST`/`GET` | `/v1/messages/batches…` | Anthropic Message Batches |
+| `POST` | `/v1beta/models/{model}:generateContent` | Google Gemini |
 | `GET` | `/v1/models` | List models |
-| `GET` | `/api/v1/health` | Health check |
-| `GET` | `/api/v1/agents` | List agents |
-| `GET` | `/api/v1/agents/{name}` | Agent detail |
-| `POST` | `/api/v1/agents/{name}/reload` | Hot reload agent |
-| `GET` | `/api/v1/logs` | Query logs |
+
+Plus the management API under `/api/v1/` (health, agents CRUD, logs + SSE
+stream, costs, audit, pipelines, config validation, tenants/keys/quota) — see
+the [Management API guide](management-api.md).
 
 ---
 
@@ -146,7 +166,7 @@ mockagents validate --format json
 
 ## `mockagents add` / `mockagents rm`
 
-Manage agents on a **running** server over its write API (FB-04) — no restart.
+Manage agents on a **running** server over its write API — no restart.
 `add` sends an agent definition file (`POST /api/v1/agents`); `--replace` upserts
 it instead (`PUT /api/v1/agents/{name}`). `rm` deletes by name.
 
@@ -220,8 +240,15 @@ mockagents logs --output json --since 1h
 Run `kind: TestSuite` files against agents or pipelines.
 
 ```bash
-mockagents test [path...] [--format text|json|junit]
+mockagents test [file|directory...] [flags]
 ```
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format` | `text` | Output format: `text`, `json`, or `junit` (JUnit XML on stdout) |
+| `--suites-dir` | | Directory containing TestSuite files (defaults to `--agents-dir`) |
 
 Assertions include `tool_call`, `tool_call_args` (nested dotted-path argument
 match), `no_tool_call`, `tool_error` (a simulated tool returned an error),
@@ -308,16 +335,50 @@ before committing.
 
 ## `mockagents mcp`
 
-Serve a `kind: MCPServer` definition over HTTP or stdio.
+Serve a `kind: MCPServer` definition over HTTP or stdio — see the
+[MCP guide](mcp.md).
 
 ```bash
 mockagents mcp --transport http --port 8081 --agents-dir examples
 mockagents mcp --transport stdio --agents-dir examples --server weather-mcp
+mockagents mcp --manage --agents-dir ./agents   # agent-management tools over MCP
 ```
+
+**Flags:**
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--transport` | | `http` | Transport: `http` or `stdio` |
+| `--port` | `-p` | `8081` | HTTP port (`--transport=http`) |
+| `--bind` | | `127.0.0.1` | Interface to bind (`0.0.0.0` to expose) |
+| `--server` | | | MCPServer to serve (required when multiple are loaded) |
+| `--manage` | | `false` | Also expose agent-management tools (`list_agents`, `get_agent`, `validate_agent`, `create_agent`, `put_agent`, `delete_agent`) backed by the write API |
 
 The HTTP transport binds `127.0.0.1` by default, per the MCP spec's guidance
 for local servers. Pass `--bind 0.0.0.0` to expose it beyond the host — e.g.
 when running inside a container whose port is mapped out.
+
+---
+
+## `mockagents a2a`
+
+Serve a `kind: A2AServer` definition (Agent2Agent protocol) — see the
+[A2A guide](a2a.md).
+
+```bash
+mockagents a2a --agents-dir examples --server weather-a2a
+```
+
+**Flags:**
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--port` | `-p` | `8083` | HTTP port |
+| `--server` | | | A2AServer to serve (required when multiple are loaded) |
+
+Serves the Agent Card at `/.well-known/agent-card.json` (and the legacy
+`/.well-known/agent.json` alias) and JSON-RPC (`message/send`,
+`message/stream`, `tasks/get`, `tasks/cancel`) on `POST /`.
 
 ---
 

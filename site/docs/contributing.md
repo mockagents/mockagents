@@ -38,27 +38,33 @@ make release   # GoReleaser snapshot
 ```
 cmd/mockagents/          # Cobra CLI entry points
 internal/
-  adapter/               # OpenAI + Anthropic protocol adapters
+  a2a/                   # Mock Agent2Agent (A2A) server
+  adapter/               # Protocol adapters (OpenAI, Anthropic, Gemini, Azure, Realtime bridge)
   audit/                 # Append-only audit log
   cli/                   # CLI scaffolding and color utilities
-  config/                # YAML loading and validation (all 4 kinds)
+  config/                # YAML loading and validation (all 5 kinds)
   contract/              # Contract extraction + diffing
-  engine/                # Core mock engine (matching, generation, tools)
+  engine/                # Core mock engine (matching, generation, tools, chaos, strict-tools)
   engine/state/          # Session state management
-  mcp/                   # Mock MCP server (JSON-RPC, HTTP/stdio/SSE)
+  mcp/                   # Mock MCP server (JSON-RPC, Streamable HTTP/stdio/SSE)
+  mcpadmin/              # Agent CRUD exposed as MCP tools (mcp --manage)
   observability/         # OpenTelemetry tracing
+  oidcauth/              # OIDC relying-party seam for SSO
   pricing/               # Per-model cost table
+  quota/                 # Per-tenant rate + spend enforcement
+  realtime/              # OpenAI Realtime WebSocket sessions (server VAD, pacing)
   recording/             # Record / replay cassettes
   runner/                # TestSuite executor + JUnit
   server/                # HTTP server, middleware, handlers
   storage/               # SQLite interaction logging
-  streaming/             # SSE streaming (OpenAI + Anthropic)
+  streaming/             # SSE streaming + timing physics
   tenancy/               # Multi-tenant store + RBAC + auth cache
+  toolschema/            # JSON-Schema tool-argument + strict-subset validators
   types/                 # Domain types (agent, tool, behavior)
 sdk/{python,typescript,go}/  # Three language SDKs
 gui/                     # Next.js 15 web console
 deploy/                  # Helm chart, CI/CD templates
-schema/                  # JSON Schemas for the 4 document kinds
+schema/                  # JSON Schemas for the 5 document kinds
 examples/                # Example definitions
 site/                    # Documentation (MkDocs)
 ```
