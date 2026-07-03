@@ -16,7 +16,7 @@ jobs:
   agent-e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Start MockAgents
         uses: mockagents/mockagents/deploy/actions/setup-mockagents@main
@@ -36,7 +36,7 @@ working tree, or this repo's CI before `v0.1.0` is tagged — set `source-path`
 and the action builds the CLI from source instead:
 
 ```yaml
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: ./deploy/actions/setup-mockagents
         with:
           source-path: ${{ github.workspace }}
@@ -82,5 +82,5 @@ to `GITHUB_ENV` for every subsequent step:
 
 Composite actions run directly on the runner, sharing Go's build cache with
 other steps and starting in seconds rather than pulling a container. The
-trade-off is needing a Go toolchain, which `actions/setup-go@v5` provisions
+trade-off is needing a Go toolchain, which `actions/setup-go@v6` provisions
 for free and most Go pipelines already have.

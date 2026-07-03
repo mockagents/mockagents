@@ -1,11 +1,14 @@
 name: Documentation
 
-# Builds the MkDocs site and deploys it to GitHub Pages (RR-05).
+# Builds the MkDocs site and deploys it to GitHub Pages.
 #
 # Prerequisite (one-time, repo Settings → Pages → Build and deployment):
 #   Source = "GitHub Actions"
-# Until that is set, the deploy job will no-op/fail on the Pages API; the
-# build job is always safe to run.
+# On a PRIVATE repository this additionally requires a plan that includes
+# Pages for private repos (GitHub Pro/Team/Enterprise), or making the repo
+# public. Until Pages is enabled the Pages API returns 404; the build job is
+# always safe to run, and the deploy job below is marked continue-on-error so
+# an un-provisioned Pages setup does not fail the whole workflow run.
 
 on:
   push:
@@ -29,10 +32,10 @@ jobs:
     name: Build MkDocs site
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -44,7 +47,7 @@ jobs:
         run: mkdocs build --strict
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: site/site
 
@@ -52,10 +55,13 @@ jobs:
     name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
+    # Best-effort: don't red-X the run when Pages isn't enabled yet (see the
+    # header note). Once Pages is provisioned this deploys normally.
+    continue-on-error: true
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

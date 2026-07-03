@@ -11,6 +11,13 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
 ## [Unreleased]
 
 ### Changed
+- **`mockagents mcp` (HTTP) now binds `127.0.0.1` by default** — per the MCP
+  spec's guidance for local servers (the primary DNS-rebinding defence). Pass
+  the new `--bind 0.0.0.0` flag to expose it beyond the host, e.g. inside a
+  container whose port is mapped out. The `initialize` handshake now also
+  **echoes a supported requested `protocolVersion`** instead of always
+  answering the newest revision, so pre-2025-11-25 clients no longer fail the
+  handshake; capabilities advertise `completions` and `listChanged`.
 - **The test runner is now multi-turn** — a `kind: TestSuite` case replays *every*
   user step as a turn in one session (the engine accumulates conversation history
   and per-session turn count), instead of only sending the last user message. This
@@ -24,6 +31,40 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   identically.
 
 ### Added
+- **Strict tools mode (`strict_tools`)** — an opt-in "fail like production"
+  knob that makes the mock enforce what the real provider APIs enforce and the
+  mock was otherwise lenient about. Configure it per agent under
+  `spec.behavior.strict_tools` (`level: off | warn | strict`, plus optional
+  `ids` / `tool_choice` / `schemas` booleans) or fleet-wide with the
+  `MOCKAGENTS_STRICT_TOOLS` environment variable (per-agent YAML overrides the
+  env default). Three dimensions: **round-trip tool ids** — an orphan or
+  mismatched `tool_call_id` / `tool_use_id` / `call_id` (or a Gemini
+  `functionResponse` that matches no prior call), and an unanswered tool call,
+  now return each provider's real `400` with its documented message; **tool_choice
+  forcing** — `required` / named-function / Anthropic `any`/`tool` / Gemini
+  `ANY` now actually force a tool call (synthesized when the scenario emits
+  none), reporting `finish_reason: "stop"` on the OpenAI family, and an unknown
+  named tool is a `400`; `parallel_tool_calls: false` / `disable_parallel_tool_use`
+  caps the response to one call; **strict schemas** — a `strict: true` function
+  tool whose parameter schema violates the structured-outputs subset (missing
+  `additionalProperties: false`, `required` not covering every key) is rejected
+  at request time, exactly like the real API. `off` is the default (existing
+  suites are unaffected); `warn` runs every check but only logs and sets an
+  `X-Mockagents-Strict-Violation` response header (assert on its absence to
+  migrate a suite incrementally); `strict` fails with the provider 400. See the
+  [Strict Tools guide](https://mockagents.github.io/mockagents/guides/strict-tools/).
+- **MCP `tools/call` argument validation** — a mock `kind: MCPServer` now
+  validates call arguments against each tool's `inputSchema` by default (the MCP
+  spec requires servers to validate inputs). A wrong-typed or missing-required
+  argument returns an `isError: true` execution result with actionable,
+  path-qualified feedback — never a `-32602` protocol error — matching the
+  2025-11-25 revision and official SDK servers; extra arguments on a permissive
+  schema stay accepted. Opt out per server with `spec.strictArgs: false`.
+- **MCP bidirectional / admin surface is now served** — the documented
+  server→client endpoints `GET /mcp/events`, `POST /mcp/response`,
+  `POST /mcp/sample`, and `POST /mcp/roots` (sampling/roots over the Streamable
+  HTTP transport) are now mounted by `mockagents mcp`; they previously existed
+  only in-library and every request 404'd against a runnable server.
 - **Realtime server VAD Phase 3: validation, transcription ladder, idle-loop
   guard** — an invalid `turn_detection` config in `session.update` (unknown
   `type`, `threshold` outside [0,1], negative durations, bad `eagerness`) now
@@ -133,6 +174,46 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   `ToolResults` (aggregate + final-turn) so these read real injected errors.
 
 ### Fixed
+- **The tool-call loop now converges on every protocol** — the canonical agent
+  loop (ask → model returns a tool call → client sends the tool result → model
+  answers) previously never converged against the mock: scenario matching keys
+  on the last user message, so a request whose tail was a tool result re-matched
+  the original question and re-issued the *same* tool call forever. This
+  affected OpenAI Chat Completions (and Azure), the Responses API, Gemini, and
+  Anthropic. The engine now detects a tool-result tail and consumes an identical
+  re-issue so the loop terminates naturally (`finish_reason` / `stop_reason`
+  falls out per provider), while genuinely different or multi-step calls still
+  go out. `tool_choice: "none"` is now honored on every surface (scenario tool
+  calls are suppressed), and a batch of wire-shape fixes make no-argument calls
+  render `{}` (Anthropic `tool_use.input` is a required key; OpenAI/Responses
+  emit `"{}"` not `"null"`), Anthropic tool-call ids carry the `toolu_` prefix,
+  `stream_options.include_usage` emits the final usage chunk, Gemini attaches
+  `finishReason` to the last content-bearing chunk, and the OpenAI error
+  envelope renders `param: null`. Verified against the live `openai`,
+  `anthropic`, and `google-genai` SDKs.
+- **MCP Streamable HTTP spec conformance** — a batch of fixes to the mock MCP
+  server: spec-accurate JSON-RPC error codes (`-32602` for an unknown tool name
+  or bad arguments, `-32002` for an unknown resource URI, `-32600` for a batch
+  body, `-32602` for an unknown pagination cursor or a missing required prompt
+  argument); id-less requests are treated as notifications and never answered;
+  error responses whose id can't be determined render `"id": null` instead of
+  omitting the member; a session allows at most one concurrent server→client
+  `GET` stream (a second is `409 Conflict`); an over-sized stdio frame yields a
+  parse error and the loop keeps serving instead of the process exiting; and
+  schema-less tools / nameless resources always carry the required `inputSchema`
+  / `name` members so a strict SDK client can parse the whole list.
+- **Realtime fidelity, live-SDK verified** — a sweep of the Realtime WebSocket
+  surface validated against `openai-python` over a real socket (zero schema
+  validation errors across ~250 events): server VAD now defaults **on** per the
+  GA API; VAD auto-commit no longer trips the 100 ms minimum-commit floor; the
+  Realtime tool loop converges (an identical `function_call` is not re-issued
+  after its `function_call_output`); per-session **quota enforcement and
+  interaction logging** now apply to Realtime connections (through adapter
+  hooks, since a long-lived socket bypasses the HTTP middleware chain);
+  ephemeral `client_secrets` keys seed the session config; transcription-only
+  sessions are gated correctly; and several GA error/event shapes were
+  corrected. A strict-mode env knob (`MOCKAGENTS_REALTIME_STRICT`) rejects
+  unknown `session.update` fields with a GA-shaped `unknown_parameter` error.
 - **Realtime round-4 fidelity batch** (4th adversarial eval, verified against
   the GA SDK types) — **VAD:** the GA `threshold` scale (0..1 activation) was
   compared directly against mean-abs PCM16 amplitude, so **real microphone
@@ -311,6 +392,18 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   is also a required field that must be a JSON array — a skill that left it unset
   rendered `null`, so the server now normalizes it to `[]`. The declared
   definition is never mutated by this normalization.
+
+### Documentation
+- **Architecture documentation rebuilt** — `ARCHITECTURE.md` (also published on
+  the docs site) is a full rewrite with seven verified Mermaid diagrams: system
+  context, a component map with the package import-direction rules, and sequence
+  diagrams for the Chat Completions request flow, the Realtime session
+  (server VAD, barge-in), and the MCP Streamable HTTP transport, plus a
+  cross-cutting chaos / strict-tools view and a data / deployment view.
+- **New user guides** for the Realtime API, MCP servers, A2A agents, strict
+  tools, and chaos / fault injection, plus TypeScript and Go SDK reference
+  pages joining the Python one; the existing pages were swept for stale
+  commands, flags, and YAML fields against the current code.
 
 ## [0.4.0] - 2026-06-17
 
