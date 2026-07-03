@@ -1207,8 +1207,8 @@ components:
             "required", or an object specifying a particular function.
             "none" is always honored; "required" and named forcing (with
             forced-call synthesis and finish_reason "stop") are enforced
-            when the agent's strict_tools knob is on (round-11) —
-            otherwise they are accepted and ignored.
+            when the agent's strict_tools knob is on — otherwise they are
+            accepted and ignored.
           oneOf:
             - type: string
               enum: [none, auto, required]
@@ -1477,7 +1477,7 @@ components:
           description: >
             "none" is always honored; "any"/"tool" forcing and
             disable_parallel_tool_use are enforced when the agent's
-            strict_tools knob is on (round-11).
+            strict_tools knob is on.
           properties:
             type:
               type: string
