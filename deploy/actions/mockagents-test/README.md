@@ -12,7 +12,7 @@ jobs:
   agent-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Run MockAgents tests
         id: mockagents
@@ -56,5 +56,5 @@ jobs:
 Composite actions run on the runner without pulling a container, so
 cache layers are shared with other Go steps and startup is measured in
 seconds rather than minutes. The trade-off is that the runner needs a
-Go toolchain, which is free to provision via `actions/setup-go@v5` and
+Go toolchain, which is free to provision via `actions/setup-go@v6` and
 already required by most Go-oriented CI pipelines.
