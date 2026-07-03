@@ -220,6 +220,7 @@ Append-only control-plane events. `kind` is one of `tenant.created`,
 ```
 GET /api/v1/pipelines             # list kind:Pipeline documents
 GET /api/v1/pipelines/{name}      # detail incl. DAG nodes + edges
+PUT /api/v1/pipelines/{name}      # editor — create-or-replace a pipeline
 ```
 
 ## Config Validation
@@ -248,6 +249,17 @@ once** on mint/rotate.
 | `DELETE /api/v1/keys/{id}` | admin | Delete a key |
 | `POST /api/v1/keys/me/rotate` | viewer | Self-service rotation |
 | `POST /api/v1/keys/me/burn` | viewer | Rotate without returning plaintext |
+
+### Quotas
+
+```
+GET /api/v1/quota                     # caller's rate + monthly-spend quota and usage
+PUT /api/v1/tenants/{id}/quota        # set a per-tenant override (persisted)
+```
+
+Defaults come from `MOCKAGENTS_DEFAULT_RATE_PER_SEC`,
+`MOCKAGENTS_DEFAULT_RATE_BURST`, and `MOCKAGENTS_DEFAULT_MONTHLY_SPEND_USD`.
+Over-rate LLM requests get `429` (+ `Retry-After`); over-spend gets `402`.
 
 ```bash
 # Mint a read-only CI key

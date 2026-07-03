@@ -25,7 +25,7 @@ the same:
 | [Claude Agent SDK](#anthropic-claude-agent-sdk) | `ANTHROPIC_BASE_URL` via `ClaudeAgentOptions(env=...)` | `/v1/messages` | [`demo/customer-support-agent-claude`](https://github.com/mockagents/mockagents/tree/main/demo/customer-support-agent-claude) |
 | [Google ADK](#google-adk) | `GOOGLE_GEMINI_BASE_URL` (native) or `LiteLlm(api_base=...)` | `/v1beta/models/...` or `/v1/chat/completions` | [`demo/customer-support-agent-google-adk`](https://github.com/mockagents/mockagents/tree/main/demo/customer-support-agent-google-adk) |
 | [CrewAI](#crewai) | `crewai.LLM(base_url=..., api_key=...)` (LiteLLM) | `/v1/chat/completions` | — (adapter: `mockagents.adapters.crewai_mock_llm`) |
-| [LangChain / LangGraph](#langchain--langgraph) | `base_url=` on the chat model, or `patched_env(...)` | `/v1/chat/completions`, `/v1/messages` | — (adapter: `mockagents.adapters`) |
+| [LangChain / LangGraph](#langchain-langgraph) | `base_url=` on the chat model, or `patched_env(...)` | `/v1/chat/completions`, `/v1/messages` | — (adapter: `mockagents.adapters`) |
 
 > **A note on the `/v1` suffix.** OpenAI-compatible clients want the base URL
 > *with* `/v1` (`http://localhost:8080/v1`); the Anthropic and Gemini clients
@@ -279,7 +279,7 @@ on the outcome. Three options, smallest-footprint first:
 
 1. **A declarative `TestSuite`** — assert tool calls, arguments, and *which
    scenario matched* with no test code, JUnit output straight into CI. See
-   [Testing AI Agents → Option A](testing-agents.md#option-a--a-declarative-testsuite-no-code).
+   [Testing AI Agents → Option A](testing-agents.md#option-a-a-declarative-testsuite-no-code).
 
 2. **The `mockagents` pytest fixture** (`pip install mockagents`) — spawns the
    server and patches `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, and

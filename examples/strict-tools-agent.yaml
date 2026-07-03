@@ -1,4 +1,4 @@
-# Strict-tools demo (round-11): fail like production.
+# Strict-tools demo: fail like production.
 #
 # With strict_tools enabled, this agent enforces what the real OpenAI API
 # enforces — and today's lenient mock behavior does not:

@@ -69,10 +69,11 @@ npm run build     # tsc -> dist/
 npm run typecheck # tsc --noEmit
 ```
 
-## Known v1 limitations
+## Known limitations
 
-- Streaming (SSE) is not yet wrapped. Call the `/v1/chat/completions` endpoint
-  directly with `stream: true` if you need it — parity with the Python SDK
-  streaming helpers is on the roadmap.
 - `MockAgentServer` has no built-in hot-reload flag yet; use the management
   API (`POST /api/v1/agents/:name/reload`) directly for now.
+
+Streaming **is** wrapped: `iterStream` yields protocol-agnostic `StreamChunk`
+objects for both OpenAI and Anthropic SSE — see the
+[TypeScript SDK guide](https://mockagents.github.io/mockagents/sdk/typescript-sdk/).

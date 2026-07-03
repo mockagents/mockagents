@@ -187,7 +187,9 @@ offline in milliseconds.
 Agents increasingly call **Model Context Protocol (MCP)** servers for tools and
 resources. MockAgents mocks the *server* side so you can test your MCP *client*
 (or an agent that uses one) without standing up the real thing — something most
-mocking tools don't do.
+mocking tools don't do. (This is the quick tour; the
+[MCP guide](mcp.md) is the full reference — transports, `strictArgs`
+validation, official-SDK and Claude Desktop wiring, and `--manage`.)
 
 ### The MCP server
 
@@ -235,7 +237,7 @@ $ printf '%s\n' \
     '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_forecast","arguments":{"city":"tokyo"}}}' \
   | mockagents mcp --transport stdio --agents-dir examples --server weather-mcp
 
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","serverInfo":{"name":"weather-mcp","version":"mock"},"capabilities":{"prompts":{},"resources":{"subscribe":true},"tools":{}}}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","serverInfo":{"name":"weather-mcp","version":"mock"},"capabilities":{"completions":{},"prompts":{"listChanged":true},"resources":{"listChanged":true,"subscribe":true},"tools":{"listChanged":true}}}}
 {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"get_forecast","description":"Return a canned weather forecast for a city.","inputSchema":{"properties":{"city":{"type":"string"}},"required":["city"],"type":"object"}}]}}
 {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"Tokyo: sunny, 22C"}]}}
 ```

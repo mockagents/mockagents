@@ -121,7 +121,7 @@ mockagents start                              # prints your base URL + a ready-t
   test your agent's routing and argument handling without a live model. (Tool
   `responses:` tables resolve results for the test runner and MCP servers — on
   the HTTP protocol endpoints your client executes the tools, as with real APIs.)
-- **Strict tools mode** (`strict_tools`, round-11) — opt into failing like
+- **Strict tools mode** (`strict_tools`) — opt into failing like
   production: round-trip tool id validation (orphan/mismatched
   `tool_call_id`/`tool_use_id`/`call_id` → the provider's real 400),
   `tool_choice: required`/named forcing with forced-call synthesis and
