@@ -179,15 +179,19 @@ linter rule):
 | `mcpadmin/` | A separate concern from `mcp`'s bidirectional/sampling surface: it re-exposes the agent management write API (create/get/put/delete/validate/list agents) as MCP tools, so an MCP client can manage MockAgents' own agent catalog. |
 | `realtime/` | Server-side state machine for the OpenAI Realtime mock: session/event handling, server voice-activity detection (an energy-threshold detector), and deadline-based response pacing with barge-in and idle-timeout. See the [Realtime sequence](#realtime-websocket-session-with-server-vad). |
 | `a2a/` | Mocks the A2A (Agent-to-Agent) protocol for `kind: A2AServer` documents: agent-card discovery, a JSON-RPC surface (`message/send`, `message/stream`, `tasks/get`, `tasks/cancel`), and task lifecycle with real SSE streaming. |
-| `recording/` | Cassette format + record/replay handlers, including SSE streams. |
+| `recording/` | Cassette format + record/replay handlers, including SSE streams. Record modes (`none`/`new_episodes`/`once`/`all` via `--record-mode`), configurable request matching (`--match-ignore`) with structured miss diagnostics, at-write secret redaction (`--redact`), sequenced playback, and importers for vcrpy YAML + OpenAI stored-completions JSONL (`mockagents import`). See the [Record & Replay guide](../guides/record-replay.md). |
 | `streaming/` | SSE chunking used when a chat/messages request sets `stream: true`. Supports a deterministic fixed-seed pacing model (TTFT + tokens-per-sec + jitter) and, when an agent sets `ttft_p50_ms`/`itl_p50_ms`, a per-stream-seeded lognormal "load-target" sampler, plus mid-stream fault injection. |
-| `storage/` | SQLite interaction logging (pure-Go, no cgo). Default DB file `.mockagents.db`. `MOCKAGENTS_LOG_BODIES` controls response-body capture depth; `MOCKAGENTS_LOG_MAX_ROWS` bounds the table via a background pruner. |
+| `storage/` | SQLite interaction logging (pure-Go, no cgo). Default DB file `.mockagents.db` in the working directory; `MOCKAGENTS_DATA_DIR` relocates it (and the audit + tenancy DBs) — an unwritable path degrades to a WARN, never a crash. `MOCKAGENTS_LOG_BODIES` controls response-body capture depth; `MOCKAGENTS_LOG_MAX_ROWS` bounds the table via a background pruner. |
 | `config/` | YAML/JSON loader + validator. Splits a directory's files by top-level `kind` into `Agent`, `Pipeline`, `TestSuite`, `MCPServer`, `A2AServer` documents. `chaos_presets.go` expands a named `chaos.preset` into a `ChaosConfig`. The schema lives at `schema/mockagents-v1-agent.json`. |
 | `types/` | Domain types shared across packages. Changes here ripple widely. |
 
-Outside `internal/`: `cmd/mockagents/` (Cobra CLI), `gui/` (Next.js console),
-`sdk/{python,typescript,go}/`, `deploy/` (Helm chart + GitHub/GitLab CI
-templates).
+Outside `internal/`: `cmd/mockagents/` (Cobra CLI — `start`, `init`,
+`validate`, `test`, `add`/`rm`, `logs`, `record`, `replay`, `import`,
+`contract`, `mcp`, `a2a`), `gui/` (Next.js console),
+`sdk/{python,typescript,go,vitest,npx}/` (client SDKs plus the
+`@mockagents/vitest` test-runner helper and the `npx mockagents` launcher),
+`deploy/` (Helm chart + GitHub/GitLab CI templates + composite GitHub
+Actions).
 
 ## How a request becomes a response
 

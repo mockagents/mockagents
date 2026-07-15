@@ -78,6 +78,14 @@ mockagents start [flags]
 
 Environment variables: `MOCKAGENTS_HOST`, `MOCKAGENTS_PORT`.
 
+State & logging knobs:
+
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `MOCKAGENTS_DATA_DIR` | working directory | Relocates the on-disk state (`.mockagents.db` interaction log, `.mockagents-audit.db` audit trail, `.mockagents-tenancy.db`) to any writable directory (auto-created). Use when the working directory is read-only. An unwritable path degrades to a WARN — logging off, server still serving. The Docker image runs from the `/data` volume, so state persists across container restarts without this. |
+| `MOCKAGENTS_LOG_BODIES` | `full` | Interaction-log body capture: `full` \| `sanitized` \| `none`. |
+| `MOCKAGENTS_LOG_MAX_ROWS` | `0` (unlimited) | Bounds the interaction-log table via a background pruner. |
+
 Strictness knobs:
 
 | Variable | Values | Default | What it gates |
@@ -260,6 +268,17 @@ match), `no_tool_call`, `tool_error` (a simulated tool returned an error),
 ```bash
 mockagents test tests/ --format junit > report.xml
 ```
+
+Glob patterns are expanded by the command itself, so they behave identically
+in shells that don't expand them (Windows, `docker run` args). In zsh, quote
+the pattern so the shell doesn't fail on it before the command runs:
+
+```bash
+mockagents test 'tests/*.yaml'     # quoted → mockagents expands it
+```
+
+Matches run in sorted filename order; an unmatched pattern is an error
+(exit 2), never a silent zero-suite run.
 
 ---
 

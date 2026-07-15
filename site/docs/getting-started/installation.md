@@ -27,7 +27,14 @@ docker pull mockagents/mockagents:latest
 
 # Run with mounted agents
 docker run -p 8080:8080 -v ./agents:/agents:ro mockagents/mockagents
+
+# Persist interaction/audit logs across restarts (the image runs from /data)
+docker run -p 8080:8080 -v ./agents:/agents:ro -v mockagents-data:/data mockagents/mockagents
 ```
+
+The container runs as a non-root user from the `/data` volume, so SQLite
+state and `mockagents init` scaffolds land there. Set
+`MOCKAGENTS_DATA_DIR=/some/dir` to relocate state elsewhere.
 
 ## SDKs
 
