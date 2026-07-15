@@ -15,10 +15,14 @@ provider unless you're using record/replay against one on purpose.
 This document has two parts: a set of diagrams (System Context → Containers →
 two full request sequences → a cross-cutting fault-injection view → a
 deployment view), and a narrative that explains the seams between packages.
-Every diagram and every claim below was checked against the code on the
-`docs/architecture-and-user-docs` branch; where the codebase disagreed with
-the previous version of this document, that's called out explicitly instead
-of silently fixed, in the [Corrections](#corrections-from-the-previous-version-of-this-document)
+Every diagram and every claim below was checked against the code (most
+recently on `main` @ `aa049a8`, 2026-07-15 — adding record modes/importers/
+redaction, hallucination + semantic-error fixtures, vision matching,
+Anthropic depth, the MCP loopback-bind default, the vitest/npx packages, and
+the `/data` workdir + `MOCKAGENTS_DATA_DIR` state handling); where the
+codebase disagreed with an earlier version of this document, that's called
+out explicitly instead of silently fixed, in the
+[Corrections](#corrections-from-the-previous-version-of-this-document)
 section at the end.
 
 ## Contents
@@ -175,7 +179,7 @@ is no linter rule; see [Design rules](#design-rules-keep-these-intact)):
 
 | Package | Role |
 |---|---|
-| `adapter/` | Wire-format translators. `openai.go`, `anthropic.go`, `gemini.go`, `azure.go` convert provider JSON ↔ engine types; `conversations.go`/`responses.go`/`responses_stream.go` mock the OpenAI Conversations + Responses APIs (see below); `batches.go`/`anthropic_batches.go` mock async batch endpoints; `embeddings.go`, `moderations.go`, `files.go`, `structured_output.go` cover the smaller surfaces; `realtime.go` bridges a WebSocket connection into `internal/realtime`. `registry.go` is the extension seam (`Adapter` interface + `DefaultRegistry`). `strict.go`/`chaos.go` translate `engine.StrictToolError`/`engine.ChaosError` into each provider's wire error shape. `token.go` counts tokens; `decode.go` pools buffers for request decoding. |
+| `adapter/` | Wire-format translators. `openai.go`, `anthropic.go`, `gemini.go`, `azure.go` convert provider JSON ↔ engine types; `conversations.go`/`responses.go`/`responses_stream.go` mock the OpenAI Conversations + Responses APIs (see below); `batches.go`/`anthropic_batches.go` mock async batch endpoints; `embeddings.go`, `moderations.go`, `files.go`, `structured_output.go` cover the smaller surfaces; `realtime.go` bridges a WebSocket connection into `internal/realtime`. `registry.go` is the extension seam (`Adapter` interface + `DefaultRegistry`). `strict.go`/`chaos.go` translate `engine.StrictToolError`/`engine.ChaosError` into each provider's wire error shape. `hallucination.go` stamps `X-Mockagents-Hallucination: <type>` when the matched scenario is a planted-hallucination fixture (the fixture itself is generated in `engine/response_generator.go`). **Vision inputs** are parsed on the OpenAI (`image_url`, incl. `data:` URLs) and Anthropic (base64/url image parts) paths — image presence drives the `has_image` scenario rule and the `X-Mockagents-Image-Count` response header. **Anthropic depth**: `POST /v1/messages/count_tokens` (engine-free), prompt-cache usage accounting (`cache_creation`/`cache_read` driven by `cache_control`), and extended-thinking blocks. `token.go` counts tokens; `decode.go` pools buffers for request decoding. |
 | `engine/` | The core, provider-agnostic. `engine.go`'s `ProcessRequestContext` orchestrates: chaos pre-check → strict-tools request validation → scenario match/generate/tool-loop inside a session turn → strict tool_choice forcing → tool processing → chaos post-latency (see [walkthrough](#how-a-request-becomes-a-response)). `agent_registry.go` looks up an agent (by-model index + `*ForTenant` visibility). `scenario_matcher.go` picks a scenario, `response_generator.go` produces content (template expansion via a pooled buffer). `tool_processor.go` handles simulated tool calls; `tool_validator.go` is now a thin alias into `internal/toolschema`. `chaos.go` is the fault-injection seam. `strict.go` is the strict-tools seam (id/tool_choice/schema validation). `pipeline.go`/`pipeline_registry.go` run a `kind: Pipeline` document (sequential/parallel/graph topology over multiple agents) as a distinct concept from a single `Agent`. `reqmeta.go` carries `RequestMeta` + tenant id on the context. Session state lives in `state/` (history slice pre-sized to cap=16). |
 | `toolschema/` | JSON-Schema-subset validator (`validator.go`) used to check simulated tool-call arguments against a tool's declared `inputSchema`, plus a stricter OpenAI-structured-outputs-subset checker (`strict_subset.go`) used when an agent opts into `strict: true` function schemas. Consumed by `engine/strict.go`, by the engine's tool path through the `engine/tool_validator.go` alias, and by `internal/mcp` for `tools/call` argument validation. |
 | `server/` | `net/http` server, middleware, and route handlers for the LLM + management APIs. `route_authz.go` is the single role-floor table + `mountManaged` chokepoint for every `/api/v1` route — it panics at startup if a route has no floor entry. `log_worker.go`/`log_broadcaster.go` own async logging + SSE fan-out. `quota_middleware.go` enforces per-tenant rate/spend limits. `realtime_wiring.go` wires quota + logging hooks into the Realtime adapter (which never passes through the HTTP middleware chain — see the [Realtime section](#realtime-websocket-session-with-server-vad)). `oidc_handlers.go` serves `/auth/login`, `/auth/callback`, `/auth/logout`. `conformance_test.go` is the cross-adapter integration test suite. |
@@ -188,9 +192,9 @@ is no linter rule; see [Design rules](#design-rules-keep-these-intact)):
 | `mcpadmin/` | A separate concern from `mcp`'s bidirectional/sampling surface: it re-exposes the agent management write API (create/get/put/delete/validate/list agents) as MCP tools registered onto an `*mcp.Server`, so an MCP client (e.g. an LLM coding agent) can manage MockAgents' own agent catalog. Wired in `cmd/mockagents/mcp.go`. |
 | `realtime/` | Server-side state machine for the OpenAI Realtime mock: `session.go` (event handling, config validation), `vad.go` (server voice-activity detection — an energy-threshold detector, not a real acoustic model), `pace.go` (deadline-based event pacing + barge-in cancellation + idle-timeout). See the [Realtime sequence](#realtime-websocket-session-with-server-vad). |
 | `a2a/` | Mocks the A2A (Agent-to-Agent) protocol for `kind: A2AServer` documents: agent-card discovery, a JSON-RPC surface (`message/send`, `message/stream`, `tasks/get`, `tasks/cancel`), and task lifecycle. `message/stream` is real SSE. Its own package, mounted by `cmd/mockagents a2a`, not part of `adapter.DefaultRegistry`. |
-| `recording/` | Cassette format + record/replay handlers, including SSE streams (`Proxy.serveStreaming` / `Replay.serveStreaming`). |
+| `recording/` | Cassette format + record/replay handlers, including SSE streams (`Proxy.serveStreaming` / `Replay.serveStreaming`). Grew a full VCR-style feature set: **record modes** (`mode.go` — `none` replay-only default, `new_episodes` record-on-miss, `once`, `all` re-record/passthrough, via `--record-mode`); **configurable request matching** (`matcher.go` — `--match-ignore` drops volatile fields from the match key) with **structured miss diagnostics** (`diagnostics.go` — a replay 404 explains *which* field failed to match instead of a bare miss); **secret redaction before write** (`redact.go` — auth headers/keys masked in the cassette, not post-hoc); **sequenced playback** (repeat requests step through recorded responses in order); and **importers** for foreign formats (`import_vcr.go` vcrpy YAML, `import_openai.go` OpenAI stored-completions JSONL — surfaced as `mockagents import vcr\|openai-stored-completions`). |
 | `streaming/` | SSE chunking used when a chat/messages request sets `stream: true`. `pacing.go`'s `streamPacer` supports two modes: a deterministic fixed-seed model (TTFT + tokens-per-sec + jitter) and, when an agent sets `ttft_p50_ms`/`itl_p50_ms`, a per-stream-seeded lognormal "load-target" sampler. Also applies mid-stream fault injection (`truncateAfter`, `malformed`). This is a distinct mechanism from Realtime's `internal/realtime/pace.go`, which is a flat constant-interval drain, not this TTFT/ITL model — wiring the two together is a known, code-documented follow-on, not yet done. |
-| `storage/` | SQLite interaction logging (`modernc.org/sqlite`, pure-Go, no cgo). WAL + `synchronous=NORMAL` + `MaxOpenConns=8` for parallel readers/writers (deliberately different from the tenancy store's `MaxOpenConns=1`, which relies on single-connection serialization instead of row locks). Default DB file `.mockagents.db`. `MOCKAGENTS_LOG_BODIES`=`full`\|`sanitized`\|`none` controls response-body capture; `MOCKAGENTS_LOG_MAX_ROWS`=N bounds the table via a background pruner. |
+| `storage/` | SQLite interaction logging (`modernc.org/sqlite`, pure-Go, no cgo). WAL + `synchronous=NORMAL` + `MaxOpenConns=8` for parallel readers/writers (deliberately different from the tenancy store's `MaxOpenConns=1`, which relies on single-connection serialization instead of row locks). Default DB file `.mockagents.db` in the working directory; `MOCKAGENTS_DATA_DIR` relocates it (and the audit + tenancy DBs) to any writable directory — the escape hatch for read-only workdirs, resolved by `dataPath` in `cmd/mockagents/start.go`. An unwritable path degrades to a WARN (with the path and a hint; SQLite misreports `SQLITE_CANTOPEN` as `out of memory (14)`) — never a crash. `MOCKAGENTS_LOG_BODIES`=`full`\|`sanitized`\|`none` controls response-body capture; `MOCKAGENTS_LOG_MAX_ROWS`=N bounds the table via a background pruner. |
 | `config/` | YAML/JSON loader + validator. `LoadAllDocuments` (`loader.go`) splits a directory's files by top-level `kind` into five buckets: `Agent` (default when `kind` is empty), `Pipeline`, `TestSuite`, `MCPServer`, `A2AServer`; an unrecognized kind is a load error. `chaos_presets.go` expands a named `chaos.preset` into a `ChaosConfig`, filling only the sections the author left nil (`server-down`, `rate-limited`, `access-denied`, `unauthorized`, `flaky`, `slow`, `connection-reset`). The schema lives at `schema/mockagents-v1-agent.json`. |
 | `cli/` | Shared CLI helpers: `scaffold.go` powers `mockagents init` templates, `color.go` handles terminal output. |
 | `build/` | Test-only package whose `build_test.go` compiles `./cmd/mockagents` to guard against a broken main package. |
@@ -199,14 +203,22 @@ is no linter rule; see [Design rules](#design-rules-keep-these-intact)):
 | `contract/` | Contract extraction + diffing for `mockagents contract` — classifies changes as breaking/additive/info. |
 | `types/` | Domain types shared across packages (`AgentDefinition`, `PipelineDefinition`, `MCPServerDefinition`, `A2AServerDefinition`, `TestSuiteDefinition`, `ChaosConfig`, etc.). `Metadata.TenantID` is the multi-tenancy ownership marker. Changes here ripple widely. |
 
-Outside `internal/`: `cmd/mockagents/` (Cobra CLI), `gui/` (Next.js console),
-`sdk/{python,typescript,go}/`, `deploy/` (Helm chart + GitHub/GitLab CI
-templates), `site/` (MkDocs).
+Outside `internal/`: `cmd/mockagents/` (Cobra CLI — `start`, `init`,
+`validate`, `test`, `add`/`rm`, `logs`, `record`, `replay`,
+`import vcr|openai-stored-completions`, `contract`, `mcp`, `a2a`), `gui/`
+(Next.js console), `sdk/{python,typescript,go,vitest,npx}/`, `deploy/` (Helm
+chart + GitHub/GitLab CI templates + `deploy/actions/` composite GitHub
+Actions with source-path builds and an end-to-end self-test workflow,
+`.github/workflows/actions-selftest.yml`), `site/` (MkDocs).
 
 The three SDKs (`sdk/python`, `sdk/typescript`, `sdk/go/mockagents`) are plain
 HTTP/WS clients with no special coupling to the Go internals, except the Go
 SDK's `NewInProcessClient`, which loads agents and boots an `engine.Engine` +
-`httptest.Server` inline so Go test suites can skip the subprocess.
+`httptest.Server` inline so Go test suites can skip the subprocess. Two
+auxiliary npm packages ride alongside: `@mockagents/vitest` (`sdk/vitest` — a
+Vitest test-runner helper that boots/points at a mock per suite) and the
+`mockagents` npx launcher (`sdk/npx` — downloads the platform binary so
+`npx mockagents start` works with no install).
 
 ## How a request becomes a response
 
@@ -473,6 +485,16 @@ params — bad shape, unknown tool name, unknown pagination cursor, missing
 required prompt argument), `-32603` (internal error from a registered tool
 handler), and the MCP-specific `-32002` (resource not found).
 
+Operational notes: `mockagents mcp` (HTTP) **binds `127.0.0.1` by default**
+per the MCP spec's DNS-rebinding guidance — pass `--bind 0.0.0.0` to expose
+it (required inside a container whose port is mapped out). The `initialize`
+handshake echoes a supported requested `protocolVersion` rather than always
+answering the newest revision, so older clients negotiate cleanly. An MCP
+conformance suite runs in CI (`.github/workflows/mcp-conformance.yml`, with
+a README badge), and `tools/call` arguments are validated against each
+tool's `inputSchema` by default — violations return an `isError: true`
+execution result with path-qualified feedback, not a `-32602`.
+
 ## Cross-cutting: chaos and strict-tools
 
 ```mermaid
@@ -525,6 +547,24 @@ Strict-tools has three independently-togglable dimensions (round-trip tool
 IDs, `tool_choice` enforcement, and per-function JSON-schema strictness);
 each can be forced to `off` in YAML even when the top-level knob is on.
 
+### Failure fixtures: hallucination + semantic error modes
+
+Distinct from chaos (transport/HTTP-level faults), two fixture families plant
+**well-formed but wrong** responses — the failures a real client mishandles
+*after* a 200:
+
+- **Hallucination fixtures** — a scenario response can declare a
+  hallucination type (fabricated fact/citation, ungrounded, bad tool result);
+  the content is generated deterministically in
+  `engine/response_generator.go` and every adapter advertises it via the
+  `X-Mockagents-Hallucination: <type>` header (`adapter/hallucination.go`), so
+  a test can assert its guardrails caught something a real model won't
+  produce on demand.
+- **Semantic error modes** (`examples/semantic-errors-agent.yaml`) — cookbook
+  scenarios for `finish_reason: length` truncation, assistant refusals
+  (OpenAI `message.refusal`), and tool calls with deliberately malformed JSON
+  `arguments` — exercising parsers and fallbacks, not HTTP retry paths.
+
 ## Data and deployment view
 
 ```mermaid
@@ -551,9 +591,9 @@ flowchart TB
     BIN --> DB3
 
     subgraph docker["Docker"]
-        IMG["golang:1.26-alpine build →<br/>alpine:3.19 runtime, non-root user"]
+        IMG["golang:1.26-alpine build →<br/>alpine:3.19 runtime, non-root user,<br/>WORKDIR /data"]
         VOL1["/agents volume (ro)"]
-        VOL2["/data volume"]
+        VOL2["/data volume<br/>(workdir → SQLite DBs +<br/>init scaffolds land here)"]
     end
     IMG -.-> BIN
 
@@ -574,6 +614,13 @@ store and a quota enforcer backed by the same tenancy store's `tenant_spend`
 table. Nothing here requires cgo; the Dockerfile's `CGO_ENABLED=0` build and
 the pure-Go SQLite driver are what make the Alpine multi-stage image and
 cross-compilation in `goreleaser` simple.
+
+All three SQLite files resolve relative to the working directory —
+`WORKDIR /data` in the runtime image places them (and `mockagents init`
+scaffolds) inside the `/data` volume, so state survives container restarts.
+`MOCKAGENTS_DATA_DIR=<dir>` relocates them anywhere writable; if the
+resolved path is unwritable the server degrades to WARN-and-continue (no
+interaction/audit logging) rather than failing startup.
 
 ## Design rules (keep these intact)
 
@@ -648,6 +695,15 @@ route wiring. To add provider `foo` (see `gemini.go` as the template):
 - A Realtime session not committing a turn or not pacing right →
   `internal/realtime/vad.go` / `pace.go`.
 - An MCP client stuck on session negotiation → `internal/mcp/streamable.go`.
+- A replay 404 you didn't expect → `internal/recording/diagnostics.go` (the
+  miss explains which field failed the match) + `matcher.go` (`--match-ignore`).
+- A cassette captured a secret → `internal/recording/redact.go` (redaction is
+  applied at write time).
+- Logging silently off / DBs in the wrong place → `dataPath` in
+  `cmd/mockagents/start.go` (`MOCKAGENTS_DATA_DIR`) and `WORKDIR /data` in the
+  Dockerfile.
+- A hallucination fixture missing its header → `adapter/hallucination.go`;
+  wrong fixture content → `engine/response_generator.go`.
 - A new CLI command → `cmd/mockagents/`.
 
 ## Corrections from the previous version of this document

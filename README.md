@@ -140,6 +140,9 @@ mockagents start                              # prints your base URL + a ready-t
 - **Hallucination fixtures** — return a deterministic confidently-wrong / ungrounded /
   fabricated output (advertised via a response header) to test that your guardrails
   catch it — something a real model won't do on demand.
+- **Semantic error modes** — well-formed responses that break agents *after* the
+  200: `finish_reason: length` truncation, assistant refusals, and tool calls with
+  malformed JSON arguments ([cookbook example](examples/semantic-errors-agent.yaml)).
 - **Record & replay** — capture real upstream traffic once, replay it offline
   forever (SSE streams included).
 - **Contract testing** — extract an agent contract as JSON; diff breaking changes
