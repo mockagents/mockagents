@@ -1,12 +1,22 @@
 # MockAgents — Manual QA Test Plan
 
 **Document ID:** MA-QA-TP-001
-**Version:** 1.1
+**Version:** 1.2
 **Status:** Ready for execution
 **Owner:** QA
-**Applies to build:** `main` @ `585d89d` or later (Docker image `mockagents:latest`)
-**Last updated:** 2026-07-02
+**Applies to build:** `main` @ `888b59d` or later (Docker image `mockagents:latest`)
+**Last updated:** 2026-07-15
 
+> **v1.2 changes:** Covers the fixes for the cycle-1 QA validation report (`888b59d`):
+> TC-ENV-05 rewritten — data persistence via the `/data` volume **was broken before this build**
+> (DBs were silently written to the unwritable `/`; logging was disabled with a misleading
+> SQLite "out of memory (14)" warning) and must now be positively verified; new TC-ENV-06
+> (container workdir + `MOCKAGENTS_DATA_DIR` relocation); new TC-CLI-03 (`init` inside the
+> container); new TC-RUN-03 (in-process glob expansion in `mockagents test`); §4.1 gains zsh
+> glob-quoting guidance; §4.2 documents the model-collision tie-break warning (`wins=` field);
+> §13 gains GUI port-conflict recovery; §16 regression table extended with TC-REG-11..14;
+> tracker updated with the new case rows.
+>
 > **v1.1 changes:** Realtime suite expanded from 3 to 8 cases with copy-paste payloads (the
 > Realtime surface gained server VAD, barge-in/cancellation, item ops, ephemeral keys, and
 > session-update semantics across fidelity rounds 3–5, PRs #17–#23); §16 regression table now
@@ -30,6 +40,7 @@ every response is deterministic and canned, which makes expected results predict
 
 | Ref | Location |
 |---|---|
+| **QA troubleshooting guide (symptom → fix)** | `docs/qa/TROUBLESHOOTING.md` |
 | Project overview & architecture | `CLAUDE.md` |
 | CLI reference | `site/docs/guides/cli-reference.md` |
 | Management API | `site/docs/guides/management-api.md` |
@@ -90,6 +101,10 @@ macOS/Linux shell). If you must use PowerShell:
   ```
 - For WebSocket cases install `websocat` (https://github.com/vi/websocat/releases — a single
   binary; add it to PATH). `wscat` (`npm i -g wscat`) also works; the plan shows `websocat`.
+- **Glob patterns in zsh.** zsh aborts on an unmatched glob *before* the command runs
+  (`zsh: no matches found: /tests/*.yaml`). Quote the pattern — `mockagents test 'tests/*.yaml'`
+  — the CLI expands globs itself (since `888b59d`), so quoted patterns behave identically on
+  every shell, including inside `docker run` arguments (see TC-RUN-03).
 
 ### 4.2 Canonical trigger phrases (example agents)
 
@@ -107,6 +122,13 @@ throughout the plan:
 
 > Multiple example agents share `model: gpt-4o`; the engine picks by model **and** scenario
 > match. When a case says "the weather scenario", include the word `weather` in the message.
+>
+> **Model-collision tie-break (since `888b59d`).** When several agents claim the same model,
+> API requests resolve to the **lexicographically smallest agent name** — deterministic, not
+> random. The server logs a startup WARN per collision that names the winner explicitly
+> (`wins=<agent>`) plus a `hint`. QA does **not** need to isolate agents into a backup folder
+> to identify the routing target: read the `wins=` field. Isolation remains useful only when
+> a case must exercise a *losing* agent's scenarios via its shared model.
 
 ## 5. Test approach
 
@@ -170,12 +192,20 @@ throughout the plan:
 | **Expected** | Server honors debug logging; the captured response body is redacted/sanitized per `MOCKAGENTS_LOG_BODIES`. |
 | **Verification** | Compare log body vs `full` mode — sanitized mode masks/omits body while keeping agent grouping. |
 
-| ID | TC-ENV-05 | Priority | P2 |
+| ID | TC-ENV-05 | Priority | **P1** (regression — was broken before `888b59d`) |
 |---|---|---|---|
-| **Title** | Graceful shutdown / restart / data persistence |
-| **Steps** | 1. Make several chat calls.  2. `make docker-down` then `make docker-up`.  3. `GET /api/v1/logs`. |
-| **Expected** | Container stops cleanly; on restart the SQLite-backed logs (volume `mockagents-data:/data`) persist prior interactions. |
-| **Verification** | Log IDs from before the restart are still queryable. |
+| **Title** | Graceful shutdown / restart / data persistence via `/data` |
+| **Steps** | 1. `docker compose logs mockagents` — confirm startup logs say `interaction logging enabled db=.mockagents.db` and `audit logging enabled` (**no** `logging disabled` WARNs).  2. Make several chat calls.  3. `docker compose exec mockagents ls -la /data` — the `.mockagents.db` / `.mockagents-audit.db` files (+ WAL/SHM) are present.  4. `make docker-down` then `make docker-up`.  5. `GET /api/v1/logs`. |
+| **Expected** | Logging is ENABLED at startup; DB files live in `/data` (the compose volume), not `/`; container stops cleanly; on restart prior interactions persist. |
+| **Verification** | Log IDs from before the restart are still queryable. **Failure signature of the old bug:** WARN `interaction logging disabled ... unable to open database file: out of memory (14)` — that message means the DB path is unwritable (SQLITE_CANTOPEN), *not* actual memory exhaustion; it must not appear on `888b59d`+. |
+
+| ID | TC-ENV-06 | Priority | P2 |
+|---|---|---|---|
+| **Title** | Writable workdir + `MOCKAGENTS_DATA_DIR` relocation |
+| **Preconditions** | TC-ENV-03 passed |
+| **Steps** | 1. Confirm the image workdir: `docker run --rm --entrypoint pwd mockagents:latest` → `/data`.  2. Relocation: add `MOCKAGENTS_DATA_DIR=/data/state` to compose env, `docker compose up -d --force-recreate`, make a chat call.  3. `docker compose exec mockagents ls /data/state`.  4. Negative: run with a read-only root and NO data dir override pointing at a writable path, e.g. `docker run --rm --read-only -v "$PWD/agents:/agents:ro" mockagents:latest start --agents-dir /agents` and observe startup logs. |
+| **Expected** | (1) `pwd` is `/data`. (2)(3) all three SQLite DBs are created under `/data/state` (directory auto-created).  (4) Server still starts and serves traffic; the `logging disabled` WARNs appear and each carries the DB path and the actionable `hint` naming `MOCKAGENTS_DATA_DIR` — logging failure is degraded-mode, never a crash. |
+| **Verification** | With the override removed, DBs return to `/data` (the default). `GET /api/v1/logs` works in (2) and returns rows. |
 
 ---
 
@@ -657,6 +687,14 @@ throughout the plan:
 | **Expected** | Multi-turn steps replay and aggregate trajectory; `tool_call_args` matches nested dotted paths (type-tolerant); `tool_error`/`handles_tool_error` assert error trajectory; `latency_ms_lt` enforces `max_ms ≥ 1`. |
 | **Verification** | `--format junit` emits valid JUnit XML; `--format json` machine-readable. |
 
+| ID | TC-RUN-03 | Priority | P2 (new in `888b59d`) |
+|---|---|---|---|
+| **Title** | Glob pattern expansion in `mockagents test` |
+| **Preconditions** | ≥ 2 TestSuite YAML files staged (e.g. under `/agents`) |
+| **Steps** | 1. Quoted glob (zsh-safe): `mockagents test '/agents/*suite*.yaml' --agents-dir /agents`.  2. Same via Docker: `docker run --rm -v "$PWD/agents:/agents:ro" mockagents:latest test '/agents/*suite*.yaml' --agents-dir /agents`.  3. Negative: `mockagents test '/agents/*.nomatch' --agents-dir /agents`. |
+| **Expected** | (1)(2) The CLI expands the pattern itself — every matching suite runs, in **sorted filename order** (deterministic), identical results on zsh/bash/PowerShell/in-container.  (3) Clear error `no test suite files match pattern ...` with a **non-zero exit** — an unmatched glob never silently runs zero suites. |
+| **Verification** | A non-glob literal path that doesn't exist still reports the file-not-found error (pass-through unchanged). Compare run output of (1) against invoking each suite file explicitly — same cases, same results. |
+
 ### 12.2 Record & replay (REC)
 
 | ID | TC-REC-01 | Priority | P2 |
@@ -691,12 +729,25 @@ throughout the plan:
 | **Expected** | Change is picked up without restart; an `agent.reloaded` audit entry appears. |
 | **Verification** | New scenario behavior reflected in responses. |
 
+| ID | TC-CLI-03 | Priority | P2 (regression — was broken before `888b59d`) |
+|---|---|---|---|
+| **Title** | `init` scaffolding inside the container |
+| **Preconditions** | TC-ENV-01 passed |
+| **Steps** | 1. Default workdir: `docker run --rm --entrypoint mockagents mockagents:latest init starter` (no volume mount).  2. Scaffold onto the host: `docker run --rm -v "$PWD/scaffold-out:/work" -w /work --entrypoint mockagents mockagents:latest init starter && ls scaffold-out/starter`. |
+| **Expected** | (1) Scaffolds into `/data/starter` **without** `permission denied` — the image now runs from the writable `/data` (the old failure was `Error: creating directory for ".mockagents.yaml": mkdir /starter: permission denied`).  (2) Project lands on the host; `agents/`, `tests/`, `.mockagents.yaml` present. No `--force` needed on a fresh directory. |
+| **Verification** | The scaffold from (2) validates: `docker run --rm -v "$PWD/scaffold-out/starter:/p:ro" mockagents:latest validate /p/agents` exits 0. |
+
 ---
 
 ## 13. GUI console suite (GUI)
 
 > Requires the Next.js console: `make gui-dev` (port 3001) pointed at the server on 8080, or the
 > deployed GUI. In single-tenant mode calls go through anonymously; in multi-tenant mode log in at `/login`.
+>
+> **Port 3001 busy?** (`Error: listen EADDRINUSE: address already in use :::3001`) — run on
+> another port with `npx next dev --port 3002` (from `gui/`), or free 3001 first (Windows:
+> `netstat -ano | findstr :3001` → `taskkill /PID <pid> /F`). See `gui/README.md` §Running.
+> A port change does not affect any test expectation — the GUI talks to the API on 8080.
 
 | ID | TC-GUI-01 | Priority | P2 |
 |---|---|---|---|
@@ -799,6 +850,10 @@ links the manual case that exercises the fix.
 | TC-REG-08 | TC-RT-08 | `session.update` mid-speech keeps the turn; voice locked after assistant audio (`cannot_update_voice` verbatim); `max_output_tokens` range validation (round 5). |
 | TC-REG-09 | TC-RT-04 | Legacy `/v1/realtime/sessions` = beta-flat shape + 60 s key expiry; GA `client_secrets` envelope + 600 s default (rounds 4–5). |
 | TC-REG-10 | TC-RT-07 | Delete-tail chain repair (`previous_item_id` never dangles); truncate error shape (code null, verbatim message); OOB items not retrievable (round 5). |
+| TC-REG-11 | TC-CLI-03 | Container `init` scaffolds without `permission denied` — runtime image runs from writable `/data` (`888b59d`, QA cycle-1 #1). |
+| TC-REG-12 | TC-ENV-05 / TC-ENV-06 | Interaction + audit logging ENABLED in Docker; DBs land in the `/data` volume; `MOCKAGENTS_DATA_DIR` relocates state; disabled-logging WARNs carry path + hint (`888b59d`, QA cycle-1 #4). |
+| TC-REG-13 | TC-RUN-03 | `mockagents test` expands quoted globs in-process; unmatched pattern errors instead of running zero suites (`888b59d`, QA cycle-1 #2). |
+| TC-REG-14 | §4.2 note | Model-collision startup WARN names the winning agent (`wins=`) + fix hint; observe it by loading two agents with the same `model:` (`888b59d`, QA cycle-1 #3). |
 
 ---
 
@@ -816,7 +871,11 @@ Summarize each cycle here:
 
 | Defect ID | Test Case | Severity | Summary | Steps to reproduce | Status | Owner |
 |---|---|---|---|---|---|---|
-| | | | | | | |
+| MA-DEF-001 | TC-CLI-03 | Sev-2 | `mockagents init` in container: `mkdir /starter: permission denied` (runtime image had no writable WORKDIR; ran from `/` as non-root) | `docker run --rm --entrypoint mockagents mockagents:<pre-888b59d> init starter` | **Fixed** `888b59d` (WORKDIR /data) — verify via TC-REG-11 | Eng |
+| MA-DEF-002 | TC-ENV-05 | Sev-2 | Interaction + audit logging silently disabled in Docker: `unable to open database file: out of memory (14)` (= SQLITE_CANTOPEN, DBs written to unwritable `/`; log GUI pages empty) | Start pre-`888b59d` container; check startup WARNs; `/api/v1/logs` empty | **Fixed** `888b59d` (WORKDIR /data + `MOCKAGENTS_DATA_DIR` + hint in WARN) — verify via TC-REG-12 | Eng |
+| MA-DEF-003 | TC-RUN-03 | Sev-3 | `mockagents test /tests/*.yaml` fails in zsh (`no matches found`) — CLI did not expand globs itself | Run an unquoted glob in zsh against a container path | **Fixed** `888b59d` (in-process expansion; quote the pattern) — verify via TC-REG-13 | Eng |
+| MA-DEF-004 | §4.2 | Sev-3 | Multi-agent model-claim WARN did not say which agent wins; QA had to isolate agents to identify routing | Load two agents with the same `model:`; read the WARN | **Fixed** `888b59d` (WARN now has `wins=` + hint); behavior itself was by-design — verify via TC-REG-14 | Eng |
+| MA-DEF-005 | §13 note | Sev-3 (env) | GUI `npm run dev` fails `EADDRINUSE :3001` when the port is taken | Occupy 3001; `npm run dev` in `gui/` | **Documented** (`gui/README.md` + §13) — env issue, not a product defect | QA |
 
 ## 19. Risks & assumptions
 

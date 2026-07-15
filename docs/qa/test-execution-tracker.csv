@@ -3,7 +3,8 @@ TC-ENV-01,ENV,Build the Docker image,P1,Not Run,,,,,
 TC-ENV-02,ENV,Stage and validate example agents,P1,Not Run,,,,,
 TC-ENV-03,ENV,Start via Docker Compose and confirm health,P1,Not Run,,,,,
 TC-ENV-04,ENV,Config via environment variables,P2,Not Run,,,,,
-TC-ENV-05,ENV,Graceful shutdown / restart / data persistence,P2,Not Run,,,,,
+TC-ENV-05,ENV,Graceful shutdown / restart / data persistence via /data,P1,Not Run,,,,,Regression of QA cycle-1 #4 (fixed in 888b59d)
+TC-ENV-06,ENV,Writable workdir + MOCKAGENTS_DATA_DIR relocation,P2,Not Run,,,,,New in 888b59d
 TC-OAI-01,OAI,Non-streaming chat completion,P1,Not Run,,,,,
 TC-OAI-02,OAI,Streaming chat completion (SSE),P1,Not Run,,,,,
 TC-OAI-03,OAI,Simulated tool / function call,P1,Not Run,,,,,
@@ -58,10 +59,12 @@ TC-TENANT-03,TENANT,RBAC enforcement & privilege boundaries,P1,Not Run,,,,,
 TC-QUOTA-01,QUOTA,Rate limit & monthly spend enforcement,P2,Not Run,,,,,
 TC-RUN-01,RUN,Run a TestSuite (assertions),P1,Not Run,,,,,
 TC-RUN-02,RUN,Multi-turn + new assertion types,P2,Not Run,,,,,
+TC-RUN-03,RUN,Glob pattern expansion in mockagents test,P2,Not Run,,,,,Regression of QA cycle-1 #2 (fixed in 888b59d)
 TC-REC-01,REC,Record then replay a cassette,P2,Not Run,,,,,
 TC-CONTRACT-01,CONTRACT,Extract & diff agent contract,P3,Not Run,,,,,
 TC-CLI-01,CLI,Scaffold via init templates,P3,Not Run,,,,,
 TC-CLI-02,CLI,Hot-reload with --watch,P3,Not Run,,,,,
+TC-CLI-03,CLI,init scaffolding inside the container,P2,Not Run,,,,,Regression of QA cycle-1 #1 (fixed in 888b59d)
 TC-GUI-01,GUI,Agent catalog & detail,P2,Not Run,,,,,
 TC-GUI-02,GUI,Live log feed & log detail,P2,Not Run,,,,,
 TC-GUI-03,GUI,Costs / audit / pipelines DAG / editor,P3,Not Run,,,,,
@@ -82,3 +85,7 @@ TC-REG-07,REG,Cancellation close-out - delta invariant / no phantom items / usag
 TC-REG-08,REG,session.update mid-speech + voice lock + max_output_tokens validation,P2,Not Run,,,,,
 TC-REG-09,REG,Legacy sessions beta shape 60s vs GA client_secrets 600s,P3,Not Run,,,,,
 TC-REG-10,REG,Delete-tail chain repair + truncate error shape + OOB not retrievable,P3,Not Run,,,,,
+TC-REG-11,REG,Container init scaffolds without permission denied (workdir /data),P1,Not Run,,,,,QA cycle-1 #1 / 888b59d
+TC-REG-12,REG,Docker logging enabled + DBs in /data volume + DATA_DIR relocation,P1,Not Run,,,,,QA cycle-1 #4 / 888b59d
+TC-REG-13,REG,test command glob expansion + unmatched-pattern error,P2,Not Run,,,,,QA cycle-1 #2 / 888b59d
+TC-REG-14,REG,Model-collision WARN names winner (wins= field) + hint,P3,Not Run,,,,,QA cycle-1 #3 / 888b59d
