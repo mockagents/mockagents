@@ -866,6 +866,7 @@ Summarize each cycle here:
 | Cycle | Date | Build | Total | Pass | Fail | Blocked | N/A | P1 pass % | Sign-off |
 |---|---|---|---|---|---|---|---|---|---|
 | 1 | | | | | | | | | |
+| 1a (regression-only: TC-REG-11..14) | 2026-07-15 | `b7e0f3f` | 4 | 4 | 0 | 0 | 0 | 100% (2/2 P1) | automated run; see tracker notes — REG-11/12 used a locally rebuilt runtime image (apk step skipped behind corp TLS proxy; WORKDIR/USER/volumes identical) |
 
 ## 18. Defect log
 

@@ -85,7 +85,7 @@ TC-REG-07,REG,Cancellation close-out - delta invariant / no phantom items / usag
 TC-REG-08,REG,session.update mid-speech + voice lock + max_output_tokens validation,P2,Not Run,,,,,
 TC-REG-09,REG,Legacy sessions beta shape 60s vs GA client_secrets 600s,P3,Not Run,,,,,
 TC-REG-10,REG,Delete-tail chain repair + truncate error shape + OOB not retrievable,P3,Not Run,,,,,
-TC-REG-11,REG,Container init scaffolds without permission denied (workdir /data),P1,Not Run,,,,,QA cycle-1 #1 / 888b59d
-TC-REG-12,REG,Docker logging enabled + DBs in /data volume + DATA_DIR relocation,P1,Not Run,,,,,QA cycle-1 #4 / 888b59d
-TC-REG-13,REG,test command glob expansion + unmatched-pattern error,P2,Not Run,,,,,QA cycle-1 #2 / 888b59d
-TC-REG-14,REG,Model-collision WARN names winner (wins= field) + hint,P3,Not Run,,,,,QA cycle-1 #3 / 888b59d
+TC-REG-11,REG,Container init scaffolds without permission denied (workdir /data),P1,Pass,Claude (automated),2026-07-15,pwd=/data; whoami=mockagents; init exit 0 scaffolded /data/starter,,QA cycle-1 #1 / 888b59d. Image: runtime stage rebuilt locally w/o apk ca-certificates (corp TLS proxy); WORKDIR/USER/volumes identical
+TC-REG-12,REG,Docker logging enabled + DBs in /data volume + DATA_DIR relocation,P1,Pass,Claude (automated),2026-07-15,logging enabled; DBs+WAL in /data owned by mockagents; DATA_DIR=/data/state relocates; ro /data -> WARNs w/ path+hint + health 200,,QA cycle-1 #4 / 888b59d. Note: docker mounts declared VOLUMEs writable even under --read-only; used ro bind mount for the negative case
+TC-REG-13,REG,test command glob expansion + unmatched-pattern error,P2,Pass,Claude (automated),2026-07-15,quoted glob matched 2 suites 4/4 pass exit 0; unmatched glob + missing literal both exit 2 w/ clear errors,,QA cycle-1 #2 / 888b59d
+TC-REG-14,REG,Model-collision WARN names winner (wins= field) + hint,P3,Pass,Claude (automated),2026-07-15,WARN per collision states lexicographic rule + wins=<agent> + hint (5 observed on examples set),,QA cycle-1 #3 / 888b59d. wins= is per-pair; global winner = smallest across all claimants
