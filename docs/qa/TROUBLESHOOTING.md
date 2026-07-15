@@ -29,6 +29,11 @@ marked with their defect id.
 - If you deliberately run with a read-only or unwritable workdir, set
   `MOCKAGENTS_DATA_DIR=/some/writable/dir` — it relocates `.mockagents.db`,
   `.mockagents-audit.db`, and `.mockagents-tenancy.db` (directory auto-created).
+- **Testing degraded mode:** `docker run --read-only` will NOT reproduce this —
+  Docker mounts the image's declared `VOLUME`s (`/agents`, `/data`) as writable
+  anonymous volumes even under `--read-only`. Bind-mount an empty host dir
+  read-only over `/data` instead: `-v "$PWD/ro-data:/data:ro"` (see TC-ENV-06
+  step 4 in the test plan).
 - **Consequence when disabled:** the server still serves traffic (degraded mode), but
   `/api/v1/logs`, `/api/v1/costs`, `/api/v1/audit` and the GUI `/logs`/`/costs`/`/audit`
   pages will be empty. Don't log GUI-page defects while this WARN is present.

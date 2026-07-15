@@ -1,11 +1,16 @@
 # MockAgents — Manual QA Test Plan
 
 **Document ID:** MA-QA-TP-001
-**Version:** 1.2
+**Version:** 1.2.1
 **Status:** Ready for execution
 **Owner:** QA
 **Applies to build:** `main` @ `888b59d` or later (Docker image `mockagents:latest`)
 **Last updated:** 2026-07-15
+
+> **v1.2.1 changes:** TC-ENV-06 step 4 corrected from cycle-1a execution evidence — plain
+> `docker run --read-only` cannot produce logging-degraded mode (declared `VOLUME`s stay
+> writable); the step now bind-mounts an empty host dir read-only over `/data`, and expected
+> results gain the in-container health probe and the exact WARN error text.
 
 > **v1.2 changes:** Covers the fixes for the cycle-1 QA validation report (`888b59d`):
 > TC-ENV-05 rewritten — data persistence via the `/data` volume **was broken before this build**
@@ -203,9 +208,9 @@ throughout the plan:
 |---|---|---|---|
 | **Title** | Writable workdir + `MOCKAGENTS_DATA_DIR` relocation |
 | **Preconditions** | TC-ENV-03 passed |
-| **Steps** | 1. Confirm the image workdir: `docker run --rm --entrypoint pwd mockagents:latest` → `/data`.  2. Relocation: add `MOCKAGENTS_DATA_DIR=/data/state` to compose env, `docker compose up -d --force-recreate`, make a chat call.  3. `docker compose exec mockagents ls /data/state`.  4. Negative: run with a read-only root and NO data dir override pointing at a writable path, e.g. `docker run --rm --read-only -v "$PWD/agents:/agents:ro" mockagents:latest start --agents-dir /agents` and observe startup logs. |
-| **Expected** | (1) `pwd` is `/data`. (2)(3) all three SQLite DBs are created under `/data/state` (directory auto-created).  (4) Server still starts and serves traffic; the `logging disabled` WARNs appear and each carries the DB path and the actionable `hint` naming `MOCKAGENTS_DATA_DIR` — logging failure is degraded-mode, never a crash. |
-| **Verification** | With the override removed, DBs return to `/data` (the default). `GET /api/v1/logs` works in (2) and returns rows. |
+| **Steps** | 1. Confirm the image workdir: `docker run --rm --entrypoint pwd mockagents:latest` → `/data`.  2. Relocation: add `MOCKAGENTS_DATA_DIR=/data/state` to compose env, `docker compose up -d --force-recreate`, make a chat call.  3. `docker compose exec mockagents ls /data/state`.  4. Negative (degraded mode): make `/data` genuinely unwritable by bind-mounting an empty host dir read-only **over** it — `mkdir -p ro-data && docker run --rm -v "$PWD/ro-data:/data:ro" -v "$PWD/agents:/agents:ro" mockagents:latest start --agents-dir /agents` — and observe startup logs. ⚠️ Plain `--read-only` does **not** work here: Docker mounts the image's declared `VOLUME`s (`/agents`, `/data`) as writable anonymous volumes even under `--read-only`, so logging stays enabled and no WARNs appear (cycle-1a finding). |
+| **Expected** | (1) `pwd` is `/data`. (2)(3) all three SQLite DBs are created under `/data/state` (directory auto-created).  (4) Server still starts and serves traffic (`GET /api/v1/health` → 200 from inside: `docker exec <ctr> wget -qO- http://localhost:8080/api/v1/health`); both `interaction logging disabled` and `audit logging disabled` WARNs appear, each carrying the DB path and the actionable `hint` naming `MOCKAGENTS_DATA_DIR` — logging failure is degraded-mode, never a crash. |
+| **Verification** | With the override removed, DBs return to `/data` (the default). `GET /api/v1/logs` works in (2) and returns rows. In (4), the WARN's `error` text reads `unable to open database file: out of memory (14)` — that is SQLITE_CANTOPEN misreported, per `TROUBLESHOOTING.md` §1. |
 
 ---
 
