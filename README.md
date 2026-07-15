@@ -273,6 +273,13 @@ loop: saving any agent YAML re-parses, validates, and re-registers it without
 restarting; validation failures are logged and the previous known-good
 definition is preserved.
 
+On-disk state (the `.mockagents.db` interaction log, `.mockagents-audit.db`
+audit trail, and `.mockagents-tenancy.db`) is written to the working directory
+by default; set `MOCKAGENTS_DATA_DIR=/path/to/dir` to relocate it — required
+when the working directory isn't writable (read-only containers). The official
+Docker image runs from the `/data` volume, so state persists across container
+restarts out of the box.
+
 ## CI integration
 
 `mockagents test --format junit > report.xml` produces a Jenkins-compatible

@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -129,12 +130,15 @@ func runStart(cmd *cobra.Command, args []string) error {
 	eng := engine.NewEngine(registry, store, logger)
 
 	// Initialize interaction log storage.
-	logStore, err := storage.NewSQLiteStore(".mockagents.db")
+	logDB := dataPath(".mockagents.db")
+	logStore, err := storage.NewSQLiteStore(logDB)
 	if err != nil {
-		logger.Warn("interaction logging disabled", "error", err)
+		logger.Warn("interaction logging disabled",
+			"db", logDB, "error", err,
+			"hint", "SQLite could not open the file — usually the directory is not writable (SQLITE_CANTOPEN is misreported as 'out of memory (14)'); set MOCKAGENTS_DATA_DIR to a writable directory")
 	} else {
 		defer logStore.Close()
-		logger.Info("interaction logging enabled", "db", ".mockagents.db")
+		logger.Info("interaction logging enabled", "db", logDB)
 	}
 
 	// Configure and start server.
@@ -168,13 +172,16 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Audit log: always enabled. Costs a few KB of SQLite and a
 	// handful of writes per control-plane mutation; the value is
 	// high and the overhead is invisible.
-	auditStore, auditErr := audit.NewSQLiteStore(".mockagents-audit.db")
+	auditDB := dataPath(".mockagents-audit.db")
+	auditStore, auditErr := audit.NewSQLiteStore(auditDB)
 	if auditErr != nil {
-		logger.Warn("audit logging disabled", "error", auditErr)
+		logger.Warn("audit logging disabled",
+			"db", auditDB, "error", auditErr,
+			"hint", "SQLite could not open the file — usually the directory is not writable; set MOCKAGENTS_DATA_DIR to a writable directory")
 	} else {
 		defer auditStore.Close()
 		cfg.AuditStore = auditStore
-		logger.Info("audit logging enabled", "db", ".mockagents-audit.db")
+		logger.Info("audit logging enabled", "db", auditDB)
 	}
 
 	// Cost estimation: always on with the built-in default price
@@ -204,7 +211,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 			tenancyStore = ps
 			logger.Info("tenancy: using Postgres store")
 		} else {
-			ss, err := tenancy.NewSQLiteStore(".mockagents-tenancy.db")
+			ss, err := tenancy.NewSQLiteStore(dataPath(".mockagents-tenancy.db"))
 			if err != nil {
 				return fmt.Errorf("multi-tenant mode: %w", err)
 			}
@@ -299,6 +306,22 @@ func runStart(cmd *cobra.Command, args []string) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+// dataPath resolves where MockAgents keeps its on-disk state (interaction
+// logs, audit trail, tenancy DB). MOCKAGENTS_DATA_DIR relocates all of it —
+// the escape hatch when the working directory is not writable (read-only
+// containers, `docker run` without a workdir). Unset, it preserves the
+// original behavior: the file lands in the current working directory.
+func dataPath(filename string) string {
+	dir := strings.TrimSpace(os.Getenv("MOCKAGENTS_DATA_DIR"))
+	if dir == "" {
+		return filename
+	}
+	// Best-effort create; if this fails the SQLite open below reports the
+	// path-specific error with the actionable hint attached.
+	_ = os.MkdirAll(dir, 0o755)
+	return filepath.Join(dir, filename)
 }
 
 // printStartBanner shows the base-URL-swap "hero" so a developer's first move

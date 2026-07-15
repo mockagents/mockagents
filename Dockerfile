@@ -33,6 +33,13 @@ VOLUME ["/agents", "/data"]
 
 USER mockagents
 
+# Run from the writable data volume, not /. Relative writes — the SQLite
+# interaction/audit/tenancy DBs and `mockagents init` scaffolding — land in
+# /data (persisted by the volume above) instead of failing with EACCES as
+# the non-root user (QA: "mkdir /starter: permission denied",
+# "unable to open database file: out of memory (14)" = SQLITE_CANTOPEN).
+WORKDIR /data
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \

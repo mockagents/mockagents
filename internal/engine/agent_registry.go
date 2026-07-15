@@ -151,8 +151,15 @@ func (r *AgentRegistry) registerLocked(def *types.AgentDefinition) {
 		// instead of leaving authors to discover the tie-break by probing
 		// (round-9 R9-17: six shipped examples claim gpt-4o).
 		if prev, ok := r.byModel[def.Spec.Model]; ok && prev.Metadata.Name != name {
-			slog.Warn("model claimed by multiple agents; requests resolve to one deterministically",
-				"model", def.Spec.Model, "agents", []string{prev.Metadata.Name, name})
+			// The adapter hot path (GetByModelForTenant) breaks the tie by
+			// lexicographically smallest name — say so, and name the winner,
+			// so authors don't have to isolate agents to find out (QA bug 3).
+			winner := min(prev.Metadata.Name, name)
+			slog.Warn("model claimed by multiple agents; API requests for this model resolve to the lexicographically smallest agent name",
+				"model", def.Spec.Model,
+				"agents", []string{prev.Metadata.Name, name},
+				"wins", winner,
+				"hint", "give each agent a distinct spec.model so every agent stays reachable")
 		}
 		r.byModel[def.Spec.Model] = def
 	}

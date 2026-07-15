@@ -86,6 +86,16 @@ npm run dev   # http://localhost:3001
 To point the GUI at a non-default MockAgents URL, set
 `MOCKAGENTS_API_URL` before running `npm run dev` or `npm start`.
 
+> **Port 3001 already in use?** (`Error: listen EADDRINUSE: address already
+> in use :::3001`) — run Next.js on another port directly:
+>
+> ```bash
+> npx next dev --port 3002
+> ```
+>
+> Or free the port first: `npx kill-port 3001`, or on Windows
+> `netstat -ano | findstr :3001` + `taskkill /PID <pid> /F`.
+
 To exercise the admin surfaces, start the server in multi-tenant
 mode and copy the bootstrap admin key from stderr:
 

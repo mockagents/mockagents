@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/mockagents/mockagents/internal/cli"
 	"github.com/mockagents/mockagents/internal/config"
@@ -32,7 +34,12 @@ A TestSuite targets either an agent (target.agent: <name>) or a pipeline
   - tool_call (tool + arguments)
   - response_contains (value)
   - scenario_matched (value)
-  - latency_ms_lt (max_ms)`,
+  - latency_ms_lt (max_ms)
+
+Glob patterns are expanded by the command itself, so they work in shells that
+don't expand them (Windows) and inside docker run arguments. In zsh, quote the
+pattern so the shell doesn't fail on it first:
+  mockagents test 'tests/*.yaml'`,
 	RunE: runTest,
 }
 
@@ -87,11 +94,17 @@ func runTest(cmd *cobra.Command, args []string) error {
 	switch {
 	case len(args) > 0:
 		for _, p := range args {
-			loaded, err := loadSuitesFrom(p)
+			paths, err := expandSuiteArg(p)
 			if err != nil {
 				return err
 			}
-			suites = append(suites, loaded...)
+			for _, path := range paths {
+				loaded, err := loadSuitesFrom(path)
+				if err != nil {
+					return err
+				}
+				suites = append(suites, loaded...)
+			}
 		}
 	case testSuites != "":
 		loaded, err := loadSuitesFrom(testSuites)
@@ -137,6 +150,27 @@ func runTest(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 	return nil
+}
+
+// expandSuiteArg expands a glob pattern argument into concrete paths. Shells
+// that expand globs never hand us metacharacters, but quoted patterns (the
+// zsh-safe `mockagents test '/tests/*.yaml'`), Windows shells, and `docker run`
+// arguments arrive unexpanded — expanding here makes globs work the same
+// everywhere. A non-pattern argument passes through untouched so a literal
+// missing path still reports the os.Stat error from loadSuitesFrom.
+func expandSuiteArg(p string) ([]string, error) {
+	if !strings.ContainsAny(p, "*?[") {
+		return []string{p}, nil
+	}
+	matches, err := filepath.Glob(p)
+	if err != nil {
+		return nil, fmt.Errorf("invalid glob pattern %q: %w", p, err)
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no test suite files match pattern %q", p)
+	}
+	sort.Strings(matches)
+	return matches, nil
 }
 
 func loadSuitesFrom(path string) ([]*config.TestSuiteLoadResult, error) {
