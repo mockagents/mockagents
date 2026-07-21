@@ -46,6 +46,7 @@ every response is deterministic and canned, which makes expected results predict
 | Ref | Location |
 |---|---|
 | **QA troubleshooting guide (symptom → fix)** | `docs/qa/TROUBLESHOOTING.md` |
+| **Performance test plan (MA-QA-PTP-001)** | `docs/qa/PERFORMANCE-TEST-PLAN.md` |
 | Project overview & architecture | `CLAUDE.md` |
 | CLI reference | `site/docs/guides/cli-reference.md` |
 | Management API | `site/docs/guides/management-api.md` |
