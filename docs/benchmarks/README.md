@@ -1,12 +1,19 @@
 # Benchmarks
 
 This directory is the published home for the MockAgents hot-path
-benchmark numbers referenced by **US-12.2** in `product-backlog.md`.
+benchmark numbers.
 
-> **Optimizing?** See **`docs/PERFORMANCE.md`** — the performance handoff
-> guide: the prioritized optimization backlog (grounded in `file:line`), the
-> "already optimized — don't redo" list, and the scaling ceilings. This README
-> is *how to measure*; that doc is *what to change*.
+> **Optimizing?** This README is *how to measure*. For *what's already
+> optimized and why*, see the `PERF-*` entries in [`CHANGELOG.md`](../../CHANGELOG.md)
+> and the hot-path walkthrough + design rules in
+> [`ARCHITECTURE.md`](../../ARCHITECTURE.md). For *how QA regresses these
+> numbers*, see [`docs/qa/PERFORMANCE-TEST-PLAN.md`](../qa/PERFORMANCE-TEST-PLAN.md)
+> (TC-PERF-01 pins allocs/op exactly against this directory's baseline).
+>
+> The original internal performance-handoff guide (`docs/PERFORMANCE.md`,
+> with the prioritized optimization backlog) was removed from the public
+> tree with the other planning docs; maintainers can find it on the
+> unpublished `release/roadmap_docs` archive branch.
 
 ## How to refresh
 
