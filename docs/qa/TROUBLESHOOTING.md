@@ -121,6 +121,18 @@ marked with their defect id.
   `busy_timeout=5000`, and a per-write timeout are already configured
   (`internal/storage/sqlite.go`, `internal/server/log_worker.go`).
 
+### Chaos agent responds instantly — latency/errors not firing
+- The `chaos:` block nests under **`spec.behavior`**, not `spec.` — a
+  mis-nested block validates clean but silently never fires. It also needs
+  `enabled: true`. Sanity-probe the agent and check the response time
+  matches the configured band before running a chaos-dependent test.
+
+### Every curl probe takes ~200 ms on Windows
+- You probed `localhost`: curl resolves it IPv6-first, the server binds
+  IPv4, and the per-request fallback costs ~200 ms — which can masquerade
+  as chaos/injected latency. Probe `http://127.0.0.1:8080` instead. (Same
+  root cause as the GUI health-pill note in `gui/README.md`.)
+
 ### Fewer rows in `/api/v1/logs` than requests sent during heavy load
 - Documented overflow behavior, not data corruption: the bounded log queue
   drops entries under burst to protect request latency. The worker's

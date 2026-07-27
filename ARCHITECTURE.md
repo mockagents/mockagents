@@ -500,7 +500,7 @@ execution result with path-qualified feedback, not a `-32602`.
 ```mermaid
 flowchart LR
     subgraph yaml["Agent YAML"]
-        C1["spec.chaos: {preset | latency | errors | connection}"]
+        C1["spec.behavior.chaos: {preset | latency | errors | connection}"]
         C2["spec.behavior.strict_tools: {ids, tool_choice, schemas}"]
     end
     subgraph cfgload["internal/config"]

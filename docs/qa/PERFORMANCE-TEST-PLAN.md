@@ -425,17 +425,44 @@ throughout; a `Retry-After` header present on 429s.
 
 **Steps**
 
-1. Server per §4.4 (examples include `chaos-agent` and the slow presets).
+1. Server per §4.4. Stage a **latency-only** chaos target (v1.1 — do *not*
+   use the example `chaos-agent`: its 20/min rate cap turns the run into a
+   ~2,000 RPS fast-429 flood that measures load scaling, not isolation):
+
+   ```yaml
+   # agents/perf-slow-agent.yaml — note: chaos nests under spec.behavior
+   apiVersion: mockagents/v1
+   kind: Agent
+   metadata:
+     name: perf-slow
+   spec:
+     protocol: openai-chat-completions
+     model: perf-slow-model
+     behavior:
+       scenarios:
+         - name: default
+           response: {content: Deliberately slow canned completion.}
+       chaos:
+         enabled: true
+         latency: {distribution: uniform, min_ms: 100, max_ms: 300}
+   ```
+
+   Sanity-probe it with `http://127.0.0.1:8080` (NOT `localhost` — Windows
+   curl pays a ~200 ms IPv6-fallback that masquerades as chaos latency):
+   expect 100–300 ms responses.
 2. Terminal A: TC-PERF-02 script at 20 VUs against `perf-echo-model`,
    3 minutes.
-3. Terminal B, starting 30 s later: 20 VUs against the chaos/slow agent's
-   model for 2 minutes (its injected latency/errors are the *expected*
-   behavior).
+3. Terminal B — a **separate load-generator process** (a shared process
+   skews the healthy numbers), starting 30 s later: 20 VUs against
+   `perf-slow-model` for 2 minutes. Its ~100–300 ms responses are the
+   expected behavior; its RPS is bounded by the sleeps.
 4. Compare terminal A's p95 during the overlap window vs before it.
 
 **Pass criteria:** healthy-agent p95 during overlap within **±25%** of its
-solo value. Chaos latency is per-request goroutine sleep — it must never
-starve unrelated traffic.
+solo value; chaos-role latency distribution matches the configured band
+(confirms the injection actually fired — a mis-nested chaos block
+validates clean but never fires). Chaos latency is per-request goroutine
+sleep — it must never starve unrelated traffic.
 
 ---
 
@@ -470,7 +497,7 @@ worth a ticket, not a release blocker.
 | Cycle | Date | Build | Machine (CPU/cores/RAM/OS/power plan) | TC-PERF-02 RPS@50VU / p95 | TC-PERF-03 p95 stream | TC-PERF-04 TTFT p50/p95 @20u | TC-PERF-05 none→full delta | TC-PERF-07 warm overhead | Verdict |
 |---|---|---|---|---|---|---|---|---|---|
 | 1 (partial: 02–05) | 2026-07-27 | `ad67121` | QA laptop, Windows 11 (details in perf-results/2026-07-27/) | pass — p95 7.6–8.4 ms, 0% err @200 VU (k6) | pass — well under 8 s @20/100 VU | pass — TTFT p50 ≈330 ms (in band) | pass — row cap held; deltas in raw artifacts | not run | **02–05 pass.** Ad-hoc 36 s client `max` investigated → client/OS-side, closed not-a-defect (MA-DEF-006; see perf-results/2026-07-27/). Cross-check repro: 3,796 RPS, client p95 20.5 ms, server-side max 461 ms over 683k reqs. 06+ pending. |
-| 1 (cont.: 06–07) | 2026-07-27 | `8a26f15` | Same machine (native binary) | — | — | — | — | pass — cold 57.9 ms → warm 7.5 ms; ≈0 ms warm overhead (4,116 RPS auth vs 3,796 unauth); burst: only 200s+429s, `Retry-After` on all 129,739 429s, zero 5xx | **06–07 pass.** Soak: 2.18M reqs 0 err, p95 flat 13–17 ms, DB capped at 50k rows, session-TTL RSS sawtooth peaked 4.4 GB then declined under load; idle decay 3.95→1.69 GB by +15 min (no leak). Details: `perf-results/2026-07-27/TC-PERF-06-soak-results.md`, `TC-PERF-07-multitenant-results.md`. Remaining: 08–10. |
+| 1 (cont.: 06–07) | 2026-07-27 | `8a26f15` | Same machine (native binary) | — | — | — | — | pass — cold 57.9 ms → warm 7.5 ms; ≈0 ms warm overhead (4,116 RPS auth vs 3,796 unauth); burst: only 200s+429s, `Retry-After` on all 129,739 429s, zero 5xx | **06–07 pass.** Soak: 2.18M reqs 0 err, p95 flat 13–17 ms, DB capped at 50k rows, session-TTL RSS sawtooth peaked 4.4 GB then declined under load; idle decay 3.95→1.69 GB by +15 min (no leak). Details: `perf-results/2026-07-27/TC-PERF-06-soak-results.md`, `TC-PERF-07-multitenant-results.md`. **08 pass** — healthy p95 ratio 1.102 vs latency-only chaos target (`TC-PERF-08-chaos-isolation-results.md`). Remaining: 09–10 (exploratory/optional). |
 
 - Track execution status in `test-execution-tracker.csv` (TC-PERF rows).
 - Defects: log in MANUAL-TEST-PLAN §18 with severity per its §5.3.
