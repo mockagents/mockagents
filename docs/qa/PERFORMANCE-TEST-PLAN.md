@@ -152,6 +152,15 @@ and delete `.mockagents.db*` for a clean logging table:
 | Memory | server process RSS over time | Task Manager / `ps` sampled every 5 min (record, don't eyeball) |
 | DB growth | `.mockagents.db*` file sizes over time | `ls -la` sampled with RSS |
 
+**Outlier triage rule:** before attributing a client-reported latency outlier
+(a big `max` with healthy p95) to the server, cross-check the **server-side**
+distribution from the interaction log —
+`SELECT MAX(latency_ms) FROM interaction_logs`. On a single machine the load
+generator and server share CPU and one loopback TCP stack; multi-second client
+`max` values with a millisecond server-side max are a client/OS artifact, not
+a server defect (see `TROUBLESHOOTING.md` §5 and the 2026-07-27
+investigation in `perf-results/`).
+
 ## 6. Test cases
 
 > Effort key: each case lists an estimated wall-clock duration. Run TC-PERF-01
@@ -445,7 +454,7 @@ worth a ticket, not a release blocker.
 
 | Cycle | Date | Build | Machine (CPU/cores/RAM/OS/power plan) | TC-PERF-02 RPS@50VU / p95 | TC-PERF-03 p95 stream | TC-PERF-04 TTFT p50/p95 @20u | TC-PERF-05 none→full delta | TC-PERF-07 warm overhead | Verdict |
 |---|---|---|---|---|---|---|---|---|---|
-| | | | | | | | | | |
+| 1 (partial: 02–05) | 2026-07-27 | `ad67121` | QA laptop, Windows 11 (details in perf-results/2026-07-27/) | pass — p95 7.6–8.4 ms, 0% err @200 VU (k6) | pass — well under 8 s @20/100 VU | pass — TTFT p50 ≈330 ms (in band) | pass — row cap held; deltas in raw artifacts | not run | **02–05 pass.** Ad-hoc 36 s client `max` investigated → client/OS-side, closed not-a-defect (MA-DEF-006; see perf-results/2026-07-27/). Cross-check repro: 3,796 RPS, client p95 20.5 ms, server-side max 461 ms over 683k reqs. 06+ pending. |
 
 - Track execution status in `test-execution-tracker.csv` (TC-PERF rows).
 - Defects: log in MANUAL-TEST-PLAN §18 with severity per its §5.3.
@@ -472,3 +481,7 @@ absolute, not relative — they never loosen with a slower baseline.
   writes; exclude the working directory for timed runs if policy allows.
 - k6 buffers SSE bodies: k6 can gate on *total* stream time only. TTFT
   claims must come from Locust (§5). Never report k6 TTFB as TTFT.
+- Single-machine loopback runs produce occasional multi-second **client-side**
+  `max` outliers (load generator and server share CPU + one TCP stack) with no
+  server-side counterpart. Apply the §5 outlier triage rule before filing;
+  gate on percentiles, never on `max`, for pass/fail decisions.

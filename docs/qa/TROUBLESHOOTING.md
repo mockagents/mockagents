@@ -104,7 +104,30 @@ marked with their defect id.
   real PCM16 energy is measured. Also remember: committed audio always transcribes to
   `[audio input]` (no STT), so VAD turns match the agent's *default* scenario.
 
-## 5. When in doubt
+## 5. Performance testing
+
+### Load test shows a huge `max` latency but healthy p95/p99 and 0% errors
+- **Check the server's own numbers before blaming the server.** Every request's
+  server-measured latency is in the interaction log:
+  `python -c "import sqlite3;print(sqlite3.connect('file:.mockagents.db?mode=ro',uri=True).execute('SELECT COUNT(*),MAX(latency_ms) FROM interaction_logs').fetchone())"`
+  If the server-side max is milliseconds while the client saw seconds, the
+  outlier happened on the client/OS side of the loopback (load generator and
+  server contending for CPU on one machine; OS TCP retransmission backoff) —
+  not in the server. Verified 2026-07-27: client max 5.6 s vs server max
+  0.46 s over 683k requests (`perf-results/2026-07-27/`).
+- **It is not SQLite lock contention.** Interaction-log writes are async and
+  off the request path: the response is fully sent before the entry is queued,
+  and `Submit` drops on overflow rather than blocking. WAL,
+  `busy_timeout=5000`, and a per-write timeout are already configured
+  (`internal/storage/sqlite.go`, `internal/server/log_worker.go`).
+
+### Fewer rows in `/api/v1/logs` than requests sent during heavy load
+- Documented overflow behavior, not data corruption: the bounded log queue
+  drops entries under burst to protect request latency. The worker's
+  `submitted`/`dropped` counters print at server shutdown. If you need every
+  row at high RPS, lower the load or accept the sample.
+
+## 6. When in doubt
 
 1. `docker compose logs mockagents` — startup WARNs explain most "missing data" symptoms.
 2. Reproduce via the raw API (`curl`) before blaming the GUI or an SDK.

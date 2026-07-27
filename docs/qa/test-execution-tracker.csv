@@ -86,10 +86,10 @@ TC-REG-08,REG,session.update mid-speech + voice lock + max_output_tokens validat
 TC-REG-09,REG,Legacy sessions beta shape 60s vs GA client_secrets 600s,P3,Not Run,,,,,
 TC-REG-10,REG,Delete-tail chain repair + truncate error shape + OOB not retrievable,P3,Not Run,,,,,
 TC-PERF-01,PERF,Engine micro-benchmark baseline (make bench-report),P1,Not Run,,,,,MA-QA-PTP-001. allocs/B per op must match baseline exactly; ns/op ±25%
-TC-PERF-02,PERF,Non-streaming HTTP throughput ramp (10/50/200 VUs),P1,Not Run,,,,,MA-QA-PTP-001. First cycle = baseline capture
-TC-PERF-03,PERF,Streaming load — k6.js encoded thresholds (20 + 100 VUs),P1,Not Run,,,,,MA-QA-PTP-001
-TC-PERF-04,PERF,TTFT / pacing fidelity under load (Locust 20 + 100 users),P2,Not Run,,,,,MA-QA-PTP-001. Too-fast streaming under load = defect
-TC-PERF-05,PERF,Logging pipeline under burst (bodies none/sanitized/full + drops + retention),P2,Not Run,,,,,MA-QA-PTP-001
+TC-PERF-02,PERF,Non-streaming HTTP throughput ramp (10/50/200 VUs),P1,Pass,QA,2026-07-27,p95 7.57-8.44ms; 0.00% errors up to 200 VUs,,MA-QA-PTP-001. Baseline captured. Ad-hoc 36s max outlier -> MA-DEF-006 closed not-a-defect (client/OS-side; server max 461ms)
+TC-PERF-03,PERF,Streaming load — k6.js encoded thresholds (20 + 100 VUs),P1,Pass,QA,2026-07-27,p95 stream well under 8s at 20 and 100 VU; 0% errors,,MA-QA-PTP-001
+TC-PERF-04,PERF,TTFT / pacing fidelity under load (Locust 20 + 100 users),P2,Pass,QA,2026-07-27,TTFT p50 ~330ms within 250-500ms band; 0% failures,,MA-QA-PTP-001
+TC-PERF-05,PERF,Logging pipeline under burst (bodies none/sanitized/full + drops + retention),P2,Pass,QA,2026-07-27,none/sanitized/full tested; retention row cap held; drop accounting verified at 3.8k RPS in follow-up repro,,MA-QA-PTP-001
 TC-PERF-06,PERF,Soak 45 min — RSS plateau / DB growth / session TTL,P2,Not Run,,,,,MA-QA-PTP-001
 TC-PERF-07,PERF,Multi-tenant auth (bcrypt cold/warm) + quota 429 correctness under burst,P2,Not Run,,,,,MA-QA-PTP-001
 TC-PERF-08,PERF,Chaos isolation — slow agent must not degrade healthy p95,P3,Not Run,,,,,MA-QA-PTP-001

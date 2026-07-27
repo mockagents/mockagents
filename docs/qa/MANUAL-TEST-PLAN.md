@@ -883,6 +883,7 @@ Summarize each cycle here:
 | MA-DEF-003 | TC-RUN-03 | Sev-3 | `mockagents test /tests/*.yaml` fails in zsh (`no matches found`) — CLI did not expand globs itself | Run an unquoted glob in zsh against a container path | **Fixed** `888b59d` (in-process expansion; quote the pattern) — verify via TC-REG-13 | Eng |
 | MA-DEF-004 | §4.2 | Sev-3 | Multi-agent model-claim WARN did not say which agent wins; QA had to isolate agents to identify routing | Load two agents with the same `model:`; read the WARN | **Fixed** `888b59d` (WARN now has `wins=` + hint); behavior itself was by-design — verify via TC-REG-14 | Eng |
 | MA-DEF-005 | §13 note | Sev-3 (env) | GUI `npm run dev` fails `EADDRINUSE :3001` when the port is taken | Occupy 3001; `npm run dev` in `gui/` | **Documented** (`gui/README.md` + §13) — env issue, not a product defect | QA |
+| MA-DEF-006 | TC-PERF-02 (ad-hoc) | Sev-3 (env) | 36 s client-side `max` latency outlier in 180 s/50 VU run; hypothesized as SQLite lock contention | See `docs/qa/perf-results/2026-07-27/adhoc-max-outlier-investigation.md` | **Closed — not a server defect.** Server-side max 461 ms over 683k reqs; WAL/busy_timeout/write-timeout already in code; log writes are async off the request path. Triage rule added to TROUBLESHOOTING §5 | Eng |
 
 ## 19. Risks & assumptions
 
