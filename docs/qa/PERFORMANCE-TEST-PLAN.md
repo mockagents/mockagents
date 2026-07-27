@@ -1,7 +1,15 @@
 # MockAgents — Performance Test Plan
 
 **Document ID:** MA-QA-PTP-001
-**Version:** 1.0
+**Version:** 1.1
+
+> **v1.1 changes (from cycle-1 execution):** TC-PERF-07 re-sequenced — start
+> the server **uncapped**, measure warm auth overhead, then apply the rate cap
+> **at runtime** (`PUT /api/v1/tenants/{id}/quota`) before the burst phase
+> (the v1.0 env-var cap at startup would have limited the overhead
+> measurement itself to 100 RPS). TC-PERF-06 memory metric switched to
+> private bytes (`tasklist` working set proved too noisy — the OS trims it).
+> §9 gains the sessionless-traffic memory note.
 **Status:** Ready for execution
 **Owner:** QA
 **Applies to build:** `main` @ `a806dab` or later
@@ -349,8 +357,11 @@ and verifies overflow degrades exactly as documented.
    constant 20 VUs (`--vus 20 --duration 45m` on a simple script without the
    ramp scenario), and in a second terminal the streaming k6.js with
    `VUS=10 DURATION=45m`.
-3. Every 5 minutes, append to `perf-results/TC-PERF-06-samples.csv`: RSS of
-   the server process, sizes of `.mockagents.db*`, and one manual
+3. Every 5 minutes, append to `perf-results/TC-PERF-06-samples.csv`: the
+   server process's **private bytes** (PowerShell:
+   `(Get-Process mockagents).PrivateMemorySize64` — do *not* use
+   `tasklist`'s working set, which the OS trims aggressively and swings by
+   GBs; cycle-1 finding), sizes of `.mockagents.db*`, and one manual
    `curl -w '%{time_total}'` latency probe of each endpoint.
 4. Send ~50 requests with **distinct `session_id`s** early on (session store
    entries expire after a 30-min TTL; a 45-min soak crosses it).
@@ -378,14 +389,15 @@ and proves the cold path and limit responses stay correct under burst.
 
 **Steps**
 
-1. Start multi-tenant with a modest rate limit:
+1. Start multi-tenant **without** rate caps (they'd cap step 3's overhead
+   measurement itself — v1.1 fix):
    ```bash
-   MOCKAGENTS_MULTI_TENANT=1 MOCKAGENTS_DEFAULT_RATE_PER_SEC=100 \
-     MOCKAGENTS_DEFAULT_RATE_BURST=200 ./mockagents.exe start --agents-dir agents --log-level warn
+   MOCKAGENTS_MULTI_TENANT=1 ./mockagents.exe start --agents-dir agents --log-level warn
    ```
-   Capture the bootstrap platform key from stderr; mint one `editor` API key
-   via the management API (see `docs/guides/multi-tenant.md`) and use **that**
-   key for the load below.
+   Capture the bootstrap platform key from stderr (don't pipe the server
+   output through `grep`/`head` — buffering can swallow the shown-once
+   banner); mint one `editor` API key via the management API (see
+   `docs/guides/multi-tenant.md`) and use **that** key for the load below.
 2. **Cold vs warm:** send 5 sequential `curl -w '%{time_total}'` requests
    with the key. Request 1 pays bcrypt; 2–5 should be an order of magnitude
    cheaper. Record all five timings.
@@ -393,9 +405,12 @@ and proves the cold path and limit responses stay correct under burst.
    `Authorization: Bearer <editor-key>`. Compare RPS + p95 against the
    single-tenant TC-PERF-02 numbers → this delta is the authenticated-path
    overhead (record it; no hard gate first cycle).
-4. **Limit correctness under burst:** raise to 200 VUs for 30 s. The rate
-   cap (100/s) must reject the excess with **429 + `Retry-After`** —
-   never 500s, never connection errors. In k6, count statuses
+4. **Limit correctness under burst:** first apply the cap **at runtime** —
+   `PUT /api/v1/tenants/{id}/quota` with
+   `{"rate_per_sec":100,"rate_burst":200}` (platform key; expect 200) —
+   then raise to 200 VUs for 30 s. The cap must reject the excess with
+   **429 + `Retry-After`** — never 500s, never connection errors. In k6,
+   count statuses
    (`check(res, {'429 or 200': r => r.status === 200 || r.status === 429})`).
 
 **Pass criteria:** warm-path p95 overhead vs single-tenant < 10 ms; burst
@@ -455,6 +470,7 @@ worth a ticket, not a release blocker.
 | Cycle | Date | Build | Machine (CPU/cores/RAM/OS/power plan) | TC-PERF-02 RPS@50VU / p95 | TC-PERF-03 p95 stream | TC-PERF-04 TTFT p50/p95 @20u | TC-PERF-05 none→full delta | TC-PERF-07 warm overhead | Verdict |
 |---|---|---|---|---|---|---|---|---|---|
 | 1 (partial: 02–05) | 2026-07-27 | `ad67121` | QA laptop, Windows 11 (details in perf-results/2026-07-27/) | pass — p95 7.6–8.4 ms, 0% err @200 VU (k6) | pass — well under 8 s @20/100 VU | pass — TTFT p50 ≈330 ms (in band) | pass — row cap held; deltas in raw artifacts | not run | **02–05 pass.** Ad-hoc 36 s client `max` investigated → client/OS-side, closed not-a-defect (MA-DEF-006; see perf-results/2026-07-27/). Cross-check repro: 3,796 RPS, client p95 20.5 ms, server-side max 461 ms over 683k reqs. 06+ pending. |
+| 1 (cont.: 06–07) | 2026-07-27 | `8a26f15` | Same machine (native binary) | — | — | — | — | pass — cold 57.9 ms → warm 7.5 ms; ≈0 ms warm overhead (4,116 RPS auth vs 3,796 unauth); burst: only 200s+429s, `Retry-After` on all 129,739 429s, zero 5xx | **06–07 pass.** Soak: 2.18M reqs 0 err, p95 flat 13–17 ms, DB capped at 50k rows, session-TTL RSS sawtooth peaked 4.4 GB then declined under load; idle decay 3.95→1.69 GB by +15 min (no leak). Details: `perf-results/2026-07-27/TC-PERF-06-soak-results.md`, `TC-PERF-07-multitenant-results.md`. Remaining: 08–10. |
 
 - Track execution status in `test-execution-tracker.csv` (TC-PERF rows).
 - Defects: log in MANUAL-TEST-PLAN §18 with severity per its §5.3.
@@ -485,3 +501,8 @@ absolute, not relative — they never loosen with a slower baseline.
   `max` outliers (load generator and server share CPU + one TCP stack) with no
   server-side counterpart. Apply the §5 outlier triage rule before filing;
   gate on percentiles, never on `max`, for pass/fail decisions.
+- **Sessionless traffic holds memory by design:** each request without an
+  `X-Session-Id` creates a 30-min-TTL session (~2–2.5 KB); at ~800 RPS the
+  live set peaks at ~4 GB RSS before TTL expiry balances creation (cycle-1
+  soak). Not a leak — but budget RAM for high-RPS runs, or reuse a session
+  id to keep memory flat.
