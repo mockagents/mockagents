@@ -86,7 +86,14 @@ client-side overhead.
   results file (§7). Numbers from different machines are not comparable.
 - **Windows:** the Balanced power plan throttles benchmarks ~1.4× *uniformly*
   (documented in `docs/benchmarks/README.md`). Switch to **High performance**
-  (`powercfg /setactive SCHEME_MIN`) for every timed run; restore afterwards.
+  (`powercfg /setactive SCHEME_MIN`) for **micro-benchmark** runs; restore
+  afterwards. **HTTP-level runs: record the active plan and compare matched
+  plans only** — cycle-2 measured p95 27.1 ms (High-perf) vs 16.96 ms
+  (Balanced) on the identical build at identical RPS; the existing HTTP
+  baselines for the primary box are **Balanced**. On P/E-core CPUs, verify
+  any bench ns/op outlier with an isolated `-count=5` run before filing —
+  full-suite ns/op swings ±30–113% on sub-µs rows with identical code
+  (cycle-2 phase-2 finding).
 - Close background heavy processes (browsers with many tabs, indexers,
   containers you're not using). Laptop on AC power, not battery.
 - **Run the server natively, not in Docker, for all timed cases.** Docker
