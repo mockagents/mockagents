@@ -1,7 +1,15 @@
 # MockAgents — Performance Test Plan
 
 **Document ID:** MA-QA-PTP-001
-**Version:** 1.1
+**Version:** 1.2
+
+> **v1.2 changes (cycle-2 planning):** new §10 cycle-2 execution plan. Two new
+> cases close cycle-1 coverage gaps: TC-PERF-11 (adapter parity — every cycle-1
+> HTTP number was measured through the OpenAI adapter only) and TC-PERF-12
+> (MCP `tools/call` throughput — the MCP surface had zero perf coverage).
+> TC-PERF-06 gains a 90-minute variant with private-bytes sampling. Cycle 2
+> is a **regression cycle**: every repeated case gates against the committed
+> 2026-07-27 baselines per §8 (>20% = defect).
 
 > **v1.1 changes (from cycle-1 execution):** TC-PERF-07 re-sequenced — start
 > the server **uncapped**, measure warm auth overhead, then apply the rate cap
@@ -9,7 +17,7 @@
 > (the v1.0 env-var cap at startup would have limited the overhead
 > measurement itself to 100 RPS). TC-PERF-06 memory metric switched to
 > private bytes (`tasklist` working set proved too noisy — the OS trims it).
-> §9 gains the sessionless-traffic memory note.
+> the environment-caveats section gains the sessionless-traffic memory note.
 **Status:** Ready for execution
 **Owner:** QA
 **Applies to build:** `main` @ `a806dab` or later
@@ -476,6 +484,66 @@ event ordering stays correct per session (spot-check 3 transcripts), server
 RSS before/after, and any error events. File defects only for crashes,
 cross-session event bleed, or stuck sessions.
 
+### TC-PERF-11 — Adapter parity: Anthropic + Gemini throughput (P2, new in cycle 2, ~25 min)
+
+*Kind: raw speed. Cycle-1 blind spot: every HTTP-level number (02, 05, 06,
+07, 10) was measured through `/v1/chat/completions` — the OpenAI adapter.
+The Anthropic and Gemini adapters share the engine but have their own
+decode/encode paths.*
+
+**Steps**
+
+1. Server per §4.4, plus two parity agents alongside `perf-echo` (protocol
+   strings are exact — a typo fails validation):
+
+   ```yaml
+   # agents/perf-echo-ant-agent.yaml
+   apiVersion: mockagents/v1
+   kind: Agent
+   metadata: {name: perf-echo-ant}
+   spec:
+     protocol: anthropic-messages
+     model: perf-echo-ant-model
+     behavior:
+       scenarios:
+         - name: default
+           response: {content: A short deterministic completion for parity measurement.}
+   ---
+   # agents/perf-echo-gem-agent.yaml — same shape with
+   # protocol: google-gemini, model: perf-echo-gem-model
+   ```
+
+2. Three identical 60 s / 50-worker runs (restart + clean DB between):
+   - OpenAI: `POST /v1/chat/completions` with `perf-echo-model`
+   - Anthropic: `POST /v1/messages` (header `anthropic-version: 2023-06-01`,
+     body `{"model":"perf-echo-ant-model","max_tokens":100,"messages":[...]}`)
+   - Gemini: `POST /v1beta/models/perf-echo-gem-model:generateContent`
+3. Record RPS + p50/p95/p99 per adapter.
+
+**Pass criteria:** Anthropic and Gemini RPS within **±30%** of the OpenAI
+run and p95 within 2× (first cycle-2 run = parity baseline capture; the
+band flags only a grossly slower adapter). Zero errors on all three.
+
+### TC-PERF-12 — MCP tools/call throughput (P3, new in cycle 2, ~20 min)
+
+*Kind: raw speed. The MCP surface (`mockagents mcp`) had no cycle-1 perf
+coverage; it is its own process and dispatch path (JSON-RPC 2.0 +
+per-session state + input-schema validation on every call).*
+
+**Steps**
+
+1. `mockagents mcp --transport http --port 8081 --agents-dir agents` with
+   the `weather-mcp` example document (loopback bind is the default —
+   probing from the same host is fine).
+2. Initialize one session (`initialize` → capture `Mcp-Session-Id`), then
+   50 workers × 60 s of `tools/call` POSTs on that session with valid
+   arguments; a second run with 50 sessions (one per worker).
+3. Record RPS, p95, and JSON-RPC error counts (id echo must always match).
+
+**Pass criteria:** zero protocol errors; single-session vs per-worker-session
+throughput within 2× of each other (flags a session-lock bottleneck);
+numbers recorded as the MCP baseline (no absolute gate first run).
+
 ### TC-PERF-10 — Replay throughput (P3, optional, ~15 min)
 
 Record a 5-interaction cassette against the live mock itself
@@ -513,7 +581,45 @@ allocs/op change in TC-PERF-01 = defect (either direction — improvements
 must be consciously re-baselined); pacing-fidelity bands (TC-PERF-04) are
 absolute, not relative — they never loosen with a slower baseline.
 
-## 9. Known environment caveats
+## 9. Cycle-2 execution plan
+
+**Objective:** first true *regression* cycle — every repeated case gates
+against the committed 2026-07-27 baselines (§8: >20% = defect; allocs/op
+change = defect either direction) — plus the two new coverage cases and the
+measurement-quality fixes cycle 1 identified.
+
+### Scope & order
+
+| Phase | Cases | Notes |
+|---|---|---|
+| 1 — Machine prep | §4.1 checklist | High-perf power plan; record machine specs; identify one **non-AV, non-throttled** box for the TC-PERF-01 second baseline (cycle-1 ran on the primary dev machine off-governor) |
+| 2 — Regression core (P1) | 01, 02, 03, 04 | Gate against 2026-07-27 numbers. Standardize the load client: run TC-PERF-02 once with k6 **and** once with the stdlib-Python driver on the same build to cross-validate the two clients before trusting deltas (cycle 1 mixed them) |
+| 3 — Behavior + endurance (P2) | 05, 06 (90-min variant), 07, **11 (new)** | 06: sample **private bytes** (`(Get-Process mockagents).PrivateMemorySize64`), 90 min to observe a full post-TTL steady state under load — expect the sawtooth to level, not just turn |
+| 4 — Isolation + protocol (P3) | 08, 09, 10, **12 (new)** | 09 from a second machine over a real network if Realtime dial bursts matter to a customer scenario |
+
+### Entry criteria
+
+- 2026-07-27 baselines on `main` (done — `0b826be`).
+- Plan v1.2 published (this document).
+- Eng: CI trend-tracking of `docs/benchmarks/latest.json` wired (schema v1
+  is built for it) — recommended before the cycle so engine drift between
+  QA cycles is visible; not a hard blocker.
+
+### Exit criteria
+
+- All P1/P2 cases executed; any >20% regression filed as Sev-2 with the §5
+  outlier-triage evidence attached (server-side `latency_ms` cross-check).
+- TC-PERF-11 parity baseline and TC-PERF-12 MCP baseline recorded.
+- Results committed under `docs/qa/perf-results/<date>/` + cycle summary
+  row in §7's cycle table + a team report (reuse the cycle-1 summary format).
+
+### Explicitly out of cycle-2 scope
+
+A2A streaming load, Batch API throughput, pipeline (`kind: Pipeline`)
+execution under load, Postgres-backed tenancy performance — candidates for
+cycle 3 once the adapter-parity picture from TC-PERF-11 is in hand.
+
+## 10. Known environment caveats
 
 - Windows Balanced power plan → ~1.4× uniform ns/op inflation (§4.1).
 - Docker/Rancher Desktop VM → do not time through it (§4.1). Rancher's
