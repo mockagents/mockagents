@@ -85,7 +85,7 @@ TC-REG-07,REG,Cancellation close-out - delta invariant / no phantom items / usag
 TC-REG-08,REG,session.update mid-speech + voice lock + max_output_tokens validation,P2,Not Run,,,,,
 TC-REG-09,REG,Legacy sessions beta shape 60s vs GA client_secrets 600s,P3,Not Run,,,,,
 TC-REG-10,REG,Delete-tail chain repair + truncate error shape + OOB not retrievable,P3,Not Run,,,,,
-TC-PERF-01,PERF,Engine micro-benchmark baseline (make bench-report),P1,Not Run,,,,,MA-QA-PTP-001. allocs/B per op must match baseline exactly; ns/op ±25%
+TC-PERF-01,PERF,Engine micro-benchmark baseline (make bench-report),P1,Pass,Claude (automated),2026-07-27,allocs/op 17/17 exact; control benches flat (UUID 98.3 vs 103.4ns); matcher/generator family +25-45% ns + B/op growth = cost of vision/hallucination features since 2026-06-04 -> baseline consciously re-committed,,MA-QA-PTP-001. High-perf plan on/off per recipe. Found+fixed: slog collision WARNs silently broke benchreport parsing of 2 registry benches (silenceSlog). See perf-results/2026-07-27/TC-PERF-01-bench-baseline-results.md
 TC-PERF-02,PERF,Non-streaming HTTP throughput ramp (10/50/200 VUs),P1,Pass,QA,2026-07-27,p95 7.57-8.44ms; 0.00% errors up to 200 VUs,,MA-QA-PTP-001. Baseline captured. Ad-hoc 36s max outlier -> MA-DEF-006 closed not-a-defect (client/OS-side; server max 461ms)
 TC-PERF-03,PERF,Streaming load — k6.js encoded thresholds (20 + 100 VUs),P1,Pass,QA,2026-07-27,p95 stream well under 8s at 20 and 100 VU; 0% errors,,MA-QA-PTP-001
 TC-PERF-04,PERF,TTFT / pacing fidelity under load (Locust 20 + 100 users),P2,Pass,QA,2026-07-27,TTFT p50 ~330ms within 250-500ms band; 0% failures,,MA-QA-PTP-001

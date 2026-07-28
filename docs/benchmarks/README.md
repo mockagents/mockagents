@@ -34,12 +34,22 @@ The GOMAXPROCS suffix is stripped from benchmark names before parsing
 so results from a laptop and a CI runner stay comparable.
 
 > **Baseline freshness:** `latest.{json,md}` was last refreshed
-> **2026-06-04** off-governor (same recipe as the "Release 2026-06-03
-> refresh" note below) to capture the P3 engine wins — PERF-14 (tool-call
+> **2026-07-27** off-governor (High-performance plan, Go 1.26.4; QA cycle-1
+> TC-PERF-01). vs the 2026-06-04 baseline: every `allocs/op` is unchanged;
+> `B/op` grew on the generator/matcher paths (e.g. `ResponseGenerator_Static`
+> 144→208 B) and `ns/op` rose ~25–45% on the scenario-matcher family — the
+> measured cost of the features shipped since (vision/`has_image` matching,
+> hallucination fixtures), while UUID and registry lookups stayed flat.
+> Consciously re-baselined; regress future runs against these numbers.
+> Note: benchmarks that mass-register colliding-model agents must silence
+> slog (see `silenceSlog` in `internal/engine/benchmark_test.go`) — the
+> per-collision WARN otherwise corrupts the bench output line and
+> benchreport silently drops those rows (found when a run captured 15/17).
+>
+> The 2026-06-04 refresh captured the P3 engine wins — PERF-14 (tool-call
 > inline: `ToolCallProcessor` 10→6 allocs, `WithToolCalls` 22→18) and
 > PERF-17 (UUID hex: `TemplateResponse` 23→17, `ResponseGenerator_Template`
-> 14→8) — plus the two new `GenerateUUID_New/Old` benches. It is current
-> with all engine + security + perf work through that date.
+> 14→8) — plus the two `GenerateUUID_New/Old` benches.
 >
 > **Refreshing on the primary dev machine:** that box ships only the
 > Windows **Balanced** power plan, which throttles `ns/op` ~1.4× uniformly

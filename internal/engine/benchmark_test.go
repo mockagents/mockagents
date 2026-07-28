@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"io"
 	"log/slog"
 	"os"
 	"testing"
@@ -246,7 +247,20 @@ func BenchmarkToolCallProcessor(b *testing.B) {
 	}
 }
 
+// silenceSlog discards the default slog output for the benchmark's duration.
+// The registry warns per model collision (R9-17), and benchmarks that mass-
+// register colliding agents emit hundreds of WARN lines that interleave with
+// the `BenchmarkX ...` result line — which silently breaks benchreport's
+// parser (the 2026-07-27 QA baseline run captured 15/17 results).
+func silenceSlog(b *testing.B) {
+	b.Helper()
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	b.Cleanup(func() { slog.SetDefault(old) })
+}
+
 func BenchmarkAgentRegistry_Get(b *testing.B) {
+	silenceSlog(b)
 	r := NewAgentRegistry()
 	for i := 0; i < 100; i++ {
 		r.Register(&types.AgentDefinition{

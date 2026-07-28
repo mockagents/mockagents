@@ -161,6 +161,7 @@ func TestAgentRegistry_GetByModelForTenant_NoAllocs(t *testing.T) {
 // BenchmarkGetByModelForTenant_ManyAgents proves the lookup stays flat (O(1))
 // as the registry grows — the whole point of PERF-01.
 func BenchmarkGetByModelForTenant_ManyAgents(b *testing.B) {
+	silenceSlog(b)
 	r := NewAgentRegistry()
 	for i := 0; i < 1000; i++ {
 		owner := ""
