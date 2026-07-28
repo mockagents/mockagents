@@ -345,13 +345,20 @@ and verifies overflow degrades exactly as documented.
 3. Stop the server with Ctrl-C and capture the shutdown log line with the
    worker's `submitted` / `dropped` counters.
 4. Retention: re-run (b) with `MOCKAGENTS_LOG_MAX_ROWS=1000`; after the run
-   confirm the row count settles at ≤ ~1000 and the DB file is not growing
-   unboundedly.
+   confirm the row count settles near 1000 and the DB file is not growing
+   unboundedly. **The cap is a bounded sawtooth, not a hard ceiling** — the
+   pruner runs every 60 s (`DefaultLogPruneInterval`), so a live table can sit
+   at cap + up to one minute of persisted writes (cycle-2 soak: 63,513 rows
+   against a 50,000 cap at ~225 persisted writes/s). Overshoot proportional
+   to write rate is expected; unbounded growth is not.
 
 **Pass criteria**
 
-- Throughput ordering `none ≥ sanitized ≥ full`; record the deltas (this is
-  the documented cost of body capture — baseline data, no hard gate).
+- Record the per-mode deltas (baseline data, no hard gate). Note: cycle-2
+  measured the three modes within 4.5% of each other and in *inverted* order
+  — at ~4k RPS the cost of body capture is below the run-to-run noise floor,
+  which is consistent with capture being async and off the request path. Do
+  not file a defect on ordering alone.
 - `submitted + dropped == requests sent` (every request accounted once).
 - Zero drops at 50 VUs is the expectation on local hardware; if drops occur,
   p95 latency must **not** have degraded vs run (a) — drops must buy
