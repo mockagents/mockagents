@@ -1,7 +1,17 @@
 # MockAgents — Performance Test Plan
 
 **Document ID:** MA-QA-PTP-001
-**Version:** 1.2
+**Version:** 1.3
+
+> **v1.3 changes (cycle-3 planning):** §9 replaced with the cycle-3 execution
+> plan. Four new cases take the protocol surfaces cycle 2 deferred:
+> TC-PERF-13 (A2A), TC-PERF-14 (Batch fan-out), TC-PERF-15 (Postgres tenancy),
+> TC-PERF-16 (test-runner pipeline execution). **Scope correction:** "pipeline
+> execution under load" as deferred in v1.2 is **not executable over HTTP** —
+> `PipelineExecutor.Run` is reachable only from `internal/runner` via
+> `mockagents test`; there is no pipeline execution endpoint (list/get/update
+> only). TC-PERF-16 measures the runner path instead, and the missing surface
+> is raised with Eng rather than papered over.
 
 > **v1.2 changes (cycle-2 planning):** new §10 cycle-2 execution plan. Two new
 > cases close cycle-1 coverage gaps: TC-PERF-11 (adapter parity — every cycle-1
@@ -20,8 +30,8 @@
 > the environment-caveats section gains the sessionless-traffic memory note.
 **Status:** Ready for execution
 **Owner:** QA
-**Applies to build:** `main` @ `a806dab` or later
-**Last updated:** 2026-07-16
+**Applies to build:** `main` @ `699a897` or later
+**Last updated:** 2026-07-28
 **Companions:** `MANUAL-TEST-PLAN.md` (MA-QA-TP-001, functional), `TROUBLESHOOTING.md` (MA-QA-TS-001)
 
 ---
@@ -46,14 +56,18 @@ Two kinds of performance matter, and they are **asserted differently**:
 Confusing these two is the most common way to misread a result. Every case
 below states which kind it asserts.
 
-### First cycle = baseline capture
+### Baseline status (updated each cycle)
 
-MockAgents has a committed **engine micro-benchmark** baseline
-(`docs/benchmarks/latest.{json,md}`) but no committed **HTTP end-to-end**
-baseline yet. For the first execution cycle, the HTTP-level cases (TC-PERF-02
-onward) run in *baseline-capture* mode: the provisional gates below flag only
-gross problems; the recorded numbers become the baseline that later cycles
-regress against (>20% degradation = defect, see §8).
+| Surface | Baseline | Captured |
+|---|---|---|
+| Engine micro-benchmarks | `docs/benchmarks/latest.{json,md}` | 2026-07-27, re-verified 2026-07-28 |
+| HTTP (throughput, streaming, TTFT, logging, soak, multi-tenant, chaos, Realtime, replay) | `perf-results/2026-07-27/` + `2026-07-28/` | cycles 1–2 |
+| Adapter parity (Anthropic/Gemini), MCP | `perf-results/2026-07-28/` | cycle 2 |
+| A2A, Batch fan-out, Postgres tenancy, runner pipelines | — | **cycle 3 captures these** |
+
+Repeated cases gate against the recorded numbers (>20% degradation = defect,
+see §8). A case with no baseline yet runs in *capture* mode: its provisional
+gates flag only gross problems, and its numbers become the anchor.
 
 ## 2. References
 
@@ -70,13 +84,17 @@ regress against (>20% degradation = defect, see §8).
 
 **In scope:** engine micro-benchmarks; HTTP non-streaming throughput/latency;
 SSE streaming under load incl. pacing fidelity; the async logging pipeline
-under burst; memory/DB growth under soak; multi-tenant auth + quota overhead;
-chaos-agent isolation. Optional/exploratory: Realtime WebSocket concurrency,
-replay throughput.
+under burst; memory/DB growth under soak; multi-tenant auth + quota overhead
+(SQLite **and** Postgres stores); chaos-agent isolation; adapter parity
+across OpenAI/Anthropic/Gemini; MCP and A2A protocol throughput; Batch API
+fan-out; replay throughput; Realtime WebSocket concurrency; runner-side
+pipeline execution.
 
 **Out of scope:** GUI rendering performance; Kubernetes/Helm horizontal
-scaling; network-limited scenarios (all tests are localhost); the SDKs'
-client-side overhead.
+scaling and multi-instance deployments; network-limited scenarios (all tests
+are localhost); the SDKs' client-side overhead. **Not testable as of
+`699a897`:** concurrent pipeline execution over HTTP — no execution endpoint
+exists (see §9 "Raised with Eng").
 
 ## 4. Environment & setup
 
@@ -558,6 +576,100 @@ per-session state + input-schema validation on every call).*
 throughput within 2× of each other (flags a session-lock bottleneck);
 numbers recorded as the MCP baseline (no absolute gate first run).
 
+### TC-PERF-13 — A2A throughput: message/send + message/stream (P2, new in cycle 3, ~25 min)
+
+*Kind: raw speed. A2A is its own package and its own process — never load-tested.*
+
+**Steps**
+
+1. `mockagents a2a --agents-dir agents --server weather-a2a` (defaults to
+   **port 8083**; `--server` is required when several A2AServer docs are loaded).
+2. Verify the card first: `GET /.well-known/agent-card.json` → 200.
+3. 60 s × 50 workers of JSON-RPC `message/send` (`POST /`, a text part).
+   Record RPS, p50/p95, and that every response echoes its request `id`.
+4. 60 s × 20 workers of `message/stream`, reading each SSE stream to the
+   `final:true` status-update. Record full-stream time and frame counts.
+
+**Pass criteria:** zero JSON-RPC errors and zero id mismatches;
+`message/send` RPS within **2×** of the OpenAI adapter baseline (TC-PERF-11)
+— a large gap points at task-lifecycle bookkeeping, worth a ticket;
+every stream terminates with `final:true` (no truncated streams). First run
+is baseline capture.
+
+### TC-PERF-14 — Batch API fan-out throughput (P2, new in cycle 3, ~25 min)
+
+*Kind: raw speed under fan-out. A batch dispatches N engine calls from one
+request — a different shape from per-request load.*
+
+**Verified behavior:** a batch completes **immediately by default**
+(`delay = 0`); the optional `X-Mockagents-Batch-Delay-Ms` header simulates
+processing time (clamped to 600,000 ms). So a no-delay batch measures pure
+fan-out cost, and the delay header is only for lifecycle tests.
+
+**Steps**
+
+1. Server per §4.4 (single-tenant).
+2. **Anthropic inline** (no file upload needed — simplest fan-out probe):
+   `POST /v1/messages/batches` with N inline `requests[]` at
+   N = 100 / 1,000 / 5,000, targeting `perf-echo-ant-model`. Time
+   create → first `completed` poll. Repeat each N three times.
+3. **OpenAI file-based**: `POST /v1/files` (purpose=batch) with a JSONL of
+   1,000 chat requests → `POST /v1/batches` → poll → fetch the output file.
+   Time the whole lifecycle and the output fetch separately.
+4. Compute per-request cost (total ms ÷ N) at each size.
+
+**Pass criteria:** per-request fan-out cost is **flat or improving** as N
+grows (a rising per-request cost means super-linear behavior — file it);
+output line count == input count with every `custom_id` echoed; zero errors.
+Baseline capture on first run.
+
+### TC-PERF-15 — Postgres-backed tenancy vs SQLite (P2, new in cycle 3, ~30 min)
+
+*Kind: raw speed on a swapped backend. Cycle 2 measured the auth/quota path
+on the SQLite store only; `MOCKAGENTS_TENANCY_DSN` selects Postgres, which
+uses `SELECT … FOR UPDATE` for read-modify-write.*
+
+**Environment:** needs a Postgres instance —
+`docker run -e POSTGRES_PASSWORD=… -p 5432:5432 postgres:16`. ⚠️ The
+container runtime on the primary box has been unreliable (see
+TROUBLESHOOTING); if Docker is unavailable, **skip and record as blocked**
+rather than substituting a different store.
+
+**Steps**
+
+1. Start Postgres; start the mock with `MOCKAGENTS_MULTI_TENANT=1` and
+   `MOCKAGENTS_TENANCY_DSN=postgres://…`.
+2. Repeat **TC-PERF-07 exactly** (bcrypt cold/warm, warm 50×60 s throughput,
+   runtime quota cap + 200-worker burst).
+3. Compare against the same-day SQLite run of TC-PERF-07.
+
+**Pass criteria:** warm-path throughput within **±20%** of SQLite (the auth
+cache should make the backend nearly irrelevant on the hot path); cold
+bcrypt unchanged; burst still yields only 200s/429s-with-`Retry-After` and
+zero 5xx. A large warm-path gap indicates the cache isn't covering the
+Postgres path — file it.
+
+### TC-PERF-16 — Test-runner pipeline execution (P3, new in cycle 3, ~20 min)
+
+*Kind: raw speed, CLI-side. **Scope note:** pipelines have **no HTTP
+execution surface** — `PipelineExecutor.Run` is reachable only through
+`internal/runner` from `mockagents test` (the management API exposes
+list/get/update only). This case therefore measures the runner path; a
+concurrent HTTP pipeline load test is **not possible** against the current
+product. See §9 "Raised with Eng".*
+
+**Steps**
+
+1. Author a TestSuite targeting `research-pipeline` (sequential) with ~20
+   cases, and a second targeting a parallel/graph topology if one exists.
+2. `mockagents test <suite> --agents-dir agents --format json`, timed, ×3.
+3. Record wall-clock per case and total; compare sequential vs parallel
+   topology cost per node.
+
+**Pass criteria:** run-to-run variance < 20%; per-case cost roughly constant
+as case count grows; parallel topology is not slower than sequential for the
+same node count. Baseline capture.
+
 ### TC-PERF-10 — Replay throughput (P3, optional, ~15 min)
 
 Record a 5-interaction cassette against the live mock itself
@@ -595,43 +707,57 @@ allocs/op change in TC-PERF-01 = defect (either direction — improvements
 must be consciously re-baselined); pacing-fidelity bands (TC-PERF-04) are
 absolute, not relative — they never loosen with a slower baseline.
 
-## 9. Cycle-2 execution plan
+## 9. Cycle-3 execution plan
 
-**Objective:** first true *regression* cycle — every repeated case gates
-against the committed 2026-07-27 baselines (§8: >20% = defect; allocs/op
-change = defect either direction) — plus the two new coverage cases and the
-measurement-quality fixes cycle 1 identified.
+**Objective:** extend coverage to the **protocol and storage surfaces never
+load-tested** (A2A, Batch fan-out, Postgres tenancy, runner-side pipelines)
+while regressing the now-two-deep baseline set. Cycles 1–2 covered the
+OpenAI-family HTTP surface, Realtime, MCP, replay, chaos, and endurance;
+cycle 3 is about the remaining edges.
 
 ### Scope & order
 
 | Phase | Cases | Notes |
 |---|---|---|
-| 1 — Machine prep | §4.1 checklist | High-perf power plan; record machine specs; identify one **non-AV, non-throttled** box for the TC-PERF-01 second baseline (cycle-1 ran on the primary dev machine off-governor) |
-| 2 — Regression core (P1) | 01, 02, 03, 04 | Gate against 2026-07-27 numbers. Standardize the load client: run TC-PERF-02 once with k6 **and** once with the stdlib-Python driver on the same build to cross-validate the two clients before trusting deltas (cycle 1 mixed them) |
-| 3 — Behavior + endurance (P2) | 05, 06 (90-min variant), 07, **11 (new)** | 06: sample **private bytes** (`(Get-Process mockagents).PrivateMemorySize64`), 90 min to observe a full post-TTL steady state under load — expect the sawtooth to level, not just turn |
-| 4 — Isolation + protocol (P3) | 08, 09, 10, **12 (new)** | 09 from a second machine over a real network if Realtime dial bursts matter to a customer scenario |
+| 1 — Prep | §4.1 checklist + Postgres container | Record the power plan; bring up `postgres:16` for TC-PERF-15 (verify Docker health **first** — if the runtime is down, mark 15 blocked and continue) |
+| 2 — Regression (P1) | 01, 02, 03, 04 | Gate against **both** 2026-07-27 and 2026-07-28 numbers; two consistent cycles make a >20% move unambiguous |
+| 3 — New protocol surfaces (P2) | **13** (A2A), **14** (Batch fan-out) | Both are baseline captures; 14's per-request-cost-vs-N curve is the real signal |
+| 4 — Storage + runner (P2/P3) | **15** (Postgres tenancy), **16** (runner pipelines) | 15 compares against a same-day SQLite TC-PERF-07 run — don't compare across days |
+| 5 — Spot regression (P3) | 08, 12 | Cheap, high-signal; skip 05/06/09/10 unless engine code changed since 2026-07-28 |
 
 ### Entry criteria
 
-- 2026-07-27 baselines on `main` (done — `0b826be`).
-- Plan v1.2 published (this document).
-- Eng: CI trend-tracking of `docs/benchmarks/latest.json` wired (schema v1
-  is built for it) — recommended before the cycle so engine drift between
-  QA cycles is visible; not a hard blocker.
+- Cycle-2 baselines on `main` (done — `699a897`).
+- Plan v1.3 published (this document).
+- **Docker/Postgres reachable** for TC-PERF-15, or the case is marked blocked
+  up front rather than mid-cycle.
 
 ### Exit criteria
 
-- All P1/P2 cases executed; any >20% regression filed as Sev-2 with the §5
-  outlier-triage evidence attached (server-side `latency_ms` cross-check).
-- TC-PERF-11 parity baseline and TC-PERF-12 MCP baseline recorded.
-- Results committed under `docs/qa/perf-results/<date>/` + cycle summary
-  row in §7's cycle table + a team report (reuse the cycle-1 summary format).
+- All P1/P2 cases executed; regressions filed with §5 outlier-triage evidence.
+- Baselines recorded for 13, 14, 16 (and 15 if unblocked).
+- Results under `docs/qa/perf-results/<date>/`, §7 cycle row, team report.
 
-### Explicitly out of cycle-2 scope
+### Raised with Eng (not a QA blocker)
 
-A2A streaming load, Batch API throughput, pipeline (`kind: Pipeline`)
-execution under load, Postgres-backed tenancy performance — candidates for
-cycle 3 once the adapter-parity picture from TC-PERF-11 is in hand.
+**Pipelines have no HTTP execution surface.** `PipelineExecutor.Run` is
+called only from `internal/runner` (i.e. `mockagents test`); the management
+API exposes `GET/PUT /api/v1/pipelines[/{name}]` but nothing that *executes*
+one, and no adapter routes a chat request to a pipeline. Consequence: a
+client application cannot drive a `kind: Pipeline` document over the wire —
+only the CLI runner can. If pipelines are intended as a client-facing
+feature, an execution endpoint is missing; if they are runner-only by design,
+the docs should say so plainly. QA covers the runner path in TC-PERF-16
+meanwhile.
+
+### Deferred beyond cycle 3
+
+Multi-instance / horizontal scaling, Helm-deployed cluster performance,
+GUI rendering, and sustained (multi-hour) adapter-parity runs.
+
+> Cycle-2's execution plan is retired; its results live in
+> `perf-results/2026-07-28/CYCLE-2-SUMMARY.md`.
+
 
 ## 10. Known environment caveats
 
