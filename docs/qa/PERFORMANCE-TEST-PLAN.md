@@ -108,10 +108,16 @@ exists (see §9 "Raised with Eng").
   afterwards. **HTTP-level runs: record the active plan and compare matched
   plans only** — cycle-2 measured p95 27.1 ms (High-perf) vs 16.96 ms
   (Balanced) on the identical build at identical RPS; the existing HTTP
-  baselines for the primary box are **Balanced**. On P/E-core CPUs, verify
-  any bench ns/op outlier with an isolated `-count=5` run before filing —
-  full-suite ns/op swings ±30–113% on sub-µs rows with identical code
-  (cycle-2 phase-2 finding).
+  baselines for the primary box are **Balanced**.
+- **Do not gate on `ns/op` for sub-microsecond benchmarks on this machine
+  class — report them as informational only.** Cycle 2 found full-suite
+  ns/op swinging ±30–113% on sub-µs rows with identical code; cycle 3 showed
+  the isolated `-count=5` escape hatch doesn't rescue them either
+  (`ResponseGenerator_Static`: 49–52 ns one day, 77–94 ns the next in
+  isolation, 232 ns in-suite — same commit). Gate on **`allocs/op` and
+  `B/op`** (exact, machine-independent, clean for three cycles) plus the
+  µs-scale rows (`ProcessRequest_*`), which behave sensibly. Trustworthy
+  ns/op gating **requires** the non-AV fixed-clock second-baseline box.
 - Close background heavy processes (browsers with many tabs, indexers,
   containers you're not using). Laptop on AC power, not battery.
 - **Run the server natively, not in Docker, for all timed cases.** Docker

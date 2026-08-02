@@ -1,0 +1,155 @@
+{
+    "metrics": {
+        "vus": {
+            "value": 1,
+            "min": 1,
+            "max": 100
+        },
+        "http_req_duration": {
+            "med": 1236.01675,
+            "max": 11756.3644,
+            "p(90)": 1905.018,
+            "p(95)": 2246.6086,
+            "avg": 1363.2735660343262,
+            "min": 634.9743
+        },
+        "iteration_duration": {
+            "p(95)": 2247.0366,
+            "avg": 1363.7905933039747,
+            "min": 635.5258,
+            "med": 1236.6373,
+            "max": 11756.4173,
+            "p(90)": 1905.3335499999998
+        },
+        "vus_max": {
+            "max": 100,
+            "value": 100,
+            "min": 100
+        },
+        "http_req_receiving": {
+            "p(90)": 1900.6862999999998,
+            "p(95)": 2241.894325,
+            "avg": 1358.2708063121083,
+            "min": 630.4547,
+            "med": 1230.76205,
+            "max": 11752.5484
+        },
+        "http_req_tls_handshaking": {
+            "avg": 0,
+            "min": 0,
+            "med": 0,
+            "max": 0,
+            "p(90)": 0,
+            "p(95)": 0
+        },
+        "http_req_sending": {
+            "p(95)": 0.5096,
+            "avg": 0.030756560523938544,
+            "min": 0,
+            "med": 0,
+            "max": 3.3928,
+            "p(90)": 0
+        },
+        "http_req_connecting": {
+            "p(90)": 0,
+            "p(95)": 0,
+            "avg": 0.07267227868112013,
+            "min": 0,
+            "med": 0,
+            "max": 10.0034
+        },
+        "http_reqs": {
+            "count": 8856,
+            "rate": 70.80919135158285
+        },
+        "data_received": {
+            "count": 69226759,
+            "rate": 553510.7073939601
+        },
+        "http_req_blocked": {
+            "avg": 0.2846527213188798,
+            "min": 0,
+            "med": 0,
+            "max": 28.8157,
+            "p(90)": 0,
+            "p(95)": 0
+        },
+        "data_sent": {
+            "count": 2302560,
+            "rate": 18410.38975141154
+        },
+        "stream_total_ms": {
+            "avg": 1363.2735660343262,
+            "min": 634.9743,
+            "med": 1236.01675,
+            "max": 11756.3644,
+            "p(90)": 1905.018,
+            "p(95)": 2246.6086,
+            "thresholds": {
+                "p(95)<8000": false
+            }
+        },
+        "http_req_duration{expected_response:true}": {
+            "p(90)": 1905.018,
+            "p(95)": 2246.6086,
+            "avg": 1363.2735660343262,
+            "min": 634.9743,
+            "med": 1236.01675,
+            "max": 11756.3644
+        },
+        "http_req_waiting": {
+            "avg": 4.972003161698287,
+            "min": 1.5657,
+            "med": 4.4551,
+            "max": 52.2581,
+            "p(90)": 5.17305,
+            "p(95)": 5.562725
+        },
+        "http_req_failed": {
+            "passes": 0,
+            "fails": 8856,
+            "thresholds": {
+                "rate<0.01": false
+            },
+            "value": 0
+        },
+        "checks": {
+            "passes": 26568,
+            "fails": 0,
+            "value": 1
+        },
+        "iterations": {
+            "count": 8856,
+            "rate": 70.80919135158285
+        }
+    },
+    "root_group": {
+        "name": "",
+        "path": "",
+        "id": "d41d8cd98f00b204e9800998ecf8427e",
+        "groups": {},
+        "checks": {
+                "status 200": {
+                    "name": "status 200",
+                    "path": "::status 200",
+                    "id": "fad9fa412b86fcb03bee97c80dcd61f1",
+                    "passes": 8856,
+                    "fails": 0
+                },
+                "is SSE": {
+                    "name": "is SSE",
+                    "path": "::is SSE",
+                    "id": "d6fac7e12b9dfc2a897bda6ddd7a497b",
+                    "passes": 8856,
+                    "fails": 0
+                },
+                "streamed [DONE]": {
+                    "id": "ddfa654aa7b138432575034e6f4511e6",
+                    "passes": 8856,
+                    "fails": 0,
+                    "name": "streamed [DONE]",
+                    "path": "::streamed [DONE]"
+                }
+            }
+    }
+}
