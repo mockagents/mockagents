@@ -31,6 +31,21 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   identically.
 
 ### Added
+- **`MOCKAGENTS_DATA_DIR` relocates on-disk state** — the interaction log
+  (`.mockagents.db`), audit trail (`.mockagents-audit.db`), and tenancy store
+  resolve relative to the working directory by default; set this variable to
+  put them anywhere writable (the directory is created if missing). This is the
+  escape hatch for read-only working directories. When the resolved path is not
+  writable the server now **degrades to a warning and keeps serving** rather
+  than running with logging silently off — and the warning carries the DB path
+  plus a hint, because SQLite reports `SQLITE_CANTOPEN` as the misleading
+  `unable to open database file: out of memory (14)`.
+- **`mockagents test` expands glob patterns itself** — `mockagents test
+  'tests/*.yaml'` now behaves identically on zsh (quote the pattern so the
+  shell doesn't abort on an unmatched glob), bash, PowerShell, and inside
+  `docker run` arguments. Matches run in sorted filename order, and an
+  unmatched pattern is a clear error with a non-zero exit instead of a silent
+  zero-suite run.
 - **Strict tools mode (`strict_tools`)** — an opt-in "fail like production"
   knob that makes the mock enforce what the real provider APIs enforce and the
   mock was otherwise lenient about. Configure it per agent under
@@ -174,6 +189,24 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   `ToolResults` (aggregate + final-turn) so these read real injected errors.
 
 ### Fixed
+- **The Docker image ran from an unwritable directory** — the runtime stage had
+  no `WORKDIR`, so the non-root user started in `/`. Two visible symptoms:
+  `mockagents init` failed with `mkdir /<name>: permission denied`, and
+  interaction + audit logging were silently disabled at startup (the misleading
+  SQLite "out of memory (14)"), leaving the log, cost, and audit views empty.
+  The image now runs from the `/data` volume, so scaffolding and all SQLite
+  state land there and survive container restarts.
+- **The multi-agent model-collision warning now names the winner** — when
+  several agents declare the same `spec.model`, requests resolve to the
+  lexicographically smallest agent name. The startup warning said only that
+  resolution was deterministic, so operators had to isolate agents to discover
+  which one served traffic; it now states the rule, reports `wins=<agent>`, and
+  suggests giving each agent a distinct model. Behavior is unchanged.
+- **Benchmark reporting no longer drops rows silently** — benchmarks that
+  register many colliding-model agents flooded stderr with per-collision
+  warnings that interleaved with Go's benchmark output line, so
+  `make bench-report` quietly wrote 15 of 17 results. Those benchmarks now
+  silence the default logger for their duration.
 - **The tool-call loop now converges on every protocol** — the canonical agent
   loop (ask → model returns a tool call → client sends the tool result → model
   answers) previously never converged against the mock: scenario matching keys
@@ -394,6 +427,33 @@ internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `ma
   definition is never mutated by this normalization.
 
 ### Documentation
+- **QA documentation set** — a manual test plan (100+ cases across the
+  protocol, control-plane, and tooling surfaces), a performance test plan, a
+  symptom-to-fix troubleshooting guide, and an execution tracker now live under
+  `docs/qa/`. The troubleshooting guide covers the traps that cost real time:
+  the misleading SQLite error above, `chaos:` nesting under `spec.behavior`
+  (a mis-nested block validates cleanly but never fires), Windows `localhost`
+  resolving IPv6-first against an IPv4-bound server (~200 ms per request), and
+  how to tell a client-side latency outlier from a server stall.
+- **Reusable load-test drivers** — `docs/qa/perf-tools/` ships k6 and
+  stdlib-only Python drivers for throughput, A2A, Batch fan-out, MCP, and chaos
+  isolation, so the published numbers can be reproduced without rebuilding
+  scripts.
+- **Performance characterized across three measurement cycles** (no code
+  changes were needed to reach these numbers; they document existing behavior
+  on laptop-class hardware): ~4,000 RPS non-streaming at p95 under 20 ms;
+  streaming, MCP `tools/call`, A2A `message/send`, and cassette replay all
+  within a few percent of that same figure; the Anthropic and Gemini adapters
+  within 1% of OpenAI; Batch fan-out **sub-linear** — per-request cost falls
+  roughly 6x as a batch grows from 100 to 5,000 requests, reaching ~36,500
+  requests/second of dispatch. A 90-minute soak ran 4.6M requests with zero
+  errors and a flat latency profile. Two capacity notes worth knowing: every
+  request without an `X-Session-Id` holds a session for 30 minutes (~2-2.5 KB
+  each), so high-RPS sessionless load can reach multi-GB resident memory before
+  TTL expiry balances it — reuse a session id to keep memory flat; and the
+  interaction-log retention cap (`MOCKAGENTS_LOG_MAX_ROWS`) is enforced by a
+  pruner on a 60-second interval, so a live table sits at the cap plus up to
+  one minute of writes rather than at a hard ceiling.
 - **Architecture documentation rebuilt** — `ARCHITECTURE.md` (also published on
   the docs site) is a full rewrite with seven verified Mermaid diagrams: system
   context, a component map with the package import-direction rules, and sequence
