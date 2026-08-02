@@ -1,7 +1,17 @@
 # MockAgents — Performance Test Plan
 
 **Document ID:** MA-QA-PTP-001
-**Version:** 1.3
+**Version:** 1.4
+
+> **v1.4 changes (cycle-4 planning): the cycle model changes.** Cycles 1–3 ran
+> the full suite on a schedule; `git log` shows **no product-code change
+> between the cycle-1 baselines and cycle 3**, so cycles 2 and 3 re-measured an
+> identical binary and found — as they must — no regression. Scheduled
+> full re-runs have therefore stopped paying. §9 replaces the phase plan with a
+> **change-triggered model**: a small CI perf-guard catches drift continuously,
+> and manual effort goes only to new surfaces, changed code, and the questions
+> earlier cycles could not answer. The case list is also **demoted, not
+> grown** — see §9.3.
 
 > **v1.3 changes (cycle-3 planning):** §9 replaced with the cycle-3 execution
 > plan. Four new cases take the protocol surfaces cycle 2 deferred:
@@ -30,8 +40,8 @@
 > the environment-caveats section gains the sessionless-traffic memory note.
 **Status:** Ready for execution
 **Owner:** QA
-**Applies to build:** `main` @ `699a897` or later
-**Last updated:** 2026-07-28
+**Applies to build:** `main` @ `c722eaa` or later
+**Last updated:** 2026-07-29
 **Companions:** `MANUAL-TEST-PLAN.md` (MA-QA-TP-001, functional), `TROUBLESHOOTING.md` (MA-QA-TS-001)
 
 ---
@@ -63,7 +73,8 @@ below states which kind it asserts.
 | Engine micro-benchmarks | `docs/benchmarks/latest.{json,md}` | 2026-07-27, re-verified 2026-07-28 |
 | HTTP (throughput, streaming, TTFT, logging, soak, multi-tenant, chaos, Realtime, replay) | `perf-results/2026-07-27/` + `2026-07-28/` | cycles 1–2 |
 | Adapter parity (Anthropic/Gemini), MCP | `perf-results/2026-07-28/` | cycle 2 |
-| A2A, Batch fan-out, Postgres tenancy, runner pipelines | — | **cycle 3 captures these** |
+| A2A, Batch fan-out, runner pipelines | `perf-results/2026-07-29/` | cycle 3 |
+| Postgres tenancy | — | **blocked** — no Postgres reachable (cycle-3 §5) |
 
 Repeated cases gate against the recorded numbers (>20% degradation = defect,
 see §8). A case with no baseline yet runs in *capture* mode: its provisional
@@ -93,7 +104,7 @@ pipeline execution.
 **Out of scope:** GUI rendering performance; Kubernetes/Helm horizontal
 scaling and multi-instance deployments; network-limited scenarios (all tests
 are localhost); the SDKs' client-side overhead. **Not testable as of
-`699a897`:** concurrent pipeline execution over HTTP — no execution endpoint
+`c722eaa`:** concurrent pipeline execution over HTTP — no execution endpoint
 exists (see §9 "Raised with Eng").
 
 ## 4. Environment & setup
@@ -698,6 +709,7 @@ worth a ticket, not a release blocker.
 |---|---|---|---|---|---|---|---|---|---|
 | 1 (partial: 02–05) | 2026-07-27 | `ad67121` | QA laptop, Windows 11 (details in perf-results/2026-07-27/) | pass — p95 7.6–8.4 ms, 0% err @200 VU (k6) | pass — well under 8 s @20/100 VU | pass — TTFT p50 ≈330 ms (in band) | pass — row cap held; deltas in raw artifacts | not run | **02–05 pass.** Ad-hoc 36 s client `max` investigated → client/OS-side, closed not-a-defect (MA-DEF-006; see perf-results/2026-07-27/). Cross-check repro: 3,796 RPS, client p95 20.5 ms, server-side max 461 ms over 683k reqs. 06+ pending. |
 | 1 (cont.: 06–07) | 2026-07-27 | `8a26f15` | Same machine (native binary) | — | — | — | — | pass — cold 57.9 ms → warm 7.5 ms; ≈0 ms warm overhead (4,116 RPS auth vs 3,796 unauth); burst: only 200s+429s, `Retry-After` on all 129,739 429s, zero 5xx | **06–07 pass.** Soak: 2.18M reqs 0 err, p95 flat 13–17 ms, DB capped at 50k rows, session-TTL RSS sawtooth peaked 4.4 GB then declined under load; idle decay 3.95→1.69 GB by +15 min (no leak). Details: `perf-results/2026-07-27/TC-PERF-06-soak-results.md`, `TC-PERF-07-multitenant-results.md`. **08 pass** — healthy p95 ratio 1.102 vs latency-only chaos target (`TC-PERF-08-chaos-isolation-results.md`). **09 pass** — 50/50 concurrent Realtime sessions, correct ladders, RSS +1.4 MB (instant-dial-burst failure = client-machine artifact; stagger dials). **10 pass** — replay 4,140 RPS ≥ live 3,974 RPS. **Cycle 1 COMPLETE: 01–10 all executed, all pass.** ↓ **Cycle 2 (2026-07-28, `75dd153`, Balanced plan): 01–12 all executed, 12/12 pass, zero regressions.** k6 ramp 0.00% failed; 90-min soak 4.62M reqs 0 errors with 45 min of post-TTL steady state (no leak); adapter parity within **1%** (OpenAI/Anthropic/Gemini); MCP 4.1–4.2k RPS ratio 1.02. Four measurement-quality rules added (bench isolation, power-plan matching, retention sawtooth, body-capture noise floor). See `perf-results/2026-07-28/CYCLE-2-SUMMARY.md`. 01 ran off-governor per §4.1 recipe: allocs/op 17/17 exact, control benches flat; matcher/generator ns/B growth = shipped-feature cost since 2026-06-04 → baseline consciously re-committed (`TC-PERF-01-bench-baseline-results.md`; also found+fixed benchreport silently dropping 2 registry benches due to collision-WARN output pollution). |
+| 3 | 2026-07-29 | `c722eaa` | same box, Balanced plan | k6 507,906 reqs 0.00% fail, p95 46.4 ms; Python 3,849 RPS / p95 18.59 ms | 2.36 s @20VU · 2.24 s @100VU | 380/360 ms · p95 1.5 s | modes within 4.5% (noise floor) | — | **11/11 executed pass · 0 regressions · 1 blocked.** New baselines: A2A send 3,953 RPS (within 3% of the OpenAI adapter); Batch fan-out sub-linear (0.164→0.027 ms/req as N goes 100→5,000); runner pipelines 1.6–2.8 ms execution vs ~250 ms invocation. ns/op gate retired for sub-µs rows. TC-PERF-15 blocked — no Postgres reachable. See `perf-results/2026-07-29/CYCLE-3-SUMMARY.md`. |
 
 - Track execution status in `test-execution-tracker.csv` (TC-PERF rows).
 - Defects: log in MANUAL-TEST-PLAN §18 with severity per its §5.3.
@@ -713,57 +725,106 @@ allocs/op change in TC-PERF-01 = defect (either direction — improvements
 must be consciously re-baselined); pacing-fidelity bands (TC-PERF-04) are
 absolute, not relative — they never loosen with a slower baseline.
 
-## 9. Cycle-3 execution plan
+## 9. Cycle-4 plan — change-triggered, automation-first
 
-**Objective:** extend coverage to the **protocol and storage surfaces never
-load-tested** (A2A, Batch fan-out, Postgres tenancy, runner-side pipelines)
-while regressing the now-two-deep baseline set. Cycles 1–2 covered the
-OpenAI-family HTTP surface, Realtime, MCP, replay, chaos, and endurance;
-cycle 3 is about the remaining edges.
+### 9.1 Why the model changes
 
-### Scope & order
+Three cycles produced **zero product defects and zero regressions**. The
+reason is visible in the history: `git log -- internal/ cmd/` shows **no
+product-code change between the cycle-1 baselines (`0b826be`, 2026-07-27) and
+the end of cycle 3** — the only code touched was a test-only benchmark fix.
+Cycles 2 and 3 re-measured the same binary. Their real value was
+*measurement-quality* findings (power-plan sensitivity, the unusable sub-µs
+`ns/op` gate, the retention sawtooth), and those are now written down.
 
-| Phase | Cases | Notes |
-|---|---|---|
-| 1 — Prep | §4.1 checklist + Postgres container | Record the power plan; bring up `postgres:16` for TC-PERF-15 (verify Docker health **first** — if the runtime is down, mark 15 blocked and continue) |
-| 2 — Regression (P1) | 01, 02, 03, 04 | Gate against **both** 2026-07-27 and 2026-07-28 numbers; two consistent cycles make a >20% move unambiguous |
-| 3 — New protocol surfaces (P2) | **13** (A2A), **14** (Batch fan-out) | Both are baseline captures; 14's per-request-cost-vs-N curve is the real signal |
-| 4 — Storage + runner (P2/P3) | **15** (Postgres tenancy), **16** (runner pipelines) | 15 compares against a same-day SQLite TC-PERF-07 run — don't compare across days |
-| 5 — Spot regression (P3) | 08, 12 | Cheap, high-signal; skip 05/06/09/10 unless engine code changed since 2026-07-28 |
+Continuing to re-run a 10-case suite against unchanged code buys nothing and
+costs hours. Cycle 4 therefore inverts the model:
 
-### Entry criteria
+| Old (cycles 1–3) | New (cycle 4 onward) |
+|---|---|
+| Full suite, on a schedule | Small guard in CI on **every push**; manual runs **triggered by change** |
+| Regression is QA's job | Regression is CI's job; QA owns *new surfaces and open questions* |
+| Plan grows each cycle | Plan **shrinks** — cases that pass on unchanged code get demoted |
 
-- Cycle-2 baselines on `main` (done — `699a897`).
-- Plan v1.3 published (this document).
-- **Docker/Postgres reachable** for TC-PERF-15, or the case is marked blocked
-  up front rather than mid-cycle.
+### 9.2 Deliverable 1 (primary): CI perf-guard
 
-### Exit criteria
+A new job — suggested `.github/workflows/perf-guard.yml`, or a job inside
+`ci.yml` — that runs on every push touching `internal/` or `cmd/`:
 
-- All P1/P2 cases executed; regressions filed with §5 outlier-triage evidence.
-- Baselines recorded for 13, 14, 16 (and 15 if unblocked).
-- Results under `docs/qa/perf-results/<date>/`, §7 cycle row, team report.
+1. `go test -run '^$' -bench . -benchmem ./internal/engine/...` via
+   `tools/benchreport`.
+2. Compare against the committed `docs/benchmarks/latest.json`:
+   - **Fail** on any `allocs/op` or `B/op` change (exact, machine-independent,
+     stable across three cycles — this is the signal that actually works).
+   - **Warn only** on `ns/op` for sub-µs rows; fail only if a **µs-scale** row
+     (`ProcessRequest_*`) moves >25%. Runner CPUs vary; see §4.1.
+3. On an intentional change, the PR updates `latest.json` in the same commit —
+   the diff becomes the review artifact.
 
-### Raised with Eng (not a QA blocker)
+This closes the "engine drift between QA cycles" gap that has been the top
+open item since cycle 1, and it is what makes scheduled manual regression
+unnecessary rather than merely tedious.
 
-**Pipelines have no HTTP execution surface.** `PipelineExecutor.Run` is
-called only from `internal/runner` (i.e. `mockagents test`); the management
-API exposes `GET/PUT /api/v1/pipelines[/{name}]` but nothing that *executes*
-one, and no adapter routes a chat request to a pipeline. Consequence: a
-client application cannot drive a `kind: Pipeline` document over the wire —
-only the CLI runner can. If pipelines are intended as a client-facing
-feature, an execution endpoint is missing; if they are runner-only by design,
-the docs should say so plainly. QA covers the runner path in TC-PERF-16
-meanwhile.
+**Note:** the guard needs *no* new tooling — `tools/benchreport` already emits
+schema-v1 JSON built for exactly this.
 
-### Deferred beyond cycle 3
+### 9.3 Deliverable 2: demote the settled cases
 
-Multi-instance / horizontal scaling, Helm-deployed cluster performance,
-GUI rendering, and sustained (multi-hour) adapter-parity runs.
+Cases that passed three consecutive cycles on unchanged code, with no finding
+attributable to the product, move to **on-demand** — run when their surface
+changes, not on a schedule:
 
-> Cycle-2's execution plan is retired; its results live in
-> `perf-results/2026-07-28/CYCLE-2-SUMMARY.md`.
+| Demoted to on-demand | Trigger to re-run |
+|---|---|
+| TC-PERF-02, 03, 04 (throughput / streaming / TTFT) | any change under `internal/adapter/`, `internal/streaming/`, `internal/engine/` |
+| TC-PERF-05 (logging modes) | `internal/storage/`, `internal/server/log_*` |
+| TC-PERF-08 (chaos isolation) | `internal/engine/chaos.go`, `internal/config/chaos_presets.go` |
+| TC-PERF-09, 10, 12, 13 (Realtime, replay, MCP, A2A) | their own package |
+| TC-PERF-01 (bench) | **now CI's job** — manual run only when re-baselining |
 
+TC-PERF-06 (soak) stays **scheduled but rare**: once per release candidate,
+not per cycle — leaks are time-dependent, not commit-dependent, so a
+change-trigger would miss them.
+
+### 9.4 Deliverable 3: the two open questions
+
+Manual cycle-4 work is limited to what earlier cycles genuinely could not
+answer:
+
+1. **TC-PERF-16 redo with latency-injected nodes.** Cycle 3 could not compare
+   parallel vs sequential topology because per-node execution is sub-millisecond
+   — the delta was scheduling noise. Re-run with each node backed by a
+   chaos-latency agent (~100 ms uniform) so a sequential 2-node pipeline should
+   cost ~2 node-times and a parallel one ~1. That is a real answer about the
+   executor.
+2. **TC-PERF-15 (Postgres tenancy)** — still blocked; runs the moment a
+   reachable Postgres exists (§ cycle-3 summary lists four unblock paths).
+   Compare against a **same-day** SQLite run.
+
+### 9.5 Entry / exit
+
+**Entry:** none for the CI guard (it is a code change, reviewable as a PR).
+The two manual cases need their respective unblocks (a parallel-pipeline
+fixture is already committed; Postgres is not).
+
+**Exit:** perf-guard merged and demonstrably failing on a deliberate
+allocs/op change (prove the gate works before trusting it); TC-PERF-16 redo
+recorded with a defensible topology answer; TC-PERF-15 either executed or
+still formally blocked with an owner.
+
+### 9.6 Explicitly not doing
+
+A full 12-case manual re-run. If the CI guard is green and no surface-specific
+trigger fired, there is nothing a scheduled cycle would discover — and three
+cycles of evidence say so.
+
+### Deferred beyond cycle 4
+
+Multi-instance / horizontal scaling, Helm-deployed cluster performance, GUI
+rendering, sustained multi-hour parity runs.
+
+> Cycle-3's execution plan is retired; its results live in
+> `perf-results/2026-07-29/CYCLE-3-SUMMARY.md`.
 
 ## 10. Known environment caveats
 
