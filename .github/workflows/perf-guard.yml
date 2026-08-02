@@ -1,0 +1,72 @@
+name: Perf guard
+
+# Catches engine hot-path regressions on every change to the product code,
+# so performance drift is found at the commit that caused it rather than at
+# the next manual QA cycle (MA-QA-PTP-001 v1.4 §9.2).
+#
+# What fails the build: any allocs/op or B/op change, a benchmark that
+# disappears, or a >25% ns/op move on a microsecond-scale benchmark.
+# What only gets reported: ns/op drift on sub-microsecond benchmarks — three
+# QA cycles showed those swing far more than that on identical code, so
+# gating on them would produce noise, not signal (docs/benchmarks/README.md).
+#
+# When a change is intentional, regenerate the baseline in the same PR:
+#   go run ./tools/benchreport -pkg ./internal/engine/... -out docs/benchmarks
+# The latest.json diff is then the review artifact.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "internal/**"
+      - "cmd/**"
+      - "docs/benchmarks/latest.json"
+      - "tools/bench*/**"
+      - ".github/workflows/perf-guard.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "internal/**"
+      - "cmd/**"
+      - "docs/benchmarks/latest.json"
+      - "tools/bench*/**"
+      - ".github/workflows/perf-guard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark-guard:
+    name: Engine benchmark guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Measure current benchmarks
+        run: go run ./tools/benchreport -pkg ./internal/engine/... -out "${RUNNER_TEMP}/bench"
+
+      - name: Compare against committed baseline
+        run: |
+          go run ./tools/benchguard \
+            -baseline docs/benchmarks/latest.json \
+            -candidate "${RUNNER_TEMP}/bench/latest.json" \
+            -summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload measured report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-report-${{ github.sha }}
+          path: ${{ runner.temp }}/bench/
+          retention-days: 14
