@@ -1,7 +1,17 @@
 # MockAgents — Performance Test Plan
 
 **Document ID:** MA-QA-PTP-001
-**Version:** 1.4
+**Version:** 1.5
+
+> **v1.5 changes (cycle-5 planning): no execution cycle is scheduled — and
+> that is the finding.** Checked before planning: no product-code commit since
+> the cycle-1 baselines, all three tracking issues still open, and the CI
+> perf-guard live and green. Per §9.6 of v1.4, nothing a scheduled run would
+> discover. Cycle 5 therefore **operationalizes** the change-triggered model
+> instead of exercising it: a trigger-response playbook (§9.2), a
+> release-candidate perf checklist (§9.3), a guard fire-drill (§9.4), and a
+> baseline-staleness policy (§9.5) — the four things that will fail first when
+> a trigger *does* fire.
 
 > **v1.4 changes (cycle-4 planning): the cycle model changes.** Cycles 1–3 ran
 > the full suite on a schedule; `git log` shows **no product-code change
@@ -38,10 +48,10 @@
 > measurement itself to 100 RPS). TC-PERF-06 memory metric switched to
 > private bytes (`tasklist` working set proved too noisy — the OS trims it).
 > the environment-caveats section gains the sessionless-traffic memory note.
-**Status:** Ready for execution
+**Status:** Active — change-triggered (no scheduled cycle; see §9)
 **Owner:** QA
-**Applies to build:** `main` @ `c722eaa` or later
-**Last updated:** 2026-07-29
+**Applies to build:** `main` @ `4dddf03` or later
+**Last updated:** 2026-08-03
 **Companions:** `MANUAL-TEST-PLAN.md` (MA-QA-TP-001, functional), `TROUBLESHOOTING.md` (MA-QA-TS-001)
 
 ---
@@ -726,106 +736,114 @@ allocs/op change in TC-PERF-01 = defect (either direction — improvements
 must be consciously re-baselined); pacing-fidelity bands (TC-PERF-04) are
 absolute, not relative — they never loosen with a slower baseline.
 
-## 9. Cycle-4 plan — change-triggered, automation-first
+## 9. Cycle-5 plan — operationalize, don't execute
 
-### 9.1 Why the model changes
+### 9.1 Why no execution cycle
 
-Three cycles produced **zero product defects and zero regressions**. The
-reason is visible in the history: `git log -- internal/ cmd/` shows **no
-product-code change between the cycle-1 baselines (`0b826be`, 2026-07-27) and
-the end of cycle 3** — the only code touched was a test-only benchmark fix.
-Cycles 2 and 3 re-measured the same binary. Their real value was
-*measurement-quality* findings (power-plan sensitivity, the unusable sub-µs
-`ns/op` gate, the retention sawtooth), and those are now written down.
+Checked on 2026-08-03 before planning anything:
 
-Continuing to re-run a 10-case suite against unchanged code buys nothing and
-costs hours. Cycle 4 therefore inverts the model:
-
-| Old (cycles 1–3) | New (cycle 4 onward) |
+| Signal | State |
 |---|---|
-| Full suite, on a schedule | Small guard in CI on **every push**; manual runs **triggered by change** |
-| Regression is QA's job | Regression is CI's job; QA owns *new surfaces and open questions* |
-| Plan grows each cycle | Plan **shrinks** — cases that pass on unchanged code get demoted |
+| `git log 0b826be..HEAD -- internal/ cmd/` | **empty** — no product code has changed since the cycle-1 baselines |
+| Tracking issues [#33](https://github.com/mockagents/mockagents/issues/33) / [#34](https://github.com/mockagents/mockagents/issues/34) / [#35](https://github.com/mockagents/mockagents/issues/35) | all **open** — no blocker cleared, so no previously-impossible case became possible |
+| CI perf-guard | **live and green** (first run 2026-08-02, success) |
 
-### 9.2 Deliverable 1 (primary): CI perf-guard
+v1.4 §9.6 committed to not running a full manual suite under exactly these
+conditions. Honoring that is the point of having written it down. **Cycle 5
+runs no test cases.**
 
-A new job — suggested `.github/workflows/perf-guard.yml`, or a job inside
-`ci.yml` — that runs on every push touching `internal/` or `cmd/`:
+What it does instead is close the gaps that only appear once you rely on
+automation: the model is defined, but the *procedures around it* are not.
 
-1. `go test -run '^$' -bench . -benchmem ./internal/engine/...` via
-   `tools/benchreport`.
-2. Compare against the committed `docs/benchmarks/latest.json`:
-   - **Fail** on any `allocs/op` or `B/op` change (exact, machine-independent,
-     stable across three cycles — this is the signal that actually works).
-   - **Warn only** on `ns/op` for sub-µs rows; fail only if a **µs-scale** row
-     (`ProcessRequest_*`) moves >25%. Runner CPUs vary; see §4.1.
-3. On an intentional change, the PR updates `latest.json` in the same commit —
-   the diff becomes the review artifact.
+### 9.2 Deliverable 1 — trigger-response playbook
 
-This closes the "engine drift between QA cycles" gap that has been the top
-open item since cycle 1, and it is what makes scheduled manual regression
-unnecessary rather than merely tedious.
+v1.4 §9.3 says which source paths trigger which case. It does **not** say what
+happens next, so the first real trigger would arrive with nobody knowing the
+recipe. This table is the missing half.
 
-**Note:** the guard needs *no* new tooling — `tools/benchreport` already emits
-schema-v1 JSON built for exactly this.
+| If a PR touches… | Run | With | Gate |
+|---|---|---|---|
+| `internal/adapter/`, `internal/streaming/`, `internal/engine/` | TC-PERF-02 + 03 + 04 | `perf-tools/k6-nostream.js`, `examples/loadtest/k6.js`, `locustfile.py` | vs 2026-07-29 numbers, >20% = defect |
+| `internal/storage/`, `internal/server/log_*` | TC-PERF-05 | `perf-tools/load_driver.py` × 3 body modes | per-mode deltas within noise; retention sawtooth bounded |
+| `internal/engine/chaos.go`, `internal/config/chaos_presets.go` | TC-PERF-08 | `perf-tools/chaos_isolation.py` (two processes) | healthy p95 ratio 0.75–1.25 |
+| `internal/mcp/` | TC-PERF-12 | `perf-tools/mcp_perf.py` | single-vs-per-worker ratio < 2×, zero protocol errors |
+| `internal/a2a/` | TC-PERF-13 | `perf-tools/a2a_perf.py` | within 2× of the OpenAI adapter; zero id mismatches; all streams `final:true` |
+| `internal/adapter/*batches*` | TC-PERF-14 | `perf-tools/batch_perf.py` | per-request cost flat-or-improving as N grows |
+| `internal/realtime/` | TC-PERF-09 | `perf09` driver (rebuild from cycle-3 notes) | 50/50 sessions, correct ladders, zero error events |
+| `internal/recording/` | TC-PERF-10 | record → replay → `perf-tools/load_driver.py` | replay ≥ live, same order of magnitude |
+| `internal/tenancy/`, `internal/quota/` | TC-PERF-07 | multi-tenant driver | warm overhead < 10 ms; burst yields only 200/429-with-`Retry-After` |
 
-### 9.3 Deliverable 2: demote the settled cases
+**Standing rules for any triggered run:** server per §4.4 with a scratch
+`MOCKAGENTS_DATA_DIR`; Balanced power plan (HTTP baselines are Balanced);
+record the plan in the results; cross-check any outlier against server-side
+`latency_ms` before filing (§5). Results go to
+`perf-results/<date>/TC-PERF-<n>-triggered.md` and a tracker row — a triggered
+run is evidence like any other.
 
-Cases that passed three consecutive cycles on unchanged code, with no finding
-attributable to the product, move to **on-demand** — run when their surface
-changes, not on a schedule:
+### 9.3 Deliverable 2 — release-candidate perf checklist
 
-| Demoted to on-demand | Trigger to re-run |
-|---|---|
-| TC-PERF-02, 03, 04 (throughput / streaming / TTFT) | any change under `internal/adapter/`, `internal/streaming/`, `internal/engine/` |
-| TC-PERF-05 (logging modes) | `internal/storage/`, `internal/server/log_*` |
-| TC-PERF-08 (chaos isolation) | `internal/engine/chaos.go`, `internal/config/chaos_presets.go` |
-| TC-PERF-09, 10, 12, 13 (Realtime, replay, MCP, A2A) | their own package |
-| TC-PERF-01 (bench) | **now CI's job** — manual run only when re-baselining |
+v1.4 keeps the soak "scheduled but rare — once per release candidate," but no
+RC checklist exists. The project has no tagged release yet, so this needs to
+be written *before* the first one, not during it.
 
-TC-PERF-06 (soak) stays **scheduled but rare**: once per release candidate,
-not per cycle — leaks are time-dependent, not commit-dependent, so a
-change-trigger would miss them.
+**Run at RC cut:**
 
-### 9.4 Deliverable 3: the two open questions
+1. **TC-PERF-06 soak**, 90 min, private-bytes sampling — leaks are
+   time-dependent, so no change-trigger can substitute.
+2. **TC-PERF-02** throughput ramp — the single broadest smoke signal.
+3. **Confirm the perf-guard passed** on the RC commit (it should already have).
+4. Skim `docs/benchmarks/latest.json` vs the previous release's copy — the
+   release-over-release delta is the number worth putting in release notes.
 
-Manual cycle-4 work is limited to what earlier cycles genuinely could not
-answer:
+**Sign-off criterion:** zero errors in both runs, memory plateaus rather than
+trends, throughput within 20% of the last RC. Record as
+`perf-results/<date>/RC-<version>-checklist.md`.
 
-1. **TC-PERF-16 redo with latency-injected nodes.** Cycle 3 could not compare
-   parallel vs sequential topology because per-node execution is sub-millisecond
-   — the delta was scheduling noise. Re-run with each node backed by a
-   chaos-latency agent (~100 ms uniform) so a sequential 2-node pipeline should
-   cost ~2 node-times and a parallel one ~1. That is a real answer about the
-   executor.
-2. **TC-PERF-15 (Postgres tenancy)** — still blocked ([#35](https://github.com/mockagents/mockagents/issues/35));
-   runs the moment a reachable Postgres exists (§ cycle-3 summary lists four unblock paths).
-   Compare against a **same-day** SQLite run.
+### 9.4 Deliverable 3 — guard fire-drill
 
-### 9.5 Entry / exit
+The perf-guard was verified against hand-mutated JSON before merge, and has
+since run green. It has **never failed on a real PR**, so nobody has seen it
+bite in anger. A gate nobody has watched fail is a gate nobody should trust.
 
-**Entry:** none for the CI guard (it is a code change, reviewable as a PR).
-The two manual cases need their respective unblocks (a parallel-pipeline
-fixture is already committed; Postgres is not).
+**Drill:** on a scratch branch, add one deliberate allocation to a benchmarked
+path (e.g. an extra slice alloc in `ResponseGenerator`), push, and confirm the
+guard fails with a readable message naming the benchmark and the allocs
+delta. Delete the branch. Record the run link.
 
-**Exit:** perf-guard merged and demonstrably failing on a deliberate
-allocs/op change (prove the gate works before trusting it); TC-PERF-16 redo
-recorded with a defensible topology answer; TC-PERF-15 either executed or
-still formally blocked with an owner.
+Repeat whenever the guard's thresholds change. Budget: ~15 minutes.
 
-### 9.6 Explicitly not doing
+### 9.5 Deliverable 4 — baseline staleness policy
 
-A full 12-case manual re-run. If the CI guard is green and no surface-specific
-trigger fired, there is nothing a scheduled cycle would discover — and three
-cycles of evidence say so.
+Baselines are dated 2026-07-27/28/29. With no code changing they never expire
+on merit — but the *machine* drifts (OS updates, AV definitions, firmware),
+so an old baseline silently becomes a comparison against a different world.
 
-### Deferred beyond cycle 4
+**Policy:** re-capture HTTP baselines when any of these is true —
+(a) 90 days elapse, (b) the QA machine is rebuilt or its OS/AV materially
+changes, (c) the Go toolchain minor version changes, or (d) a triggered run
+disagrees with the baseline by >20% *and* investigation finds no product
+cause. Re-capture is TC-PERF-02/03/04 only — roughly 20 minutes — not a full
+cycle. Note the reason in the results file.
+
+Bench baselines are exempt: `allocs/op` is machine-independent, and the guard
+re-measures every push.
+
+### 9.6 What would trigger a real cycle 6
+
+Any one of: a product-code change landing in a surface above · a blocker
+clearing ([#34](https://github.com/mockagents/mockagents/issues/34) or
+[#35](https://github.com/mockagents/mockagents/issues/35)) · a decision on
+[#33](https://github.com/mockagents/mockagents/issues/33) · an RC cut · a new
+protocol surface · or a customer-reported performance problem, which
+outranks everything here.
+
+### Deferred beyond cycle 5
 
 Multi-instance / horizontal scaling, Helm-deployed cluster performance, GUI
 rendering, sustained multi-hour parity runs.
 
-> Cycle-3's execution plan is retired; its results live in
-> `perf-results/2026-07-29/CYCLE-3-SUMMARY.md`.
+> Cycle-4's execution plan is retired; its results live in
+> `perf-results/2026-07-29/` and the cycle-4 report.
 
 ## 10. Known environment caveats
 
