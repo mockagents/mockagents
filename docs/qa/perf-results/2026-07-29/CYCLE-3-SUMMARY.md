@@ -53,7 +53,7 @@ clean for three cycles) plus the µs-scale `ProcessRequest_*` rows, and treats
 sub-µs `ns/op` as informational. **Consequence:** the second-baseline box
 moves from *nice-to-have* to **required** for any ns/op gating at all.
 
-## 5. TC-PERF-15 blocked — and not faked
+## 5. TC-PERF-15 blocked — and not faked ([#35](https://github.com/mockagents/mockagents/issues/35))
 
 Three routes checked before the cycle started: Rancher/Docker has been removed
 from the box; podman is running but `postgres:16` can't be pulled (DNS fails
@@ -79,8 +79,8 @@ scripts.
 
 ## 7. Open items for cycle 4
 
-1. **Second-baseline box** — now *required* for ns/op gating, not optional.
-2. **Unblock TC-PERF-15** (see §5) — the only untested storage backend.
+1. **Second-baseline box** ([#34](https://github.com/mockagents/mockagents/issues/34)) — now *required* for ns/op gating, not optional.
+2. **Unblock TC-PERF-15** ([#35](https://github.com/mockagents/mockagents/issues/35), see §5) — the only untested storage backend.
 3. **Redo the TC-PERF-16 topology comparison with latency-injected nodes** —
    at sub-ms execution the parallel-vs-sequential question is unanswerable;
    with ~100 ms nodes it becomes meaningful.

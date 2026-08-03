@@ -72,7 +72,7 @@ was consciously refreshed after ~8 weeks of feature work.
 1. Regress against the 2026-07-27 baselines (>20% = defect, per plan §8).
 2. Sample **private bytes** in the soak; consider a 90-min soak to observe
    a full post-TTL steady state under load.
-3. Run TC-PERF-01 additionally on a non-AV, non-throttled machine to get a
+3. ([#34](https://github.com/mockagents/mockagents/issues/34)) Run TC-PERF-01 additionally on a non-AV, non-throttled machine to get a
    second baseline point (this cycle's ran on the primary dev box,
    off-governor).
 4. Consider CI trend-tracking of `docs/benchmarks/latest.json` (schema v1

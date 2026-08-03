@@ -36,7 +36,7 @@ rule. Three routes checked, all closed:
 acceptable stand-in, so the case is recorded **Blocked** rather than
 approximated. Cycle 3 continues with 13, 14, 16 and the regression set.
 
-**To unblock (team action):** provide a reachable Postgres — an internal
+**Tracked as [#35](https://github.com/mockagents/mockagents/issues/35). To unblock (team action):** provide a reachable Postgres — an internal
 registry mirror for `postgres:16`, a proxy exception for Docker Hub, a
 native PostgreSQL 17 server install, or a shared dev Postgres instance
 (`MOCKAGENTS_TENANCY_DSN` accepts any reachable DSN, so a remote instance

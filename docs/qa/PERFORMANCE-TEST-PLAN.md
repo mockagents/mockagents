@@ -105,7 +105,7 @@ pipeline execution.
 scaling and multi-instance deployments; network-limited scenarios (all tests
 are localhost); the SDKs' client-side overhead. **Not testable as of
 `c722eaa`:** concurrent pipeline execution over HTTP — no execution endpoint
-exists (see §9 "Raised with Eng").
+exists — raised as [#33](https://github.com/mockagents/mockagents/issues/33).
 
 ## 4. Environment & setup
 
@@ -128,7 +128,8 @@ exists (see §9 "Raised with Eng").
   isolation, 232 ns in-suite — same commit). Gate on **`allocs/op` and
   `B/op`** (exact, machine-independent, clean for three cycles) plus the
   µs-scale rows (`ProcessRequest_*`), which behave sensibly. Trustworthy
-  ns/op gating **requires** the non-AV fixed-clock second-baseline box.
+  ns/op gating **requires** the non-AV fixed-clock second-baseline box
+  ([#34](https://github.com/mockagents/mockagents/issues/34)).
 - Close background heavy processes (browsers with many tabs, indexers,
   containers you're not using). Laptop on AC power, not battery.
 - **Run the server natively, not in Docker, for all timed cases.** Docker
@@ -673,7 +674,7 @@ execution surface** — `PipelineExecutor.Run` is reachable only through
 `internal/runner` from `mockagents test` (the management API exposes
 list/get/update only). This case therefore measures the runner path; a
 concurrent HTTP pipeline load test is **not possible** against the current
-product. See §9 "Raised with Eng".*
+product. Raised as [#33](https://github.com/mockagents/mockagents/issues/33).*
 
 **Steps**
 
@@ -797,8 +798,8 @@ answer:
    chaos-latency agent (~100 ms uniform) so a sequential 2-node pipeline should
    cost ~2 node-times and a parallel one ~1. That is a real answer about the
    executor.
-2. **TC-PERF-15 (Postgres tenancy)** — still blocked; runs the moment a
-   reachable Postgres exists (§ cycle-3 summary lists four unblock paths).
+2. **TC-PERF-15 (Postgres tenancy)** — still blocked ([#35](https://github.com/mockagents/mockagents/issues/35));
+   runs the moment a reachable Postgres exists (§ cycle-3 summary lists four unblock paths).
    Compare against a **same-day** SQLite run.
 
 ### 9.5 Entry / exit

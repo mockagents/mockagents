@@ -56,12 +56,15 @@ No product code changed this cycle — every finding was about how we measure.
 
 ## 5. Open items for cycle 3
 
-1. **Second-baseline box** (carried from cycle 2 phase 1): run TC-PERF-01 on
+1. **Second-baseline box** ([#34](https://github.com/mockagents/mockagents/issues/34), carried from cycle 2 phase 1): run TC-PERF-01 on
    a non-AV, fixed-clock machine so bench ns/op has a trustworthy anchor.
 2. **CI trend-tracking** of `docs/benchmarks/latest.json` — still the highest-
    leverage automation available; catches engine drift between QA cycles.
 3. **Deferred coverage** now worth scheduling: A2A streaming load, Batch API
    throughput, `kind: Pipeline` execution under load, Postgres-backed tenancy.
+   *(Outcome: A2A + Batch baselined in cycle 3; pipelines have no HTTP
+   execution surface — [#33](https://github.com/mockagents/mockagents/issues/33);
+   Postgres still blocked — [#35](https://github.com/mockagents/mockagents/issues/35).)*
 4. Consider a **sustained-throughput variant** of TC-PERF-11 (parity under a
    long run, not a 60 s window) once cycle-3 scope is set.
 
