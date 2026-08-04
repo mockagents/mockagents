@@ -1,7 +1,7 @@
 # Perf-guard fire drill (2026-08-03)
 
-**Plan:** MA-QA-PTP-001 v1.5 §9.4 · **Result: guard fires correctly — exit 1.**
-**Residual gap: workflow-level failure propagation not exercised** (see below).
+**Plan:** MA-QA-PTP-001 v1.5 §9.4 · **Result: guard fires correctly — exit 1,
+and the CI job goes red on a real PR. No residual gap.**
 
 ## Why this drill exists
 
@@ -56,31 +56,58 @@ Three things worth noting about the output quality:
    produced a wall of failures that buried the eight real ones — a live
    demonstration of why the v1.5 §4.1 rule exists.
 
-## Residual gap — stated plainly
+## Part 2 — real PR run (gap closed)
 
-The drill could **not** be run as a real PR: this repo's pre-push hook enforces
-a branch model where feature branches stay local
-(`Feature branches stay local in this repo's branch model`). Bypassing it with
-`--no-verify` would have meant overriding a deliberate repo guard without
-authorization, so it was not done.
+The first pass could not open a PR: a pre-push hook enforces
+`Feature branches stay local in this repo's branch model`. With **explicit
+authorization** to use the override the hook itself documents, the drill was
+re-run end to end.
 
-Consequently:
+**PR [#36](https://github.com/mockagents/mockagents/pull/36)** ·
+**run [30929813756](https://github.com/mockagents/mockagents/actions/runs/30929813756)**
 
-- ✅ **Proven:** `benchguard` detects a real regression and exits non-zero, and
-  its message is fit for a reviewer.
-- ✅ **Already proven separately:** the workflow itself runs and completes
-  (green run, 2026-08-02).
-- ❌ **Not proven:** that a non-zero `benchguard` exit fails the *GitHub
-  Actions job* and blocks the PR. This is standard Actions behaviour (a
-  non-zero step exit fails the job, and no `continue-on-error` is set), so the
-  risk is low — but it is inference, not observation.
+| Check | Result |
+|---|---|
+| **Engine benchmark guard** | ❌ **fail** (55 s) |
+| Lint | ✅ pass |
+| Python SDK Tests | ✅ pass |
+| Go Tests | pending at capture time |
 
-**To close the last gap** (~5 minutes, needs a decision on the branch policy):
-open a real PR from a drill branch — either by pushing with `--no-verify`
-deliberately, or from a fork — and confirm the job goes red. Worth doing once
-before the first release candidate.
+The failing step reproduced the local verdict exactly — 8 blocking
+`allocs/op` changes, each +1, with the re-baseline instruction printed and
+every ns/op move demoted to a non-blocking note:
+
+```
+### ❌ 8 blocking change(s)
+- BenchmarkProcessRequest_DefaultFallback: allocs/op 10 -> 11
+- BenchmarkProcessRequest_MultipleToolCalls: allocs/op 37 -> 38
+- BenchmarkProcessRequest_RegexMatch: allocs/op 14 -> 15
+- BenchmarkProcessRequest_StaticResponse: allocs/op 10 -> 11
+- BenchmarkProcessRequest_TemplateResponse: allocs/op 17 -> 18
+- BenchmarkProcessRequest_WithToolCalls: allocs/op 18 -> 19
+- BenchmarkResponseGenerator_Static: allocs/op 1 -> 2
+- BenchmarkResponseGenerator_Template: allocs/op 8 -> 9
+If these are intentional, regenerate the baseline in this PR:
+### Notes (non-blocking)
+```
+
+**That other checks passed while the guard failed** is the detail that matters:
+the red came from the guard, not from a broken build, so the signal a reviewer
+sees is unambiguous.
+
+## Verified end to end
+
+- ✅ `benchguard` detects a real regression and exits non-zero.
+- ✅ The workflow runs on a PR touching `internal/`.
+- ✅ **A non-zero exit fails the Actions job and surfaces as a failed PR
+  check** — previously inference, now observed.
+- ✅ The failure message is actionable and correctly scoped.
+
+Re-run this drill whenever the guard's thresholds change (§9.4).
 
 ## Cleanup
 
-Drill branch deleted; `main` verified free of drill code; scratch artifacts
-removed. Nothing was pushed to the remote.
+PR #36 closed unmerged with the result recorded in a closing comment; drill
+branch deleted locally **and** on the remote; `main` verified free of drill
+code; scratch artifacts removed. The only remote trace is the closed PR and
+its CI run, which are the evidence.
