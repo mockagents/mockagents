@@ -103,7 +103,15 @@ func NewResponseGenerator() *ResponseGenerator {
 }
 
 // Generate renders a matched scenario into a Response.
+// fireDrillSink exists only for the perf-guard fire drill (MA-QA-PTP-001
+// §9.4). It is deliberately allocated on the hot path so the CI guard has a
+// real regression to catch. THIS MUST NEVER MERGE.
+var fireDrillSink []byte
+
 func (g *ResponseGenerator) Generate(agent *types.AgentDefinition, scenario *types.Scenario, ctx TemplateContext) (*Response, error) {
+	// FIRE DRILL: deliberate extra allocation — verifies the guard bites.
+	fireDrillSink = append([]byte(nil), scenario.Name...)
+
 	content, err := g.renderContent(scenario.Response.Content, ctx)
 	if err != nil {
 		return nil, fmt.Errorf("rendering scenario %q content: %w", scenario.Name, err)
