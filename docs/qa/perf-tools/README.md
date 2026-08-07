@@ -35,15 +35,40 @@ k6 run docs/qa/perf-tools/k6-nostream.js
 output captured (it reads the shown-once bootstrap key from the log):
 
 ```bash
-MOCKAGENTS_MULTI_TENANT=1 MOCKAGENTS_LOG_BODIES=sanitized   ./mockagents start --agents-dir agents --log-level warn > mt.log 2>&1 &
+# TC-PERF-07 — SQLite store (the default)
+MOCKAGENTS_MULTI_TENANT=1 \
+  MOCKAGENTS_LOG_BODIES=sanitized \
+  ./mockagents start --agents-dir agents --log-level warn > mt.log 2>&1 &
+
 python docs/qa/perf-tools/multitenant_perf.py mt.log 8080
 ```
 
-For **TC-PERF-15** add `MOCKAGENTS_TENANCY_DSN='postgres://…'` to that server
-command and run the identical script — then compare against a **same-day**
-SQLite run on the same machine. Don't set `MOCKAGENTS_DEFAULT_RATE_*` at
-startup: the script applies the cap at runtime so the throughput phase isn't
-capped by the thing it's supposed to measure.
+For **TC-PERF-15**, point the same script at a server started with a DSN —
+nothing else changes, because the store is selected server-side:
+
+```bash
+# TC-PERF-15 — Postgres store
+MOCKAGENTS_MULTI_TENANT=1 \
+  MOCKAGENTS_TENANCY_DSN='postgres://user:pw@host:5432/db' \
+  MOCKAGENTS_LOG_BODIES=sanitized \
+  ./mockagents start --agents-dir agents --log-level warn > mt.log 2>&1 &
+
+python docs/qa/perf-tools/multitenant_perf.py mt.log 8080
+```
+
+Three rules for that comparison:
+
+- Compare against a **same-day SQLite run on the same machine** — not against
+  a figure from a previous cycle.
+- **Don't** set `MOCKAGENTS_DEFAULT_RATE_*` at startup. The script applies the
+  quota cap at runtime precisely so the throughput phase isn't limited by the
+  thing it is meant to measure.
+- If the Postgres instance is **remote**, say so in the results: a network hop
+  adds latency the SQLite comparison doesn't have.
+
+Expected if healthy: warm-path throughput within ±20% of SQLite (the auth
+cache should make the backend nearly irrelevant on the hot path), unchanged
+cold bcrypt cost, and a burst that yields only 200s and 429s-with-`Retry-After`.
 
 `chaos_isolation.py` runs as **two processes** so the load roles don't share a
 GIL — start `chaos` about 30 s after `healthy`:
