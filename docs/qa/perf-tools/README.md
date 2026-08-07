@@ -16,6 +16,7 @@ measurement); everything else runs with a bare Python 3.
 | `batch_perf.py` | TC-PERF-14 | Batch fan-out at N = 100 / 1,000 / 5,000 + the OpenAI file-based lifecycle |
 | `mcp_perf.py` | TC-PERF-12 | MCP `tools/call`, single shared session vs one per worker |
 | `chaos_isolation.py` | TC-PERF-08 | Whether a latency-injected agent disturbs a healthy one |
+| `multitenant_perf.py` | TC-PERF-07 · **TC-PERF-15** | bcrypt cold-vs-warm, authenticated throughput, and quota-burst correctness — same script for the SQLite and Postgres stores |
 
 ## Usage
 
@@ -29,6 +30,20 @@ python docs/qa/perf-tools/batch_perf.py 8080
 python docs/qa/perf-tools/mcp_perf.py 8081               # needs: mockagents mcp
 k6 run docs/qa/perf-tools/k6-nostream.js
 ```
+
+`multitenant_perf.py` needs the server started in multi-tenant mode with its
+output captured (it reads the shown-once bootstrap key from the log):
+
+```bash
+MOCKAGENTS_MULTI_TENANT=1 MOCKAGENTS_LOG_BODIES=sanitized   ./mockagents start --agents-dir agents --log-level warn > mt.log 2>&1 &
+python docs/qa/perf-tools/multitenant_perf.py mt.log 8080
+```
+
+For **TC-PERF-15** add `MOCKAGENTS_TENANCY_DSN='postgres://…'` to that server
+command and run the identical script — then compare against a **same-day**
+SQLite run on the same machine. Don't set `MOCKAGENTS_DEFAULT_RATE_*` at
+startup: the script applies the cap at runtime so the throughput phase isn't
+capped by the thing it's supposed to measure.
 
 `chaos_isolation.py` runs as **two processes** so the load roles don't share a
 GIL — start `chaos` about 30 s after `healthy`:
