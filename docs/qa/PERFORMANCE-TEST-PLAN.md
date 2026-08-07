@@ -799,18 +799,42 @@ be written *before* the first one, not during it.
 trends, throughput within 20% of the last RC. Record as
 `perf-results/<date>/RC-<version>-checklist.md`.
 
-### 9.4 Deliverable 3 — guard fire-drill
+### 9.4 Deliverable 3 — guard fire-drill ✅ **DONE 2026-08-03**
 
-The perf-guard was verified against hand-mutated JSON before merge, and has
-since run green. It has **never failed on a real PR**, so nobody has seen it
-bite in anger. A gate nobody has watched fail is a gate nobody should trust.
+A gate nobody has watched fail is a gate nobody should trust. The perf-guard
+had only been verified against hand-mutated JSON and had since run green, so
+it was exercised against a real regression.
 
-**Drill:** on a scratch branch, add one deliberate allocation to a benchmarked
-path (e.g. an extra slice alloc in `ResponseGenerator`), push, and confirm the
-guard fails with a readable message naming the benchmark and the allocs
-delta. Delete the branch. Record the run link.
+**Result: the guard bites.** PR
+[#36](https://github.com/mockagents/mockagents/pull/36) ·
+run [30929813756](https://github.com/mockagents/mockagents/actions/runs/30929813756) —
+`Engine benchmark guard` **failed** while Lint and the SDK tests passed, so
+the red was unambiguously the guard rather than a broken build. It reported 8
+blocking `allocs/op` changes (each +1, from one injected allocation), printed
+the re-baseline command, and demoted every `ns/op` move to a non-blocking
+note. Full record: `perf-results/2026-08-03/GUARD-FIRE-DRILL.md`.
 
-Repeat whenever the guard's thresholds change. Budget: ~15 minutes.
+**Procedure, for the next run** (repeat whenever the guard's thresholds
+change; ~15 minutes):
+
+1. On a scratch branch, add one *escaping* allocation to a benchmarked path —
+   e.g. a package-level `[]byte` sink appended in `ResponseGenerator.Generate`.
+   A non-escaping one gets optimized away and proves nothing.
+2. Confirm `go test ./internal/engine/...` still passes, so the drill isolates
+   the guard rather than a broken build.
+3. Optionally dry-run locally with the workflow's own command chain
+   (`benchreport` → `benchguard`) — it reproduces the CI verdict exactly and
+   costs nothing.
+4. Open a PR and confirm the job goes red with a message naming the benchmarks
+   and deltas.
+5. Close the PR unmerged, delete the branch locally **and** on the remote,
+   verify `main` carries no drill code, and record the run link.
+
+⚠️ **Branch-model wrinkle:** a pre-push hook enforces *"feature branches stay
+local in this repo's branch model,"* so a drill branch cannot be pushed
+normally. Either get explicit authorization for the `--no-verify` override the
+hook itself documents (what was done here), or run the drill from a fork.
+Don't bypass the hook casually — it exists on purpose.
 
 ### 9.5 Deliverable 4 — baseline staleness policy
 
