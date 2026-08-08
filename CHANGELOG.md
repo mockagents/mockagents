@@ -3,8 +3,10 @@
 All notable changes to MockAgents are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
-MockAgents has not cut a tagged release yet; the version headings below mark the
-internal **v0.1 → v0.2 → v0.3** development milestones. All three are on `main`.
+The current release is **[v0.4.0](https://github.com/mockagents/mockagents/releases/tag/v0.4.0)**
+(tagged 2026-06-17, published 2026-06-20) — the first tagged release. The
+**v0.1 → v0.2 → v0.3** headings below it mark the internal development
+milestones that preceded it; all are on `main`.
 
 ---
 

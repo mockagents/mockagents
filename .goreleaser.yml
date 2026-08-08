@@ -69,7 +69,7 @@ homebrew_casks:
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Casks
     homepage: "https://github.com/mockagents/mockagents"
-    description: "Mock the OpenAI, Anthropic & Gemini APIs for testing AI agents — zero LLM calls"
+    description: "Mock OpenAI, Anthropic, Gemini, MCP and A2A APIs — including their failure modes"
     skip_upload: '{{ if eq .Env.HOMEBREW_TAP_TOKEN "" }}true{{ else }}false{{ end }}'
 
 changelog:

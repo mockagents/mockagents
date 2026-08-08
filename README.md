@@ -1,6 +1,6 @@
 # MockAgents
 
-**Mock the OpenAI, Anthropic & Gemini APIs. Test your AI agents with zero LLM calls — fast, free, deterministic, offline.**
+**Make your agent fail on purpose.** Simulate hallucinations, malformed tool calls, broken streams, and flaky MCP/A2A peers — offline, deterministically, with zero LLM calls.
 
 [![CI](https://github.com/mockagents/mockagents/actions/workflows/ci.yml/badge.svg)](https://github.com/mockagents/mockagents/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/mockagents/mockagents)](https://goreportcard.com/report/github.com/mockagents/mockagents)
@@ -9,12 +9,20 @@
 [![MCP Conformance](https://github.com/mockagents/mockagents/actions/workflows/mcp-conformance.yml/badge.svg)](https://github.com/mockagents/mockagents/actions/workflows/mcp-conformance.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-MockAgents is a single pure-Go binary that's a **drop-in replacement** for the
-OpenAI, Anthropic, and Google Gemini HTTP APIs — and for MCP servers. Point your
-app's base URL at it and your existing SDK code just works, returning
-**deterministic** canned responses, simulated tool calls, and real SSE streams,
-with **no real LLM calls**. So your agent tests stop costing a dollar a run,
-stop flaking on model updates, and run fully offline.
+MockAgents is a single pure-Go binary that stands in for the services your agent
+talks to — the OpenAI, Anthropic, and Google Gemini HTTP APIs, MCP servers, and
+A2A agents. Point your app's base URL at it and your existing SDK code just
+works, returning **deterministic** responses, simulated tool calls, and real SSE
+streams with **no real LLM calls**. Your tests stop costing a dollar a run, stop
+flaking on model updates, and run fully offline.
+
+That much is table stakes. The reason to reach for MockAgents is the other half:
+it produces the failures a real model **won't produce on demand** — a
+confidently-wrong answer, a tool call carrying malformed JSON arguments, a
+response truncated mid-stream, a refusal, an MCP peer that starts rate-limiting
+under load. Those are the paths your guardrails and retry logic exist for, and
+the paths that are otherwise nearly impossible to cover in CI. You can't ask
+GPT-4o to hallucinate on cue. You can ask MockAgents.
 
 <!-- TODO(RR-03): embed a 12-second GIF of `mockagents start` + the web console streaming SSE. -->
 
@@ -58,8 +66,52 @@ mockagents start                              # prints your base URL + a ready-t
 
 ## Why MockAgents
 
-- **One static binary, no runtime** — no Node, JVM, Python, or GPU. Drop it into
-  any CI in seconds (pure-Go, no cgo).
+### The failures a real model won't produce on demand
+
+- **Hallucination fixtures** — return a deterministic confidently-wrong / ungrounded /
+  fabricated output (advertised via a response header) to test that your guardrails
+  catch it — something a real model won't do on demand.
+- **Semantic error modes** — well-formed responses that break agents *after* the
+  200: `finish_reason: length` truncation, assistant refusals, and tool calls with
+  malformed JSON arguments ([cookbook example](examples/semantic-errors-agent.yaml)).
+- **Chaos & fault injection** — inject latency, errors, and rate limits per agent
+  to test the unhappy paths.
+- **Strict tools mode** (`strict_tools`) — opt into failing like
+  production: round-trip tool id validation (orphan/mismatched
+  `tool_call_id`/`tool_use_id`/`call_id` → the provider's real 400),
+  `tool_choice: required`/named forcing with forced-call synthesis and
+  `finish_reason: "stop"`, `parallel_tool_calls: false` capping, and
+  `strict: true` schema-subset validation — per agent or fleet-wide via
+  `MOCKAGENTS_STRICT_TOOLS=off|warn|strict` (`warn` = header-only).
+
+### Agent protocols, not just chat endpoints
+
+- **Mocks MCP servers too** — test agents that call Model Context Protocol
+  servers, deterministically (JSON-RPC 2.0 + bidirectional SSE).
+- **Manage agents over MCP** — `mockagents mcp --manage` exposes the agent write
+  API as MCP tools (`list_agents`, `get_agent`, `validate_agent`, `create_agent`,
+  `put_agent`, `delete_agent`), so an MCP client can create, inspect, and edit
+  your mock fixtures conversationally.
+- **Mocks A2A servers too** (`kind: A2AServer`, `mockagents a2a`) — test
+  multi-agent systems that speak Google's Agent2Agent protocol: serves the Agent
+  Card at `/.well-known/agent-card.json` and answers `message/send` / `tasks/get`
+  / `tasks/cancel` with canned, match-based task responses.
+- **Multi-agent pipelines** (`kind: Pipeline`) — sequential, parallel, and graph
+  topologies with conditional edges.
+- **Agent-trajectory assertions** (`mockagents test`) — assert the *shape* of an
+  agent's behavior, not just its text: `tool_call` (name + partial args),
+  `tool_call_count`, `tool_call_sequence` (ordered tool names), and `node_sequence`
+  (the ordered pipeline nodes that ran) — deterministic checks for the wrong-tool
+  / wrong-count / wrong-order bugs that belong on every PR.
+- **Tool-call simulation** — return canned tool calls on every protocol surface;
+  test your agent's routing and argument handling without a live model. (Tool
+  `responses:` tables resolve results for the test runner and MCP servers — on
+  the HTTP protocol endpoints your client executes the tools, as with real APIs.)
+- **Scenario matching** — route by message content, regex, or turn number;
+  assert *which* path fired, not just the text.
+
+### Provider API coverage
+
 - **OpenAI + Anthropic + Gemini parity** — real response shapes, `tool_calls` /
   `tool_use` / `functionCall`, `usage` token counts, and SSE streaming.
 - **OpenAI Responses API** (`/v1/responses`) — the default OpenAI Agents SDK
@@ -105,44 +157,10 @@ mockagents start                              # prints your base URL + a ready-t
 - **Vision input** — OpenAI `image_url` (incl. `data:` URLs) and Anthropic
   base64/url image parts are parsed; match on image presence via the `has_image`
   scenario rule and read the count from the `X-Mockagents-Image-Count` header.
-- **Mocks MCP servers too** — test agents that call Model Context Protocol
-  servers, deterministically (JSON-RPC 2.0 + bidirectional SSE).
-- **Manage agents over MCP** — `mockagents mcp --manage` exposes the agent write
-  API as MCP tools (`list_agents`, `get_agent`, `validate_agent`, `create_agent`,
-  `put_agent`, `delete_agent`), so an MCP client can create, inspect, and edit
-  your mock fixtures conversationally.
-- **Mocks A2A servers too** (`kind: A2AServer`, `mockagents a2a`) — test
-  multi-agent systems that speak Google's Agent2Agent protocol: serves the Agent
-  Card at `/.well-known/agent-card.json` and answers `message/send` / `tasks/get`
-  / `tasks/cancel` with canned, match-based task responses.
-- **Scenario matching** — route by message content, regex, or turn number;
-  assert *which* path fired, not just the text.
-- **Tool-call simulation** — return canned tool calls on every protocol surface;
-  test your agent's routing and argument handling without a live model. (Tool
-  `responses:` tables resolve results for the test runner and MCP servers — on
-  the HTTP protocol endpoints your client executes the tools, as with real APIs.)
-- **Strict tools mode** (`strict_tools`) — opt into failing like
-  production: round-trip tool id validation (orphan/mismatched
-  `tool_call_id`/`tool_use_id`/`call_id` → the provider's real 400),
-  `tool_choice: required`/named forcing with forced-call synthesis and
-  `finish_reason: "stop"`, `parallel_tool_calls: false` capping, and
-  `strict: true` schema-subset validation — per agent or fleet-wide via
-  `MOCKAGENTS_STRICT_TOOLS=off|warn|strict` (`warn` = header-only).
-- **Agent-trajectory assertions** (`mockagents test`) — assert the *shape* of an
-  agent's behavior, not just its text: `tool_call` (name + partial args),
-  `tool_call_count`, `tool_call_sequence` (ordered tool names), and `node_sequence`
-  (the ordered pipeline nodes that ran) — deterministic checks for the wrong-tool
-  / wrong-count / wrong-order bugs that belong on every PR.
-- **Multi-agent pipelines** (`kind: Pipeline`) — sequential, parallel, and graph
-  topologies with conditional edges.
-- **Chaos & fault injection** — inject latency, errors, and rate limits per agent
-  to test the unhappy paths.
-- **Hallucination fixtures** — return a deterministic confidently-wrong / ungrounded /
-  fabricated output (advertised via a response header) to test that your guardrails
-  catch it — something a real model won't do on demand.
-- **Semantic error modes** — well-formed responses that break agents *after* the
-  200: `finish_reason: length` truncation, assistant refusals, and tool calls with
-  malformed JSON arguments ([cookbook example](examples/semantic-errors-agent.yaml)).
+### Fits your CI
+
+- **One static binary, no runtime** — no Node, JVM, Python, or GPU. Drop it into
+  any CI in seconds (pure-Go, no cgo).
 - **Record & replay** — capture real upstream traffic once, replay it offline
   forever (SSE streams included).
 - **Contract testing** — extract an agent contract as JSON; diff breaking changes
