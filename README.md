@@ -4,8 +4,6 @@
 
 [![CI](https://github.com/mockagents/mockagents/actions/workflows/ci.yml/badge.svg)](https://github.com/mockagents/mockagents/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/mockagents/mockagents)](https://goreportcard.com/report/github.com/mockagents/mockagents)
-[![PyPI](https://img.shields.io/pypi/v/mockagents)](https://pypi.org/project/mockagents/)
-[![Docker](https://img.shields.io/docker/v/mockagents/mockagents?label=docker)](https://hub.docker.com/r/mockagents/mockagents)
 [![MCP Conformance](https://github.com/mockagents/mockagents/actions/workflows/mcp-conformance.yml/badge.svg)](https://github.com/mockagents/mockagents/actions/workflows/mcp-conformance.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
@@ -29,33 +27,47 @@ GPT-4o to hallucinate on cue. You can ask MockAgents.
 ## 60-second start
 
 ```bash
-docker run -p 8080:8080 mockagents/mockagents          # 1. run the mock (no prereqs)
+go install github.com/mockagents/mockagents/cmd/mockagents@latest   # needs Go 1.26+
+mockagents start                                       # 1. run the mock
 export OPENAI_BASE_URL=http://localhost:8080/v1        # 2. the ONLY change to your app
 export OPENAI_API_KEY=mock
 python my_existing_app.py                              # 3. it works — free, offline, deterministic
 ```
 
+No Go toolchain? Grab a prebuilt binary for macOS / Linux / Windows (amd64 and
+arm64) from [Releases](https://github.com/mockagents/mockagents/releases), then
+skip to step 1.
+
 That's the whole idea: **swap the base URL, change nothing else.** Works with
 the official OpenAI / Anthropic / Google SDKs, LangChain, LlamaIndex, the Vercel
 AI SDK — anything that talks these APIs over HTTP.
 
-### Or install the CLI
+### Install
 
-| Method | Command |
-|---|---|
-| npx (no install) | `npx mockagents start` |
-| pipx (no install) | `pipx run mockagents start` |
-| Homebrew | `brew install mockagents/tap/mockagents` |
-| Docker | `docker run -p 8080:8080 mockagents/mockagents` |
-| Go | `go install github.com/mockagents/mockagents/cmd/mockagents@latest` |
-| Binary | [GitHub Releases](https://github.com/mockagents/mockagents/releases) |
+| Method | Command | |
+|---|---|---|
+| Go | `go install github.com/mockagents/mockagents/cmd/mockagents@latest` | ✅ |
+| Binary | [GitHub Releases](https://github.com/mockagents/mockagents/releases) | ✅ |
+| npx | `npx mockagents start` | ⏳ |
+| pipx | `pipx run mockagents start` | ⏳ |
+| Homebrew | `brew install mockagents/tap/mockagents` | ⏳ |
+| Docker | `docker run -p 8080:8080 mockagents/mockagents` | ⏳ |
 
-**SDKs** (client libraries, not the server): `pip install mockagents` (Python),
-`npm install @mockagents/sdk` (TypeScript), `go get github.com/mockagents/mockagents/sdk/go/mockagents` (Go).
+⏳ **Not yet published.** These packages are built and versioned in-tree, but the
+v0.4.0 release pipeline failed partway through, so the registries have nothing to
+serve — they will 404 until the next release completes. Use Go or a prebuilt
+binary in the meantime. The
+[install-paths workflow](https://github.com/mockagents/mockagents/actions/workflows/install-paths.yml)
+checks every row on this table daily and is the source of truth for this column.
+
+**SDKs** (client libraries, not the server) — the Go SDK works today via
+`go get github.com/mockagents/mockagents/sdk/go/mockagents`. The Python
+(`mockagents`) and TypeScript (`@mockagents/sdk`) packages are ⏳ pending the same
+release.
 
 **Test-runner helpers** (auto-spawn the server + redirect the provider SDKs):
 `@mockagents/vitest` for [Vitest/Jest](sdk/vitest/README.md), and the bundled
-`pytest` plugin in the Python SDK.
+`pytest` plugin in the Python SDK — both ⏳ pending publication.
 
 ```bash
 mockagents init my-project && cd my-project   # scaffold an example agent

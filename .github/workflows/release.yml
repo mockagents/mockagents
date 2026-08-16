@@ -202,20 +202,16 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-  smoke-test:
-    name: Post-Release Smoke Test
-    needs: [release-binaries, release-docker, release-npm]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Docker smoke test
-        run: |
-          TAG="${{ github.ref_name }}"
-          docker pull "ghcr.io/${{ github.repository }}:${TAG#v}" || true
-          echo "Docker image pull verified"
-
-      - name: Binary smoke test
-        run: |
-          echo "Release artifacts published successfully"
-          echo "Tag: ${{ github.ref_name }}"
+  # The post-release smoke test used to live here. It was removed because it
+  # could not fail: it ran `docker pull ... || true` and then echoed "Release
+  # artifacts published successfully" without verifying anything. It also
+  # `needs:`-ed the three publish jobs, so on the v0.4.0 run — where all three
+  # failed on missing credentials — it was SKIPPED rather than red, and the
+  # release reported no actionable alarm while publishing almost nothing.
+  #
+  # Verification now lives in `install-paths.yml`, which runs on a schedule
+  # against the PUBLIC registries and via `workflow_run` after this workflow
+  # completes (including when it fails). Checking the registries rather than
+  # this run's own outputs is the point: it is the only way to catch a publish
+  # that silently no-opped, such as GoReleaser's `skip_upload` swallowing the
+  # Homebrew tap push when HOMEBREW_TAP_TOKEN is unset.

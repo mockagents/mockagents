@@ -1,0 +1,168 @@
+name: Install paths
+
+# Verifies that every install method the README advertises actually works,
+# against the PUBLIC registries — not against build outputs.
+#
+# This exists because the v0.4.0 release run reported no actionable alarm while
+# publishing almost nothing. Its post-release smoke test `needs:`-ed the publish
+# jobs, so it was SKIPPED when they failed; it also ran `docker pull ... || true`
+# and echoed "artifacts published successfully" without checking anything. A
+# guard that cannot fail is not a guard.
+#
+# Design rules that follow from that:
+#   1. Never depend on the release jobs. Run on a schedule, against registries.
+#   2. Every check must be able to fail. No `|| true`, no unconditional echo.
+#   3. Check ALL paths in one run, then decide — one run reports every breakage
+#      rather than stopping at the first.
+#   4. Known-unpublished paths live in .github/install-paths-pending.txt so the
+#      expected state is reviewable in a diff. A pending path that STARTS
+#      working also fails the run, because the README is then stale.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+env:
+  REPO: mockagents/mockagents
+
+jobs:
+  linux:
+    name: Check (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Each check prints "<id>|<ok|fail>|<detail>" and always exits 0, so a
+      # single run reports every path instead of halting at the first failure.
+      - name: Run checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          out=results-linux.txt
+          : > "$out"
+
+          record() { printf '%s|%s|%s\n' "$1" "$2" "$3" >> "$out"; }
+
+          check() {   # check <id> <description> <command...>
+            local id="$1" desc="$2"; shift 2
+            echo "::group::$id — $desc"
+            if timeout 300 "$@" > /tmp/"$id".log 2>&1; then
+              record "$id" ok "$desc"
+              echo "OK"
+            else
+              record "$id" fail "$desc"
+              echo "FAILED (exit $?)"
+              tail -n 20 /tmp/"$id".log || true
+            fi
+            echo "::endgroup::"
+          }
+
+          # --- paths that must always work -------------------------------
+          check go "go install from module proxy" \
+            bash -c 'go install github.com/mockagents/mockagents/cmd/mockagents@latest \
+                     && "$(go env GOPATH)"/bin/mockagents --version'
+
+          check binary "prebuilt binary from GitHub Releases" \
+            bash -c 'rm -rf /tmp/relbin && mkdir -p /tmp/relbin \
+                     && gh release download --repo "$REPO" --pattern "*linux_amd64.tar.gz" --dir /tmp/relbin \
+                     && tar -xzf /tmp/relbin/*linux_amd64.tar.gz -C /tmp/relbin \
+                     && /tmp/relbin/mockagents --version'
+
+          check go-sdk "go get the Go SDK" \
+            bash -c 'cd "$(mktemp -d)" && go mod init probe >/dev/null \
+                     && go get github.com/mockagents/mockagents/sdk/go/mockagents'
+
+          # --- paths pending publication ---------------------------------
+          check docker-hub "docker run from Docker Hub" \
+            docker run --rm mockagents/mockagents --version
+
+          check ghcr "docker run from GHCR" \
+            docker run --rm ghcr.io/mockagents/mockagents --version
+
+          check npx "npx mockagents" \
+            npx -y mockagents@latest --version
+
+          check npm-sdk "npm @mockagents/sdk" \
+            npm view @mockagents/sdk version
+
+          check npm-vitest "npm @mockagents/vitest" \
+            npm view @mockagents/vitest version
+
+          check pipx "pipx run mockagents" \
+            bash -c 'pip install --quiet pipx && pipx run mockagents --version'
+
+          check pypi "pip install mockagents" \
+            bash -c 'python -m venv /tmp/probe-venv && /tmp/probe-venv/bin/pip install --quiet mockagents'
+
+          echo "--- results ---"; cat "$out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: results-linux
+          path: results-linux.txt
+
+  macos:
+    name: Check (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Homebrew tap install
+        run: |
+          set -uo pipefail
+          if timeout 600 brew install mockagents/tap/mockagents > /tmp/brew.log 2>&1 \
+             && mockagents --version >> /tmp/brew.log 2>&1; then
+            printf 'homebrew|ok|brew install from tap\n' > results-macos.txt
+          else
+            printf 'homebrew|fail|brew install from tap\n' > results-macos.txt
+            tail -n 20 /tmp/brew.log || true
+          fi
+          cat results-macos.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: results-macos
+          path: results-macos.txt
+
+  report:
+    name: Report
+    needs: [linux, macos]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # `cat ... || true` is safe here only because the script treats a missing
+      # or row-less results file as a hard failure — see its `rows` guard.
+      - name: Summarise and gate
+        run: |
+          cat artifacts/results-*.txt > all.txt 2>/dev/null || true
+          bash scripts/install-paths-report.sh \
+            all.txt \
+            .github/install-paths-pending.txt \
+            "$GITHUB_STEP_SUMMARY"

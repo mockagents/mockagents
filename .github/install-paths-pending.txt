@@ -1,0 +1,23 @@
+# Install paths that are advertised but not yet published.
+#
+# One id per line (see .github/workflows/install-paths.yml for the id list).
+# A path listed here is allowed to fail without failing the workflow — it is a
+# known gap, not a regression.
+#
+# The workflow FAILS if a listed path starts working: that means the package
+# shipped and this file plus the README install table are now stale. Delete the
+# line to clear it.
+#
+# Cause: the v0.4.0 release run (2026-06-20) failed in its publish jobs —
+# missing Docker Hub / npm / PyPI credentials and an unconfigured `pypi`
+# deployment environment. The packages are built and versioned in-tree; nothing
+# was ever pushed to the registries.
+
+docker-hub
+ghcr
+npx
+pipx
+pypi
+npm-sdk
+npm-vitest
+homebrew
