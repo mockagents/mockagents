@@ -2,7 +2,7 @@
 // and run them against a MockAgentClient. Mirrors the Python SDK.
 
 import { MockAgentClient } from "./client.js";
-import { ChatMessage, ChatResponse } from "./types.js";
+import { ChatMessage, ChatResponse, ToolCall } from "./types.js";
 
 export interface ScenarioStep {
   role: "user" | "assistant" | "system";
@@ -47,6 +47,13 @@ export interface ScenarioResult {
   readonly lastContent: string;
   /** Shortcut to the final ChatResponse (throws if empty). */
   readonly last: ChatResponse;
+  /**
+   * Every tool call across every turn, in invocation order — the scenario's
+   * trajectory. This is what the trajectory assertions read, and it matches
+   * what the Go test runner aggregates for `tool_call_sequence` /
+   * `tool_call_count`, so an assertion behaves the same in a YAML suite.
+   */
+  readonly toolCalls: ToolCall[];
 }
 
 /**
@@ -94,6 +101,9 @@ export async function runScenario(
     get last() {
       if (!last) throw new Error("scenario produced no responses");
       return last;
+    },
+    get toolCalls() {
+      return responses.flatMap((r) => r.toolCalls);
     },
   };
 }

@@ -43,6 +43,33 @@ try {
 }
 ```
 
+## Trajectory assertions
+
+Assert the *shape* of what the agent did, not just what it said:
+
+```ts
+expect(result)
+  .toHaveToolCallSequence(["search", "rerank", "summarize"])  // exact order
+  .toHaveToolCallCount(3)                                     // total calls
+  .toHaveToolCallCount(1, "search");                          // calls to one tool
+```
+
+These mirror the `tool_call_sequence` and `tool_call_count` assertions of
+`kind: TestSuite` YAML, so a check reads the same whether you run it through
+`mockagents test` or from your own suite. Both read the **aggregate across every
+turn** of a scenario — a multi-turn trajectory is every call it made, in order.
+`toHaveToolCallSequence` is full equality, not a subsequence: an unexpected extra
+call fails it.
+
+The two-argument `toHaveToolCallCount(n, name)` narrows to a single tool. That is
+an SDK-only convenience with no YAML equivalent — use the one-argument form when
+you want a check that transfers to a YAML suite.
+
+> `node_sequence` (ordered pipeline nodes) is **not** available here. A
+> `kind: Pipeline` can only be executed by the in-process CLI runner, so an HTTP
+> client cannot produce the node trajectory — see
+> [#33](https://github.com/mockagents/mockagents/issues/33). It remains YAML-only.
+
 ## API surface
 
 | Export | Purpose |
@@ -50,7 +77,7 @@ try {
 | `MockAgentServer` | Spawns the Go binary, picks a free port, polls `/api/v1/health`. |
 | `MockAgentClient` | `fetch`-based client for `/v1/chat/completions`, `/v1/messages`, and the management API. |
 | `Scenario`, `runScenario` | Declarative multi-turn scripts with automatic session scoping. |
-| `expect(target)` | Fluent assertion helper: `toHaveToolCall`, `toHaveResponseContaining`, `toHaveFinishReason`, `toHaveStatusCode`, `toHaveLatencyLessThan`, `toHaveToolCallCount`. |
+| `expect(target)` | Fluent assertion helper: `toHaveToolCall`, `toHaveResponseContaining`, `toHaveFinishReason`, `toHaveStatusCode`, `toHaveLatencyLessThan`, plus the trajectory assertions `toHaveToolCallCount` and `toHaveToolCallSequence` (see below). |
 | `adapters.chatOpenAI(server)` | Returns a `@langchain/openai` `ChatOpenAI` pointed at the mock. |
 | `adapters.chatAnthropic(server)` | Returns a `@langchain/anthropic` `ChatAnthropic` pointed at the mock. |
 | `adapters.patchEnv(server)` | Temporarily sets `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` for LangGraph-style frameworks. |

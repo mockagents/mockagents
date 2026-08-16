@@ -110,11 +110,15 @@ mockagents start                              # prints your base URL + a ready-t
   / `tasks/cancel` with canned, match-based task responses.
 - **Multi-agent pipelines** (`kind: Pipeline`) — sequential, parallel, and graph
   topologies with conditional edges.
-- **Agent-trajectory assertions** (`mockagents test`) — assert the *shape* of an
-  agent's behavior, not just its text: `tool_call` (name + partial args),
-  `tool_call_count`, `tool_call_sequence` (ordered tool names), and `node_sequence`
-  (the ordered pipeline nodes that ran) — deterministic checks for the wrong-tool
-  / wrong-count / wrong-order bugs that belong on every PR.
+- **Agent-trajectory assertions** — assert the *shape* of an agent's behavior,
+  not just its text: `tool_call` (name + partial args), `tool_call_count`,
+  `tool_call_sequence` (ordered tool names), and `node_sequence` (the ordered
+  pipeline nodes that ran) — deterministic checks for the wrong-tool /
+  wrong-count / wrong-order bugs that belong on every PR. Available both in
+  `kind: TestSuite` YAML via `mockagents test` **and natively in your own
+  pytest / Vitest / Jest suite** through the SDKs, with matching semantics.
+  (`node_sequence` is YAML-only — pipelines have no HTTP execution surface yet,
+  [#33](https://github.com/mockagents/mockagents/issues/33).)
 - **Tool-call simulation** — return canned tool calls on every protocol surface;
   test your agent's routing and argument handling without a live model. (Tool
   `responses:` tables resolve results for the test runner and MCP servers — on

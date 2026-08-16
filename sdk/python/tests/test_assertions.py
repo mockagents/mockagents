@@ -186,3 +186,100 @@ def test_chaining_value_assertions():
 def test_expect_chat_response_directly():
     response = ChatResponse(content="Hello!", status_code=200)
     expect(response).to_have_response_containing("Hello").to_have_status(200)
+
+
+# --- Trajectory assertions (tool_call_sequence / tool_call_count) ---
+#
+# These mirror the `kind: TestSuite` YAML assertions of the same names, so the
+# semantics are pinned to the Go runner's: read the AGGREGATE across every turn,
+# and compare the sequence for full equality rather than as a subsequence.
+
+def _call(name: str) -> ToolCall:
+    return ToolCall(id=f"id-{name}", name=name, arguments={})
+
+
+def test_tool_call_sequence_exact_match():
+    result = make_result(
+        ChatResponse(tool_calls=[_call("search")]),
+        ChatResponse(tool_calls=[_call("summarize")]),
+    )
+    expect(result).to_have_tool_call_sequence(["search", "summarize"])
+
+
+def test_tool_call_sequence_aggregates_across_turns():
+    """A multi-turn trajectory is every call in order, not just the last turn."""
+    result = make_result(
+        ChatResponse(tool_calls=[_call("a"), _call("b")]),
+        ChatResponse(tool_calls=[_call("c")]),
+    )
+    expect(result).to_have_tool_call_sequence(["a", "b", "c"])
+
+
+def test_tool_call_sequence_rejects_wrong_order():
+    result = make_result(ChatResponse(tool_calls=[_call("summarize"), _call("search")]))
+    with pytest.raises(AssertionError) as exc:
+        expect(result).to_have_tool_call_sequence(["search", "summarize"])
+    # The message must name what actually happened, not just that it failed.
+    assert "summarize" in str(exc.value) and "search" in str(exc.value)
+
+
+def test_tool_call_sequence_is_not_a_subsequence_check():
+    """An extra call breaks the sequence — full equality, matching the runner."""
+    result = make_result(
+        ChatResponse(tool_calls=[_call("search"), _call("rerank"), _call("summarize")])
+    )
+    with pytest.raises(AssertionError):
+        expect(result).to_have_tool_call_sequence(["search", "summarize"])
+
+
+def test_tool_call_sequence_empty():
+    expect(make_result(ChatResponse())).to_have_tool_call_sequence([])
+
+
+def test_tool_call_count_total():
+    result = make_result(
+        ChatResponse(tool_calls=[_call("a"), _call("b")]),
+        ChatResponse(tool_calls=[_call("a")]),
+    )
+    expect(result).to_have_tool_call_count(3)
+
+
+def test_tool_call_count_rejects_mismatch():
+    result = make_result(ChatResponse(tool_calls=[_call("a")]))
+    with pytest.raises(AssertionError) as exc:
+        expect(result).to_have_tool_call_count(2)
+    assert "got 1" in str(exc.value)
+
+
+def test_tool_call_count_by_name():
+    result = make_result(
+        ChatResponse(tool_calls=[_call("search"), _call("search"), _call("summarize")])
+    )
+    expect(result).to_have_tool_call_count(2, name="search")
+    expect(result).to_have_tool_call_count(1, name="summarize")
+    expect(result).to_have_tool_call_count(0, name="absent")
+
+
+def test_tool_call_count_by_name_rejects_mismatch():
+    result = make_result(ChatResponse(tool_calls=[_call("search")]))
+    with pytest.raises(AssertionError) as exc:
+        expect(result).to_have_tool_call_count(2, name="search")
+    assert "search" in str(exc.value)
+
+
+def test_trajectory_assertions_chain():
+    result = make_result(
+        ChatResponse(content="done", tool_calls=[_call("search"), _call("summarize")])
+    )
+    (
+        expect(result)
+        .to_have_tool_call_sequence(["search", "summarize"])
+        .to_have_tool_call_count(2)
+        .to_have_tool_call_count(1, name="search")
+        .to_have_response_containing("done")
+    )
+
+
+def test_trajectory_assertions_on_bare_chat_response():
+    response = ChatResponse(tool_calls=[_call("search")])
+    expect(response).to_have_tool_call_sequence(["search"]).to_have_tool_call_count(1)

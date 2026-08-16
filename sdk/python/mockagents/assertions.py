@@ -1,4 +1,22 @@
-"""Fluent assertion library for testing MockAgents responses."""
+"""Fluent assertion library for testing MockAgents responses.
+
+Trajectory assertions
+---------------------
+``to_have_tool_call_sequence`` and ``to_have_tool_call_count`` mirror the
+``tool_call_sequence`` / ``tool_call_count`` assertions of ``kind: TestSuite``
+YAML, so the same check reads the same way whether you run it through
+``mockagents test`` or from your own test file. Both read the **aggregate**
+across every turn of a scenario, matching the Go runner: a multi-turn
+conversation's trajectory is every tool call it made, in order — not just the
+final turn's.
+
+``node_sequence`` has deliberately **not** been ported. It asserts the ordered
+pipeline nodes that ran, and a ``kind: Pipeline`` can only be executed by the
+in-process CLI runner — there is no HTTP route that runs one, so an SDK client
+has no way to produce the data. Tracked as
+https://github.com/mockagents/mockagents/issues/33; until that lands,
+``node_sequence`` remains YAML-only.
+"""
 
 from __future__ import annotations
 
@@ -89,6 +107,74 @@ class ResponseExpect:
         if all_calls:
             msg += f" (arguments: {[tc.arguments for tc in all_calls]})"
         raise AssertionError(msg)
+
+    def to_have_tool_call_sequence(self, names: list[str]) -> ResponseExpect:
+        """Assert the exact ordered sequence of tool-call names.
+
+        Reads the aggregate across every interaction, in invocation order, and
+        compares for **full equality** — not a subsequence. This is the
+        ``tool_call_sequence`` assertion of ``kind: TestSuite`` YAML, so a check
+        that passes here passes there.
+
+        Args:
+            names: Expected tool names, in the order they should be called.
+
+        Raises:
+            AssertionError: If the observed sequence differs in content or order.
+
+        Example:
+            expect(result).to_have_tool_call_sequence(["search", "summarize"])
+        """
+        expected = list(names)
+        got = [tc.name for tc in self._result.tool_calls]
+        if got != expected:
+            raise AssertionError(
+                f"Expected tool call sequence {expected}, but got {got}"
+            )
+        return self
+
+    def to_have_tool_call_count(
+        self,
+        count: int,
+        name: Optional[str] = None,
+    ) -> ResponseExpect:
+        """Assert how many tool calls were made.
+
+        With no ``name`` this is the ``tool_call_count`` assertion of
+        ``kind: TestSuite`` YAML: the **total** across every interaction, compared
+        for exact equality.
+
+        Passing ``name`` narrows the count to one tool. That is an SDK-only
+        convenience with no YAML equivalent — reach for the unnamed form when you
+        want a check that transfers to a YAML suite.
+
+        Args:
+            count: Expected number of tool calls.
+            name: Count only calls to this tool. ``None`` counts every call.
+
+        Raises:
+            AssertionError: If the observed count differs.
+
+        Example:
+            expect(result).to_have_tool_call_count(3)
+            expect(result).to_have_tool_call_count(1, name="search")
+        """
+        calls = self._result.tool_calls
+        if name is None:
+            got = len(calls)
+            if got != count:
+                raise AssertionError(
+                    f"Expected {count} tool call(s), but got {got}: "
+                    f"{[tc.name for tc in calls]}"
+                )
+        else:
+            got = sum(1 for tc in calls if tc.name == name)
+            if got != count:
+                raise AssertionError(
+                    f"Expected {count} call(s) to tool {name!r}, but got {got}: "
+                    f"{[tc.name for tc in calls]}"
+                )
+        return self
 
     def to_have_tool_error(self, code: str) -> ResponseExpect:
         """Assert that any response contains a tool error with the given code.
