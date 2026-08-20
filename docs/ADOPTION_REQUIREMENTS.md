@@ -43,7 +43,7 @@ daily habit → advocate.** Today the funnel breaks at *install* (4 of 6 adverti
 | R6 | Framework recipes as runnable templates, not prose: LangGraph, CrewAI, OpenAI Agents SDK, Vercel AI SDK. | PMF roadmap · FR-K03 |
 | R7 | One flagship demo: a guardrail bug caught by a hallucination fixture that a real model would have hidden. This is the "fail on purpose" positioning made concrete. | PMF roadmap |
 | R8 | Publish the evals-vs-tests stance (short doc: evals measure model quality; mocks make application logic testable; you need both). Cheap, clarifying, category-defining. | PMF §6 |
-| R9 | Operability floor: `/health` + `/ready` on the **main** server (today only sub-commands have `/healthz`; the Helm chart ships without a real readiness probe) and a Prometheus `/metrics` endpoint. | PMF F7 · FR-J02 |
+| R9 | Operability floor: a Prometheus `/metrics` endpoint (none exists today), and a real **readiness** signal — `/api/v1/health` exists and both Helm probes point at it, but it returns an unconditional 200 the moment the process is up, so readiness and liveness are currently the same check. The PRD's own §11 requires distinguishing them. *(Corrected on review: an earlier draft claimed the main server had no health route and the chart no probes — both false.)* | FR-J02 + PRD §11 |
 | R10 | OSS hygiene: CONTRIBUTING quick-path, 5–10 labeled good-first-issues, a stated issue-response norm. Discussions is already on. Non-maintainer issues are the earliest PMF signal — make filing one easy. | **NEW** |
 
 ## Tier 2 — Differentiated capability *(1–3 months)*
@@ -78,7 +78,7 @@ HTTP.
 
 | Metric | Target | Source |
 |---|---|---|
-| Advertised install paths that work on a clean machine | 7/7 (today: 2/7) | PMF |
+| Install-path checks green in the [guard workflow](../.github/workflows/install-paths.yml), with an empty pending file | 11/11 (today: 3/11 work, 8 declared pending) | PMF |
 | First non-zero weekly download count | exists at all | PMF |
 | Time-to-first-green-test (naive user, measured) | <5 min quickstart · <10 min RAG example | PMF + PRD §14 |
 | Issues/Discussions opened by non-maintainers | the earliest real PMF signal | PMF |
