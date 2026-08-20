@@ -57,7 +57,5 @@ spec:
       # VAD-committed audio always transcribes to the fixed "[audio input]"
       # placeholder (the mock has no STT), so voice turns land here.
       - name: default
-        match:
-          default: true
         response:
           content: "I heard you loud and clear. What would you like to do next?"

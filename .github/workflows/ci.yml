@@ -122,6 +122,21 @@ jobs:
         working-directory: sdk/python
         run: python -m pytest tests/ -v
 
+      # examples/tests asserts the shape of the example documents themselves —
+      # agent scenarios, and the Pipeline/TestSuite/MCPServer/A2AServer specs.
+      # It ran nowhere in CI and quietly rotted to 16 failures, so it is gated
+      # here. No extra install: pytest comes from the SDK's dev extra and pyyaml
+      # is a runtime dependency, both from the step above.
+      #
+      # Autoload is off so the step depends only on pytest core — these are pure
+      # YAML-shape assertions, and an unrelated pytest plugin that happens to be
+      # installed should not be able to fail (or silently alter) this gate.
+      - name: Run example fixture tests
+        working-directory: examples
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: python -m pytest tests/ -v
+
   # The RAG demo is a claim, not just a sample: "clone, one command, green in
   # under ten minutes". A demo nobody runs rots into a lie, so CI runs it the
   # same way its README tells a reader to — the binary from this checkout, the

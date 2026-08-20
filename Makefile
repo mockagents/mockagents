@@ -1,4 +1,4 @@
-.PHONY: build test test-verbose test-coverage test-python test-typescript test-all \
+.PHONY: build test test-verbose test-coverage test-python test-examples test-typescript test-all \
        lint drift fmt clean validate docker docker-up docker-down \
        gui-dev gui-build \
        helm-lint helm-template helm-package \
@@ -41,7 +41,12 @@ test-python:                    ## Run Python SDK tests
 test-typescript:                ## Run TypeScript SDK tests
 	cd sdk/typescript && npm test
 
-test-all: test test-python test-typescript ## Run all tests (Go + Python + TypeScript)
+# Autoload off so the run depends only on pytest core — see the matching note in
+# .github/workflows/ci.yml.
+test-examples:                  ## Run the examples/ fixture-shape tests
+	cd examples && PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/ -v
+
+test-all: test test-python test-examples test-typescript ## Run all tests (Go + Python + examples + TypeScript)
 
 ## Code Quality
 lint:                           ## Run Go vet
