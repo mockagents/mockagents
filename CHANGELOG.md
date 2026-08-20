@@ -13,6 +13,18 @@ milestones that preceded it; all are on `main`.
 ## [Unreleased]
 
 ### Fixed
+- **The quickstart could not be completed.** Measuring time-to-first-green-test
+  by running the page verbatim found three of its four externally-dependent
+  steps dead: the "Binary (recommended)" `curl` URL 404s (release assets carry
+  the version in the filename, so `mockagents_linux_amd64.tar.gz` does not
+  exist — it is `mockagents_0.4.0_linux_amd64.tar.gz`); the Docker image is not
+  published, which the README's install table said and the quickstart did not;
+  and step 5's `pip install mockagents` fails, so the page's entire payoff was
+  unreachable. All three now tell the truth and hand the reader a route that
+  works. The real fix is R1 (publish the packages), which needs credentials.
+  Also corrected: the README advertised Windows arm64 binaries; there is no such
+  asset. Numbers and method in
+  [`docs/qa/adoption-results/2026-08-20/`](docs/qa/adoption-results/2026-08-20/TTFGT-measurement.md).
 - **The Python SDK no longer resolves the pip console-script shim as the
   server binary on Windows.** `_looks_like_python_wrapper` only recognized the
   POSIX shebang form; a Windows console script is a small PE launcher with the

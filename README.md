@@ -34,9 +34,11 @@ export OPENAI_API_KEY=mock
 python my_existing_app.py                              # 3. it works — free, offline, deterministic
 ```
 
-No Go toolchain? Grab a prebuilt binary for macOS / Linux / Windows (amd64 and
-arm64) from [Releases](https://github.com/mockagents/mockagents/releases), then
-skip to step 1.
+No Go toolchain? Grab a prebuilt binary from
+[Releases](https://github.com/mockagents/mockagents/releases) — macOS and Linux
+on amd64 and arm64, Windows on amd64 — then skip to step 1. Asset names carry
+the version (`mockagents_0.4.0_linux_amd64.tar.gz`), so there is no
+version-independent download URL.
 
 That's the whole idea: **swap the base URL, change nothing else.** Works with
 the official OpenAI / Anthropic / Google SDKs, LangChain, LlamaIndex, the Vercel

@@ -6,16 +6,24 @@ Get your first mock agent running in under 5 minutes.
 
 === "Binary (recommended)"
 
-    Download the latest release for your platform:
+    Release assets carry the version in the filename, so set it once:
 
     ```bash
-    # macOS / Linux
-    curl -fsSL https://github.com/mockagents/mockagents/releases/latest/download/mockagents_linux_amd64.tar.gz | tar xz
+    VERSION=0.4.0
+
+    # macOS / Linux — swap linux_amd64 for darwin_arm64, darwin_amd64, or linux_arm64
+    curl -fsSL "https://github.com/mockagents/mockagents/releases/download/v${VERSION}/mockagents_${VERSION}_linux_amd64.tar.gz" | tar xz
     sudo mv mockagents /usr/local/bin/
 
     # Verify
     mockagents --version
     ```
+
+    Windows (amd64 only — there is no Windows arm64 build):
+    download `mockagents_${VERSION}_windows_amd64.zip` from the
+    [releases page](https://github.com/mockagents/mockagents/releases) and unzip it.
+
+    Checksums for every asset are in `checksums.txt` on the same release.
 
 === "Go Install"
 
@@ -23,11 +31,20 @@ Get your first mock agent running in under 5 minutes.
     go install github.com/mockagents/mockagents/cmd/mockagents@latest
     ```
 
+    Needs Go 1.26+. Takes about half a minute on a cold module cache.
+
 === "Docker"
 
     ```bash
-    docker pull mockagents/mockagents:latest
+    docker run -p 8080:8080 mockagents/mockagents
     ```
+
+    !!! warning "Not published yet"
+        The Docker image 404s today — the v0.4.0 release pipeline failed partway
+        through, so no registry has anything to serve. The
+        [install-paths workflow](https://github.com/mockagents/mockagents/actions/workflows/install-paths.yml)
+        checks every advertised path daily and is the source of truth. Use the
+        binary or `go install` until it goes green.
 
 ## 2. Create a Project
 
@@ -124,9 +141,18 @@ You do not need step 3 for this. The SDK registers a pytest plugin, so the
 `mockagents` fixture starts and stops a server for you and points the provider
 SDKs at it — no import, no conftest, no fixture wiring:
 
-```bash
-pip install mockagents
-```
+!!! warning "`pip install mockagents` does not work yet"
+    The Python SDK is not on PyPI — same stalled release as the Docker image
+    above. Until it is, install it from a checkout, which is the *only* way to
+    get the pytest plugin today:
+
+    ```bash
+    git clone https://github.com/mockagents/mockagents.git
+    pip install -e mockagents/sdk/python
+    pip install pytest openai
+    ```
+
+    Everything below then works exactly as written.
 
 ```python
 # test_agent.py
