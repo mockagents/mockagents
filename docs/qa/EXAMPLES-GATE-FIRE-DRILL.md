@@ -1,7 +1,9 @@
 # Examples-gate fire drill (2026-08-20)
 
 **Result: the gate fires — exit 1 on all four mutations, in both partitions —
-and the CI step runs the suite for real. No residual gap.**
+and the CI step runs the suite for real. Part 2 extends discovery into
+subdirectories and shows it collects the one document nothing was checking,
+while still ignoring dependency trees. No residual gap.**
 
 ## Why this drill exists
 
@@ -80,8 +82,45 @@ does produce the non-zero exit.
 Re-run this drill whenever the partitioning logic or the set of known kinds
 changes.
 
+## Part 2 — recursive discovery (2026-08-20)
+
+Discovery was then made recursive, to cover
+`frameworks/agents/support-agent.yaml`. That document had been checked by
+**nothing**: `mockagents validate examples/` does not recurse
+(`listDocumentPaths` skips directories), and the old `os.listdir` walk did not
+either. The framework recipe jobs execute it, but executing an agent does not
+assert that it has a catch-all scenario.
+
+Recursion brings its own failure mode, and it is the opposite of the last one:
+not collecting too little, but collecting **junk**. `examples/frameworks/
+typescript/node_modules` ships `.travis.yml` and `FUNDING.yml`, and it is
+untracked — so a naive walk collects a corpus that depends on whether anyone
+has run `npm install`, i.e. green in a clean CI job and red on a developer's
+box. Hence `SKIP_DIRS`, and hence a drill case that plants junk rather than
+breaking something:
+
+| # | Mutation | Expected | Exit | Caught by |
+|---|---|---|---|---|
+| A | the **subdirectory** agent loses its default scenario | red | **1** | `test_example_has_default_scenario[frameworks/agents/support-agent.yaml]` |
+| B | a bogus YAML is planted **inside `node_modules`** | **green** | **0** | *nothing — correctly ignored* |
+| C | a broken document appears in a **brand-new** subdirectory | red | **1** | `test_example_yaml_is_valid[drilldir/bad.yaml]` **+** `test_example_has_default_scenario` |
+
+Baseline before and after: **138 passed, 7 skipped, exit 0** (up from 131 — the
+subdirectory agent adds 7 parametrized cases).
+
+1. **B is the case that matters**, and it is the one that passes. A drill where
+   every case goes red would not have tested the exclusion at all; the only way
+   to show `SKIP_DIRS` works is to plant something that *must not* be collected
+   and confirm the suite stays green.
+2. **C proves recursion is general, not a hardcoded path.** A new subdirectory
+   nobody anticipated is covered automatically — so this gate does not need
+   updating each time examples grow a folder.
+3. **Test ids carry the relative path** (`frameworks/agents/support-agent.yaml`),
+   normalized to forward slashes so they read the same on Windows and Linux.
+
 ## Cleanup
 
 Mutations were applied and reverted from byte-exact backups in the scratch
 directory; `git status` confirms only the intended files changed, and no drill
-artifact (`drill-unknown-kind.yaml`) remains.
+artifact remains (`drill-unknown-kind.yaml`, `drilldir/`, or the planted
+`node_modules/drill-pkg`).

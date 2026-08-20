@@ -9,6 +9,13 @@ accepts an Agent document with `kind` unset (internal/config/loader.go,
 LoadFile) — and every other kind is asserted against the shape that actually
 applies to it, rather than being skipped.
 
+Discovery recurses into subdirectories, so `frameworks/agents/support-agent.yaml`
+is covered too. That one matters: `mockagents validate examples/` does NOT
+recurse (internal/config/loader.go listDocumentPaths skips directories), so
+before it was picked up here nothing asserted its shape at all — the framework
+recipe jobs run it, but running an agent does not check that it has, say, a
+catch-all scenario.
+
 Cross-document invariants (a Pipeline node's `ref`, a TestSuite's `target`
 resolving to a real agent) are deliberately NOT duplicated here: the Go
 cross-document validator already covers them, and CI runs
@@ -42,12 +49,38 @@ NON_AGENT_REQUIRED_SPEC_FIELDS = {
 KNOWN_KINDS = ("", AGENT_KIND) + tuple(NON_AGENT_REQUIRED_SPEC_FIELDS)
 
 
+# Directory names never descended into when looking for example documents.
+# Dependency and build trees carry unrelated YAML — node_modules alone ships
+# .travis.yml and FUNDING.yml — and they are untracked, so whether they exist
+# depends on whether anyone has run `npm install` in this checkout. Walking
+# them would make the collected corpus differ between machines and between CI
+# jobs, which is how a gate turns flaky.
+SKIP_DIRS = frozenset({
+    ".git",
+    ".pytest_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+})
+
+
 def get_example_files():
-    """Find all YAML files in the examples directory."""
+    """Find every example YAML under examples/, recursively.
+
+    Returns paths relative to EXAMPLES_DIR with forward slashes, so parametrized
+    test ids and failure messages read identically on Windows and Linux.
+    """
     files = []
-    for f in os.listdir(EXAMPLES_DIR):
-        if f.endswith((".yaml", ".yml")) and not f.startswith("."):
-            files.append(f)
+    for dirpath, dirnames, filenames in os.walk(EXAMPLES_DIR):
+        # Prune in place so os.walk never descends into them.
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
+        for f in filenames:
+            if f.endswith((".yaml", ".yml")) and not f.startswith("."):
+                rel = os.path.relpath(os.path.join(dirpath, f), EXAMPLES_DIR)
+                files.append(rel.replace(os.sep, "/"))
     return sorted(files)
 
 
@@ -112,6 +145,25 @@ class TestExampleValidation:
         assert sorted(AGENT_EXAMPLES + NON_AGENT_EXAMPLES) == get_example_files()
         assert AGENT_EXAMPLES, "no agent examples were collected"
         assert NON_AGENT_EXAMPLES, "no non-agent examples were collected"
+
+    def test_discovery_reaches_subdirectories(self):
+        """The frameworks recipe agent lives in a subdirectory and must be covered.
+
+        `mockagents validate examples/` does not recurse, so if discovery here
+        stopped recursing too, nothing would assert this document's shape.
+        """
+        assert "frameworks/agents/support-agent.yaml" in get_example_files()
+
+    def test_discovery_excludes_dependency_trees(self):
+        """No collected path may come out of a vendor or build directory.
+
+        Those trees carry unrelated YAML and are untracked, so walking into them
+        would collect a corpus that differs by machine — green on a clean
+        checkout, red once someone has run `npm install`.
+        """
+        for filename in get_example_files():
+            offending = set(filename.split("/")) & SKIP_DIRS
+            assert not offending, f"{filename} was collected from {sorted(offending)}"
 
     def test_customer_support_agent_exists(self):
         path = os.path.join(EXAMPLES_DIR, "customer-support-agent.yaml")
