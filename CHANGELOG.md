@@ -102,7 +102,12 @@ milestones that preceded it; all are on `main`.
   job runs it on every push, exercised by breaking the fixture and confirming
   the job goes red — and it earned its keep on the first run, catching that the
   MCP Python SDK renamed `CallToolResult.isError` to `.is_error` in 2.0. The
-  demo now reads either, with a test pinning both spellings.
+  demo now reads either, with a test pinning both spellings. The suite also
+  carries the **flagship guardrail-bug exhibit**: `naive_grounding_ok` is the
+  check most teams write first ("did the model cite anything?"), and a test
+  asserts it returns True for the fabricated answer while the real check raises.
+  Against a live model that naive check would have looked correct in every test
+  run anyone ever did.
 - **`GET /metrics` — a real Prometheus endpoint** (FR-J02, adoption R9). Text
   exposition format 0.0.4, always on, no dependency added: the exposition is
   hand-written and its correctness is asserted against the upstream Prometheus

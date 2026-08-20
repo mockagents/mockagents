@@ -112,6 +112,36 @@ async def test_the_fixture_declares_itself_a_hallucination(mockagents_client):
 
 
 @pytest.mark.asyncio
+async def test_the_naive_guardrail_would_have_shipped_it(mockagents_client):
+    """The guardrail BUG, caught by the fixture.
+
+    `naive_grounding_ok` asks "did the model cite anything?". That is the check
+    most teams write first; it looks careful and it passes review. Run the
+    fabricated answer through it and it returns True — the answer ships, with a
+    citation to a document that does not exist, and the user has no way to tell.
+
+    The only reason this is demonstrable at all is that the fixture produces the
+    bad answer on demand. Against a live model the naive check would have looked
+    correct in every test run anyone ever did, because the model would have
+    cited a real document nearly every time. That is what "a real model would
+    have hidden it" means, concretely.
+    """
+    reply = mockagents_client.chat(
+        messages=[{"role": "user", "content": "what is your refund policy?"}],
+        model=rag.MODEL,
+    )
+    fabricated_answer = reply.content
+
+    # The naive check is happy: there IS a citation.
+    assert rag.naive_grounding_ok(fabricated_answer) is True
+    assert "[doc-7]" in fabricated_answer
+
+    # The real check is not: doc-7 was never retrieved.
+    with pytest.raises(rag.UngroundedAnswer):
+        await rag.answer("what is your refund policy?")
+
+
+@pytest.mark.asyncio
 async def test_unknown_question_falls_through_to_abstention():
     result = await rag.answer("who won the 1994 world cup?")
     assert result.abstained

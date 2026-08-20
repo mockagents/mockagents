@@ -1,7 +1,7 @@
 # RAG demo — a grounded answerer, and the guardrail that catches it lying
 
 A small retrieval-augmented-generation app with a real test suite, running
-entirely against [MockAgents]: **no network, no tokens, no flakes.** Ten tests,
+entirely against [MockAgents]: **no network, no tokens, no flakes.** Eleven tests,
 green in a few seconds, deterministic on every run.
 
 The point isn't that the happy path works. It's that the *failure* paths are
@@ -29,8 +29,8 @@ MOCKAGENTS_BIN=../../mockagents pytest
 ```
 
 ```
-..........                                                      [100%]
-10 passed in 5.53s
+...........                                                     [100%]
+11 passed in 5.9s
 ```
 
 That command is verbatim on Windows too — `make build` writes an extensionless
@@ -52,7 +52,7 @@ app/
   retrieval.py          MCP client: search_docs, score filtering
   rag.py                the app under test: retrieve → abstain → answer → verify
 tests/
-  test_rag.py           10 tests
+  test_rag.py           11 tests
 ```
 
 ## The app
@@ -81,6 +81,7 @@ model has to misbehave first, and it won't on request.
 | `test_grounded_answer_cites_a_retrieved_document` | The happy path, with citations checked. |
 | `test_empty_retrieval_abstains_without_calling_the_model` | Guardrail 1. |
 | `test_fabricated_citation_is_caught` | **Guardrail 2 — the headline.** |
+| `test_the_naive_guardrail_would_have_shipped_it` | **The guardrail *bug*.** The obvious check passes the fabrication. |
 | `test_the_fixture_declares_itself_a_hallucination` | The test knows ground truth the app doesn't. |
 | `test_unknown_question_falls_through_to_abstention` | The default scenario doesn't leak a fake answer. |
 | `test_error_flag_is_read_across_mcp_sdk_majors` | The MCP SDK's 1.x→2.0 attribute rename. |
@@ -111,6 +112,29 @@ not because the wording happened to differ.
 Delete the citation check in `app/rag.py` and this test fails. That is the
 whole argument for the demo: the check is only load-bearing if something
 actually exercises it.
+
+### The guardrail bug the fixture exposes
+
+Here is the version of that check most teams write first:
+
+```python
+def naive_grounding_ok(answer: str) -> bool:
+    return bool(CITATION_RE.search(answer))   # "did the model cite anything?"
+```
+
+It looks careful. It passes code review. And it returns **True** for the
+fabricated answer, because that answer does cite something — it cites `doc-7`.
+So the answer ships, with a citation to a document that does not exist, and the
+user has no way to tell.
+
+`test_the_naive_guardrail_would_have_shipped_it` runs the fabricated answer
+through both checks and asserts the difference, so it is a fact the suite
+proves rather than a claim in a comment.
+
+The reason this is demonstrable at all is that the fixture misbehaves on
+demand. Against a live model the naive check would have looked correct in every
+test run anyone ever did, because the model would have cited a real document
+nearly every time — and the one time it didn't would have been in production.
 
 ## Why MCP, and not a vector store
 

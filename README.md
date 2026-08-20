@@ -356,21 +356,26 @@ cookbooks for asserting agent **tool-calls** (right tool, right arguments) and
 ## A complete example: RAG with a guardrail that fires
 
 [`demo/rag-agent/`](demo/rag-agent) is a small retrieval-augmented-generation
-app plus a ten-test suite. Clone, one command, green in seconds — no network,
+app plus an eleven-test suite. Clone, one command, green in seconds — no network,
 no tokens, no compose file:
 
 ```bash
 make build && cd demo/rag-agent
 pip install -r requirements.txt && pip install -e ../../sdk/python
-MOCKAGENTS_BIN=../../mockagents pytest        # 10 passed in 5.53s
+MOCKAGENTS_BIN=../../mockagents pytest        # 11 passed in 5.9s
 ```
 
 The happy path is the boring part. The suite also pins an **empty index**, a
 **low-confidence-only result set**, and a model that answers the refund question
 with a confident, plausible, completely ungrounded claim — citing `doc-7`, a
-document retrieval never returned. The app's citation check catches it. In a
-suite running against a live model that branch is dead code nobody has ever
-executed, because the model has to misbehave first and it won't on request.
+document retrieval never returned.
+
+One test exists purely to show the **guardrail bug**: the check most teams write
+first asks "did the model cite anything?", which returns `True` for that answer
+and ships it. Against a live model that check would have looked correct in every
+test run anyone ever did, because the model would have cited a real document
+nearly every time — and the one time it didn't would have been in production.
+The fixture makes it fail on demand instead.
 
 Retrieval is mocked as an MCP tool server, not a vector store — [VectorMock is
 planned but does not exist yet](docs/ADOPTION_REQUIREMENTS.md) — and the demo

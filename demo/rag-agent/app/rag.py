@@ -44,6 +44,21 @@ class UngroundedAnswer(Exception):
         )
 
 
+def naive_grounding_ok(answer: str) -> bool:
+    """The grounding check most people write first — and it is wrong.
+
+    It asks "did the model cite anything?", which is a proxy for "is this
+    grounded" that holds right up until the model invents a citation. It reads
+    as careful, it passes code review, and it ships.
+
+    Kept here as an executable exhibit rather than a comment: the test suite
+    runs the fabricated answer through BOTH this and the real check, so the
+    difference between them is a fact the suite asserts, not a claim in a
+    docstring. See tests/test_rag.py::test_the_naive_guardrail_would_have_shipped_it.
+    """
+    return bool(CITATION_RE.search(answer))
+
+
 @dataclass
 class Answer:
     text: str
