@@ -356,13 +356,13 @@ cookbooks for asserting agent **tool-calls** (right tool, right arguments) and
 ## A complete example: RAG with a guardrail that fires
 
 [`demo/rag-agent/`](demo/rag-agent) is a small retrieval-augmented-generation
-app plus a nine-test suite. Clone, one command, green in seconds — no network,
+app plus a ten-test suite. Clone, one command, green in seconds — no network,
 no tokens, no compose file:
 
 ```bash
 make build && cd demo/rag-agent
 pip install -r requirements.txt && pip install -e ../../sdk/python
-MOCKAGENTS_BIN=../../mockagents pytest        # 9 passed in 5.41s
+MOCKAGENTS_BIN=../../mockagents pytest        # 10 passed in 5.53s
 ```
 
 The happy path is the boring part. The suite also pins an **empty index**, a

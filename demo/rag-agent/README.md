@@ -1,8 +1,8 @@
 # RAG demo — a grounded answerer, and the guardrail that catches it lying
 
 A small retrieval-augmented-generation app with a real test suite, running
-entirely against [MockAgents]: **no network, no tokens, no flakes.** Nine tests,
-green in about ten seconds, deterministic on every run.
+entirely against [MockAgents]: **no network, no tokens, no flakes.** Ten tests,
+green in a few seconds, deterministic on every run.
 
 The point isn't that the happy path works. It's that the *failure* paths are
 exercised on every commit — an empty index, a low-confidence-only result set,
@@ -29,8 +29,8 @@ MOCKAGENTS_BIN=../../mockagents pytest
 ```
 
 ```
-.........                                                       [100%]
-9 passed in 5.41s
+..........                                                      [100%]
+10 passed in 5.53s
 ```
 
 That command is verbatim on Windows too — `make build` writes an extensionless
@@ -52,7 +52,7 @@ app/
   retrieval.py          MCP client: search_docs, score filtering
   rag.py                the app under test: retrieve → abstain → answer → verify
 tests/
-  test_rag.py           9 tests
+  test_rag.py           10 tests
 ```
 
 ## The app
@@ -83,6 +83,7 @@ model has to misbehave first, and it won't on request.
 | `test_fabricated_citation_is_caught` | **Guardrail 2 — the headline.** |
 | `test_the_fixture_declares_itself_a_hallucination` | The test knows ground truth the app doesn't. |
 | `test_unknown_question_falls_through_to_abstention` | The default scenario doesn't leak a fake answer. |
+| `test_error_flag_is_read_across_mcp_sdk_majors` | The MCP SDK's 1.x→2.0 attribute rename. |
 | `test_missing_binary_is_a_clear_error` | Backend failure produces an actionable error. |
 
 ### The headline test
@@ -141,6 +142,10 @@ When VectorMock lands, `app/retrieval.py` is the only file that changes.
 - **One directory, two kinds.** `agents/` holds both the `kind: Agent` and the
   `kind: MCPServer` document. `mockagents start` loads the agent and ignores the
   rest; `mockagents mcp` does the reverse.
+- **Both MCP SDK majors work.** The 1.x → 2.0 bump renamed
+  `CallToolResult.isError` to `.is_error`; `app/retrieval.py` reads either,
+  because a demo that only runs on the version its author happened to have
+  installed is not a demo. CI installs the latest, which is how this was found.
 - **Both servers are spawned for you.** The pytest plugin owns the LLM server
   for the session; `stdio_client` owns the MCP server per retrieval call. There
   is no port to allocate and no teardown to write.

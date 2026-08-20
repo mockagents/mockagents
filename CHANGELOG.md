@@ -100,7 +100,9 @@ milestones that preceded it; all are on `main`.
   an MCP tool server rather than a vector store, because VectorMock does not
   exist yet (Tier 2 R11); the demo says so instead of implying otherwise. A CI
   job runs it on every push, exercised by breaking the fixture and confirming
-  the job goes red.
+  the job goes red — and it earned its keep on the first run, catching that the
+  MCP Python SDK renamed `CallToolResult.isError` to `.is_error` in 2.0. The
+  demo now reads either, with a test pinning both spellings.
 - **`GET /metrics` — a real Prometheus endpoint** (FR-J02, adoption R9). Text
   exposition format 0.0.4, always on, no dependency added: the exposition is
   hand-written and its correctness is asserted against the upstream Prometheus

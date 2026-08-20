@@ -121,6 +121,27 @@ async def test_unknown_question_falls_through_to_abstention():
 # Failure of the backend itself
 # --------------------------------------------------------------------------
 
+def test_error_flag_is_read_across_mcp_sdk_majors():
+    """The MCP Python SDK renamed this attribute from `isError` (1.x) to
+    `is_error` (2.0). CI installs the latest, so pinning only one spelling
+    means the demo breaks the day the ecosystem moves -- which is exactly how
+    this was found."""
+    from app.retrieval import _is_error
+
+    class OneX:  # mcp 1.x
+        isError = True
+
+    class TwoX:  # mcp 2.0
+        is_error = True
+
+    class Fine:
+        is_error = False
+
+    assert _is_error(OneX()) is True
+    assert _is_error(TwoX()) is True
+    assert _is_error(Fine()) is False
+
+
 @pytest.mark.asyncio
 async def test_missing_binary_is_a_clear_error(monkeypatch):
     """Retrieval failures should say what to do, not raise FileNotFoundError

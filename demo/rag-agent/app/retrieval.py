@@ -71,7 +71,7 @@ async def search(query: str, top_k: int = 5) -> list[Document]:
                 "search_docs", {"query": query, "top_k": top_k}
             )
 
-    if result.isError:
+    if _is_error(result):
         raise RetrievalError(f"search_docs failed: {_text_of(result)}")
 
     try:
@@ -95,8 +95,27 @@ async def search(query: str, top_k: int = 5) -> list[Document]:
     return strong[:top_k]
 
 
+def _is_error(result: Any) -> bool:
+    """Read the tool-result error flag across MCP SDK majors.
+
+    The wire field is `isError`; the Python SDK models it as a pydantic field
+    whose attribute name changed from `isError` (1.x) to `is_error` (2.0).
+    Reading both keeps this demo working on either, which is the same thing a
+    real app has to do while the ecosystem crosses that version boundary.
+    """
+    flag = getattr(result, "is_error", None)
+    if flag is None:
+        flag = getattr(result, "isError", False)
+    return bool(flag)
+
+
 def _text_of(result: Any) -> str:
-    """Concatenate the text blocks of an MCP tool result."""
+    """Concatenate the text blocks of an MCP tool result.
+
+    A text block is identified by having a `.text`, not by its `.type` tag:
+    the tag is stable but the block classes are not, and `.text` is what we
+    actually need.
+    """
     return "".join(
-        block.text for block in result.content if getattr(block, "type", None) == "text"
+        block.text for block in result.content if getattr(block, "text", None) is not None
     )
