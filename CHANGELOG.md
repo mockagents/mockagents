@@ -37,6 +37,18 @@ milestones that preceded it; all are on `main`.
   a full pipe buffer), and still captures the child's stderr into `.logs`.
 
 ### Changed
+- **OSS hygiene: a five-minute contributor path, eight labeled issues, and a
+  stated response norm.** CONTRIBUTING opened with `make setup` and a full dev
+  environment; it now opens with the actual minimum — `go build ./... && go test
+  ./internal/...`, no C compiler, no database, nothing running in the background
+  — plus what a contributor gets back: a first response within a week, a bump
+  invited after two, and a stalled PR merged or given a concrete reason rather
+  than quietly closed. The eight good-first-issues that lived as prose in
+  CONTRIBUTING (and so were unfindable from the Issues tab, where newcomers
+  actually look) are now filed and labeled: [#37](https://github.com/mockagents/mockagents/issues/37)–[#44](https://github.com/mockagents/mockagents/issues/44).
+  Each was re-verified against the code before filing. CONTRIBUTING keeps a
+  one-line index and the issues carry the detail, so there is one copy to keep
+  true.
 - **[`docs/EVALS_VS_TESTS.md`](docs/EVALS_VS_TESTS.md) states the stance**: evals
   measure whether the model is good enough, tests measure whether your code is
   correct; they fail for different reasons and you need both. Short, opinionated,

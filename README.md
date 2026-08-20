@@ -710,7 +710,21 @@ of it. **See the [Multi-Tenant & Control-Plane guide](docs/guides/multi-tenant.m
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+The whole toolchain is Go 1.26+. No C compiler, no database to install, nothing
+running in the background — SQLite is pure Go:
+
+```bash
+git clone https://github.com/mockagents/mockagents.git && cd mockagents
+go build ./... && go test ./internal/...       # ~1 min, and that's the setup
+```
+
+Then pick one of the
+[good first issues](https://github.com/mockagents/mockagents/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+— each names the file, the change, and what "done" looks like — and comment to
+claim it. **We answer within a week; bump the thread if we don't.**
+
+Filing an issue is a contribution on its own, especially if the docs were
+wrong. See [CONTRIBUTING.md](CONTRIBUTING.md) for the rest.
 
 ## License
 
