@@ -357,7 +357,15 @@ cookbooks for asserting agent **tool-calls** (right tool, right arguments) and
 
 MockAgents mocks the **wire protocol, not the model**. It won't tell you whether
 your prompt is *good* — only that your code handles the API correctly. Pair it
-with an eval tool (e.g. promptfoo) for output quality.
+with an eval tool (promptfoo, Braintrust, LangSmith, DeepEval) for output
+quality.
+
+Those are two different questions, and most teams have one of them and think
+they have coverage: **evals measure whether the model is good enough; tests
+measure whether your code is correct.** You cannot ask a real model to emit
+malformed tool arguments on cue, and you cannot ask a mock whether an answer is
+any good. → **[Evals vs. tests](docs/EVALS_VS_TESTS.md)**, the short opinionated
+version.
 
 ---
 
@@ -668,6 +676,7 @@ of it. **See the [Multi-Tenant & Control-Plane guide](docs/guides/multi-tenant.m
 - [Python SDK](site/docs/sdk/python-sdk.md)
 - [Management API](site/docs/guides/management-api.md)
 - [Observability & Metrics](site/docs/guides/observability.md)
+- [Evals vs. tests](docs/EVALS_VS_TESTS.md) — why you need both, and which one catches what
 - [Multi-Tenant & Control Plane](docs/guides/multi-tenant.md)
 
 ## Contributing

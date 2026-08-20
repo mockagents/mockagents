@@ -24,6 +24,12 @@ milestones that preceded it; all are on `main`.
   a full pipe buffer), and still captures the child's stderr into `.logs`.
 
 ### Changed
+- **[`docs/EVALS_VS_TESTS.md`](docs/EVALS_VS_TESTS.md) states the stance**: evals
+  measure whether the model is good enough, tests measure whether your code is
+  correct; they fail for different reasons and you need both. Short, opinionated,
+  with the two lists that matter — what only an eval catches, and what only a
+  test catches — plus a CI shape. Linked from the README's "What it is *not*",
+  which previously left the reader with a one-line pointer at promptfoo.
 - **The zero-config test path is now the headline** in the README, the
   quickstart, both SDK guides, and the testing-agents cookbook: the pytest
   plugin (no import, no conftest) and `setupMockAgents()` for Vitest/Jest, with
