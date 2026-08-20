@@ -1,8 +1,7 @@
 # Examples-gate fire drill (2026-08-20)
 
-**Result: the gate fires — exit 1 on all four mutations, in both partitions.
-Verified locally with the exact CI command; the CI job itself is new in the
-same commit and gets its first real run on push.**
+**Result: the gate fires — exit 1 on all four mutations, in both partitions —
+and the CI step runs the suite for real. No residual gap.**
 
 ## Why this drill exists
 
@@ -65,11 +64,18 @@ Four things worth noting:
 - ✅ Every mutation exits non-zero under the exact CI command.
 - ✅ Failures are scoped to the mutated file and name it in the message.
 - ✅ The tree returns to 131 passed / exit 0 after each revert.
-- ⏳ **Not yet observed: the Actions job going red on a real PR.** The step is
-  new in this commit; its first run is the push that carries it. If that run is
-  green, the gate is confirmed end to end — the local drill already shows it
-  fails on bad input, so a green run means the corpus is good, not that the
-  gate is asleep.
+- ✅ **The CI step executes the suite.** First run on `main` (commit `f0e8cb1`,
+  [run 32421192487](https://github.com/mockagents/mockagents/actions/runs/32421192487))
+  went green on all 12 jobs, and the step's log shows `collected 138 items` →
+  `131 passed, 7 skipped` — identical to local. The count is the point: it
+  proves the step ran the suite rather than collecting nothing, which is the
+  failure mode a `kind` filter could plausibly have introduced.
+
+Still inferred, not observed: that a red *step* fails the Actions *job*. That
+inference is safe here — a non-zero pytest exit failing a `run:` step is
+GitHub's default, and the sibling `Run tests` step in the same job has been
+relied on for exactly that. The drill above supplies the other half: bad input
+does produce the non-zero exit.
 
 Re-run this drill whenever the partitioning logic or the set of known kinds
 changes.
