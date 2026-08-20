@@ -41,7 +41,9 @@ self-escalate. Roles gate the control-plane routes:
 | Route                                     | Min role |
 | ----------------------------------------- | -------- |
 | `GET  /api/v1/health`                     | open     |
+| `GET  /api/v1/ready`                      | open     |
 | `GET  /api/v1/agents`, `/api/v1/logs`     | viewer   |
+| `GET  /metrics`                           | viewer   |
 | `POST /api/v1/agents/{name}/reload`       | editor   |
 | `POST /api/v1/agents` (create)            | editor   |
 | `PUT  /api/v1/agents/{name}` (replace)    | editor   |
@@ -64,6 +66,22 @@ self-escalate. Roles gate the control-plane routes:
 `/v1/engines/*`) deliberately remain unauthenticated** — clients send their own
 provider API keys which MockAgents ignores, and forcing a second layer of
 credentials would break every existing SDK.
+
+`GET /api/v1/health` and `GET /api/v1/ready` are unauthenticated for the same
+class of reason: a kubelet or load balancer carries no API key, and gating the
+probes would take every pod out of rotation. Neither response contains agent,
+tenant, or configuration data. `GET /metrics` is **not** in that group — agent
+and scenario names appear there as metric labels — so a Prometheus scrape
+config needs a viewer key:
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: mockagents
+    authorization: { credentials_file: /etc/prometheus/mockagents.key }
+    static_configs:
+      - targets: ["mockagents:8080"]
+```
 
 ```bash
 # Mint a viewer key for a read-only CI bot:

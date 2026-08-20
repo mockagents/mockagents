@@ -119,16 +119,27 @@ agents:
   #             response:
   #               content: "I received your message."
 
-# -- Liveness and readiness probe tuning. Defaults hit /api/v1/health.
+# -- Liveness and readiness probe tuning.
+# --
+# -- The two probes ask DIFFERENT questions, and must stay pointed at
+# -- different paths. Liveness (/api/v1/health) returns 200 while the
+# -- process is running and checks nothing else: a pod that is alive but
+# -- misconfigured must not be restarted, because a restart fixes nothing.
+# -- Readiness (/api/v1/ready) verifies that agent fixtures are loaded and
+# -- that the interaction-log store answers, and returns 503 naming the
+# -- failing dependency otherwise — so a pod that can only 404 is taken out
+# -- of rotation instead of serving.
 probes:
   liveness:
     enabled: true
+    path: /api/v1/health
     initialDelaySeconds: 5
     periodSeconds: 10
     timeoutSeconds: 2
     failureThreshold: 3
   readiness:
     enabled: true
+    path: /api/v1/ready
     initialDelaySeconds: 2
     periodSeconds: 5
     timeoutSeconds: 1
@@ -214,9 +225,19 @@ networkPolicy:
 
 # -- Prometheus Operator ServiceMonitor. Requires the Prometheus
 # -- Operator CRDs to be installed; the chart silently skips this
-# -- template otherwise. The exposed metrics shape is whatever the
-# -- mockagents binary prints at /metrics — currently the standard
-# -- Go runtime + log worker counters.
+# -- template otherwise.
+# --
+# -- /metrics serves the Prometheus text exposition format with these
+# -- families: mockagents_requests_total{protocol,agent,status},
+# -- mockagents_request_duration_seconds{protocol} (histogram),
+# -- mockagents_scenario_matches_total{agent,scenario,kind},
+# -- mockagents_chaos_injections_total{agent,kind}, plus the
+# -- mockagents_build_info / _uptime_seconds / _agents_loaded / _ready
+# -- gauges and mockagents_metrics_series_dropped_total.
+# --
+# -- In MULTI-TENANT mode /metrics requires a viewer-or-above API key
+# -- (agent and scenario names are labels), so the scrape needs a
+# -- bearerTokenSecret; single-tenant deployments scrape it unauthenticated.
 serviceMonitor:
   enabled: false
   # Override the namespace the ServiceMonitor is created in. Default

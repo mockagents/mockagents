@@ -49,6 +49,7 @@ nav:
     - CLI Reference: guides/cli-reference.md
     - YAML Schema: guides/yaml-schema.md
     - Management API: guides/management-api.md
+    - Observability & Metrics: guides/observability.md
   - SDKs:
     - Python SDK: sdk/python-sdk.md
     - TypeScript SDK: sdk/typescript-sdk.md

@@ -317,6 +317,14 @@ func (s *SQLiteStore) Count(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+// Ping verifies the database is reachable. It is the readiness probe's store
+// check (R9): a connection round-trip, deliberately NOT a SELECT COUNT(*) —
+// readiness must stay O(1) as the log table grows, and "can we talk to the
+// database" is the question being asked.
+func (s *SQLiteStore) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
 // Close closes the database connection.
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()

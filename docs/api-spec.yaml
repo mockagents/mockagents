@@ -32,7 +32,7 @@ servers:
 
 tags:
   - name: Health
-    description: Server health and status
+    description: Liveness, readiness, and Prometheus metrics
   - name: Agents
     description: Manage mock agent definitions
   - name: Logs
@@ -63,18 +63,85 @@ paths:
   /api/v1/health:
     get:
       operationId: getHealth
-      summary: Health check
-      description: Returns server health status, version, uptime, and number of loaded agents.
+      summary: Liveness check
+      description: >
+        Returns 200 unconditionally while the process is running, with version,
+        uptime, and the number of loaded agents. This is the LIVENESS signal:
+        it deliberately checks no dependencies, because restarting a process
+        that is alive but misconfigured fixes nothing. For "can this instance
+        actually serve a mock", use `GET /api/v1/ready`.
       tags: [Health]
+      security: []
       responses:
         "200":
-          description: Server is healthy.
+          description: The process is alive.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
         "500":
           $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/ready:
+    get:
+      operationId: getReadiness
+      summary: Readiness check
+      description: >
+        Runs every configured dependency check and returns 200 only when all
+        pass, 503 otherwise, with the failing check named in the body. Checks
+        are `fixtures` (at least one agent is loaded — a registry with none can
+        only 404) and, when an interaction log is configured, `log_store` (the
+        SQLite database answers a ping). Unauthenticated in multi-tenant mode:
+        a kubelet or load balancer carries no API key, and the response
+        contains no agent, tenant, or configuration data.
+      tags: [Health]
+      security: []
+      responses:
+        "200":
+          description: Every readiness check passed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+        "503":
+          description: At least one readiness check failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+
+  /metrics:
+    get:
+      operationId: getMetrics
+      summary: Prometheus metrics
+      description: >
+        Renders the process metrics in the Prometheus text exposition format
+        (version 0.0.4). Families: `mockagents_requests_total`
+        (protocol/agent/status), `mockagents_request_duration_seconds`
+        (histogram, by protocol), `mockagents_scenario_matches_total`
+        (agent/scenario/kind, where kind is rule|default|fallback),
+        `mockagents_chaos_injections_total` (agent/kind), plus the
+        `mockagents_build_info`, `mockagents_uptime_seconds`,
+        `mockagents_agents_loaded`, `mockagents_ready`, and
+        `mockagents_metrics_series_dropped_total` gauges and counters. Open in
+        single-tenant mode; requires a viewer-or-above API key in multi-tenant
+        mode, because agent and scenario names appear as metric labels.
+      tags: [Health]
+      responses:
+        "200":
+          description: Prometheus text exposition.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                # HELP mockagents_requests_total Total mock LLM/engine requests served, by wire protocol, resolved agent, and HTTP status.
+                # TYPE mockagents_requests_total counter
+                mockagents_requests_total{protocol="openai-chat-completions",agent="support-bot",status="200"} 42
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
 
   /api/v1/agents:
     get:
@@ -946,7 +1013,7 @@ components:
     # -- Management Schemas ---------------------------------------------------
     HealthResponse:
       type: object
-      required: [status, version, uptime_seconds, agents_loaded]
+      required: [status, version, uptime, uptime_seconds, agents_loaded]
       properties:
         status:
           type: string
@@ -954,12 +1021,44 @@ components:
         version:
           type: string
           example: "0.1.0"
+        uptime:
+          type: string
+          description: Uptime as a Go duration string. Read by the web console.
+          example: "1h0m21s"
         uptime_seconds:
           type: integer
           example: 3621
         agents_loaded:
           type: integer
           example: 4
+
+    ReadinessResponse:
+      type: object
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReadinessCheck"
+
+    ReadinessCheck:
+      type: object
+      required: [name, status]
+      properties:
+        name:
+          type: string
+          description: The dependency probed, e.g. `fixtures` or `log_store`.
+          example: fixtures
+        status:
+          type: string
+          enum: [ok, failed]
+        error:
+          type: string
+          description: Present only when status is `failed`.
+          example: no agent fixtures loaded
 
     AgentWriteResult:
       type: object

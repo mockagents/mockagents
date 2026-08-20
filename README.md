@@ -514,19 +514,34 @@ property's schema, or disabling streaming are **breaking**. Adding a tool,
 relaxing `required`, or adding a scenario are **additive**. Description and
 model-name changes are **info**.
 
-## Observability (OpenTelemetry)
+## Observability
 
-The tracer provider defaults to a no-op, so there is zero runtime overhead until
-you opt in via environment variables:
+`GET /metrics` serves Prometheus text exposition with no flag to turn on:
+`mockagents_requests_total{protocol,agent,status}`,
+`mockagents_request_duration_seconds{protocol}` (histogram),
+`mockagents_scenario_matches_total{agent,scenario,kind}` — where
+`kind=fallback` means a request hit no fixture at all — and
+`mockagents_chaos_injections_total{agent,kind}`.
 
-| Env var                                 | Effect                                           |
-| --------------------------------------- | ------------------------------------------------ |
-| `OTEL_EXPORTER_OTLP_ENDPOINT=https://…` | Send spans to an OTLP/HTTP collector             |
-| `MOCKAGENTS_OTEL_STDOUT=1`              | Pretty-print spans to stdout (local development) |
+```console
+$ curl -s localhost:8080/metrics | grep chaos_injections
+mockagents_chaos_injections_total{agent="flaky-agent",kind="error"} 3
+mockagents_chaos_injections_total{agent="flaky-agent",kind="latency"} 17
+mockagents_chaos_injections_total{agent="flaky-agent",kind="rate_limit"} 5
+```
 
-Each request produces an outer `http.request` span and an inner
-`engine.process_request` span carrying `agent.name`, `agent.model`,
+Liveness and readiness are separate signals: `/api/v1/health` returns 200 while
+the process is up, and `/api/v1/ready` returns 503 naming the failing
+dependency when fixtures are missing or the interaction-log store stops
+answering. The Helm chart points its two probes at the two paths.
+
+Tracing is opt-in — the tracer provider is a no-op until you set
+`OTEL_EXPORTER_OTLP_ENDPOINT` (or `MOCKAGENTS_OTEL_STDOUT=1` for local
+development). Each request then produces an outer `http.request` span and an
+inner `engine.process_request` span carrying `agent.name`, `agent.model`,
 `agent.protocol`, `agent.scenario`, and `agent.tool_calls`.
+
+**See the [Observability guide](site/docs/guides/observability.md).**
 
 ## Kubernetes (Helm chart)
 
@@ -578,6 +593,7 @@ of it. **See the [Multi-Tenant & Control-Plane guide](docs/guides/multi-tenant.m
 - [YAML Schema](site/docs/guides/yaml-schema.md)
 - [Python SDK](site/docs/sdk/python-sdk.md)
 - [Management API](site/docs/guides/management-api.md)
+- [Observability & Metrics](site/docs/guides/observability.md)
 - [Multi-Tenant & Control Plane](docs/guides/multi-tenant.md)
 
 ## Contributing

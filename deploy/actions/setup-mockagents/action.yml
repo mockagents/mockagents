@@ -101,9 +101,12 @@ runs:
           --port "$PORT" \
           --host 127.0.0.1 \
           --log-level warn > "${RUNNER_TEMP:-/tmp}/mockagents.log" 2>&1 &
-        # Health-poll until ready (max ~20s).
+        # Poll READINESS, not liveness (max ~20s): /api/v1/health answers 200
+        # the instant the listener is up, so it can green-light a step before
+        # the fixtures are usable. /api/v1/ready 503s until agents are loaded
+        # and the interaction-log store answers.
         for i in $(seq 1 100); do
-          if curl -fsS "${base}/api/v1/health" >/dev/null 2>&1; then
+          if curl -fsS "${base}/api/v1/ready" >/dev/null 2>&1; then
             ready=1; break
           fi
           sleep 0.2

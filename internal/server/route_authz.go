@@ -27,6 +27,7 @@ const roleOpen tenancy.Role = ""
 var managementRouteFloors = map[string]tenancy.Role{
 	// Agent catalog (read) + hot reload (write).
 	"GET /api/v1/health":                roleOpen,
+	"GET /api/v1/ready":                 roleOpen, // probe target; see skipAuth
 	"GET /api/v1/agents":                roleOpen,
 	"GET /api/v1/agents/{name}":         roleOpen,
 	"POST /api/v1/agents/{name}/reload": tenancy.RoleEditor, // F-HD-001: write → editor
@@ -42,9 +43,9 @@ var managementRouteFloors = map[string]tenancy.Role{
 	// or delete other tenants (X-TN-001). The per-key routes below stay at
 	// admin/editor and are additionally scoped to the caller's own tenant by
 	// ensureOwnTenant.
-	"GET /api/v1/tenants":         tenancy.RolePlatform,
-	"POST /api/v1/tenants":        tenancy.RolePlatform,
-	"DELETE /api/v1/tenants/{id}": tenancy.RolePlatform,
+	"GET /api/v1/tenants":                   tenancy.RolePlatform,
+	"POST /api/v1/tenants":                  tenancy.RolePlatform,
+	"DELETE /api/v1/tenants/{id}":           tenancy.RolePlatform,
 	"GET /api/v1/tenants/{id}/keys":         tenancy.RoleEditor,
 	"POST /api/v1/tenants/{id}/keys":        tenancy.RoleAdmin,
 	"POST /api/v1/tenants/{id}/keys/rotate": tenancy.RoleAdmin,
@@ -80,8 +81,14 @@ var managementRouteFloors = map[string]tenancy.Role{
 	// Per-tenant quotas (REF-08 slice C). Reading your own usage is open to any
 	// authenticated caller; setting a tenant's cap is a cross-tenant operator
 	// action (a tenant admin must not raise its own cap), so it's platform-gated.
-	"GET /api/v1/quota":                  tenancy.RoleViewer,
-	"PUT /api/v1/tenants/{id}/quota":     tenancy.RolePlatform,
+	"GET /api/v1/quota":              tenancy.RoleViewer,
+	"PUT /api/v1/tenants/{id}/quota": tenancy.RolePlatform,
+
+	// Prometheus scrape target (FR-J02). Not under /api/v1, but it goes
+	// through the same chokepoint so its policy is declared in one place with
+	// everything else. Viewer-gated because agent and scenario NAMES are
+	// metric labels: a multi-tenant scrape config needs a viewer API key.
+	"GET /metrics": tenancy.RoleViewer,
 }
 
 // mountManaged registers a management-API route on mux, applying the role

@@ -77,7 +77,7 @@ in the NOTES in that case.
 | `autoscaling.enabled`                | **v0.2** — render an HPA (`autoscaling/v2`) targeting CPU and/or memory. |
 | `podDisruptionBudget.enabled`        | **v0.2** — render a PDB so node drains can't take every replica at once. |
 | `networkPolicy.enabled`              | **v0.2** — render a NetworkPolicy locking down ingress + egress. |
-| `serviceMonitor.enabled`             | **v0.2** — render a Prometheus Operator ServiceMonitor for `/metrics`. |
+| `serviceMonitor.enabled`             | **v0.2** — render a Prometheus Operator ServiceMonitor for `/metrics` (the endpoint itself landed with the R9 operability slice). |
 
 ## Verify before installing
 
@@ -112,16 +112,27 @@ helm uninstall demo
   Requires the Prometheus Operator CRDs; defaults to a 30s scrape
   interval against the named `http` port. Forwards user-supplied
   `relabelings` / `metricRelabelings` / extra `labels` so the right
-  Prometheus instance picks it up.
+  Prometheus instance picks it up. In multi-tenant mode `/metrics`
+  needs a viewer-or-above API key, so add a `bearerTokenSecret` to the
+  endpoint; single-tenant deployments scrape it unauthenticated.
 
 All four are off by default. With every flag enabled, `helm template`
 renders 10 resources; defaults still render the same 6 as v0.1.
 
+## Probes
+
+Liveness and readiness point at **different** paths, and that is the point:
+
+| Probe | Path | Question it answers |
+| --- | --- | --- |
+| `livenessProbe` | `/api/v1/health` | Is the process running? Returns 200 unconditionally — a pod that is alive but misconfigured must not be restarted, because a restart fixes nothing. |
+| `readinessProbe` | `/api/v1/ready` | Can this instance serve a mock? Verifies agent fixtures are loaded and the interaction-log store answers; returns 503 naming the failing dependency otherwise. |
+
+Both paths are overridable via `probes.liveness.path` / `probes.readiness.path`.
+Neither requires credentials, even in multi-tenant mode — a kubelet has no API
+key, and the readiness body carries no agent, tenant, or configuration data.
+
 ## What's still deferred
 
-- A real `/metrics` endpoint on the Go binary. Today the
-  ServiceMonitor scrapes whatever the binary exposes (currently
-  Go runtime + log worker counters via expvar); a richer
-  Prometheus surface is its own slice.
 - Cluster-tier RBAC + admission controls — bring your own cluster
   defaults via `existingConfigMap` for tenancy bootstrap secrets.

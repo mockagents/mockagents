@@ -19,6 +19,7 @@ import (
 	"github.com/mockagents/mockagents/internal/config"
 	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/engine/state"
+	"github.com/mockagents/mockagents/internal/metrics"
 	"github.com/mockagents/mockagents/internal/oidcauth"
 	"github.com/mockagents/mockagents/internal/pricing"
 	"github.com/mockagents/mockagents/internal/quota"
@@ -149,6 +150,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	cfg.Version = version
 	cfg.LogStore = logStore
 	cfg.Pipelines = pipelineReg
+
+	// Stamp the real build version onto mockagents_build_info. The default
+	// registry is created at package init, before the ldflags-set version is
+	// readable, so it starts as "dev" until this call (FR-J02).
+	metrics.SetVersion(version)
 
 	// Interaction-log privacy + retention controls (SEC-05):
 	//   MOCKAGENTS_LOG_BODIES   = full | sanitized | none  (default full)

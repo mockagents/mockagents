@@ -13,6 +13,17 @@ milestones that preceded it; all are on `main`.
 ## [Unreleased]
 
 ### Changed
+- **`GET /api/v1/health` now emits `uptime_seconds` and `agents_loaded`** — both
+  were declared required in `docs/api-spec.yaml` long before anything sent them.
+  Added rather than deleted from the spec, so a consumer that followed the
+  published contract now works. The pre-existing `uptime` duration string stays
+  (the web console reads it) and is now documented too.
+- **An injected fault no longer reports `agent="unknown"`** — the engine stamps
+  the resolved agent onto the request metadata at resolution time instead of
+  after generation, so chaos faults, strict-tool 400s, and cancelled requests
+  carry the real agent name in both `/metrics` and the interaction log. Without
+  it, every failure was filed under `unknown` — useless for the one question an
+  operator asks, which is *which* agent is failing.
 - **`mockagents mcp` (HTTP) now binds `127.0.0.1` by default** — per the MCP
   spec's guidance for local servers (the primary DNS-rebinding defence). Pass
   the new `--bind 0.0.0.0` flag to expose it beyond the host, e.g. inside a
@@ -33,6 +44,35 @@ milestones that preceded it; all are on `main`.
   identically.
 
 ### Added
+- **`GET /metrics` — a real Prometheus endpoint** (FR-J02, adoption R9). Text
+  exposition format 0.0.4, always on, no dependency added: the exposition is
+  hand-written and its correctness is asserted against the upstream Prometheus
+  parser in a test-only dependency, so the shipped binary stays lean. Families:
+  `mockagents_requests_total{protocol,agent,status}`,
+  `mockagents_request_duration_seconds{protocol}` (histogram, bucketed for a
+  mock's sub-millisecond floor rather than Prometheus' stock 5ms),
+  `mockagents_scenario_matches_total{agent,scenario,kind}` where `kind` is
+  `rule|default|fallback` (a non-zero `fallback` rate means the fixtures do not
+  cover the traffic under test), `mockagents_chaos_injections_total{agent,kind}`,
+  plus `mockagents_build_info`, `_uptime_seconds`, `_agents_loaded`, `_ready`,
+  and `_metrics_series_dropped_total`. Every family is declared even with no
+  traffic. Cardinality is bounded at 1000 label sets per family, with drops
+  counted rather than silent. Open in single-tenant mode; **viewer**-gated in
+  multi-tenant mode, since agent and scenario names are labels. The chart's
+  ServiceMonitor has pointed at this path since v0.2 — there was nothing behind
+  it until now, and the chart's docs said so incorrectly (they claimed expvar
+  counters that never existed; corrected).
+- **`GET /api/v1/ready` — readiness, distinct from liveness** (PRD §11).
+  `/api/v1/health` is the liveness signal and stays unconditional: a process
+  that is alive but misconfigured must not be restarted. Readiness verifies that
+  agent fixtures are loaded and that the interaction-log store answers a ping,
+  returning 503 with the failing check *named* otherwise. The Helm chart's
+  `readinessProbe` now points here (`probes.readiness.path`, overridable) while
+  `livenessProbe` stays on `/api/v1/health` — previously both hit the same path,
+  so a pod whose log store had died, or whose last agent had been deleted through
+  the write API, stayed in rotation. Both probe endpoints remain unauthenticated
+  in multi-tenant mode; a kubelet carries no API key and neither body exposes
+  agent, tenant, or configuration data.
 - **`MOCKAGENTS_DATA_DIR` relocates on-disk state** — the interaction log
   (`.mockagents.db`), audit trail (`.mockagents-audit.db`), and tenancy store
   resolve relative to the working directory by default; set this variable to

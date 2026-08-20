@@ -14,6 +14,7 @@ import (
 	"github.com/mockagents/mockagents/internal/adapter"
 	"github.com/mockagents/mockagents/internal/audit"
 	"github.com/mockagents/mockagents/internal/engine"
+	"github.com/mockagents/mockagents/internal/metrics"
 	"github.com/mockagents/mockagents/internal/observability"
 	pricingpkg "github.com/mockagents/mockagents/internal/pricing"
 	"github.com/mockagents/mockagents/internal/quota"
@@ -83,6 +84,12 @@ type Config struct {
 	// (/auth/login, /auth/callback, /auth/logout) for SSO login (REF-08
 	// slice D). Configured only when the OIDC env vars are set.
 	SSO *SSOHandlers
+	// Metrics is the Prometheus registry that GET /metrics renders and that
+	// MetricsCapture records into. Nil uses metrics.Default(), which is also
+	// what the engine records scenario matches and chaos injections into —
+	// so overriding this only isolates the HTTP-level families, and is
+	// intended for tests (FR-J02).
+	Metrics *metrics.Registry
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -191,6 +198,10 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 	if cfg.QuotaEnforcer != nil {
 		handler = QuotaEnforce(cfg.QuotaEnforcer)(handler)
 	}
+	// Metrics sit OUTSIDE QuotaEnforce (so a 429/402 is counted) and INSIDE
+	// InteractionCapture (so the adapter-stamped protocol/agent are readable).
+	// See MetricsCapture's doc comment.
+	handler = MetricsCapture(cfg.Metrics)(handler)
 	if s.logWorker != nil {
 		// When quotas + pricing are configured, accrue each response's cost
 		// against the tenant's monthly spend as it's captured.
@@ -261,6 +272,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// multi-tenant mode is on. ReloadAgent is a write (re-reads YAML and
 	// replaces the registry entry) so its floor is Editor (F-HD-001).
 	s.mountManaged(mux, "GET /api/v1/health", http.HandlerFunc(s.handlers.HealthCheck))
+	// Readiness is a DIFFERENT question from liveness (PRD §11): health says
+	// "the process is up", readiness says "this process can actually serve a
+	// mock". Both Helm probes used to point at /api/v1/health, so the two were
+	// the same check and a pod whose interaction log had died, or whose last
+	// agent had been deleted through the write API, stayed in rotation.
+	s.mountManaged(mux, "GET /api/v1/ready", http.HandlerFunc(s.readinessHandlers().Ready))
 	s.mountManaged(mux, "GET /api/v1/agents", http.HandlerFunc(s.handlers.ListAgents))
 	s.mountManaged(mux, "GET /api/v1/agents/{name}", http.HandlerFunc(s.handlers.GetAgent))
 	s.mountManaged(mux, "POST /api/v1/agents/{name}/reload", http.HandlerFunc(s.handlers.ReloadAgent))
@@ -394,8 +411,76 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("POST /auth/logout", s.config.SSO.Logout)
 	}
 
+	// Prometheus scrape target (FR-J02). Open in single-tenant mode like the
+	// rest of the local-dev control plane; viewer-gated in multi-tenant mode,
+	// where agent and scenario NAMES are labels and therefore not public. A
+	// Prometheus scrape config for a multi-tenant deployment needs a viewer
+	// API key in an Authorization header.
+	s.mountManaged(mux, "GET /metrics", MetricsHandler(s.config.Metrics))
+
 	// Generic engine endpoint (internal/testing).
 	mux.HandleFunc("POST /v1/engines/process", s.handleProcessRequest)
+}
+
+// readinessHandlers builds the readiness check set from what this server was
+// actually configured with, and registers the two gauges that mirror it so a
+// /metrics scrape and a /api/v1/ready probe can never disagree.
+//
+// The checks answer the two questions that distinguish a serving mock from a
+// merely-running process:
+//
+//   - fixtures: at least one agent is loaded. A registry with zero agents can
+//     only return 404s, which is worse than being out of rotation.
+//   - log_store: the SQLite interaction log is reachable. Only checked when a
+//     store is configured; an in-memory deployment simply has no such check.
+func (s *Server) readinessHandlers() *ReadinessHandlers {
+	h := &ReadinessHandlers{
+		Checks: []ReadinessCheck{{
+			Name: "fixtures",
+			Check: func(context.Context) error {
+				if s.engine == nil || s.engine.Registry == nil || s.engine.Registry.Count() == 0 {
+					return errors.New("no agent fixtures loaded")
+				}
+				return nil
+			},
+		}},
+	}
+	if store := s.config.LogStore; store != nil {
+		h.Checks = append(h.Checks, ReadinessCheck{
+			Name: "log_store",
+			Check: func(ctx context.Context) error {
+				if err := store.Ping(ctx); err != nil {
+					return fmt.Errorf("interaction log unreachable: %w", err)
+				}
+				return nil
+			},
+		})
+	}
+
+	reg := s.config.Metrics
+	if reg == nil {
+		reg = metrics.Default()
+	}
+	reg.RegisterGauge(metrics.Namespace+"_agents_loaded",
+		"Agent fixtures currently loaded in the registry.", nil, nil,
+		func() float64 {
+			if s.engine == nil || s.engine.Registry == nil {
+				return 0
+			}
+			return float64(s.engine.Registry.Count())
+		})
+	reg.RegisterGauge(metrics.Namespace+"_ready",
+		"1 when every readiness check passes, 0 otherwise — the same verdict GET /api/v1/ready returns.",
+		nil, nil,
+		func() float64 {
+			ctx, cancel := context.WithTimeout(context.Background(), readinessTimeout)
+			defer cancel()
+			if h.IsReady(ctx) {
+				return 1
+			}
+			return 0
+		})
+	return h
 }
 
 // handleProcessRequest is a generic engine endpoint for testing.
@@ -624,6 +709,11 @@ func skipAuth(r *http.Request) bool {
 	// These are exactly the open LLM/engine routes registered in registerRoutes.
 	switch r.URL.Path {
 	case "/api/v1/health",
+		// Readiness is a probe target like health: a load balancer or kubelet
+		// has no API key, and failing it closed would take the pod out of
+		// rotation for the wrong reason. It reports only pass/fail plus a
+		// dependency name — no agent, tenant, or config data.
+		"/api/v1/ready",
 		"/v1/chat/completions",
 		"/v1/messages",
 		"/v1/messages/count_tokens",

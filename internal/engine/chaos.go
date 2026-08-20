@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mockagents/mockagents/internal/metrics"
 	"github.com/mockagents/mockagents/internal/types"
 )
 
@@ -166,11 +167,16 @@ func (c *ChaosInjector) Before(ctx context.Context, agent *types.AgentDefinition
 	c.ensureMaps()
 	if cfg.RateLimit != nil && cfg.RateLimit.Requests > 0 {
 		if err := c.checkRateLimit(agent.Metadata.Name, cfg.RateLimit); err != nil {
+			// Metered here rather than inside each maybeInject* helper so the
+			// counter can never drift from what was actually returned to the
+			// caller: exactly one increment per fault that reached the client.
+			metrics.RecordChaos(agent.Metadata.Name, metrics.ChaosRateLimit)
 			return err
 		}
 	}
 	if cfg.Errors != nil && (cfg.Errors.Rate > 0 || cfg.Errors.FailFirst > 0) {
 		if err := c.maybeInjectError(ctx, agent.Metadata.Name, cfg.Errors); err != nil {
+			metrics.RecordChaos(agent.Metadata.Name, metrics.ChaosError)
 			return err
 		}
 	}
@@ -178,6 +184,7 @@ func (c *ChaosInjector) Before(ctx context.Context, agent *types.AgentDefinition
 	// fixture below the HTTP-status faults above.
 	if cfg.Connection != nil && (cfg.Connection.Rate > 0 || cfg.Connection.FailFirst > 0) {
 		if err := c.maybeInjectConnectionFault(agent.Metadata.Name, cfg.Connection); err != nil {
+			metrics.RecordChaos(agent.Metadata.Name, metrics.ChaosConnection)
 			return err
 		}
 	}
@@ -209,6 +216,7 @@ func (c *ChaosInjector) After(ctx context.Context, agent *types.AgentDefinition)
 	if cfg == nil || cfg.Latency == nil {
 		return
 	}
+	metrics.RecordChaos(agent.Metadata.Name, metrics.ChaosLatency)
 	c.sleep(ctx, c.sampleLatency(cfg.Latency))
 }
 

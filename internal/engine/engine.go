@@ -9,6 +9,7 @@ import (
 	"reflect"
 
 	"github.com/mockagents/mockagents/internal/engine/state"
+	"github.com/mockagents/mockagents/internal/metrics"
 	"github.com/mockagents/mockagents/internal/observability"
 	"github.com/mockagents/mockagents/internal/types"
 	"go.opentelemetry.io/otel/attribute"
@@ -194,6 +195,17 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 		)
 	}
 
+	// Stamp the resolved agent onto the request metadata NOW, not after
+	// generation. Everything below here can abort — chaos faults, strict-tool
+	// 400s, a cancelled context — and an aborted request that reports
+	// agent="unknown" makes both the metrics and the interaction log useless
+	// for the question an operator actually asks: WHICH agent is failing.
+	// Adapters still overwrite these from the response on the success path.
+	if meta := RequestMetaFromContext(ctx); meta != nil {
+		meta.AgentName = agent.Metadata.Name
+		meta.Model = agent.Spec.Model
+	}
+
 	// Bail out cheaply if the client already cancelled or timed out before
 	// we do any work (chaos sleeps, matching, generation).
 	if err := ctx.Err(); err != nil {
@@ -287,11 +299,22 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 
 		var scenario *types.Scenario
 		var captures map[string]string
+		// matchKind feeds the scenario-match-rate metric (FR-J02): "rule" when
+		// an explicit match rule selected the scenario, "default" when the
+		// agent's catch-all answered, "fallback" when the agent had neither —
+		// a sustained non-zero fallback rate means the fixtures do not cover
+		// the traffic under test, which is exactly what an operator wants a
+		// dashboard to show.
+		matchKind := metrics.MatchRule
 		if matchResult != nil {
 			scenario = matchResult.Scenario
 			captures = matchResult.Captures
+			if matchResult.Default {
+				matchKind = metrics.MatchDefault
+			}
 		} else {
 			// Built-in fallback when no scenario matches and no default defined.
+			matchKind = metrics.MatchFallback
 			e.Logger.Warn("no matching scenario, using built-in fallback",
 				"agent", agent.Metadata.Name,
 				"message", truncate(userMsg, 100),
@@ -303,6 +326,7 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 				},
 			}
 		}
+		metrics.RecordScenarioMatch(agent.Metadata.Name, scenario.Name, matchKind)
 
 		e.Logger.Info("scenario matched",
 			"agent", agent.Metadata.Name,

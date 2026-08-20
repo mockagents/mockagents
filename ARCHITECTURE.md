@@ -83,7 +83,7 @@ flowchart TB
     end
 
     subgraph srv["internal/server"]
-        MW["middleware.go<br/>observability → RequestContext →<br/>Recovery → StructuredLogger → CORS →<br/>MaxBodySize → RealtimeBrowserAuth →<br/>tenancy.AuthMiddleware →<br/>WithPrincipalTenantScope → InteractionCapture →<br/>QuotaEnforce"]
+        MW["middleware.go<br/>observability → RequestContext →<br/>Recovery → StructuredLogger → CORS →<br/>MaxBodySize → RealtimeBrowserAuth →<br/>tenancy.AuthMiddleware →<br/>WithPrincipalTenantScope → InteractionCapture →<br/>MetricsCapture → QuotaEnforce"]
         ROUTES["server.go registerRoutes<br/>mux: /api/v1/* via mountManaged<br/>+ route_authz.go role floors"]
         LOGWORK["log_worker.go / log_broadcaster.go<br/>bounded async writer pool + SSE fan-out"]
     end
@@ -112,6 +112,7 @@ flowchart TB
         OIDC["internal/oidcauth + server/oidc_handlers.go"]
         PRICING["internal/pricing"]
         OBS["internal/observability — OTel"]
+        METRICS["internal/metrics — Prometheus /metrics"]
         MCP["internal/mcp + internal/mcpadmin"]
         RT["internal/realtime"]
         A2A["internal/a2a"]
@@ -199,6 +200,7 @@ is no linter rule; see [Design rules](#design-rules-keep-these-intact)):
 | `cli/` | Shared CLI helpers: `scaffold.go` powers `mockagents init` templates, `color.go` handles terminal output. |
 | `build/` | Test-only package whose `build_test.go` compiles `./cmd/mockagents` to guard against a broken main package. |
 | `observability/` | OpenTelemetry tracer wiring. `IsEnabled()` lets hot-path callers skip span-attribute construction when no exporter is configured. |
+| `metrics/` | The Prometheus surface `GET /metrics` renders (FR-J02). A **leaf** package — standard library only — so both `engine` (scenario-match + chaos counters) and `server` (request counter, latency histogram, handler) import it without a cycle, mirroring how `observability` is used. The exposition format is hand-written rather than pulled from `client_golang`, and validated against the upstream Prometheus parser in a test-only dependency, so the static binary gains no runtime dependency. Recording is allocation-free on the hot path (struct map keys, atomic counters) and bounded at `DefaultMaxSeries` label sets per family, with drops counted by `mockagents_metrics_series_dropped_total`. Records into a package-level `Default()` registry; `server.Config.Metrics` overrides it for the HTTP-level families in tests. |
 | `runner/` | `TestSuite` executor for `mockagents test`, with JUnit XML output (`junit.go`). |
 | `contract/` | Contract extraction + diffing for `mockagents contract` — classifies changes as breaking/additive/info. |
 | `types/` | Domain types shared across packages (`AgentDefinition`, `PipelineDefinition`, `MCPServerDefinition`, `A2AServerDefinition`, `TestSuiteDefinition`, `ChaosConfig`, etc.). `Metadata.TenantID` is the multi-tenancy ownership marker. Changes here ripple widely. |
@@ -230,32 +232,38 @@ translating its wire request into an `engine.InboundRequest`:
 2. Resolve the agent for the caller's tenant (`engine.TenantIDFromContext` →
    name lookup → model lookup → single-agent fallback for anonymous
    callers). Unresolvable → `ErrAgentNotFound`.
-3. Cheap `ctx.Err()` bail-out before doing any real work.
-4. **Chaos pre-check** (`ChaosInjector.Before`): rate-limit check, then
+3. Stamp the resolved agent + model onto the request's `RequestMeta` (nil-safe
+   when no HTTP middleware attached one), so everything that can abort below
+   this point — chaos, strict-tool errors, cancellation — still reports *which*
+   agent failed in the metrics and the interaction log.
+4. Cheap `ctx.Err()` bail-out before doing any real work.
+5. **Chaos pre-check** (`ChaosInjector.Before`): rate-limit check, then
    HTTP-error/timeout injection, then a connection-layer fault (TCP reset/
    garbage/early-close), in that order. Any of these can return early with a
    `*ChaosError` — this runs *before* matching so a 429/503 is cheap and
    never pays for scenario matching or generation.
-5. Extract the latest user message; an empty-message guard returns
+6. Extract the latest user message; an empty-message guard returns
    `ErrEmptyMessage` (tolerant of a turn that's purely a tool result).
-6. **Strict-tools request validation** (`StrictToolsFor(agent)`, three
+7. **Strict-tools request validation** (`StrictToolsFor(agent)`, three
    independent dimensions, each resolved YAML `spec.behavior.strict_tools` >
    env `MOCKAGENTS_STRICT_TOOLS` > off): round-trip tool-call-id validation,
    then `tool_choice` name validation, then per-function strict JSON-schema
    validation (via `internal/toolschema`). In enforce mode, a violation
    returns a `*StrictToolError` immediately; in warn mode it's collected and
    the request proceeds.
-7. The session (`state.Store.GetOrCreate`, keyed by a scoped session id) runs
+8. The session (`state.Store.GetOrCreate`, keyed by a scoped session id) runs
    the turn: scenario match (`scenario_matcher.go`, with a built-in
-   `_fallback` scenario if nothing matches) → generate content
+   `_fallback` scenario if nothing matches — the outcome is recorded as
+   `rule`/`default`/`fallback` on `mockagents_scenario_matches_total`) →
+   generate content
    (`response_generator.go`) → tool-loop convergence guard (drops an
    identical tool call re-issued after its result, which is what makes the
    simulated agent loop actually terminate) → `tool_choice: "none"`
    suppression → strict tool_choice forcing (synthesizing/capping tool
    calls) → tool call resolution (`tool_processor.go`, using
    `internal/toolschema` for argument validation).
-8. Any collected strict-tools warnings are attached to the response.
-9. **Chaos post-latency** (`ChaosInjector.After`): sleeps for the configured
+9. Any collected strict-tools warnings are attached to the response.
+10. **Chaos post-latency** (`ChaosInjector.After`): sleeps for the configured
    latency distribution (fixed/uniform/normal, capped at 60s, cancellable via
    `ctx.Done()`) — only *after* all real work, including tool processing, is
    done.
@@ -280,6 +288,7 @@ sequenceDiagram
     participant Auth as tenancy.AuthMiddleware
     participant Scope as WithPrincipalTenantScope
     participant Cap as InteractionCapture
+    participant Met as MetricsCapture
     participant Quota as QuotaEnforce
     participant Mux as http.ServeMux
     participant OAI as adapter.OpenAIHandler
@@ -296,7 +305,8 @@ sequenceDiagram
     Note over Auth: API key (Authorization/X-Api-Key/api-key)<br/>or mockagents_session cookie.<br/>Invalid/absent credential proceeds anonymously —<br/>this route never 401s.
     Auth->>Scope: attach Principal.TenantID via engine.WithTenantID
     Scope->>Cap: wrap ResponseWriter to capture status+body
-    Cap->>Quota: (only if tenant is non-empty)
+    Cap->>Met: reads Cap's engine.RequestMeta (protocol, agent)
+    Met->>Quota: (only if tenant is non-empty)
     Quota->>Quota: AllowRequest (token bucket) / CheckSpend
     alt over rate or spend cap
         Quota-->>Client: 429 + Retry-After, or 402
@@ -315,6 +325,7 @@ sequenceDiagram
             OAI-->>Client: 200 JSON
         end
     end
+    Met->>Met: RecordRequest(protocol, agent, status, latency)
     Cap->>Worker: Submit(InteractionLog) — non-blocking channel send
     Note over Worker: response already fully sent to Client.<br/>SQLite write + SSE broadcast to<br/>/api/v1/logs/stream happen after, in one<br/>of a small fixed pool of goroutines.
 ```
@@ -331,9 +342,14 @@ assumption:
   credential is present (so tenant-scoped agent resolution and quota still
   work), but it never rejects the request for lacking one, because these
   routes carry the caller's own (ignored) provider API key.
-- **Middleware order is auth → tenant-scope → capture → quota**, not
-  "auth → quota → logging → capture" — capture wraps *outside* quota
-  deliberately, so a request rejected by quota (429/402) is still logged.
+- **Middleware order is auth → tenant-scope → capture → metrics → quota**, not
+  "auth → quota → logging → capture" — capture and metrics both wrap *outside*
+  quota deliberately, so a request rejected by quota (429/402) is still logged
+  and still counted. `MetricsCapture` sits *inside* `InteractionCapture` for
+  the opposite reason: it reads the `engine.RequestMeta` that capture attaches
+  and the adapters stamp. With no log store configured `InteractionCapture` is
+  absent entirely, so `MetricsCapture` attaches its own metadata rather than
+  reporting every request as `protocol="unknown"`.
 
 ## Realtime: WebSocket session with server VAD
 

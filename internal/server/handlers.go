@@ -54,12 +54,28 @@ type Handlers struct {
 	agentWriteMu sync.Mutex
 }
 
-// HealthCheck returns server health status.
+// HealthCheck is the LIVENESS probe: it answers "is this process running",
+// and therefore returns 200 unconditionally. Whether the process can actually
+// serve a mock is a different question, answered by GET /api/v1/ready — see
+// ReadinessHandlers. Restarting a pod that is alive but has no fixtures would
+// fix nothing, which is why liveness must NOT check dependencies.
+//
+// uptime_seconds and agents_loaded were documented in docs/api-spec.yaml long
+// before they were emitted; they are added here rather than deleted from the
+// spec because a consumer that followed the published contract should work.
+// The pre-existing "uptime" string stays (the GUI reads it).
 func (h *Handlers) HealthCheck(w http.ResponseWriter, r *http.Request) {
+	uptime := time.Since(h.StartTime)
+	agents := 0
+	if h.Engine != nil && h.Engine.Registry != nil {
+		agents = h.Engine.Registry.Count()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "ok",
-		"version": h.Version,
-		"uptime":  time.Since(h.StartTime).String(),
+		"status":         "ok",
+		"version":        h.Version,
+		"uptime":         uptime.String(),
+		"uptime_seconds": int64(uptime.Seconds()),
+		"agents_loaded":  agents,
 	})
 }
 

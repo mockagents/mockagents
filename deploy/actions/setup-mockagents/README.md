@@ -74,9 +74,12 @@ to `GITHUB_ENV` for every subsequent step:
 | `ANTHROPIC_BASE_URL`  | `http://127.0.0.1:<port>`    |
 | `ANTHROPIC_API_KEY`   | `mock-key`             |
 
-> The server binds `127.0.0.1` (IPv4) and is health-polled on
-> `/api/v1/health` until ready (~20s budget); the step fails with the server
-> log if it never comes up.
+> The server binds `127.0.0.1` (IPv4) and is polled on `/api/v1/ready` — the
+> readiness signal, which 503s until agent fixtures are loaded and the
+> interaction-log store answers — until it returns 200 (~20s budget); the step
+> fails with the server log if it never comes up. `/api/v1/health` is the
+> liveness signal and returns 200 the instant the listener is up, which is too
+> early to hand a base URL to the next step.
 
 ## Why composite and not Docker?
 

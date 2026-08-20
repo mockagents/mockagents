@@ -17,6 +17,12 @@ var ErrNoMatchingScenario = errors.New("no matching scenario found")
 type MatchResult struct {
 	Scenario *types.Scenario
 	Captures map[string]string // Named capture groups from regex match
+	// Default reports that no explicit rule matched and the agent's default
+	// scenario (the one declared without a match block) answered instead.
+	// Callers must not infer this from Captures being nil — a rule CAN match
+	// with no capture groups — which is why it is a field of its own
+	// (it feeds the scenario-match-rate metric, FR-J02).
+	Default bool
 }
 
 // ScenarioMatcher evaluates scenarios against incoming messages.
@@ -98,7 +104,7 @@ func (m *ScenarioMatcher) MatchWithCaptures(scenarios []types.Scenario, userMess
 	}
 
 	if defaultScenario != nil {
-		return &MatchResult{Scenario: defaultScenario, Captures: nil}
+		return &MatchResult{Scenario: defaultScenario, Captures: nil, Default: true}
 	}
 	return nil
 }
