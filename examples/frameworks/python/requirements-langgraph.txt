@@ -1,0 +1,14 @@
+# LangGraph / LangChain recipe.
+#
+# `langchain` (not just langgraph + langchain-openai) is required for the
+# "provider:model" string form used by create_agent.
+langgraph>=1.0
+langchain>=1.0
+langchain-openai>=1.0
+pytest>=8.0
+# NOT ON PYPI YET. Until the release pipeline publishes it, install the SDK
+# from this checkout instead:
+#     pip install -e <repo>/sdk/python
+# Uncomment once `pip install mockagents` resolves (see the install table
+# in the repo README, which the install-paths workflow checks daily).
+# mockagents>=0.4.0

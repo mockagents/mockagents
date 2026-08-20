@@ -548,6 +548,16 @@ with MockAgentServer(agents_dir="./agents") as server:
 Each factory forwards extra kwargs to the underlying framework class, so
 temperature, max_tokens, custom headers, etc. still work.
 
+**Prefer a file you can run?** [`examples/frameworks/`](examples/frameworks)
+holds the same recipes as executable tests — OpenAI Agents SDK,
+LangGraph/LangChain, CrewAI, and the Vercel AI SDK, all against one shared agent
+fixture, all run in CI. Each one pins the thing that framework gets wrong the
+first time: the Agents SDK ignores `OPENAI_BASE_URL` (and phones home with
+traces unless you disable them), a LangChain provider *string* can't carry the
+session header that advances turn-gated scenarios, LiteLLM needs CrewAI's
+`openai/` model prefix, and `LLM.call` returns a list — not a string — the
+moment a tool call is involved.
+
 ## Record and Playback
 
 **The fastest on-ramp** — don't hand-write YAML, record your real provider

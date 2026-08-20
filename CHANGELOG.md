@@ -37,6 +37,18 @@ milestones that preceded it; all are on `main`.
   a full pipe buffer), and still captures the child's stderr into `.logs`.
 
 ### Changed
+- **Corrected: the LangGraph recipe taught a deprecated API.**
+  `site/docs/guides/framework-testing.md` used
+  `langgraph.prebuilt.create_react_agent`, deprecated since LangGraph 1.0 in
+  favour of `langchain.agents.create_agent` — and its string-model form needs
+  the `langchain` package, not just `langgraph` + `langchain-openai`, which the
+  guide never said. Both corrected, with the session-id limitation of the string
+  form documented alongside.
+- **Requirements files no longer name an unpublished package.** `mockagents` is
+  not on PyPI, so an uncommented `mockagents>=0.4.0` made
+  `pip install -r requirements.txt` fail outright — before installing anything
+  else. Commented out with the install-from-checkout instruction and a note to
+  re-enable it once the package resolves.
 - **OSS hygiene: a five-minute contributor path, eight labeled issues, and a
   stated response norm.** CONTRIBUTING opened with `make setup` and a full dev
   environment; it now opens with the actual minimum — `go build ./... && go test
@@ -100,6 +112,20 @@ milestones that preceded it; all are on `main`.
   identically.
 
 ### Added
+- **Framework recipes are now runnable files, not prose** —
+  [`examples/frameworks/`](examples/frameworks): OpenAI Agents SDK,
+  LangGraph/LangChain, CrewAI, and the Vercel AI SDK, fifteen tests against one
+  shared agent fixture, every one executed in CI (one venv per Python framework,
+  because CrewAI pins `openai<3` and the Agents SDK requires `openai>=3` — they
+  cannot share an environment). Each recipe pins the thing that framework gets
+  wrong the first time: the Agents SDK ignores `OPENAI_BASE_URL` and posts
+  traces to the real OpenAI backend unless you disable them; a LangChain
+  provider *string* cannot carry the `X-Session-Id` that advances turn-gated
+  scenarios, while a model instance can; LiteLLM needs CrewAI's `openai/` model
+  prefix, and `crewai.LLM.call` returns a list rather than a string the moment a
+  tool call is involved; the Vercel AI SDK takes `baseURL` on the provider
+  factory, so no env var is in the picture at all. Fire-drilled by changing an
+  argument in the fixture and confirming every recipe goes red.
 - **A complete runnable RAG demo** at [`demo/rag-agent/`](demo/rag-agent):
   clone, `pytest`, nine green tests in ~5s, with no network, no tokens, no
   compose file and no ports to allocate — the pytest plugin owns the mock LLM

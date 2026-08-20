@@ -1,0 +1,15 @@
+{
+  "name": "mockagents-framework-recipes",
+  "private": true,
+  "type": "module",
+  "description": "Runnable Vercel AI SDK recipe for MockAgents.",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@ai-sdk/openai": "^2.0.0",
+    "ai": "^5.0.0",
+    "vitest": "^2.1.0",
+    "zod": "^4.4.3"
+  }
+}

@@ -158,6 +158,79 @@ jobs:
           MOCKAGENTS_BIN: ${{ github.workspace }}/mockagents
         run: python -m pytest -v
 
+  # Framework recipes (examples/frameworks) are executed, not just published, so
+  # a recipe that stops working is a red build instead of a stale paragraph.
+  #
+  # One venv per framework, because they genuinely conflict: CrewAI pins
+  # openai<3 and the OpenAI Agents SDK requires openai>=3, so installing both in
+  # one environment silently downgrades one of them.
+  framework-recipes:
+    name: Framework recipe (${{ matrix.recipe }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - recipe: openai-agents
+            file: test_openai_agents.py
+          - recipe: langgraph
+            file: test_langgraph.py
+          - recipe: crewai
+            file: test_crewai.py
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build the binary
+        run: make build
+
+      - name: Install ${{ matrix.recipe }}
+        working-directory: examples/frameworks/python
+        # The SDK comes from this checkout, not PyPI, so the job tests THIS tree.
+        run: |
+          pip install -r requirements-${{ matrix.recipe }}.txt
+          pip install -e ../../../sdk/python
+
+      - name: Run the recipe
+        working-directory: examples/frameworks/python
+        env:
+          MOCKAGENTS_BIN: ${{ github.workspace }}/mockagents
+        run: python -m pytest -v ${{ matrix.file }}
+
+  framework-recipe-vercel:
+    name: Framework recipe (Vercel AI SDK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Build the binary
+        run: make build
+
+      - name: Install
+        working-directory: examples/frameworks/typescript
+        run: npm install
+
+      - name: Run the recipe
+        working-directory: examples/frameworks/typescript
+        env:
+          MOCKAGENTS_BIN: ${{ github.workspace }}/mockagents
+        run: npm test
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

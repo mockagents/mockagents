@@ -1,5 +1,12 @@
 # Testing with Agent Frameworks
 
+!!! tip "Prefer code you can run"
+    Every recipe on this page also exists as an executable test in
+    [`examples/frameworks/`](https://github.com/mockagents/mockagents/tree/main/examples/frameworks)
+    — OpenAI Agents SDK, LangGraph/LangChain, CrewAI, and the Vercel AI SDK,
+    all pointed at one shared agent fixture and all run in CI. Start there if
+    you would rather copy a working file than assemble one from prose.
+
 The big agent frameworks — OpenAI Agents SDK, Anthropic's Claude Agent SDK,
 Google ADK, CrewAI, LangChain/LangGraph — each wrap a provider's wire API. None
 of them ship an official "mock the model" story, so teams end up hitting the real
@@ -254,21 +261,46 @@ from langchain_openai import ChatOpenAI
 llm = ChatOpenAI(model="gpt-4o", base_url="http://localhost:8080/v1", api_key="mock-key")
 ```
 
-### LangGraph prebuilt agents
+### Prebuilt agents
 
-Prebuilt agents (and anything that constructs its own chat model from env vars)
-won't accept a `base_url` argument. Use the `patched_env` context manager — it
-sets `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` (with the right `/v1` handling) and
+A prebuilt agent built from a provider *string* constructs its own chat model,
+so there is no `base_url` argument to pass. `patched_env` is the seam — it sets
+`OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` (with the right `/v1` handling) and
 restores them on exit:
 
 ```python
+from langchain.agents import create_agent
 from mockagents.adapters import patched_env
-from langgraph.prebuilt import create_react_agent
 
 with patched_env("http://localhost:8080"):     # patches OPENAI_BASE_URL + ANTHROPIC_BASE_URL
-    agent = create_react_agent("openai:gpt-4o", tools=[...])
+    agent = create_agent("openai:gpt-4o", tools=[...])
     result = agent.invoke({"messages": [("user", "where is my order?")]})
 ```
+
+!!! warning "The string form cannot carry a session id"
+    MockAgents keys turn state off the `X-Session-Id` header, and a provider
+    string gives you nowhere to put one — so every request is a fresh session,
+    `turn_number` is always 1, and turn-gated scenarios never reach turn 2. The
+    loop still terminates (the engine drops a tool call whose result the model
+    already has, and answers with content only), but you get turn 1's text.
+
+    When you need distinct turns, pass a model **instance**:
+
+    ```python
+    llm = ChatOpenAI(model="gpt-4o", base_url="http://localhost:8080/v1",
+                     api_key="mock-key",
+                     default_headers={"X-Session-Id": f"conv-{uuid.uuid4()}"})
+    agent = create_agent(llm, tools=[...])
+    ```
+
+    Both paths are executed in
+    [`examples/frameworks/python/test_langgraph.py`](https://github.com/mockagents/mockagents/blob/main/examples/frameworks/python/test_langgraph.py).
+
+!!! note "API name"
+    `langgraph.prebuilt.create_react_agent` still works but is deprecated as of
+    LangGraph 1.0 in favour of `langchain.agents.create_agent`. Its string-model
+    form also needs the `langchain` package installed, not just `langgraph` +
+    `langchain-openai`.
 
 ---
 

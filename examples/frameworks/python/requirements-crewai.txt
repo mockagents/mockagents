@@ -1,0 +1,10 @@
+# CrewAI recipe. Install in its OWN virtualenv: CrewAI pins openai<3, which
+# conflicts with the OpenAI Agents SDK's openai>=3.
+crewai>=1.0
+pytest>=8.0
+# NOT ON PYPI YET. Until the release pipeline publishes it, install the SDK
+# from this checkout instead:
+#     pip install -e <repo>/sdk/python
+# Uncomment once `pip install mockagents` resolves (see the install table
+# in the repo README, which the install-paths workflow checks daily).
+# mockagents>=0.4.0

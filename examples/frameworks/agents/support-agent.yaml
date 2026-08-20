@@ -1,0 +1,58 @@
+# The one agent every framework recipe in this directory points at.
+#
+# It runs a two-turn tool-calling loop deterministically:
+#   turn 1: any "order" question -> call lookup_order
+#   turn 2: the framework returns the tool result -> final answer
+#
+# Turn gating is what makes the loop TERMINATE. Scenario matching keys on the
+# latest USER message, which does not change across an agent's tool loop (the
+# tool result comes back with role "tool", not "user"), so without
+# `turn_number` the same tool call would be re-issued forever.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: framework-support
+  description: A two-turn tool-calling agent shared by every framework recipe.
+  tags: [example, frameworks]
+
+spec:
+  protocol: openai-chat-completions
+  # A distinct model: over the provider HTTP surfaces an agent is selected by
+  # spec.model, so a shared name like gpt-4o would collide with other examples.
+  model: gpt-4o-frameworks
+  systemPrompt: |
+    You are a support assistant. Use lookup_order to answer order questions.
+
+  tools:
+    - name: lookup_order
+      description: Look up an order by id.
+      parameters:
+        type: object
+        properties:
+          order_id: { type: string }
+        required: [order_id]
+      responses:
+        - default: true
+          response: { value: { status: "shipped", carrier: "UPS", tracking: "1Z999AA1" } }
+
+  behavior:
+    scenarios:
+      - name: lookup
+        match:
+          content_contains: "order"
+          turn_number: 1
+        response:
+          content: "Let me look that up."
+          tool_calls:
+            - name: lookup_order
+              arguments: { order_id: "ORD-42" }
+
+      - name: resolve
+        match:
+          turn_number: 2
+        response:
+          content: "Order ORD-42 shipped via UPS, tracking 1Z999AA1."
+
+      - name: default
+        response:
+          content: "Ask me about an order and I'll look it up."
