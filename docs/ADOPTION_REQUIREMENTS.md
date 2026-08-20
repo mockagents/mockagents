@@ -30,21 +30,25 @@ daily habit → advocate.** Today the funnel breaks at *install* (4 of 6 adverti
 
 | # | Requirement | Source |
 |---|---|---|
-| R1 | Publish all advertised packages: npm (`mockagents`, `@mockagents/sdk`, `@mockagents/vitest`), PyPI, Docker Hub + GHCR, Homebrew tap. Needs four credential sets + the `pypi` environment; re-run Release. Zero code changes. | PMF F0 |
+| R1 | ⛔ **Blocked — needs credentials only the maintainer has.** Publish all advertised packages: npm (`mockagents`, `@mockagents/sdk`, `@mockagents/vitest`), PyPI, Docker Hub + GHCR, Homebrew tap. Needs four credential sets + the `pypi` environment; re-run Release. Zero code changes. | PMF F0 |
 | R2 | Keep the [install-paths guard](../.github/workflows/install-paths.yml) authoritative: as each path ships, clear it from `install-paths-pending.txt` and drop the ⏳ README marker (the guard goes red on a *revived* path precisely to force this). | PMF F0 — **shipped**, needs upkeep |
-| R3 | Repo storefront: social-preview image (every Slack/X share currently renders a grey card), register `mockagents.dev` **before someone else does — it is already the `$id` of all four shipped JSON Schemas** — and set it as the repo homepage. | PMF §6 · **NEW** (domain-squat risk) |
+| R3 | ⛔ **Blocked — needs a domain purchase.** Repo storefront: social-preview image (every Slack/X share currently renders a grey card), register `mockagents.dev` **before someone else does — it is already the `$id` of all four shipped JSON Schemas** — and set it as the repo homepage. | PMF §6 · **NEW** (domain-squat risk) |
 
 ## Tier 1 — First green test in minutes *(0–4 weeks)*
 
-| # | Requirement | Source |
+**Status: all seven shipped** (2026-08-20). Every code sample in the touched
+docs was executed before being written down, and every new CI gate was
+fire-drilled — deliberately made to fail — before being trusted.
+
+| # | Requirement | Status |
 |---|---|---|
-| R4 | A complete runnable RAG example: clone → one command → deterministic green test in **under 10 minutes**; first mock via quickstart in **under 5**. Both numbers measured on people who have never seen the product, not asserted. | FR-K03 + PRD §14 · PMF metrics |
-| R5 | Make the already-shipped zero-config ergonomics the *headline* docs path: pytest fixture (no import needed) and `setupMockAgents()` (Vitest/Jest), with trajectory assertions in the first code sample a visitor sees. | PMF F3 — code **shipped**, docs are the gap |
-| R6 | Framework recipes as runnable templates, not prose: LangGraph, CrewAI, OpenAI Agents SDK, Vercel AI SDK. | PMF roadmap · FR-K03 |
-| R7 | One flagship demo: a guardrail bug caught by a hallucination fixture that a real model would have hidden. This is the "fail on purpose" positioning made concrete. | PMF roadmap |
-| R8 | Publish the evals-vs-tests stance (short doc: evals measure model quality; mocks make application logic testable; you need both). Cheap, clarifying, category-defining. | PMF §6 |
-| R9 | Operability floor: a Prometheus `/metrics` endpoint (none exists today), and a real **readiness** signal — `/api/v1/health` exists and both Helm probes point at it, but it returns an unconditional 200 the moment the process is up, so readiness and liveness are currently the same check. The PRD's own §11 requires distinguishing them. *(Corrected on review: an earlier draft claimed the main server had no health route and the chart no probes — both false.)* | FR-J02 + PRD §11 |
-| R10 | OSS hygiene: CONTRIBUTING quick-path, 5–10 labeled good-first-issues, a stated issue-response norm. Discussions is already on. Non-maintainer issues are the earliest PMF signal — make filing one easy. | **NEW** |
+| R4 | A complete runnable RAG example: clone → one command → deterministic green test in **under 10 minutes**; first mock via quickstart in **under 5**. Both numbers measured on people who have never seen the product, not asserted. *(FR-K03 + PRD §14 · PMF metrics)* | ✅ [`demo/rag-agent`](../demo/rag-agent) — 11 tests, ~6s, one `pytest`, CI-verified. Retrieval is mocked as an MCP tool server because VectorMock (R11) does not exist yet, and the README says so. **The under-10-minutes figure is still asserted, not measured on a naive user** — that measurement stays open. |
+| R5 | Make the already-shipped zero-config ergonomics the *headline* docs path: pytest fixture (no import needed) and `setupMockAgents()` (Vitest/Jest), with trajectory assertions in the first code sample a visitor sees. *(PMF F3)* | ✅ README, quickstart, both SDK guides, testing-agents cookbook. Running the samples first turned up a 58.8s hang in `MockAgentServer.stop()` that made the headline path unusable, and a cookbook command that never worked (six examples share `model: gpt-4o`). |
+| R6 | Framework recipes as runnable templates, not prose: LangGraph, CrewAI, OpenAI Agents SDK, Vercel AI SDK. *(PMF roadmap · FR-K03)* | ✅ [`examples/frameworks`](../examples/frameworks) — 15 tests against one shared fixture, one venv per framework (CrewAI pins `openai<3`, the Agents SDK needs `openai>=3`), all in CI. |
+| R7 | One flagship demo: a guardrail bug caught by a hallucination fixture that a real model would have hidden. *(PMF roadmap)* | ✅ Folded into R4 rather than built twice: `naive_grounding_ok` — "did the model cite anything?" — returns True for a fabricated citation, and a test asserts the gap against the real check. |
+| R8 | Publish the evals-vs-tests stance (short doc: evals measure model quality; mocks make application logic testable; you need both). *(PMF §6)* | ✅ [`EVALS_VS_TESTS.md`](EVALS_VS_TESTS.md), linked from the README's "What it is *not*". |
+| R9 | Operability floor: a Prometheus `/metrics` endpoint, and a real **readiness** signal distinct from liveness. *(FR-J02 + PRD §11)* | ✅ `GET /metrics` (hand-written exposition, no runtime dependency, validated against the upstream Prometheus parser) and `GET /api/v1/ready`; the chart's readiness probe now points at it. The chart's docs claimed expvar counters that never existed — corrected. |
+| R10 | OSS hygiene: CONTRIBUTING quick-path, 5–10 labeled good-first-issues, a stated issue-response norm. *(NEW)* | ✅ Five-minute path (`go build ./... && go test ./internal/...` is the entire setup), [#37–#44](https://github.com/mockagents/mockagents/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) filed and labeled after re-verifying each against the code, and a stated norm: first response within a week, bump after two. |
 
 ## Tier 2 — Differentiated capability *(1–3 months)*
 
