@@ -1,7 +1,11 @@
 """Tests for mockagents.server — server lifecycle management."""
 
 import os
+import subprocess
+import sys
 import tempfile
+import threading
+import time
 
 import pytest
 import yaml
@@ -147,6 +151,65 @@ def test_stop_when_not_running():
     server._process = None
     server._logs = []
     server.stop()  # Should not raise.
+
+
+def test_stop_does_not_block_on_a_live_child(tmp_path):
+    """stop() must signal before draining, or it hangs forever.
+
+    Reading a still-running child's stderr blocks until EOF, and a healthy
+    server never closes stderr. Draining first therefore hung until something
+    else killed the process — which meant every pytest session using the
+    session-scoped ``mockagents_server`` fixture hung at teardown, since that
+    fixture calls stop() on the way out.
+
+    The child here is a plain Python process that writes one line to stderr and
+    then sleeps: enough to have buffered output worth draining, and long-lived
+    enough that a drain-first implementation never returns. stop() runs on a
+    thread so a regression fails this test in ~15s instead of hanging the suite.
+    """
+    ready = tmp_path / "child-booted"
+    child = (
+        "import sys, time, pathlib; "
+        "sys.stderr.write('booted'); sys.stderr.flush(); "
+        f"pathlib.Path(r'{ready}').write_text('1'); "
+        "time.sleep(300)"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    # Wait for the child to actually reach its sleep. Without this the test
+    # races the interpreter's own startup and can terminate it before it has
+    # written anything, which would test nothing.
+    deadline = time.monotonic() + 15
+    while not ready.exists() and time.monotonic() < deadline:
+        assert proc.poll() is None, "child exited before signalling readiness"
+        time.sleep(0.02)
+    assert ready.exists(), "child never started"
+
+    server = MockAgentServer.__new__(MockAgentServer)
+    server._process = proc
+    server._logs = []
+
+    finished = threading.Event()
+
+    def run_stop() -> None:
+        server.stop()
+        finished.set()
+
+    threading.Thread(target=run_stop, daemon=True).start()
+    returned = finished.wait(timeout=15)
+    if not returned:
+        # Unblock the stuck reader so the leaked thread can exit, then fail.
+        proc.kill()
+        proc.wait(timeout=5)
+    assert returned, "stop() blocked on a live child: it must signal before draining"
+
+    assert proc.poll() is not None, "stop() returned but left the child running"
+    assert server._process is None
+    # The child's stderr was still captured, not thrown away.
+    assert any("booted" in entry for entry in server._logs)
 
 
 def test_client_returns_mock_agent_client():

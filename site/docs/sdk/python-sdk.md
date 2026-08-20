@@ -4,6 +4,95 @@
 pip install mockagents
 ```
 
+## Start here: pytest, zero config
+
+Installing the package registers a pytest plugin (the `pytest11` entry point),
+so there is nothing to import and no `conftest.py` to write. Three fixtures
+appear in any test session:
+
+| Fixture | Scope | What it gives you |
+| --- | --- | --- |
+| `mockagents_server` | session | One `MockAgentServer` subprocess for the whole run. |
+| `mockagents` | function | The same server, with `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `GOOGLE_GEMINI_BASE_URL` and dummy API keys patched for the duration of the test — so your *existing* application code is redirected with zero changes. Restored afterwards. |
+| `mockagents_client` | function | A `MockAgentClient` bound to that server, for driving the mock directly. |
+
+```python
+# test_agent.py — no imports, no conftest
+def test_greeting(mockagents):
+    from openai import OpenAI            # your real app code, unchanged:
+    reply = OpenAI().chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+    assert "How can I help" in reply.choices[0].message.content
+```
+
+```console
+$ pytest -q
+1 passed in 3.23s
+```
+
+The agents directory resolves in this order: `--mockagents-agents-dir`, the
+`mockagents_agents_dir` ini option, `$MOCKAGENTS_AGENTS_DIR`, then `./agents`.
+Point at a specific binary with `--mockagents-binary` or `$MOCKAGENTS_BINARY`.
+
+!!! warning "Gemini caveat"
+    The env-var redirect reaches Gemini only through the newer `google-genai`
+    client, which reads `GOOGLE_GEMINI_BASE_URL`. The legacy
+    `google-generativeai` SDK has no base-URL env var — redirect it explicitly
+    with `genai.configure(client_options={"api_endpoint": url})`, or the test
+    silently calls the real Google endpoint.
+
+### Assert the trajectory
+
+The reason to use a mock rather than a stub is that you can assert the *shape*
+of what the agent did. `run_scenario` drives a multi-turn conversation through
+`mockagents_client`:
+
+```python
+from mockagents import Scenario, expect, run_scenario
+
+def test_support_flow(mockagents_client):
+    result = run_scenario(mockagents_client, Scenario(
+        name="support",
+        steps=[
+            {"role": "user", "content": "what's the weather in London?"},
+            {"role": "user", "content": "and where is my order?"},
+        ],
+    ))
+    expect(result).to_have_tool_call_sequence(["get_weather", "search_orders"])
+    expect(result).to_have_tool_call_count(2)
+    expect(result).to_have_tool_call("get_weather", {"city": "London"})
+```
+
+Wrong tool, wrong order, one call too many — three bugs a text assertion cannot
+see. See [Assertions](#assertions) for the exact semantics.
+
+### Wiring fixtures by hand
+
+Only needed when you want a different lifetime or several servers at once:
+
+```python
+import pytest
+from mockagents import MockAgentServer
+
+@pytest.fixture(scope="session")
+def mock_server():
+    with MockAgentServer(agents_dir="./agents") as server:
+        yield server
+
+@pytest.fixture
+def client(mock_server):
+    return mock_server.client()
+
+def test_greeting(client):
+    response = client.chat(
+        messages=[{"role": "user", "content": "hello"}],
+        model="gpt-4o",
+    )
+    assert "How can I help" in response.content
+```
+
 ## MockAgentServer
 
 Manages the MockAgents Go binary as a subprocess.
@@ -152,9 +241,15 @@ from mockagents import expect
 # Response content
 expect(result).to_have_response_containing("Hello")
 
-# Tool calls
+# Tool calls — did this call happen at all? (arguments are a PARTIAL match)
 expect(result).to_have_tool_call("search")
 expect(result).to_have_tool_call("search", {"query": "test"})
+
+# Trajectory — the ordered shape of what the agent did.
+# Both read the AGGREGATE across every turn of a ScenarioResult.
+expect(result).to_have_tool_call_sequence(["search", "summarize"])  # full equality, not a subsequence
+expect(result).to_have_tool_call_count(3)                          # total across all turns
+expect(result).to_have_tool_call_count(2, name="search")           # narrowed to one tool (SDK-only)
 
 # Simulated tool errors (tools[].responses[].error fixtures)
 expect(result).to_have_tool_error("NOT_FOUND")
@@ -178,49 +273,26 @@ expect(response.model).to_equal("gpt-4o")
 )
 ```
 
-## pytest Integration
+### Trajectory semantics
 
-The package ships a pytest plugin: the `mockagents` fixture spawns the server
-and patches `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, and
-`GOOGLE_GEMINI_BASE_URL`, so your *existing* application code is redirected
-with zero changes:
+`to_have_tool_call_sequence` and the one-argument `to_have_tool_call_count` are
+deliberately identical to the `tool_call_sequence` / `tool_call_count`
+assertions in `kind: TestSuite` YAML, so a check moves between your test file
+and `mockagents test` without changing meaning:
 
-```python
-def test_greeting(mockagents):
-    from openai import OpenAI
-    response = OpenAI().chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": "hello"}],
-    )
-    assert "Hello" in response.choices[0].message.content
-```
+- They read **every turn**, in invocation order — a multi-turn trajectory is
+  every call the agent made, not just the last response's calls.
+- The sequence is **full equality**, not a subsequence. An unexpected extra
+  call fails it. That is the point: a silent extra retrieval is a bug.
+- `to_have_tool_call_count(n, name=...)` narrows to one tool. That two-argument
+  form is an SDK convenience with **no YAML equivalent** — use the unnamed form
+  when you want a check that transfers.
+- Outcome assertions (`to_have_response_containing`, `to_have_status`,
+  `to_have_finish_reason`) read the **final** turn.
 
-```console
-$ pytest --mockagents-agents-dir ./agents
-```
-
-Or wire fixtures by hand for full control:
-
-```python
-import pytest
-from mockagents import MockAgentServer
-
-@pytest.fixture(scope="session")
-def mock_server():
-    with MockAgentServer(agents_dir="./agents") as server:
-        yield server
-
-@pytest.fixture
-def client(mock_server):
-    return mock_server.client()
-
-def test_greeting(client):
-    response = client.chat(
-        messages=[{"role": "user", "content": "hello"}],
-        model="gpt-4o"
-    )
-    assert "Hello" in response.content
-```
+`node_sequence`, the pipeline-trajectory assertion, is YAML-only: pipelines
+have no HTTP execution surface for an SDK to drive yet
+([#33](https://github.com/mockagents/mockagents/issues/33)).
 
 ## Framework adapters & MCP
 

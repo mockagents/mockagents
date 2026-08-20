@@ -12,7 +12,32 @@ milestones that preceded it; all are on `main`.
 
 ## [Unreleased]
 
+### Fixed
+- **`MockAgentServer.stop()` (Python SDK) no longer hangs.** It drained the
+  child's stderr *before* signalling it, and reading a running process's stderr
+  blocks until EOF — which a healthy server never sends. Measured: 58.8s to stop
+  a live server (it only returned because something else killed the process);
+  now 0.0s. Because the session-scoped `mockagents_server` fixture calls stop()
+  at teardown, this hung the end of every pytest run that used the plugin — the
+  zero-config path the docs now lead with. Signals first, then drains with
+  `communicate()` (which also drains stdout, so a chatty server can't deadlock on
+  a full pipe buffer), and still captures the child's stderr into `.logs`.
+
 ### Changed
+- **The zero-config test path is now the headline** in the README, the
+  quickstart, both SDK guides, and the testing-agents cookbook: the pytest
+  plugin (no import, no conftest) and `setupMockAgents()` for Vitest/Jest, with
+  the trajectory assertions — `to_have_tool_call_sequence` /
+  `toHaveToolCallSequence` and the `_count` pair — in the first test sample a
+  visitor sees, rather than buried in an assertions reference. Every sample in
+  those pages was executed before being written down.
+- **Corrected: `pytest --mockagents-agents-dir examples` in the testing-agents
+  cookbook never worked.** Over the provider HTTP surfaces an agent is selected
+  by `spec.model` (there is no agent-name header), and six agents in `examples/`
+  declare `model: gpt-4o` — so the documented command silently routed to
+  `code-assistant` and the sample's assertion failed. The guide now says to copy
+  the single agent under test into `./agents`, and explains why a `kind:
+  TestSuite` (which targets an agent by *name*) is unaffected.
 - **`GET /api/v1/health` now emits `uptime_seconds` and `agents_loaded`** — both
   were declared required in `docs/api-spec.yaml` long before anything sent them.
   Added rather than deleted from the spec, so a consumer that followed the

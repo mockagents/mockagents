@@ -76,6 +76,84 @@ mockagents init my-bot --template customer-support   # see `--list-templates`
 mockagents start                              # prints your base URL + a ready-to-paste snippet
 ```
 
+## Then write the test
+
+Nothing to import and no fixture to wire up. The Python SDK registers a pytest
+plugin, so the `mockagents` fixture exists in any test session: it starts one
+server for the session against `./agents` and points the OpenAI / Anthropic /
+Gemini SDKs at it. Your application code runs unchanged.
+
+```python
+def test_router_picks_the_weather_tool(mockagents):
+    from openai import OpenAI                      # your real app code,
+    reply = OpenAI().chat.completions.create(      # unchanged
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "what's the weather?"}],
+    )
+    assert reply.choices[0].message.tool_calls[0].function.name == "get_weather"
+```
+
+Then assert the part that actually breaks in production — the **trajectory**:
+the ordered shape of what the agent *did*, not just the text it ended with.
+
+```python
+from mockagents import Scenario, expect, run_scenario
+
+def test_support_flow(mockagents_client):
+    result = run_scenario(mockagents_client, Scenario(
+        name="support",
+        steps=[
+            {"role": "user", "content": "what's the weather in London?"},
+            {"role": "user", "content": "and where is my order?"},
+        ],
+    ))
+    expect(result).to_have_tool_call_sequence(["get_weather", "search_orders"])
+    expect(result).to_have_tool_call_count(2)
+    expect(result).to_have_tool_call("get_weather", {"city": "London"})
+```
+
+Wrong tool, wrong order, one call too many: the three bugs a text assertion
+cannot see. The same checks in TypeScript, where `setupMockAgents()` does the
+spawn-and-redirect for Vitest or Jest:
+
+```ts
+import { Scenario, expect as expectAgent, runScenario } from "@mockagents/sdk";
+import { setupMockAgents } from "@mockagents/vitest";
+import { test } from "vitest";
+
+const mock = setupMockAgents({ agentsDir: "./agents" });
+
+test("support flow", async () => {
+  const result = await runScenario(mock.client, new Scenario({
+    name: "support",
+    steps: [
+      { role: "user", content: "what's the weather in London?" },
+      { role: "user", content: "and where is my order?" },
+    ],
+  }));
+  expectAgent(result)
+    .toHaveToolCallSequence(["get_weather", "search_orders"])
+    .toHaveToolCallCount(2)
+    .toHaveToolCall("get_weather", { city: "London" });
+});
+```
+
+Both read the **aggregate across every turn** and compare the sequence for full
+equality — an unexpected extra call fails it — which is exactly what the
+`tool_call_sequence` assertion in `kind: TestSuite` YAML does. A check written
+in your test file transfers to `mockagents test` unchanged, and back.
+
+The agent behind both samples is
+[`examples/tool-routing-agent.yaml`](examples/tool-routing-agent.yaml). Put it
+in `./agents` **by itself** and the tests above pass as written — over the
+provider HTTP surfaces an agent is picked by `spec.model`, so two agents sharing
+`gpt-4o` in one directory would make the routing ambiguous (the server warns and
+picks the first name alphabetically). Both SDK packages are ⏳ pending
+publication (see the table above); until then, install from the repo with
+`pip install -e sdk/python`.
+
+→ **[Testing AI Agents guide](site/docs/guides/testing-agents.md)** · **[Python SDK](site/docs/sdk/python-sdk.md)** · **[@mockagents/vitest](sdk/vitest/README.md)**
+
 ## Why MockAgents
 
 ### The failures a real model won't produce on demand
@@ -258,22 +336,18 @@ spec:
     streaming: { enabled: true, chunk_size: 4 }
 ```
 
-## Test it (pytest)
+## Run it in CI
 
-```python
-# `pip install mockagents` ships a pytest plugin — the `mockagents` fixture
-# points the OpenAI/Anthropic/Gemini SDKs at the mock with zero code changes.
-def test_greeting(mockagents):
-    from openai import OpenAI
-    out = OpenAI().chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": "hello"}],
-    )
-    assert "How can I help" in out.choices[0].message.content
+The [`setup-mockagents` GitHub Action](deploy/actions/setup-mockagents) starts
+the server and exports the base URLs for the rest of the job, so the tests from
+[Then write the test](#then-write-the-test) run in CI with no extra wiring:
+
+```yaml
+- uses: mockagents/mockagents/deploy/actions/setup-mockagents@main
+  with:
+    agents-dir: ./agents
+- run: pytest              # OPENAI_BASE_URL etc. already point at the mock
 ```
-
-In CI, the [`setup-mockagents` GitHub Action](deploy/actions/setup-mockagents)
-starts the server and exports the base URLs for the rest of the job.
 
 → **[Testing AI Agents guide](site/docs/guides/testing-agents.md)** — runnable
 cookbooks for asserting agent **tool-calls** (right tool, right arguments) and

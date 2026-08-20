@@ -68,6 +68,44 @@ test("weather tool routes correctly", async () => {
 });
 ```
 
+## Assert the trajectory
+
+The reason to mock rather than stub is that you can check the *shape* of what
+the agent did — which tools, in which order, how many times — not just its final
+text. `runScenario` drives a multi-turn conversation through `mock.client`:
+
+```ts
+import { Scenario, expect as expectAgent, runScenario } from "@mockagents/sdk";
+import { setupMockAgents } from "@mockagents/vitest";
+import { test } from "vitest";
+
+const mock = setupMockAgents({ agentsDir: "./agents" });
+
+test("support flow", async () => {
+  const result = await runScenario(mock.client, new Scenario({
+    name: "support",
+    steps: [
+      { role: "user", content: "what's the weather in London?" },
+      { role: "user", content: "and where is my order?" },
+    ],
+  }));
+  expectAgent(result)
+    .toHaveToolCallSequence(["get_weather", "search_orders"])
+    .toHaveToolCallCount(2)
+    .toHaveToolCall("get_weather", { city: "London" });
+});
+```
+
+`toHaveToolCallSequence` reads the aggregate across **every turn** and compares
+for **full equality** — an unexpected extra call fails it. Those are the same
+semantics as the `tool_call_sequence` assertion in `kind: TestSuite` YAML and as
+the Python SDK's `to_have_tool_call_sequence`, so a check means the same thing
+wherever you write it.
+
+Note the import split: trajectory assertions come from `@mockagents/sdk`
+(aliased above to keep Vitest's own `expect` usable in the same file), while
+this package supplies only the lifecycle.
+
 ## Fixture style
 
 If you prefer Vitest's fixture injection over reaching through the handle,

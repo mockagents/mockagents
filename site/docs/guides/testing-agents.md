@@ -158,9 +158,18 @@ replies) can never satisfy it — give the case at least two user steps.
 ### Option B — pytest, against your real application code
 
 The `mockagents` pytest fixture (shipped with `pip install mockagents`) points
-the OpenAI SDK at the mock with zero changes to your code:
+the OpenAI SDK at the mock with zero changes to your code — no import, no
+`conftest.py`:
+
+```console
+$ mkdir -p agents && cp examples/tool-routing-agent.yaml agents/
+```
 
 ```python
+# test_routing.py
+import json
+
+
 def test_weather_question_routes_to_get_weather(mockagents):
     from openai import OpenAI
     resp = OpenAI().chat.completions.create(
@@ -169,16 +178,79 @@ def test_weather_question_routes_to_get_weather(mockagents):
     )
     call = resp.choices[0].message.tool_calls[0]
     assert call.function.name == "get_weather"
-    import json
     assert json.loads(call.function.arguments) == {"city": "London"}
 ```
 
 ```console
-$ pytest --mockagents-agents-dir examples
+$ pytest -q
+1 passed
 ```
 
-Same agent definition, two ways to assert it — no token cost, no flakiness, runs
-offline in milliseconds.
+!!! warning "Point the fixture at ONE agent, not the whole `examples/` directory"
+    Over the provider HTTP surfaces an agent is selected by **`spec.model`** —
+    there is no agent-name header. Six agents in `examples/` declare
+    `model: gpt-4o`, so loading the whole directory routes this request to
+    whichever of them sorts first (the server logs a `model claimed by multiple
+    agents` warning naming the winner). Option A is unaffected because a
+    `kind: TestSuite` targets an agent by **name**. Copy the single YAML file
+    you are testing into `./agents`, or give each agent a distinct `spec.model`.
+
+### Option C — trajectory assertions, in your own test file
+
+Options A and B check one turn. The bugs that survive to production are usually
+about the *sequence*: the right tools in the wrong order, or one call too many.
+`run_scenario` drives a multi-turn conversation and the trajectory assertions
+check its shape:
+
+```python
+from mockagents import Scenario, expect, run_scenario
+
+def test_support_trajectory(mockagents_client):
+    result = run_scenario(mockagents_client, Scenario(
+        name="support",
+        steps=[
+            {"role": "user", "content": "what's the weather in London?"},
+            {"role": "user", "content": "and where is my order?"},
+        ],
+    ))
+    expect(result).to_have_tool_call_sequence(["get_weather", "search_orders"])
+    expect(result).to_have_tool_call_count(2)
+```
+
+TypeScript, via `@mockagents/vitest`:
+
+```ts
+import { Scenario, expect as expectAgent, runScenario } from "@mockagents/sdk";
+import { setupMockAgents } from "@mockagents/vitest";
+import { test } from "vitest";
+
+const mock = setupMockAgents({ agentsDir: "./agents" });
+
+test("support trajectory", async () => {
+  const result = await runScenario(mock.client, new Scenario({
+    name: "support",
+    steps: [
+      { role: "user", content: "what's the weather in London?" },
+      { role: "user", content: "and where is my order?" },
+    ],
+  }));
+  expectAgent(result)
+    .toHaveToolCallSequence(["get_weather", "search_orders"])
+    .toHaveToolCallCount(2);
+});
+```
+
+These are the same `tool_call_sequence` / `tool_call_count` assertions used by
+Option A's YAML suite, with the same semantics: read the aggregate across every
+turn, and compare the sequence for **full equality** rather than as a
+subsequence. A check moves between the two forms unchanged.
+
+`node_sequence` — the pipeline equivalent — remains YAML-only, because pipelines
+have no HTTP execution surface for an SDK to drive
+([#33](https://github.com/mockagents/mockagents/issues/33)).
+
+Same agent definition, three ways to assert it — no token cost, no flakiness,
+runs offline in milliseconds.
 
 ---
 

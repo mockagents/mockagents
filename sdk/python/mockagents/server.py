@@ -151,31 +151,46 @@ class MockAgentServer:
         self._wait_for_ready(timeout)
 
     def stop(self) -> None:
-        """Stop the MockAgents server subprocess."""
+        """Stop the MockAgents server subprocess.
+
+        Signals FIRST, then drains the pipes. The order matters: reading a
+        still-running child's stderr blocks until EOF, and a healthy server
+        never closes stderr, so draining first hung forever. That made every
+        pytest session using the ``mockagents_server`` fixture hang at
+        teardown, since the session-scoped fixture calls this on the way out.
+
+        ``communicate`` (rather than ``wait``) drains stdout *and* stderr, so a
+        chatty server filling a 64 KiB pipe buffer can't deadlock on exit
+        either.
+        """
         if self._process is None:
             return
 
-        # Capture remaining output.
-        try:
-            if self._process.stderr:
-                stderr = self._process.stderr.read()
-                if stderr:
-                    self._logs.append(stderr.decode("utf-8", errors="replace"))
-        except Exception:
-            pass
+        proc = self._process
+        self._process = None
 
-        # Send SIGTERM (or terminate on Windows).
         try:
             if sys.platform == "win32":
-                self._process.terminate()
+                proc.terminate()
             else:
-                self._process.send_signal(signal.SIGTERM)
-            self._process.wait(timeout=5)
+                proc.send_signal(signal.SIGTERM)
+        except OSError:
+            pass  # already gone
+
+        stderr = b""
+        try:
+            _, stderr = proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:
-            self._process.kill()
-            self._process.wait(timeout=2)
-        finally:
-            self._process = None
+            proc.kill()
+            try:
+                _, stderr = proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass  # unkillable child; do not hold the test session hostage
+        except (OSError, ValueError):
+            pass  # pipes already closed
+
+        if stderr:
+            self._logs.append(stderr.decode("utf-8", errors="replace"))
 
     def client(self) -> MockAgentClient:
         """Create a MockAgentClient connected to this server.
