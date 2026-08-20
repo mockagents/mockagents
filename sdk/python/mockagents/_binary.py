@@ -70,17 +70,47 @@ def cache_dir() -> Path:
     return Path(base) / "mockagents" / "bin"
 
 
+#: A console-script wrapper is a small stub; the real Go binary is tens of MB.
+#: Files above this size are never read looking for a wrapper marker.
+_MAX_WRAPPER_BYTES = 1024 * 1024
+
+
 def _looks_like_python_wrapper(path: str) -> bool:
-    """Detect a pip/pipx console-script wrapper named ``mockagents`` (a Python
-    script with a ``#!.../python`` shebang) so the launcher never resolves — and
-    re-execs — itself, which would be a fork bomb.
+    """Detect a pip/pipx console-script wrapper named ``mockagents``.
+
+    Two forms, because pip generates different ones per platform:
+
+    - **POSIX**: a text script with a ``#!.../python`` shebang.
+    - **Windows**: a small PE launcher (``MZ...``) with the interpreter path
+      embedded in an appended payload. It has no shebang at offset 0, so the
+      original shebang-only check never fired there — and the resolver happily
+      selected ``Scripts/mockagents.exe``, i.e. the launcher, as if it were the
+      server. That turned "binary not found" into a ten-second TimeoutError
+      with nothing explaining it.
+
+    Getting this right matters twice over: the launcher must never resolve and
+    re-exec itself (a fork bomb), and callers must not silently spawn a
+    wrapper that then fails to find a real binary.
     """
     try:
         with open(path, "rb") as fh:
             head = fh.read(64)
     except OSError:
         return False
-    return head[:2] == b"#!" and b"python" in head.lower()
+    if head[:2] == b"#!" and b"python" in head.lower():
+        return True
+    if head[:2] != b"MZ":
+        return False
+    # Windows PE. Only a stub is worth inspecting: the real binary is ~37 MB
+    # and contains no interpreter path, so the size guard alone excludes it
+    # without reading tens of megabytes on every PATH probe.
+    try:
+        if os.path.getsize(path) > _MAX_WRAPPER_BYTES:
+            return False
+        with open(path, "rb") as fh:
+            return b"python.exe" in fh.read().lower()
+    except OSError:
+        return False
 
 
 def _acceptable(path: str, skip: set) -> bool:
@@ -94,14 +124,17 @@ def _acceptable(path: str, skip: set) -> bool:
 def find_binary(exclude: Optional[list] = None) -> Optional[str]:
     """Return a path to the mockagents Go binary, or ``None`` if not resolvable.
 
-    Search order: ``$MOCKAGENTS_BINARY``, ``PATH``, ``./mockagents(.exe)``, the
-    SDK cache. ``exclude`` is a list of paths to ignore (the ``mockagents``
+    Search order: ``$MOCKAGENTS_BINARY`` (or ``$MOCKAGENTS_BIN``, the name the
+    TypeScript SDK uses), ``PATH``, ``./mockagents(.exe)``, the SDK cache. ``exclude`` is a list of paths to ignore (the ``mockagents``
     console-script launcher passes its own path so it never selects itself); a
     PATH entry that is a Python console-script wrapper is also skipped.
     """
     skip = {os.path.realpath(p) for p in (exclude or []) if p}
 
-    explicit = os.environ.get("MOCKAGENTS_BINARY")
+    # MOCKAGENTS_BIN is the name the TypeScript SDK and @mockagents/vitest use.
+    # Accepting both means someone who learned one name does not hit a wall in
+    # the other language; MOCKAGENTS_BINARY keeps precedence for back-compat.
+    explicit = os.environ.get("MOCKAGENTS_BINARY") or os.environ.get("MOCKAGENTS_BIN")
     if explicit and Path(explicit).is_file():
         return str(Path(explicit).resolve())
 

@@ -353,6 +353,29 @@ the server and exports the base URLs for the rest of the job, so the tests from
 cookbooks for asserting agent **tool-calls** (right tool, right arguments) and
 **mocking an MCP server**, deterministically and offline.
 
+## A complete example: RAG with a guardrail that fires
+
+[`demo/rag-agent/`](demo/rag-agent) is a small retrieval-augmented-generation
+app plus a nine-test suite. Clone, one command, green in seconds — no network,
+no tokens, no compose file:
+
+```bash
+make build && cd demo/rag-agent
+pip install -r requirements.txt && pip install -e ../../sdk/python
+MOCKAGENTS_BIN=../../mockagents pytest        # 9 passed in 5.41s
+```
+
+The happy path is the boring part. The suite also pins an **empty index**, a
+**low-confidence-only result set**, and a model that answers the refund question
+with a confident, plausible, completely ungrounded claim — citing `doc-7`, a
+document retrieval never returned. The app's citation check catches it. In a
+suite running against a live model that branch is dead code nobody has ever
+executed, because the model has to misbehave first and it won't on request.
+
+Retrieval is mocked as an MCP tool server, not a vector store — [VectorMock is
+planned but does not exist yet](docs/ADOPTION_REQUIREMENTS.md) — and the demo
+says so rather than implying otherwise. CI runs it on every push.
+
 ## What it is *not*
 
 MockAgents mocks the **wire protocol, not the model**. It won't tell you whether
@@ -677,6 +700,7 @@ of it. **See the [Multi-Tenant & Control-Plane guide](docs/guides/multi-tenant.m
 - [Management API](site/docs/guides/management-api.md)
 - [Observability & Metrics](site/docs/guides/observability.md)
 - [Evals vs. tests](docs/EVALS_VS_TESTS.md) — why you need both, and which one catches what
+- [RAG demo](demo/rag-agent/README.md) — a complete runnable app + test suite, CI-verified
 - [Multi-Tenant & Control Plane](docs/guides/multi-tenant.md)
 
 ## Contributing

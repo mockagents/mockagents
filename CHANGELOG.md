@@ -13,6 +13,19 @@ milestones that preceded it; all are on `main`.
 ## [Unreleased]
 
 ### Fixed
+- **The Python SDK no longer resolves the pip console-script shim as the
+  server binary on Windows.** `_looks_like_python_wrapper` only recognized the
+  POSIX shebang form; a Windows console script is a small PE launcher with the
+  interpreter path in an appended payload, so the resolver happily selected
+  `Scripts/mockagents.exe` — the launcher — and callers spawned it as if it were
+  the server. With no real binary for it to delegate to, "binary not found"
+  surfaced as a ten-second `TimeoutError` explaining nothing. Now detects both
+  forms, guarded by a size check so the ~37 MB Go binary is never read looking
+  for the marker.
+- **`MOCKAGENTS_BIN` now works in the Python SDK.** It read only
+  `MOCKAGENTS_BINARY`, while the TypeScript SDK and `@mockagents/vitest` read
+  `MOCKAGENTS_BIN` — so whichever name you learned first was silently ignored in
+  the other language. Both are accepted; `MOCKAGENTS_BINARY` keeps precedence.
 - **`MockAgentServer.stop()` (Python SDK) no longer hangs.** It drained the
   child's stderr *before* signalling it, and reading a running process's stderr
   blocks until EOF — which a healthy server never sends. Measured: 58.8s to stop
@@ -75,6 +88,19 @@ milestones that preceded it; all are on `main`.
   identically.
 
 ### Added
+- **A complete runnable RAG demo** at [`demo/rag-agent/`](demo/rag-agent):
+  clone, `pytest`, nine green tests in ~5s, with no network, no tokens, no
+  compose file and no ports to allocate — the pytest plugin owns the mock LLM
+  server and the app spawns the mock MCP retrieval server itself over stdio.
+  Beyond the happy path it pins the failure modes that actually ship: an empty
+  index, a low-confidence-only result set, and a model that answers with a
+  confident ungrounded claim citing a document retrieval never returned. The
+  app's citation guardrail catches that last one — a branch that, in a suite
+  running against a live model, nobody has ever executed. Retrieval is mocked as
+  an MCP tool server rather than a vector store, because VectorMock does not
+  exist yet (Tier 2 R11); the demo says so instead of implying otherwise. A CI
+  job runs it on every push, exercised by breaking the fixture and confirming
+  the job goes red.
 - **`GET /metrics` — a real Prometheus endpoint** (FR-J02, adoption R9). Text
   exposition format 0.0.4, always on, no dependency added: the exposition is
   hand-written and its correctness is asserted against the upstream Prometheus

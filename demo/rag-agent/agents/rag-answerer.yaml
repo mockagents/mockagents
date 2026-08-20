@@ -1,0 +1,55 @@
+# The generation half of the RAG loop.
+#
+# The app retrieves documents (see knowledge-base.yaml), builds a grounded
+# prompt, and sends it here. Scenario matching keys on the latest user message,
+# so each scenario matches a phrase from the question the app forwards.
+#
+# The interesting fixture is `ungrounded-refund`: it returns an answer that
+# CONTRADICTS the retrieved document and cites a document that was never
+# retrieved. A real model does that occasionally and unpredictably; here it
+# happens every run, so the app's grounding check has something to catch.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: rag-answerer
+  description: Answers questions from retrieved context — grounded, and deliberately not.
+  tags: [demo, rag]
+
+spec:
+  protocol: openai-chat-completions
+  # A distinct model so requests route here unambiguously: over the provider
+  # HTTP surfaces an agent is selected by spec.model, not by name.
+  model: gpt-4o-rag
+  systemPrompt: |
+    Answer only from the provided context. Cite every claim as [doc-N].
+
+  behavior:
+    scenarios:
+      # 1. Grounded: the answer is supported by doc-1, and cites it.
+      - name: grounded-billing
+        match: { content_contains: "when are invoices sent" }
+        response:
+          content: "Invoices are sent on the 1st of each month. [doc-1]"
+
+      # 2. Ungrounded: contradicts doc-3 (30 days / store credit / excl.
+      #    shipping) AND cites doc-7, which retrieval never returned. Both
+      #    halves are real production failure modes; the app must catch the
+      #    citation one before a user ever sees this.
+      - name: ungrounded-refund
+        match: { content_contains: "refund policy" }
+        response:
+          content: "You can return anything within 90 days for a full cash refund, shipping included. [doc-7]"
+          hallucination:
+            type: ungrounded
+            ground_truth: "doc-3 says 30 days, store credit only, excluding shipping."
+            note: "Contradicts the retrieved context and cites a document that was never retrieved."
+
+      # 3. Honest abstention, for questions the context does cover thinly.
+      - name: low-confidence
+        match: { content_contains: "cowrie shells" }
+        response:
+          content: "The provided context does not answer that. [doc-2]"
+
+      - name: default
+        response:
+          content: "I don't have enough information in the provided context to answer that."

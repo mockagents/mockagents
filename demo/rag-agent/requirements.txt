@@ -1,0 +1,13 @@
+# The application's own dependencies.
+openai>=1.40
+mcp>=1.9
+
+# The test harness: the pytest plugin ships inside the mockagents SDK, so no
+# conftest.py and no imports are needed to get a running mock server.
+#
+# The published package is not on PyPI yet (see the install table in the repo
+# README). Until it is, install the SDK from this checkout:
+#     pip install -e ../../sdk/python
+mockagents>=0.4.0
+pytest>=8.0
+pytest-asyncio>=0.24

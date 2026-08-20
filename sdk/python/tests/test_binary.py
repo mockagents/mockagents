@@ -41,6 +41,66 @@ def test_find_binary_honors_explicit_env(tmp_path, monkeypatch):
     assert _binary.find_binary() == str(fake.resolve())
 
 
+SHEBANG = "#!/bin/sh" + chr(10)
+
+
+def test_find_binary_honors_mockagents_bin_alias(tmp_path, monkeypatch):
+    """MOCKAGENTS_BIN is what the TypeScript SDK and @mockagents/vitest read.
+
+    Accepting only MOCKAGENTS_BINARY meant someone who learned the name in one
+    language silently got no override in the other -- the env var was simply
+    ignored and resolution fell through to PATH.
+    """
+    fake = tmp_path / "mockagents"
+    fake.write_text(SHEBANG)
+    monkeypatch.delenv("MOCKAGENTS_BINARY", raising=False)
+    monkeypatch.setenv("MOCKAGENTS_BIN", str(fake))
+    assert _binary.find_binary() == str(fake.resolve())
+
+
+def test_mockagents_binary_wins_over_the_alias(tmp_path, monkeypatch):
+    primary = tmp_path / "primary"
+    alias = tmp_path / "alias"
+    for f in (primary, alias):
+        f.write_text(SHEBANG)
+    monkeypatch.setenv("MOCKAGENTS_BINARY", str(primary))
+    monkeypatch.setenv("MOCKAGENTS_BIN", str(alias))
+    assert _binary.find_binary() == str(primary.resolve())
+
+
+def test_find_binary_skips_windows_console_wrapper(tmp_path, monkeypatch):
+    """A pip console script on Windows is a PE launcher, not a shebang script.
+
+    The shebang-only check never fired there, so the resolver selected
+    ``Scripts/mockagents.exe`` -- the launcher -- and callers spawned it as if
+    it were the server. With no real binary to delegate to, that surfaced as a
+    ten-second TimeoutError instead of "binary not found".
+    """
+    bindir = tmp_path / "Scripts"
+    bindir.mkdir()
+    wrapper = bindir / _binary.binary_filename()
+    # Shape of a real pip wrapper: PE header, interpreter path in the payload.
+    wrapper.write_bytes(b"MZ" + bytes(600) + b"c:/python312/python.exe" + bytes(64))
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("PATH", str(bindir))
+    monkeypatch.delenv("MOCKAGENTS_BINARY", raising=False)
+    monkeypatch.delenv("MOCKAGENTS_BIN", raising=False)
+    monkeypatch.setattr(_binary, "cache_dir", lambda: tmp_path / "empty-cache")
+
+    assert _binary._looks_like_python_wrapper(str(wrapper)) is True
+    assert _binary.find_binary() is None
+
+
+def test_a_real_binary_is_not_mistaken_for_a_wrapper(tmp_path):
+    """The size guard and the marker must not reject the actual Go binary --
+    a PE with no interpreter path in it."""
+    real = tmp_path / _binary.binary_filename()
+    real.write_bytes(b"MZ" + b"go build id here" + bytes(4096))
+    assert _binary._looks_like_python_wrapper(str(real)) is False
+
+
 def test_ensure_binary_raises_actionable_error(monkeypatch):
     monkeypatch.setattr(_binary, "find_binary", lambda **kw: None)
     monkeypatch.delenv("MOCKAGENTS_AUTO_DOWNLOAD", raising=False)

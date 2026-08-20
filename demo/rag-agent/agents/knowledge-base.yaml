@@ -1,0 +1,85 @@
+# The retrieval backend, mocked as an MCP server.
+#
+# A real deployment would put a vector database here. MockAgents has no vector
+# mock yet (see the README's "Why MCP and not a vector store"), so retrieval is
+# modelled as an MCP tool — which is also how a growing number of real RAG apps
+# actually reach their index.
+#
+# Served over stdio, spawned by the app itself:
+#   mockagents mcp --transport stdio --agents-dir ./agents
+#
+# NOTE ON MATCHING: MCP tool responses match arguments by EXACT equality, unlike
+# the LLM agent's `content_contains` scenario matching. That is deliberate — a
+# retrieval index is a lookup, not a fuzzy router — but it means every fixture
+# below lists the exact query string the app will send.
+apiVersion: mockagents/v1
+kind: MCPServer
+metadata:
+  name: knowledge-base
+  description: Mock document retrieval for the RAG demo.
+  tags: [demo, rag, mcp]
+
+spec:
+  capabilities:
+    tools: true
+
+  tools:
+    - name: search_docs
+      description: Search the knowledge base and return matching documents.
+      inputSchema:
+        type: object
+        properties:
+          query:
+            type: string
+            description: The search query.
+          top_k:
+            type: integer
+            description: Maximum number of documents to return.
+        required: [query]
+      responses:
+        # --- Happy path: two relevant documents. -----------------------------
+        - match:
+            query: "when are invoices sent?"
+          content:
+            - type: text
+              text: |
+                [{"id": "doc-1", "title": "Billing FAQ",
+                  "text": "Invoices are sent on the 1st of each month.",
+                  "score": 0.95},
+                 {"id": "doc-2", "title": "Payment Methods",
+                  "text": "We accept credit cards, bank transfers, and PayPal.",
+                  "score": 0.81}]
+
+        # --- Grounding trap: ONE document, and the answer will contradict it. -
+        - match:
+            query: "what is your refund policy?"
+          content:
+            - type: text
+              text: |
+                [{"id": "doc-3", "title": "Refund Policy",
+                  "text": "Refunds are available within 30 days, as store credit, excluding shipping.",
+                  "score": 0.92}]
+
+        # --- Retrieval failure: the index has nothing. ------------------------
+        # An empty result set is the single most common RAG failure in
+        # production and the hardest to elicit from a real index on demand.
+        - match:
+            query: "do you support quantum entanglement billing?"
+          content:
+            - type: text
+              text: "[]"
+
+        # --- Low-confidence only: results exist, but none clear the bar. ------
+        - match:
+            query: "can i pay in cowrie shells?"
+          content:
+            - type: text
+              text: |
+                [{"id": "doc-2", "title": "Payment Methods",
+                  "text": "We accept credit cards, bank transfers, and PayPal.",
+                  "score": 0.11}]
+
+        - default: true
+          content:
+            - type: text
+              text: "[]"
