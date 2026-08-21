@@ -277,6 +277,15 @@ jobs:
       - name: API/SDK drift check
         run: go run ./tools/driftcheck
 
+      # GitHub Pages builds docs/ with Jekyll, which runs Liquid before markdown
+      # — so a literal `{{` in prose aborts the whole site build, backticks and
+      # all. A failed Pages deploy raises no PR check, so that kept the published
+      # site stale from 2026-07-27 until someone read the deploy log by hand,
+      # while every PR in between showed green. This is that missing check.
+      # The tool's own unit tests run in the Go job.
+      - name: Docs Liquid check
+        run: go run ./tools/liquidcheck
+
   docker:
     name: Docker Build
     runs-on: ubuntu-latest

@@ -161,9 +161,78 @@ recursion, vendor and dot-directory pruning, nested non-documents ignored,
 top-level non-documents still reported, nested malformed documents still
 surfaced, and the oversized-file cut-off.
 
+## Part 4 — the Pages deploy, and the guard that now watches it (2026-08-20)
+
+<!-- This whole section is Liquid-escaped: it is *about* literal brace syntax,
+     so every example below would otherwise be executed by Jekyll rather than
+     displayed — and an inline raw tag written in prose is a real tag to Liquid,
+     not a quotation of one. -->
+{% raw %}
+
+Not the examples gate, but the same disease, found while confirming Part 3's CI
+run: `pages build and deployment` had failed on **every commit since
+2026-07-27**. One character sequence did it —
+
+```
+Liquid syntax error (line 191): Variable '{{' was not properly
+terminated with regexp: /\}\}/ in benchmarks/README.md
+```
+
+GitHub Pages builds `docs/` with Jekyll, and the enabled
+`jekyll-optional-front-matter` plugin runs every markdown file through Liquid
+whether or not it has front matter. Liquid runs **before** markdown, so a
+backtick code span protects nothing: the prose "the static (no-`` `{{` ``) path"
+reads to Liquid as a variable that never closes, and the build aborts there.
+Fixed by wrapping that one span in `{% raw %}` — rendering unchanged.
+
+Why it survived weeks: **a failed Pages deploy raises no PR check.** The deploy
+is not part of CI, so the published site can be broken indefinitely while every
+PR shows green. This is the purest version of the pattern this whole document is
+about — not an unwatched test, an unwatched *deploy*.
+
+`tools/liquidcheck` is the missing check, wired into the Lint job. It flags an
+unterminated `{{` or `{%` and skips `{% raw %}` regions. Balanced Liquid is
+deliberately allowed: it builds fine, and flagging it would make the guard noisy
+enough to be ignored.
+
+**Drill — the mutation is the original bug, restored verbatim:**
+
+| Case | Expected | Exit |
+|---|---|---|
+| `{% raw %}` removed, i.e. the 2026-07-27 typo returns | red | **1** |
+| the tree as it now stands | green | **0** |
+
+The guard reported:
+
+```
+docs/benchmarks/README.md:191: unterminated `{{` — no closing `}}`
+    buffers across template renders; the static (no-`{{`) path is
+```
+
+**Same file, same line 191 that Jekyll itself named.** That is the strongest
+form this evidence takes: the guard is not approximating the real build's
+verdict, it reproduces it, and it does so in seconds inside a check a reviewer
+already reads.
+
+Eleven unit tests in `tools/liquidcheck/liquid_test.go` cover the rest —
+unterminated tags, unterminated `{% raw %}`, multi-line variables (legal Liquid,
+must not be flagged), balanced Liquid, extension filtering, and one test that
+runs the guard against the repository's real `docs/` so a regression in either
+fails before CI.
+
+**Postscript, and the best evidence in this document:** writing the section you
+are reading broke the build. Quoting the failure meant typing the failing
+sequence, and the guard — minutes old — caught its own author before the commit
+left the machine. That is the whole argument for a guard over a convention, made
+by accident: the person most aware of a trap still fell into it, and the check
+was what noticed.
+
+{% endraw %}
+
 ## Cleanup
 
 Mutations were applied and reverted from byte-exact backups in the scratch
 directory; `git status` confirms only the intended files changed, and no drill
 artifact remains (`drill-unknown-kind.yaml`, `drilldir/`, the planted
-`node_modules/drill-pkg`, or `node_modules/evil`).
+`node_modules/drill-pkg`, `node_modules/evil`, or the reverted
+`docs/benchmarks/README.md`).
