@@ -57,11 +57,17 @@ jobs:
         if: runner.os == 'Windows'
         run: go test ./... -count=1 -timeout 5m
 
+      # Build to an OS-appropriate name and invoke that name. `-o mockagents`
+      # writes an EXTENSIONLESS file on Windows, and PowerShell will not execute
+      # one: `./mockagents validate examples/` produced no output, set no
+      # $LASTEXITCODE, and let the step pass — so this leg validated nothing
+      # from the day it was added while looking like it did. Linux carried the
+      # check alone. Reproduced locally under pwsh before and after the fix.
       - name: Build binary
-        run: go build -o mockagents ./cmd/mockagents/
+        run: go build -o mockagents${{ runner.os == 'Windows' && '.exe' || '' }} ./cmd/mockagents/
 
       - name: Validate examples
-        run: ./mockagents validate examples/
+        run: ./mockagents${{ runner.os == 'Windows' && '.exe' || '' }} validate examples/
 
   # The tenancy Store has two backends (SQLite + Postgres). The matrix job above
   # exercises the SQLite leg everywhere; this Linux-only job spins up a real
