@@ -33,9 +33,33 @@ output, and writes two artifacts into this directory:
 The GOMAXPROCS suffix is stripped from benchmark names before parsing
 so results from a laptop and a CI runner stay comparable.
 
-> **Baseline freshness:** `latest.{json,md}` was last refreshed
-> **2026-07-27** off-governor (High-performance plan, Go 1.26.4; QA cycle-1
-> TC-PERF-01). vs the 2026-06-04 baseline: every `allocs/op` is unchanged;
+> **Baseline freshness:** `latest.{json,md}` was refreshed **2026-08-21** and
+> now comes from **`linux/amd64`, measured by the perf-guard workflow itself**
+> — no longer from the Windows dev box. Two reasons:
+>
+> 1. **`ns/op` was uncomparable.** A Windows-measured baseline against a Linux
+>    runner reported *every* benchmark +40–170%, so the informational section
+>    was a wall of false movement that would bury a real regression. Baseline
+>    and candidate now come from the same platform: measuring one CI runner
+>    against another, the median `ns/op` drift is **2.6%** and only one
+>    benchmark exceeds 20%.
+> 2. **It had been red since `4147fe9`** (2026-08-20), which added
+>    `Default bool` to `engine.MatchResult` to feed the scenario-match-rate
+>    metric. That grew the struct 16→24 bytes — `unsafe.Sizeof` confirms it,
+>    and it reproduces on Windows and Linux alike — so `B/op 16 -> 24` on
+>    `ScenarioMatcher_ContentContains` and `_Default` with `allocs/op` still 1.
+>    A real, intentional, one-word cost; the baseline simply was not
+>    regenerated alongside it.
+>
+> To refresh: run the workflow (`gh workflow run "Perf guard" --ref main`),
+> download its `bench-report-<sha>` artifact, and commit `latest.{json,md}`
+> from it. Verify before committing by running `benchguard` with the new
+> baseline against a *different* runner's artifact — that is what proves the
+> numbers are reproducible rather than one machine's mood.
+>
+> The **2026-07-27** refresh (off-governor, High-performance plan, Go 1.26.4;
+> QA cycle-1 TC-PERF-01) was the last Windows-measured baseline. vs the
+> 2026-06-04 baseline: every `allocs/op` is unchanged;
 > `B/op` grew on the generator/matcher paths (e.g. `ResponseGenerator_Static`
 > 144→208 B) and `ns/op` rose ~25–45% on the scenario-matcher family — the
 > measured cost of the features shipped since (vision/`has_image` matching,
@@ -56,9 +80,18 @@ so results from a laptop and a CI runner stay comparable.
 > vs. a clean run — enough to corrupt a committed `ns/op` baseline. To
 > refresh there, temporarily activate a High-performance plan, run
 > `make bench-report`, then restore Balanced (the recipe is in the
-> 2026-06-03 note). `allocs/op` and `B/op` are machine-independent, so for
-> a quick sanity check anywhere `make bench` prints results **without**
-> writing the files and those two columns are always safe to compare.
+> 2026-06-03 note). Since 2026-08-21 the committed baseline is measured in
+> CI instead, so this recipe is for local investigation, not for producing
+> the file that gets committed.
+>
+> **`allocs/op` is machine-independent; `B/op` is only approximately so.**
+> Two runs of identical code on two CI runners gave identical `allocs/op`
+> on all 17 benchmarks but `B/op` differing by up to **9.5%** on the
+> `ProcessRequest_*` family (e.g. `DefaultFallback` 1375 vs 1505). That is
+> why `benchguard` gates `B/op` with a 20% tolerance rather than on
+> equality — its own flag help records 7.8% noise on unchanged code. For a
+> quick sanity check anywhere, `make bench` prints results **without**
+> writing the files; treat `allocs/op` as exact and `B/op` as ±10%.
 
 ## Scope
 
