@@ -188,7 +188,7 @@ Changes in this slice:
    (the common case) get a shared `matchedSentinel` singleton and
    pay zero map allocations. (`internal/engine/scenario_matcher.go`)
 4. **bytes.Buffer pool in response generator** — `sync.Pool` recycles
-   buffers across template renders; the static (no-`{{`) path is
+   buffers across template renders; the static (no-{% raw %}`{{`{% endraw %}) path is
    unchanged and never touches the pool. (`internal/engine/response_generator.go`)
 5. **O(1) `GetByModel` via parallel index** — `AgentRegistry` now
    maintains a `byModel` map alongside the name map, kept in sync on
