@@ -48,12 +48,47 @@ type GeminiContent struct {
 	Parts []GeminiPart `json:"parts"`
 }
 
-// GeminiPart is a single content part. Text, functionCall, and functionResponse
-// are modeled; other part kinds (inlineData, fileData) are accepted and ignored.
+// GeminiPart is a single content part. Text, functionCall, functionResponse
+// and the two media kinds (inlineData, fileData) are modeled; anything else is
+// accepted and ignored.
 type GeminiPart struct {
 	Text             string                  `json:"text,omitempty"`
 	FunctionCall     *GeminiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *GeminiFunctionResponse `json:"functionResponse,omitempty"`
+	InlineData       *GeminiInlineData       `json:"inlineData,omitempty"`
+	FileData         *GeminiFileData         `json:"fileData,omitempty"`
+}
+
+// GeminiInlineData is a media part sent inline as base64. Only the mime type
+// is read: the bytes are never decoded, since nothing downstream looks at
+// them — the count is what drives has_image matching.
+type GeminiInlineData struct {
+	MimeType string `json:"mimeType,omitempty"`
+	Data     string `json:"data,omitempty"`
+}
+
+// GeminiFileData is a media part referenced by URI rather than sent inline.
+type GeminiFileData struct {
+	MimeType string `json:"mimeType,omitempty"`
+	FileURI  string `json:"fileUri,omitempty"`
+}
+
+// geminiImageParts counts the image parts in one content turn, mirroring what
+// the OpenAI adapter counts for image_url and the Anthropic adapter for image
+// blocks. Media is matched on its mime type rather than on the part kind:
+// inlineData and fileData also carry audio, video and PDFs, and has_image
+// means an image.
+func geminiImageParts(parts []GeminiPart) int {
+	images := 0
+	for _, p := range parts {
+		if p.InlineData != nil && strings.HasPrefix(p.InlineData.MimeType, "image/") {
+			images++
+		}
+		if p.FileData != nil && strings.HasPrefix(p.FileData.MimeType, "image/") {
+			images++
+		}
+	}
+	return images
 }
 
 // GeminiFunctionResponse is a tool result the client sends back on a follow-up
@@ -169,10 +204,11 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	convertedMsgs, imageCount := convertGeminiContents(req.Contents, req.SystemInstruction)
 	inbound := &engine.InboundRequest{
 		Model:            model,
 		SessionID:        extractSessionID(r),
-		Messages:         convertGeminiContents(req.Contents, req.SystemInstruction),
+		Messages:         convertedMsgs,
 		Stream:           stream,
 		ToolChoice:       parseGeminiToolChoice(req.ToolConfig),
 		RequestToolNames: geminiToolNames(req.Tools),
@@ -224,6 +260,7 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	setHallucinationHeader(w, resp)
 	setStrictViolationHeader(w, resp)
+	setImageCountHeader(w, imageCount)
 
 	// Count prompt tokens off the already-flattened inbound.Messages (the system
 	// instruction is prepended there) rather than re-extracting req.Contents
@@ -264,10 +301,16 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 
 // --- Conversion Helpers ---
 
-func convertGeminiContents(contents []GeminiContent, system *GeminiContent) []engine.RequestMessage {
+// convertGeminiContents flattens the wire contents to engine messages and
+// returns the total number of image parts across them (A-05), the same
+// contract as convertOpenAIMessages and convertAnthropicMessages. The
+// per-message count is carried out-of-band on RequestMessage.ImageCount, so
+// the flattened text stays free of markers.
+func convertGeminiContents(contents []GeminiContent, system *GeminiContent) ([]engine.RequestMessage, int) {
 	// Pre-size for the worst case (every content + an optional system prepend)
 	// so the append loop never grows the slice (PERF-15).
 	result := make([]engine.RequestMessage, 0, len(contents)+1)
+	totalImages := 0
 
 	if system != nil {
 		if text := joinGeminiParts(system.Parts); text != "" {
@@ -282,7 +325,11 @@ func convertGeminiContents(contents []GeminiContent, system *GeminiContent) []en
 		if role == "model" {
 			role = "assistant"
 		}
-		rm := engine.RequestMessage{Role: role, Content: joinGeminiParts(c.Parts)}
+		imgCount := geminiImageParts(c.Parts)
+		totalImages += imgCount
+		// An image-only turn keeps a non-zero ImageCount so the engine does
+		// not reject it as empty.
+		rm := engine.RequestMessage{Role: role, Content: joinGeminiParts(c.Parts), ImageCount: imgCount}
 		// Convergence-guard signals (round-9): a functionResponse part in ANY
 		// role (older clients use role:"function") marks a tool-result turn;
 		// functionCall parts are the echoed fingerprint material.
@@ -302,7 +349,7 @@ func convertGeminiContents(contents []GeminiContent, system *GeminiContent) []en
 		}
 		result = append(result, rm)
 	}
-	return result
+	return result, totalImages
 }
 
 // geminiToolNames flattens the request's declared function names — the set
