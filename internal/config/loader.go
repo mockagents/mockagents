@@ -2,9 +2,12 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/mockagents/mockagents/internal/types"
@@ -82,6 +85,12 @@ func readAndParse(path string) ([]byte, *yaml.Node, error) {
 // peekKind extracts the top-level `kind` field from a decoded yaml.Node.
 // Returns an empty string if the kind is not set.
 func peekKind(doc *yaml.Node) string {
+	return peekField(doc, "kind")
+}
+
+// peekField returns the value of a top-level scalar field without decoding the
+// whole document, or "" when the document is not a mapping or lacks the field.
+func peekField(doc *yaml.Node, field string) string {
 	if doc == nil || len(doc.Content) == 0 {
 		return ""
 	}
@@ -90,7 +99,7 @@ func peekKind(doc *yaml.Node) string {
 		return ""
 	}
 	for i := 0; i+1 < len(root.Content); i += 2 {
-		if root.Content[i].Value == "kind" {
+		if root.Content[i].Value == field {
 			return root.Content[i+1].Value
 		}
 	}
@@ -285,23 +294,121 @@ func LoadAllDocuments(dir string) (*Documents, []error) {
 	return docs, errs
 }
 
+// skipDirs are directory names never descended into when scanning an agents
+// directory. Dependency and build trees carry YAML that is not ours —
+// node_modules alone ships .travis.yml and FUNDING.yml — and they are normally
+// untracked, so descending into them would make the loaded set depend on
+// whether someone had run a package manager in the tree: a server that starts
+// on a fresh clone and fails after `npm install`.
+var skipDirs = map[string]struct{}{
+	"__pycache__":  {},
+	"build":        {},
+	"dist":         {},
+	"node_modules": {},
+	"target":       {},
+	"vendor":       {},
+	"venv":         {},
+}
+
+// listDocumentPaths returns every document (.yaml, .yml, .json) under dir,
+// recursively, in lexical order.
+//
+// Recursion lets an agents directory be organized into subdirectories and still
+// be fully loaded, and makes `mockagents validate ./agents` check exactly the
+// set the server will serve. The scan used to stop at the top level, which left
+// documents in subdirectories — examples/frameworks/agents/support-agent.yaml
+// among them — served by nobody and validated by nothing.
+//
+// Two kinds of directory are skipped: dependency/build trees (skipDirs) and
+// dotted directories such as .git. Symlinked directories are not followed —
+// filepath.WalkDir does not descend into them — which also stops a symlink from
+// walking a scan outside the directory the caller named.
 func listDocumentPaths(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("reading directory %s: %w", dir, err)
-	}
+	root := filepath.Clean(dir)
 	var paths []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-		ext := strings.ToLower(filepath.Ext(entry.Name()))
+		if d.IsDir() {
+			if path == root {
+				return nil // never skip the root the caller named
+			}
+			name := d.Name()
+			if _, skip := skipDirs[name]; skip || strings.HasPrefix(name, ".") {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(d.Name()))
 		if ext != ".yaml" && ext != ".yml" && ext != ".json" {
-			continue
+			return nil
 		}
-		paths = append(paths, filepath.Join(dir, entry.Name()))
+		// Top-level files keep the old contract: everything with a document
+		// extension is meant to be a document, and anything that is not says so
+		// as a load error. Only nested files have to identify themselves.
+		if filepath.Dir(path) != root && !nestedFileIsDocument(path, d) {
+			return nil
+		}
+		paths = append(paths, path)
+		return nil
+	})
+	if walkErr != nil {
+		return nil, fmt.Errorf("reading directory %s: %w", dir, walkErr)
 	}
+	sort.Strings(paths)
 	return paths, nil
+}
+
+// maxNestedDocumentSize bounds the file a nested scan will parse to identify.
+// Agent documents are kilobytes; a megabyte-scale JSON in a subdirectory is
+// something like package-lock.json, and reading it only to reject it would make
+// every scan pay for it.
+const maxNestedDocumentSize = 1 << 20 // 1 MiB
+
+// nestedFileIsDocument reports whether a file found BELOW the top level of an
+// agents directory should be loaded as a document.
+//
+// The top level of an agents directory belongs to us by convention, so anything
+// there that is not a document is a mistake worth reporting. A subdirectory is
+// different: it can belong to a project that merely happens to contain agents —
+// examples/frameworks/typescript holds package.json and package-lock.json next
+// to the recipes — so a nested file is collected only when it identifies itself
+// as ours, by apiVersion or by a kind we recognize.
+//
+// A nested file that is malformed is still collected, so a real document with a
+// syntax error surfaces as an error rather than silently vanishing. Files that
+// are empty, unreadable, or oversized are skipped: they carry no claim to be
+// ours, and at the top level they would still be reported as before.
+func nestedFileIsDocument(path string, d fs.DirEntry) bool {
+	if info, err := d.Info(); err == nil && info.Size() > maxNestedDocumentSize {
+		return false
+	}
+	_, doc, err := readAndParse(path)
+	if err != nil {
+		// Malformed content is surfaced; empty or unreadable is not ours.
+		var parseErr *ParseError
+		return errors.As(err, &parseErr)
+	}
+	if strings.HasPrefix(peekField(doc, "apiVersion"), apiVersionPrefix) {
+		return true
+	}
+	_, known := documentKinds[peekKind(doc)]
+	return known
+}
+
+// apiVersionPrefix is what every document of ours declares.
+const apiVersionPrefix = "mockagents/"
+
+// documentKinds are the kinds LoadAllDocuments dispatches on, used to recognize
+// a nested document whose apiVersion is missing or misspelled — it is ours, and
+// broken, which is worth an error rather than a silent skip.
+var documentKinds = map[string]struct{}{
+	types.AgentKind:     {},
+	types.PipelineKind:  {},
+	types.TestSuiteKind: {},
+	types.MCPServerKind: {},
+	types.A2AServerKind: {},
 }
 
 // ParseError wraps a YAML/JSON parse error with file context.

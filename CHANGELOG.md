@@ -49,6 +49,26 @@ milestones that preceded it; all are on `main`.
   a full pipe buffer), and still captures the child's stderr into `.logs`.
 
 ### Changed
+- **An agents directory is now scanned recursively.** `start`, `validate`,
+  `test`, `mcp` and `a2a` all load documents from subdirectories, so agents can
+  be organized into folders and `mockagents validate ./agents` checks exactly
+  the set the server will serve. Previously the scan stopped at the top level,
+  which is why `mockagents validate examples/` reported 27 files against 28
+  tracked — `examples/frameworks/agents/support-agent.yaml` was served by
+  nobody and validated by nothing.
+
+  Because `.yaml`/`.yml`/`.json` are all document extensions, recursion needs a
+  rule for files that are not ours: **the top level of an agents directory
+  belongs to MockAgents, a subdirectory may not.** Top-level files behave
+  exactly as before — any document-extension file there is expected to be a
+  document and is reported when it is not — while a nested file is loaded only
+  if it declares `apiVersion: mockagents/…` or a kind MockAgents owns. A nested
+  file that is malformed is still loaded, so a real document with a syntax
+  error fails loudly rather than disappearing. Dependency and build trees
+  (`node_modules`, `venv`, `dist`, `build`, `target`, `vendor`, `__pycache__`)
+  and dotted directories are never descended into, and symlinked directories
+  are not followed. Net effect: a project that keeps agents next to a
+  `package.json` still starts.
 - **Corrected: the LangGraph recipe taught a deprecated API.**
   `site/docs/guides/framework-testing.md` used
   `langgraph.prebuilt.create_react_agent`, deprecated since LangGraph 1.0 in

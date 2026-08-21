@@ -85,11 +85,11 @@ changes.
 ## Part 2 — recursive discovery (2026-08-20)
 
 Discovery was then made recursive, to cover
-`frameworks/agents/support-agent.yaml`. That document had been checked by
-**nothing**: `mockagents validate examples/` does not recurse
-(`listDocumentPaths` skips directories), and the old `os.listdir` walk did not
+`frameworks/agents/support-agent.yaml`. That document was at the time checked by
+**nothing**: `mockagents validate examples/` did not recurse
+(`listDocumentPaths` skipped directories), and the old `os.listdir` walk did not
 either. The framework recipe jobs execute it, but executing an agent does not
-assert that it has a catch-all scenario.
+assert that it has a catch-all scenario. (Part 3 closes the Go half.)
 
 Recursion brings its own failure mode, and it is the opposite of the last one:
 not collecting too little, but collecting **junk**. `examples/frameworks/
@@ -118,9 +118,52 @@ subdirectory agent adds 7 parametrized cases).
 3. **Test ids carry the relative path** (`frameworks/agents/support-agent.yaml`),
    normalized to forward slashes so they read the same on Windows and Linux.
 
+## Part 3 — `mockagents validate` recurses (2026-08-20)
+
+Part 2 left the two gates disagreeing: the Python suite saw 28 documents,
+`mockagents validate examples/` saw 27. The Go scan
+(`internal/config/loader.go listDocumentPaths`) stopped at the top level, so the
+frameworks agent got shape checks from Python and no schema or cross-document
+checks at all.
+
+Making the scan recursive is not a one-line change, because `listDocumentPaths`
+feeds `LoadAllDocuments`, which backs `start`, `mcp`, `a2a` and `test` as well as
+`validate` — it decides what the **server serves**, not just what validate reads.
+The first attempt proved the point immediately: `.json` is a document extension,
+so recursion swallowed `examples/frameworks/typescript/package.json` and
+`package-lock.json` and turned a clean tree into **30 files, 10 errors**. Shipped
+as-is, `mockagents start ./my-project` would have failed on any Node project.
+
+The rule that resolves it: **the top level of an agents directory is ours by
+convention; a subdirectory may belong to a project that merely contains agents.**
+So top-level files keep the old contract — any document-extension file there is
+meant to be a document, and is reported when it is not — while a nested file is
+collected only if it identifies itself, by `apiVersion: mockagents/…` or by a
+kind we own. Nested files that are malformed are still collected, so a real
+document with a syntax error fails loudly instead of vanishing.
+
+| # | Case | Expected | Exit |
+|---|---|---|---|
+| A | the subdirectory agent gets an invalid `spec.protocol` | red | **1** |
+| B | a broken Agent planted **inside `node_modules`** | **green** | **0** |
+| C | restored tree | green | **0** |
+
+Before the change, case A exited **0** — `validate examples/` reported
+`Validated 27 file(s)` against 28 tracked documents, which is the direct evidence
+it never opened the file. It now reports 28 and names the error with a line
+number.
+
+Note what B means for the server, not just for validate: a dependency tree that
+happens to contain YAML can no longer stop `mockagents start` from booting.
+
+Unit coverage for the rule lives in `internal/config/loader_recursive_test.go` —
+recursion, vendor and dot-directory pruning, nested non-documents ignored,
+top-level non-documents still reported, nested malformed documents still
+surfaced, and the oversized-file cut-off.
+
 ## Cleanup
 
 Mutations were applied and reverted from byte-exact backups in the scratch
 directory; `git status` confirms only the intended files changed, and no drill
-artifact remains (`drill-unknown-kind.yaml`, `drilldir/`, or the planted
-`node_modules/drill-pkg`).
+artifact remains (`drill-unknown-kind.yaml`, `drilldir/`, the planted
+`node_modules/drill-pkg`, or `node_modules/evil`).

@@ -10,11 +10,9 @@ LoadFile) — and every other kind is asserted against the shape that actually
 applies to it, rather than being skipped.
 
 Discovery recurses into subdirectories, so `frameworks/agents/support-agent.yaml`
-is covered too. That one matters: `mockagents validate examples/` does NOT
-recurse (internal/config/loader.go listDocumentPaths skips directories), so
-before it was picked up here nothing asserted its shape at all — the framework
-recipe jobs run it, but running an agent does not check that it has, say, a
-catch-all scenario.
+is covered too. `mockagents validate` recurses as well, so both gates now see the
+same corpus — when this suite was first written neither did, and that document
+was asserted by nothing at all.
 
 Cross-document invariants (a Pipeline node's `ref`, a TestSuite's `target`
 resolving to a real agent) are deliberately NOT duplicated here: the Go
