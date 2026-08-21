@@ -13,6 +13,25 @@ milestones that preceded it; all are on `main`.
 ## [Unreleased]
 
 ### Fixed
+- **Two agents sharing a `metadata.name` are no longer silent.** The registry
+  kept whichever registered last and dropped the other — unreachable by name,
+  and by model too, since the replaced agent's `byModel` entry went with it. A
+  request for the lost agent's model then fell through to whatever the resolver
+  picked next and answered from the WRONG agent instead of 404ing, with nothing
+  logged. Model collisions have warned since round-9; this was their silent
+  twin, and recursive directory scanning made it easy to reach, because
+  organizing agents into subdirectories is exactly what that feature is for.
+
+  `mockagents validate` now reports it as an error naming both files, and the
+  server warns at load time with the file it kept and the file it shadowed. Only
+  a cross-FILE collision counts: a hot reload, a `POST /reload`, and a `PUT` that
+  overwrites an agent in place all re-register the same path deliberately, and
+  an in-memory registration has no path to compare. Two tenants owning an agent
+  of the same name is the tenancy model working, not a collision.
+
+  Also fixed while wiring it: `mockagents validate` only ran the cross-document
+  pass when a pipeline or testsuite was present, so a directory of nothing but
+  agents — the common case — skipped it entirely.
 - **The quickstart could not be completed.** Measuring time-to-first-green-test
   by running the page verbatim found three of its four externally-dependent
   steps dead: the "Binary (recommended)" `curl` URL 404s (release assets carry

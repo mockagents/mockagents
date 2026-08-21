@@ -97,7 +97,7 @@ func (r *AgentRegistry) Register(def *types.AgentDefinition) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.registerLocked(def)
+	r.registerLocked(def, "")
 }
 
 // RegisterWithSource is Register plus recording the on-disk file the definition
@@ -111,21 +111,15 @@ func (r *AgentRegistry) RegisterWithSource(def *types.AgentDefinition, sourcePat
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.registerLocked(def)
-	if sourcePath != "" {
-		if r.sources == nil {
-			r.sources = make(map[string]map[string]string)
-		}
-		owner := def.Metadata.TenantID
-		if r.sources[owner] == nil {
-			r.sources[owner] = make(map[string]string)
-		}
-		r.sources[owner][def.Metadata.Name] = sourcePath
-	}
+	r.registerLocked(def, sourcePath)
 }
 
 // registerLocked performs the registration under the caller-held write lock.
-func (r *AgentRegistry) registerLocked(def *types.AgentDefinition) {
+// sourcePath is the on-disk file this definition came from, or "" when it has
+// none (an in-memory registration). It is recorded in r.sources and used to tell
+// a genuine name COLLISION — two different files claiming one name — apart from
+// a reload or an API replace, which re-register the same path.
+func (r *AgentRegistry) registerLocked(def *types.AgentDefinition, sourcePath string) {
 	owner := def.Metadata.TenantID
 	name := def.Metadata.Name
 	bucket := r.agents[owner]
@@ -135,6 +129,25 @@ func (r *AgentRegistry) registerLocked(def *types.AgentDefinition) {
 	}
 	var oldModel string
 	if prev, ok := bucket[name]; ok {
+		// Two DIFFERENT files claiming one metadata.name: the later registration
+		// replaces the earlier, and the earlier agent becomes unreachable — not
+		// only by name but by model too, since the block below drops its byModel
+		// entry. A request for the shadowed agent's model then falls through to
+		// whatever the resolver picks next, which is a wrong answer rather than
+		// a 404. Say so at load time; the model-collision warning below has
+		// covered its half of this since round-9, and this was its silent twin.
+		//
+		// Only a cross-FILE collision warns. A hot reload (server/watcher.go), a
+		// POST /reload, and a PUT that overwrites an agent in place all
+		// re-register the SAME path deliberately, and an in-memory registration
+		// has no path to compare — none of those are mistakes.
+		if prevSrc := r.sources[owner][name]; prevSrc != "" && sourcePath != "" && prevSrc != sourcePath {
+			slog.Warn("agent name claimed by multiple files; the last one loaded wins and the other becomes unreachable",
+				"agent", name,
+				"loaded", sourcePath,
+				"shadowed", prevSrc,
+				"hint", "give each agent a distinct metadata.name — an agents directory is scanned recursively, so two subdirectories can claim the same one")
+		}
 		oldModel = prev.Spec.Model
 		if prev.Spec.Model != "" {
 			// Only clear the index entry if it still points at `prev`
@@ -168,6 +181,17 @@ func (r *AgentRegistry) registerLocked(def *types.AgentDefinition) {
 	r.rebuildModelBucket(def.Spec.Model)
 	if oldModel != "" && oldModel != def.Spec.Model {
 		r.rebuildModelBucket(oldModel)
+	}
+	// Recorded last: the collision check above reads the PREVIOUS source, so
+	// this must not run before it.
+	if sourcePath != "" {
+		if r.sources == nil {
+			r.sources = make(map[string]map[string]string)
+		}
+		if r.sources[owner] == nil {
+			r.sources[owner] = make(map[string]string)
+		}
+		r.sources[owner][name] = sourcePath
 	}
 }
 

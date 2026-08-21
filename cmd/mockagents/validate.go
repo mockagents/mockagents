@@ -139,12 +139,18 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Cross-document reference checks: every pipeline's agent refs
-	// and every testsuite's target must resolve against the other
-	// documents in the same run. Skipped entirely when no pipelines
-	// or testsuites were loaded — pure agent directories don't
-	// need the extra pass.
-	if len(allPipelineResults) > 0 || len(allTestSuiteResults) > 0 {
+	// Cross-document checks: every pipeline's agent refs and every testsuite's
+	// target must resolve against the other documents in the same run, and no
+	// two agents may claim one metadata.name.
+	//
+	// This used to be skipped for a directory holding only agents, on the
+	// reasoning that a pure agent directory has no refs to resolve. The
+	// duplicate-name check made that wrong — a name collision needs no
+	// pipelines at all, and skipping the pass is precisely how
+	// `mockagents validate` reported "all valid" for a tree where one agent
+	// silently replaced another. The pass costs one map build over the agents
+	// when there is nothing else to check.
+	if len(allAgentResults) > 0 || len(allPipelineResults) > 0 || len(allTestSuiteResults) > 0 {
 		crossDocs := &config.Documents{
 			Agents:     allAgentResults,
 			Pipelines:  allPipelineResults,

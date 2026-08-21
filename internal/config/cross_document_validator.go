@@ -34,16 +34,40 @@ func ValidateDocuments(docs *Documents) *ValidationErrorList {
 		return nil
 	}
 
+	var errs []*ValidationError
+
 	// Build name indexes once. Both Agents and Pipelines are
 	// keyed by metadata.name — the same identifier the refs use.
 	agentNames := make(map[string]struct{}, len(docs.Agents))
+	// firstAgentFile remembers which file claimed each name, so a second claim
+	// can name the file it collides with.
+	firstAgentFile := make(map[string]string, len(docs.Agents))
 	for _, ar := range docs.Agents {
 		if ar == nil || ar.Definition == nil {
 			continue
 		}
-		if ar.Definition.Metadata.Name != "" {
-			agentNames[ar.Definition.Metadata.Name] = struct{}{}
+		name := ar.Definition.Metadata.Name
+		if name == "" {
+			continue
 		}
+		// Two files claiming one metadata.name is not a style problem: the
+		// registry keeps whichever registers last and the other agent is gone,
+		// unreachable by name and — because its model index entry goes with it —
+		// by model too. A request for the lost agent then resolves to whatever
+		// comes next rather than 404ing. Recursive scanning made this easy to
+		// hit, since organizing agents into subdirectories is the point of it.
+		if prev, dup := firstAgentFile[name]; dup {
+			ctx := &validationContext{file: ar.FilePath, node: ar.Node}
+			ctx.addError(
+				"metadata.name",
+				fmt.Sprintf("agent name %q is already used by %s", name, prev),
+				fmt.Sprintf("Rename one of them. Only one agent can answer to %s — the other is loaded and then silently replaced.", name),
+			)
+			errs = append(errs, ctx.errors...)
+			continue
+		}
+		firstAgentFile[name] = ar.FilePath
+		agentNames[name] = struct{}{}
 	}
 	// For pipelines we additionally record the node-id set so
 	// assertions that carry a node_id can be checked against the
@@ -65,8 +89,6 @@ func ValidateDocuments(docs *Documents) *ValidationErrorList {
 		}
 		pipelineNodeIDs[name] = nodes
 	}
-
-	var errs []*ValidationError
 
 	// Pipeline → agent ref checks.
 	for _, pr := range docs.Pipelines {
