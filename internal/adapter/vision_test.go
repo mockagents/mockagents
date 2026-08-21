@@ -45,6 +45,16 @@ func visionAnthropicAgent() *types.AgentDefinition {
 	}
 }
 
+func visionGeminiAgent() *types.AgentDefinition {
+	return &types.AgentDefinition{
+		Metadata: types.Metadata{Name: "vision-gemini"},
+		Spec: types.AgentSpec{
+			Protocol: "google-gemini", Model: "gemini-vision",
+			Behavior: visionScenarios(),
+		},
+	}
+}
+
 func imageURLPart(url string) map[string]any {
 	return map[string]any{"type": "image_url", "image_url": map[string]any{"url": url}}
 }
@@ -278,4 +288,52 @@ func TestAnthropic_Vision_NoImage_HeaderAbsent(t *testing.T) {
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Empty(t, rec.Header().Get("X-Mockagents-Image-Count"))
+}
+
+// --- Gemini e2e ---
+
+func TestGemini_Vision_InlineAndFileData(t *testing.T) {
+	h := &GeminiHandler{Engine: testEngine(visionGeminiAgent())}
+	cases := []struct {
+		name string
+		part GeminiPart
+	}{
+		{
+			name: "inline data",
+			part: GeminiPart{InlineData: &GeminiInlineData{
+				MIMEType: "image/png", Data: "iVBORw0KGgo=",
+			}},
+		},
+		{
+			name: "file data",
+			part: GeminiPart{FileData: &GeminiFileData{
+				MIMEType: "image/jpeg", FileURI: "https://example.com/image.jpg",
+			}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := doGeminiRequest(t, h, "gemini-vision", "generateContent", GeminiRequest{
+				Contents: []GeminiContent{{Role: "user", Parts: []GeminiPart{tc.part}}},
+			})
+
+			require.Equal(t, http.StatusOK, rec.Code)
+			assert.Equal(t, "1", rec.Header().Get("X-Mockagents-Image-Count"))
+			var resp GeminiResponse
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+			assert.Equal(t, "I see an image.", resp.Candidates[0].Content.Parts[0].Text)
+		})
+	}
+}
+
+func TestCountGeminiImages_IgnoresNonImageMedia(t *testing.T) {
+	parts := []GeminiPart{
+		{InlineData: &GeminiInlineData{MIMEType: " image/png ", Data: "iVBORw0KGgo="}},
+		{FileData: &GeminiFileData{MIMEType: "IMAGE/JPEG", FileURI: "files/image"}},
+		{InlineData: &GeminiInlineData{MIMEType: "audio/wav", Data: "UklGRg=="}},
+		{FileData: &GeminiFileData{MIMEType: "video/mp4", FileURI: "files/video"}},
+	}
+
+	assert.Equal(t, 2, countGeminiImages(parts))
 }
