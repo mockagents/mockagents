@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 )
@@ -27,40 +28,104 @@ func ImportOpenAIStored(r io.Reader) ([]*Interaction, ImportResult, error) {
 	var out []*Interaction
 	var res ImportResult
 
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), MaxCassetteLine)
+	br := bufio.NewReaderSize(r, 64*1024)
 	line := 0
-	for sc.Scan() {
-		line++
-		raw := bytes.TrimSpace(sc.Bytes())
-		if len(raw) == 0 {
-			continue
-		}
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &fields); err != nil {
-			res.skip(line, "invalid JSON")
-			continue
+	for {
+		raw, tooLong, err := readCappedLine(br, MaxCassetteLine)
+		atEOF := errors.Is(err, io.EOF)
+		if err != nil && !atEOF {
+			return nil, ImportResult{}, fmt.Errorf("reading stored-completions file: %w", err)
 		}
 
-		reqBody, respBody, path, reason := reconstructStoredCompletion(fields)
-		if reason != "" {
-			res.skip(line, reason)
-			continue
+		// A trailing newline yields one final empty read that is not a line.
+		if !atEOF || tooLong || len(raw) > 0 {
+			line++
+			raw = bytes.TrimSpace(raw)
+			switch {
+			case tooLong:
+				// One conversation over the cap must not cost the user the
+				// other thousand lines in the export.
+				res.skip(line, fmt.Sprintf("line is larger than the %d MiB limit", MaxCassetteLine>>20))
+			case len(raw) == 0:
+				// Blank separator line; counted so reported line numbers match
+				// the file.
+			default:
+				importStoredLine(raw, line, &out, &res)
+			}
 		}
-		out = append(out, &Interaction{
-			Method:          "POST",
-			Path:            path,
-			RequestBody:     reqBody,
-			ResponseStatus:  200,
-			ResponseHeaders: map[string]string{"Content-Type": "application/json"},
-			ResponseBody:    respBody,
-		})
-		res.Imported++
-	}
-	if err := sc.Err(); err != nil {
-		return nil, ImportResult{}, fmt.Errorf("reading stored-completions file: %w", err)
+		if atEOF {
+			break
+		}
 	}
 	return out, res, nil
+}
+
+// importStoredLine turns one non-empty JSONL line into an interaction, or
+// records why it could not be.
+func importStoredLine(raw []byte, line int, out *[]*Interaction, res *ImportResult) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		res.skip(line, "invalid JSON")
+		return
+	}
+
+	reqBody, respBody, path, reason := reconstructStoredCompletion(fields)
+	if reason != "" {
+		res.skip(line, reason)
+		return
+	}
+	*out = append(*out, &Interaction{
+		Method:          "POST",
+		Path:            path,
+		RequestBody:     reqBody,
+		ResponseStatus:  200,
+		ResponseHeaders: map[string]string{"Content-Type": "application/json"},
+		ResponseBody:    respBody,
+	})
+	res.Imported++
+}
+
+// readCappedLine reads one newline-terminated line of at most max bytes.
+//
+// bufio.Scanner cannot be used here: it stops for good on bufio.ErrTooLong, so
+// a single oversized line ends the import and every valid line after it is
+// lost. This drains an oversized line instead and reports it via tooLong, so
+// the caller can skip that one line and keep going.
+//
+// The returned error is io.EOF on the last line (which may still carry data
+// when the file does not end with a newline), or a read error.
+func readCappedLine(br *bufio.Reader, max int) (line []byte, tooLong bool, err error) {
+	for {
+		chunk, err := br.ReadSlice('\n')
+		switch {
+		case errors.Is(err, bufio.ErrBufferFull):
+			if tooLong {
+				continue // still draining the oversized line
+			}
+			line = append(line, chunk...)
+			if len(line) > max {
+				tooLong, line = true, nil
+			}
+		case err != nil:
+			if tooLong {
+				return nil, true, err
+			}
+			line = append(line, chunk...)
+			if len(line) > max {
+				return nil, true, err
+			}
+			return line, false, err
+		default:
+			if tooLong {
+				return nil, true, nil
+			}
+			line = append(line, chunk...)
+			if len(line) > max {
+				return nil, true, nil
+			}
+			return line, false, nil
+		}
+	}
 }
 
 // reconstructStoredCompletion derives the request + response bodies and the
