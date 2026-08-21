@@ -370,3 +370,117 @@ func TestStreamingRoundTripsThroughDisk(t *testing.T) {
 		t.Errorf("round-trip bytes mismatch\nwant:\n%s\ngot:\n%s", expected, got)
 	}
 }
+
+// writeCassetteFile writes raw JSONL bytes to a temp cassette path. The tests
+// below build torn files by hand, which the normal write path cannot produce.
+func writeCassetteFile(t *testing.T, contents string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cassette.jsonl")
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("writing cassette: %v", err)
+	}
+	return path
+}
+
+// interactionLine renders one valid cassette line for the given request body.
+func interactionLine(t *testing.T, body string) string {
+	t.Helper()
+	it := &Interaction{
+		Method:         "POST",
+		Path:           "/v1/chat/completions",
+		RequestBody:    json.RawMessage(body),
+		ResponseStatus: 200,
+		ResponseBody:   json.RawMessage(`{"choices":[{"message":{"content":"hello"}}]}`),
+	}
+	it.Hash = HashRequest(it.Method, it.Path, it.RequestBody)
+	line, err := json.Marshal(it)
+	if err != nil {
+		t.Fatalf("marshaling interaction: %v", err)
+	}
+	return string(line) + "\n"
+}
+
+func TestCassetteLoadSkipsTornTrailingLine(t *testing.T) {
+	first := interactionLine(t, `{"model":"gpt-4o","messages":[{"role":"user","content":"one"}]}`)
+	second := interactionLine(t, `{"model":"gpt-4o","messages":[{"role":"user","content":"two"}]}`)
+	// A process killed mid-write leaves the last line cut off, with no newline.
+	torn := second[:len(second)/2]
+
+	c, err := Load(writeCassetteFile(t, first+second+torn))
+	if err != nil {
+		t.Fatalf("Load should tolerate a torn trailing line, got: %v", err)
+	}
+	if c.Len() != 2 {
+		t.Fatalf("expected the 2 complete interactions, got %d", c.Len())
+	}
+	if got := c.All()[0].RequestBody; !strings.Contains(string(got), `"one"`) {
+		t.Errorf("first interaction not preserved: %s", got)
+	}
+	if c.Lookup(HashRequest("POST", "/v1/chat/completions",
+		[]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"two"}]}`))) == nil {
+		t.Error("the complete second interaction should still be replayable")
+	}
+}
+
+func TestCassetteLoadTornOnlyLineYieldsEmptyCassette(t *testing.T) {
+	only := interactionLine(t, `{"model":"gpt-4o","messages":[{"role":"user","content":"one"}]}`)
+
+	c, err := Load(writeCassetteFile(t, only[:len(only)/2]))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Len() != 0 {
+		t.Errorf("expected empty cassette, got %d", c.Len())
+	}
+}
+
+func TestCassetteLoadIgnoresTrailingBlankLinesAfterTornLine(t *testing.T) {
+	first := interactionLine(t, `{"model":"gpt-4o","messages":[{"role":"user","content":"one"}]}`)
+	second := interactionLine(t, `{"model":"gpt-4o","messages":[{"role":"user","content":"two"}]}`)
+
+	c, err := Load(writeCassetteFile(t, first+second[:len(second)/2]+"\n\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Len() != 1 {
+		t.Errorf("expected 1 interaction, got %d", c.Len())
+	}
+}
+
+func TestCassetteLoadFailsOnCorruptionBeforeTheEnd(t *testing.T) {
+	first := interactionLine(t, `{"model":"gpt-4o","messages":[{"role":"user","content":"one"}]}`)
+	second := interactionLine(t, `{"model":"gpt-4o","messages":[{"role":"user","content":"two"}]}`)
+
+	// Garbage in the middle is real corruption, not an interrupted write.
+	if _, err := Load(writeCassetteFile(t, first+"{not json\n"+second)); err == nil {
+		t.Fatal("expected an error for an unparseable line before the end of the file")
+	}
+}
+
+func TestCassetteLoadRoundTripsAfterTornLineIsRewritten(t *testing.T) {
+	first := interactionLine(t, `{"model":"gpt-4o","messages":[{"role":"user","content":"one"}]}`)
+	second := interactionLine(t, `{"model":"gpt-4o","messages":[{"role":"user","content":"two"}]}`)
+	path := writeCassetteFile(t, first+second[:len(second)/2])
+
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// Recording can continue from the recovered cassette, and the torn line is
+	// gone once the file is written back out.
+	if err := c.Append(&Interaction{
+		Method:         "POST",
+		Path:           "/v1/chat/completions",
+		RequestBody:    json.RawMessage(`{"model":"gpt-4o","messages":[{"role":"user","content":"three"}]}`),
+		ResponseStatus: 200,
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Len() != 2 {
+		t.Errorf("expected 2 interactions after recovery + append, got %d", reloaded.Len())
+	}
+}
