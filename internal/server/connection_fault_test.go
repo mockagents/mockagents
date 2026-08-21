@@ -29,6 +29,13 @@ func connFaultAgent(name, mode string) *types.AgentDefinition {
 // InteractionCapture (captureWriter) middleware is mounted — required to
 // exercise the FULL wrapper chain captureWriter -> statusWriter -> net.Conn.
 func setupServerWithLogStore(t *testing.T, agents ...*types.AgentDefinition) string {
+	base, _ := setupServerAndLogStore(t, agents...)
+	return base
+}
+
+// setupServerAndLogStore is setupServerWithLogStore plus the store itself, for
+// tests that assert on what was written to the interaction log.
+func setupServerAndLogStore(t *testing.T, agents ...*types.AgentDefinition) (string, *storage.SQLiteStore) {
 	t.Helper()
 	registry := engine.NewAgentRegistry()
 	for _, a := range agents {
@@ -52,7 +59,7 @@ func setupServerWithLogStore(t *testing.T, agents ...*types.AgentDefinition) str
 		_ = srv.Shutdown()
 		_ = logStore.Close()
 	})
-	return "http://" + srv.ListenAddr()
+	return "http://" + srv.ListenAddr(), logStore
 }
 
 // TestConnectionFault_FullChainHijacks is the regression guard for FB-03 slice
@@ -79,4 +86,77 @@ func TestConnectionFault_FullChainHijacks(t *testing.T) {
 			}
 		})
 	}
+}
+
+// waitForFirstLog polls the store until one entry lands and returns it. The
+// interaction log is written by an async worker, so the request returning says
+// nothing about the row existing yet.
+func waitForFirstLog(t *testing.T, store *storage.SQLiteStore) storage.InteractionLog {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		logs, err := store.Query(t.Context(), storage.InteractionFilter{Limit: 10})
+		require.NoError(t, err)
+		if len(logs) > 0 {
+			return logs[0]
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("no interaction log was written within 5s")
+	return storage.InteractionLog{}
+}
+
+// TestConnectionFault_NotLoggedAs200 is the guard for #41: the adapter hijacks
+// the connection and never calls WriteHeader, so captureWriter's statusCode
+// stays at the 200 it is initialised to and the log claimed the request
+// succeeded while the client got a TCP reset.
+func TestConnectionFault_NotLoggedAs200(t *testing.T) {
+	for _, mode := range []string{"empty", "reset"} {
+		t.Run(mode, func(t *testing.T) {
+			base, store := setupServerAndLogStore(t, connFaultAgent("cf-log-"+mode, mode))
+			body := `{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`
+			resp, err := http.Post(base+"/v1/chat/completions", "application/json", strings.NewReader(body))
+			if err == nil {
+				resp.Body.Close()
+				t.Fatalf("mode %q: expected a transport error, got status %d", mode, resp.StatusCode)
+			}
+
+			entry := waitForFirstLog(t, store)
+
+			require.NotEqual(t, 200, entry.ResponseStatus,
+				"a hijacked connection must not be logged as a success")
+			require.Equal(t, 0, entry.ResponseStatus,
+				"no HTTP status was sent, so the log should say so — matching what the metrics report as status=none")
+			require.Equal(t, "/v1/chat/completions", entry.RequestPath)
+		})
+	}
+}
+
+// A normal request must keep reporting its real status: the hijack sentinel
+// applies only to a connection that was actually taken over.
+func TestNormalRequest_StillLogsItsStatus(t *testing.T) {
+	base, store := setupServerAndLogStore(t, testFullAgent("ok-agent", "gpt-4o"))
+	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`
+	resp, err := http.Post(base+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	entry := waitForFirstLog(t, store)
+
+	require.Equal(t, 200, entry.ResponseStatus)
+}
+
+// An error response is not a hijack either — 404 must survive as 404.
+func TestUnknownModel_StillLogsItsStatus(t *testing.T) {
+	base, store := setupServerAndLogStore(t, testFullAgent("ok-agent-2", "gpt-4o"))
+	body := `{"model":"no-such-model","messages":[{"role":"user","content":"hello"}]}`
+	resp, err := http.Post(base+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	entry := waitForFirstLog(t, store)
+
+	require.Equal(t, resp.StatusCode, entry.ResponseStatus)
+	require.NotEqual(t, 0, entry.ResponseStatus, "only a hijack should log status 0")
 }
