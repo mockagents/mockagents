@@ -55,9 +55,14 @@ type StreamEvent struct {
 
 // Cassette is an in-memory collection of Interaction records indexed by
 // request hash. Cassettes are loaded from a .jsonl file and appended to
-// via Append, which rewrites the file (cassettes are small).
+// via Append, which writes one line to the end of the file.
 type Cassette struct {
 	Path string
+
+	// writeMu serializes writers so the on-disk order matches the in-memory
+	// order. It is held across the file I/O; mu is not, so readers never
+	// block on a disk write.
+	writeMu sync.Mutex
 
 	mu           sync.RWMutex
 	interactions []*Interaction
@@ -123,8 +128,11 @@ func (c *Cassette) Len() int {
 	return len(c.interactions)
 }
 
-// Append adds an interaction and flushes the cassette to disk when Path
-// is set. The hash is assigned by Append if blank.
+// Append adds an interaction and writes it to the end of the cassette file
+// when Path is set. The hash is assigned by Append if blank.
+//
+// The write is a single O_APPEND line, not a rewrite of the whole file:
+// recording N interactions costs O(N) file I/O in total, not O(N^2).
 func (c *Cassette) Append(it *Interaction) error {
 	if it.Hash == "" {
 		it.Hash = HashRequest(it.Method, it.Path, it.RequestBody)
@@ -133,24 +141,31 @@ func (c *Cassette) Append(it *Interaction) error {
 		it.RecordedAt = time.Now().UTC()
 	}
 
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
 	c.mu.Lock()
 	c.interactions = append(c.interactions, it)
 	c.byHash[it.Hash] = append(c.byHash[it.Hash], it)
-	snapshot := append([]*Interaction(nil), c.interactions...)
 	c.mu.Unlock()
 
 	if c.Path == "" {
 		return nil
 	}
-	return writeCassette(c.Path, snapshot)
+	return appendCassetteLine(c.Path, it)
 }
 
 // AppendAll adds many interactions and writes the cassette to disk ONCE. Hashes
-// and timestamps are assigned exactly as Append does. This is the path bulk
-// imports must use — calling Append N times would rewrite the whole file N times
-// (O(n^2)). With an empty Path the interactions are only indexed in memory.
+// and timestamps are assigned exactly as Append does. This is still the path
+// bulk imports should use — it pays one file write for the batch instead of one
+// per interaction. With an empty Path the interactions are only indexed in
+// memory.
 func (c *Cassette) AppendAll(interactions []*Interaction) error {
 	now := time.Now().UTC()
+
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
 	c.mu.Lock()
 	for _, it := range interactions {
 		if it.Hash == "" {
@@ -273,7 +288,58 @@ func writeCanonical(w *bytes.Buffer, v any) {
 	}
 }
 
-// writeCassette persists interactions to disk as JSON lines.
+// appendCassetteLine writes one interaction to the end of the cassette,
+// creating the file if it does not exist yet. json.Encoder emits the record in
+// a single Write, so an O_APPEND handle puts it at the end of the file without
+// reading or rewriting anything that came before.
+func appendCassetteLine(path string, it *Interaction) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	// A previous recorder killed mid-write leaves the file ending mid-line.
+	// Start a fresh line rather than gluing this record onto that fragment,
+	// which would corrupt a record that is otherwise fine.
+	if err := ensureTrailingNewline(f, path); err != nil {
+		f.Close()
+		return err
+	}
+	if err := json.NewEncoder(f).Encode(it); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// ensureTrailingNewline writes a newline when the cassette does not already end
+// with one. Reads a single byte, so it stays O(1) per append.
+func ensureTrailingNewline(f *os.File, path string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if fi.Size() == 0 {
+		return nil
+	}
+	r, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	var last [1]byte
+	if _, err := r.ReadAt(last[:], fi.Size()-1); err != nil {
+		return err
+	}
+	if last[0] == '\n' {
+		return nil
+	}
+	_, err = f.Write([]byte{'\n'})
+	return err
+}
+
+// writeCassette persists interactions to disk as JSON lines, replacing whatever
+// was there. AppendAll uses it to pay one write for a whole batch; Append
+// writes a single line instead.
 func writeCassette(path string, interactions []*Interaction) error {
 	tmp, err := os.CreateTemp("", "cassette-*.jsonl")
 	if err != nil {
