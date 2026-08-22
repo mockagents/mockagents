@@ -43,6 +43,12 @@ type MCPServerLoadResult struct {
 	FilePath   string
 }
 
+type VectorCollectionLoadResult struct {
+	Definition *types.VectorCollectionDefinition
+	Node       *yaml.Node
+	FilePath   string
+}
+
 // Documents is a bucketed collection of parsed mockagents YAML/JSON files.
 type Documents struct {
 	Agents     []*LoadResult
@@ -50,6 +56,7 @@ type Documents struct {
 	TestSuites []*TestSuiteLoadResult
 	MCPServers []*MCPServerLoadResult
 	A2AServers []*A2AServerLoadResult
+	Vectors    []*VectorCollectionLoadResult
 }
 
 // A2AServerLoadResult is a parsed kind:A2AServer document (NF-04).
@@ -198,6 +205,21 @@ func LoadA2AServerFile(path string) (*A2AServerLoadResult, error) {
 	return &A2AServerLoadResult{Definition: &def, Node: doc, FilePath: path}, nil
 }
 
+func LoadVectorCollectionFile(path string) (*VectorCollectionLoadResult, error) {
+	_, doc, err := readAndParse(path)
+	if err != nil {
+		return nil, err
+	}
+	if k := peekKind(doc); k != types.VectorCollectionKind {
+		return nil, fmt.Errorf("%s: kind %q is not %s", path, k, types.VectorCollectionKind)
+	}
+	var def types.VectorCollectionDefinition
+	if err := doc.Decode(&def); err != nil {
+		return nil, &ParseError{File: path, Err: err}
+	}
+	return &VectorCollectionLoadResult{Definition: &def, Node: doc, FilePath: path}, nil
+}
+
 // LoadDir scans a directory for agent definition files (.yaml, .yml, .json)
 // and loads each one. Files whose `kind` is not "Agent" (or unset) are
 // silently skipped so pipelines and test suites can live in the same
@@ -286,6 +308,13 @@ func LoadAllDocuments(dir string) (*Documents, []error) {
 				continue
 			}
 			docs.A2AServers = append(docs.A2AServers, &A2AServerLoadResult{Definition: &def, Node: doc, FilePath: path})
+		case types.VectorCollectionKind:
+			var def types.VectorCollectionDefinition
+			if err := doc.Decode(&def); err != nil {
+				errs = append(errs, &ParseError{File: path, Err: err})
+				continue
+			}
+			docs.Vectors = append(docs.Vectors, &VectorCollectionLoadResult{Definition: &def, Node: doc, FilePath: path})
 		default:
 			errs = append(errs, fmt.Errorf("%s: unrecognized kind %q", path, peekKind(doc)))
 		}
@@ -404,11 +433,12 @@ const apiVersionPrefix = "mockagents/"
 // a nested document whose apiVersion is missing or misspelled — it is ours, and
 // broken, which is worth an error rather than a silent skip.
 var documentKinds = map[string]struct{}{
-	types.AgentKind:     {},
-	types.PipelineKind:  {},
-	types.TestSuiteKind: {},
-	types.MCPServerKind: {},
-	types.A2AServerKind: {},
+	types.AgentKind:            {},
+	types.PipelineKind:         {},
+	types.TestSuiteKind:        {},
+	types.MCPServerKind:        {},
+	types.A2AServerKind:        {},
+	types.VectorCollectionKind: {},
 }
 
 // ParseError wraps a YAML/JSON parse error with file context.

@@ -1,7 +1,7 @@
 import { describe, expect as vexpect, it } from "vitest";
 
 import { AssertionError, expect } from "../src/assertions.js";
-import { ChatResponse } from "../src/types.js";
+import { ChatResponse, PipelineResult } from "../src/types.js";
 
 function fakeResponse(overrides: Partial<ChatResponse> = {}): ChatResponse {
   return {
@@ -149,5 +149,27 @@ describe("trajectory assertions", () => {
     expect(fakeResponse({ toolCalls: [call("search")] }))
       .toHaveToolCallSequence(["search"])
       .toHaveToolCallCount(1);
+  });
+});
+
+describe("pipeline trajectory assertions", () => {
+  const result: PipelineResult = {
+    pipelineName: "research",
+    topology: "sequential",
+    nodes: [
+      { nodeId: "plan", agentName: "planner", response: {}, latencyNs: 1 },
+      { nodeId: "write", agentName: "writer", response: {}, latencyNs: 1 },
+    ],
+    latencyNs: 2,
+  };
+
+  it("matches and chains an exact node sequence", () => {
+    expect(result).toHaveNodeSequence(["plan", "write"])
+      .toHaveNodeSequence(["plan", "write"]);
+  });
+
+  it("rejects wrong order", () => {
+    vexpect(() => expect(result).toHaveNodeSequence(["write", "plan"]))
+      .toThrowError(AssertionError);
   });
 });

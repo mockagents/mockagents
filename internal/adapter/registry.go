@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/mockagents/mockagents/internal/engine"
+	"github.com/mockagents/mockagents/internal/vector"
 )
 
 // Route is a single HTTP route an adapter mounts: a net/http ServeMux
@@ -54,6 +55,15 @@ func (r *Registry) Adapters() []Adapter {
 // the server mounts whatever the registry returns, so no route wiring in
 // the server package changes (REF-05).
 func DefaultRegistry(eng *engine.Engine) *Registry {
+	return DefaultRegistryWithVectorStore(eng, &vector.Store{})
+}
+
+// DefaultRegistryWithVectorStore mounts the built-ins against a shared vector
+// store, allowing declarative startup fixtures and HTTP mutations to coexist.
+func DefaultRegistryWithVectorStore(eng *engine.Engine, vectorStore *vector.Store) *Registry {
+	if vectorStore == nil {
+		vectorStore = &vector.Store{}
+	}
 	oai := &OpenAIHandler{Engine: eng}
 	emb := &EmbeddingsHandler{}
 	// Responses + Conversations share one store: a client creates a conversation
@@ -93,5 +103,9 @@ func DefaultRegistry(eng *engine.Engine) *Registry {
 		NewConversationsHandler(conversations),
 		// OpenAI Realtime API over WebSocket (NF-01).
 		&RealtimeHandler{Engine: eng},
+		// Deterministic VectorMock first profile (R11): Qdrant-compatible
+		// collections, points, equality filters, and search.
+		NewQdrantHandler(vectorStore),
+		NewPineconeHandler(vectorStore),
 	)
 }

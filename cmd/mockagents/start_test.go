@@ -9,6 +9,7 @@ import (
 
 	"github.com/mockagents/mockagents/internal/config"
 	"github.com/mockagents/mockagents/internal/types"
+	"github.com/mockagents/mockagents/internal/vector"
 )
 
 func TestPrintStartBanner(t *testing.T) {
@@ -53,6 +54,32 @@ func TestPrintStartBanner_HostDisplay(t *testing.T) {
 // clutter test output.
 func quietLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func TestRegisterVectorCollectionsSeedsTenantScopedStore(t *testing.T) {
+	results := []*config.VectorCollectionLoadResult{{Definition: &types.VectorCollectionDefinition{
+		APIVersion: types.AgentAPIVersion, Kind: types.VectorCollectionKind,
+		Metadata: types.Metadata{Name: "docs", TenantID: "tenant-a"},
+		Spec: types.VectorCollectionSpec{Dimension: 2, Metric: "cosine", Faults: types.VectorFaults{PartialResults: &types.VectorPartialResultsFault{MaxResults: 1}}, Points: []types.VectorPoint{
+			{ID: "refund", Vector: []float64{1, 0}, Metadata: map[string]any{"team": "support"}},
+			{ID: "billing", Vector: []float64{0, 1}, Metadata: map[string]any{"team": "finance"}},
+		}},
+	}}}
+	store, count := registerVectorCollections(results, quietLogger())
+	if count != 1 {
+		t.Fatalf("loaded %d collections, want 1", count)
+	}
+	result, err := store.QueryWithInfo(vector.ScopedCollectionName("tenant-a", "docs"), vector.Query{Vector: []float64{1, 0}, TopK: 2})
+	matches := result.Matches
+	if err != nil || len(matches) != 1 || matches[0].ExternalID != "refund" {
+		t.Fatalf("query = %#v, %v", matches, err)
+	}
+	if !result.Partial {
+		t.Fatal("startup fixture did not configure partial results")
+	}
+	if _, err := store.Collection("docs"); err == nil {
+		t.Fatal("tenant fixture leaked into the anonymous namespace")
+	}
 }
 
 func validPipeline(name string) *types.PipelineDefinition {

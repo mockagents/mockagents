@@ -26,6 +26,7 @@ import (
 	"github.com/mockagents/mockagents/internal/server"
 	"github.com/mockagents/mockagents/internal/storage"
 	"github.com/mockagents/mockagents/internal/tenancy"
+	"github.com/mockagents/mockagents/internal/vector"
 	"github.com/spf13/cobra"
 )
 
@@ -122,6 +123,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// GUI's /pipelines surface and the management API have something
 	// to list.
 	pipelineReg := registerPipelines(docs.Pipelines, logger)
+	vectorStore, vectorCount := registerVectorCollections(docs.Vectors, logger)
+	if vectorCount > 0 {
+		logger.Info("loaded vector collections", "collections", vectorCount)
+	}
 
 	// Initialize engine.
 	store := state.NewMemoryStore(state.DefaultSessionTTL)
@@ -150,6 +155,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	cfg.Version = version
 	cfg.LogStore = logStore
 	cfg.Pipelines = pipelineReg
+	cfg.VectorStore = vectorStore
 
 	// Stamp the real build version onto mockagents_build_info. The default
 	// registry is created at package init, before the ldflags-set version is
@@ -312,6 +318,47 @@ func runStart(cmd *cobra.Command, args []string) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+// registerVectorCollections validates and seeds declarative VectorMock
+// fixtures. Invalid collections are skipped consistently with invalid agents.
+func registerVectorCollections(results []*config.VectorCollectionLoadResult, logger *slog.Logger) (*vector.Store, int) {
+	store := &vector.Store{}
+	loaded := 0
+	for _, result := range results {
+		if result == nil || result.Definition == nil {
+			continue
+		}
+		def := result.Definition
+		if errs := config.ValidateVectorCollection(def, result.FilePath, result.Node); errs != nil {
+			logger.Warn("skipping invalid vector collection", "file", result.FilePath, "errors", errs.Error())
+			continue
+		}
+		name := vector.ScopedCollectionName(def.Metadata.TenantID, def.Metadata.Name)
+		if err := store.CreateCollection(name, def.Spec.Dimension, vector.Metric(strings.ToLower(def.Spec.Metric))); err != nil {
+			logger.Warn("skipping vector collection", "file", result.FilePath, "error", err)
+			continue
+		}
+		points := make([]vector.Point, 0, len(def.Spec.Points))
+		for _, fixture := range def.Spec.Points {
+			id, _ := config.VectorPointKey(fixture.ID)
+			points = append(points, vector.Point{ID: id, ExternalID: fixture.ID, Vector: fixture.Vector, Metadata: fixture.Metadata})
+		}
+		if err := store.Upsert(name, points); err != nil {
+			logger.Warn("skipping vector collection points", "file", result.FilePath, "error", err)
+			_ = store.DeleteCollection(name)
+			continue
+		}
+		if partial := def.Spec.Faults.PartialResults; partial != nil {
+			if err := store.SetPartialResultLimit(name, &partial.MaxResults); err != nil {
+				logger.Warn("skipping vector collection fault", "file", result.FilePath, "error", err)
+				_ = store.DeleteCollection(name)
+				continue
+			}
+		}
+		loaded++
+	}
+	return store, loaded
 }
 
 // dataPath resolves where MockAgents keeps its on-disk state (interaction

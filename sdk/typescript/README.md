@@ -65,19 +65,21 @@ The two-argument `toHaveToolCallCount(n, name)` narrows to a single tool. That i
 an SDK-only convenience with no YAML equivalent — use the one-argument form when
 you want a check that transfers to a YAML suite.
 
-> `node_sequence` (ordered pipeline nodes) is **not** available here. A
-> `kind: Pipeline` can only be executed by the in-process CLI runner, so an HTTP
-> client cannot produce the node trajectory — see
-> [#33](https://github.com/mockagents/mockagents/issues/33). It remains YAML-only.
+Pipeline trajectories use the same entry point:
+
+```ts
+const result = await client.runPipeline("research", "summarize the evidence");
+expect(result).toHaveNodeSequence(["plan", "research", "write"]);
+```
 
 ## API surface
 
 | Export | Purpose |
 | --- | --- |
 | `MockAgentServer` | Spawns the Go binary, picks a free port, polls `/api/v1/health`. |
-| `MockAgentClient` | `fetch`-based client for `/v1/chat/completions`, `/v1/messages`, and the management API. |
+| `MockAgentClient` | `fetch`-based client for chat/messages, management APIs, and typed pipeline execution. |
 | `Scenario`, `runScenario` | Declarative multi-turn scripts with automatic session scoping. |
-| `expect(target)` | Fluent assertion helper: `toHaveToolCall`, `toHaveResponseContaining`, `toHaveFinishReason`, `toHaveStatusCode`, `toHaveLatencyLessThan`, plus the trajectory assertions `toHaveToolCallCount` and `toHaveToolCallSequence` (see below). |
+| `expect(target)` | Fluent response/tool assertions plus exact tool-call and pipeline-node trajectory assertions. |
 | `adapters.chatOpenAI(server)` | Returns a `@langchain/openai` `ChatOpenAI` pointed at the mock. |
 | `adapters.chatAnthropic(server)` | Returns a `@langchain/anthropic` `ChatAnthropic` pointed at the mock. |
 | `adapters.patchEnv(server)` | Temporarily sets `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` for LangGraph-style frameworks. |

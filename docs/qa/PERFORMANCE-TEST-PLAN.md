@@ -80,7 +80,7 @@ below states which kind it asserts.
 
 | Surface | Baseline | Captured |
 |---|---|---|
-| Engine micro-benchmarks | `docs/benchmarks/latest.{json,md}` | 2026-07-27, re-verified 2026-07-28 |
+| Engine micro-benchmarks | `docs/benchmarks/latest.{json,md}` | 2026-08-21, linux/amd64 CI baseline |
 | HTTP (throughput, streaming, TTFT, logging, soak, multi-tenant, chaos, Realtime, replay) | `perf-results/2026-07-27/` + `2026-07-28/` | cycles 1–2 |
 | Adapter parity (Anthropic/Gemini), MCP | `perf-results/2026-07-28/` | cycle 2 |
 | A2A, Batch fan-out, runner pipelines | `perf-results/2026-07-29/` | cycle 3 |

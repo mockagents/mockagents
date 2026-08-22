@@ -294,6 +294,14 @@ func (p *PipelineExecutor) invokeNode(ctx context.Context, pipelineName string, 
 	if node.Ref == "" {
 		return &NodeResult{NodeID: node.ID}, fmt.Errorf("pipeline %q node %q missing agent ref", pipelineName, node.ID)
 	}
+	// Pipeline refs are exact agent names. ProcessRequest normally permits a
+	// single visible agent as an anonymous convenience fallback, but applying
+	// that rule here would make a stale pipeline ref silently execute the wrong
+	// node. Resolve explicitly, with the same tenant visibility as the request.
+	if p.Engine == nil || p.Engine.Registry == nil || p.Engine.Registry.GetForTenant(node.Ref, TenantIDFromContext(ctx)) == nil {
+		return &NodeResult{NodeID: node.ID, AgentName: node.Ref}, fmt.Errorf(
+			"pipeline %q node %q: %w: %q", pipelineName, node.ID, ErrAgentNotFound, node.Ref)
+	}
 	// Scope the session per pipeline node so conversation state on one agent
 	// does not leak into another when the same engine is reused.
 	scopedSession := fmt.Sprintf("%s::%s::%s", sessionID, pipelineName, node.ID)

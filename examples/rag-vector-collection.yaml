@@ -1,0 +1,22 @@
+apiVersion: mockagents/v1
+kind: VectorCollection
+metadata:
+  name: support-docs
+  description: Deterministic retrieval fixtures for RAG tests
+spec:
+  dimension: 3
+  metric: cosine
+  faults:
+    partial_results:
+      max_results: 1
+  points:
+    - id: refund-policy
+      vector: [1, 0, 0]
+      metadata:
+        team: support
+        topic: refunds
+    - id: billing-guide
+      vector: [0, 1, 0]
+      metadata:
+        team: finance
+        topic: billing

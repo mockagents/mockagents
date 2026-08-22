@@ -200,7 +200,7 @@ func main() {
 		fmt.Fprintf(&out, "\nIf these are intentional, regenerate the baseline in this PR:\n"+
 			"```bash\ngo run ./tools/benchreport -pkg %s -out docs/benchmarks\n```\n", base.Package)
 	} else {
-		fmt.Fprintf(&out, "### ✅ No blocking changes\n\nallocs/op and B/op match the baseline exactly.\n")
+		fmt.Fprintf(&out, "### ✅ No blocking changes\n\nallocs/op matches exactly and B/op stays within the configured %.0f%% tolerance.\n", *bytesTolerance*100)
 	}
 	if len(notes) > 0 {
 		fmt.Fprintf(&out, "\n### Notes (non-blocking)\n\n")

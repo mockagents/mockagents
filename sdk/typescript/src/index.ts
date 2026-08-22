@@ -10,12 +10,14 @@ export { Scenario, runScenario } from "./scenario.js";
 export type { ScenarioOptions, ScenarioStep, ScenarioResult } from "./scenario.js";
 
 export { expect, AssertionError } from "./assertions.js";
-export type { Expectation } from "./assertions.js";
+export type { Expectation, PipelineExpectation } from "./assertions.js";
 
 export type {
   AgentSummary,
   ChatMessage,
   ChatResponse,
+  PipelineNodeResult,
+  PipelineResult,
   StreamChunk,
   ToolCall,
   TokenUsage,

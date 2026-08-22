@@ -14,14 +14,38 @@
 // multi-turn `toHaveToolCall` disagree with both the YAML runner and the Python
 // SDK. They now read the aggregate. Single-turn scenarios are unaffected.
 //
-// `node_sequence` is not ported: a `kind: Pipeline` can only be executed by the
-// in-process CLI runner, so an HTTP client cannot produce the node trajectory.
-// See https://github.com/mockagents/mockagents/issues/33.
+// PipelineResult uses the same entry point and exposes toHaveNodeSequence,
+// matching the YAML runner's exact ordered node_sequence semantics.
 
-import { ChatResponse, ToolCall } from "./types.js";
+import { ChatResponse, PipelineResult, ToolCall } from "./types.js";
 import { ScenarioResult } from "./scenario.js";
 
 type Target = ChatResponse | ScenarioResult;
+
+export interface PipelineExpectation {
+  /** Assert exact ordered pipeline node ids; full equality, not a subsequence. */
+  toHaveNodeSequence(nodeIds: string[]): PipelineExpectation;
+}
+
+export function expect(target: PipelineResult): PipelineExpectation;
+export function expect(target: Target): Expectation;
+export function expect(target: Target | PipelineResult): Expectation | PipelineExpectation {
+  if (isPipelineResult(target)) {
+    const api: PipelineExpectation = {
+      toHaveNodeSequence(nodeIds) {
+        const got = target.nodes.map((node) => node.nodeId);
+        if (got.length !== nodeIds.length || got.some((node, i) => node !== nodeIds[i])) {
+          throw new AssertionError(
+            `expected node sequence ${JSON.stringify(nodeIds)}, got ${JSON.stringify(got)}`,
+          );
+        }
+        return api;
+      },
+    };
+    return api;
+  }
+  return responseExpectation(target);
+}
 
 export interface Expectation {
   toHaveToolCall(name: string, args?: Record<string, unknown>): Expectation;
@@ -44,7 +68,7 @@ export interface Expectation {
   toHaveToolCallSequence(names: string[]): Expectation;
 }
 
-export function expect(target: Target): Expectation {
+function responseExpectation(target: Target): Expectation {
   const response = isScenarioResult(target) ? target.last : target;
   const latencyMs = isScenarioResult(target) ? target.totalLatencyMs : target.latencyMs;
   // Trajectory assertions read every turn; outcome assertions read `response`.
@@ -121,6 +145,10 @@ export function expect(target: Target): Expectation {
     },
   };
   return api;
+}
+
+function isPipelineResult(target: Target | PipelineResult): target is PipelineResult {
+  return Array.isArray((target as PipelineResult).nodes);
 }
 
 export class AssertionError extends Error {

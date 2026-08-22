@@ -44,6 +44,8 @@ self-escalate. Roles gate the control-plane routes:
 | `GET  /api/v1/ready`                      | open     |
 | `GET  /api/v1/agents`, `/api/v1/logs`     | viewer   |
 | `GET  /metrics`                           | viewer   |
+| `GET  /api/v1/pipelines[/{name}]`         | viewer   |
+| `POST /api/v1/pipelines/{name}/run`       | viewer   |
 | `POST /api/v1/agents/{name}/reload`       | editor   |
 | `POST /api/v1/agents` (create)            | editor   |
 | `PUT  /api/v1/agents/{name}` (replace)    | editor   |
@@ -52,6 +54,7 @@ self-escalate. Roles gate the control-plane routes:
 | `POST /api/v1/keys/me/burn`               | viewer   |
 | `GET  /api/v1/tenants/{id}/keys`          | editor   |
 | `POST /api/v1/config/validate`            | editor   |
+| `PUT  /api/v1/pipelines/{name}`           | editor   |
 | `POST /api/v1/tenants/{id}/keys`          | admin    |
 | `POST /api/v1/tenants/{id}/keys/rotate`   | admin    |
 | `PATCH /api/v1/keys/{id}`                 | admin    |

@@ -245,9 +245,9 @@ Option A's YAML suite, with the same semantics: read the aggregate across every
 turn, and compare the sequence for **full equality** rather than as a
 subsequence. A check moves between the two forms unchanged.
 
-`node_sequence` — the pipeline equivalent — remains YAML-only, because pipelines
-have no HTTP execution surface for an SDK to drive
-([#33](https://github.com/mockagents/mockagents/issues/33)).
+`node_sequence` — the pipeline equivalent — is also available from typed HTTP
+pipeline results as Python `to_have_node_sequence` and TypeScript
+`toHaveNodeSequence`. Both compare the complete ordered node list.
 
 Same agent definition, three ways to assert it — no token cost, no flakiness,
 runs offline in milliseconds.

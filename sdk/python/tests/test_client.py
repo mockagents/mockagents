@@ -1,5 +1,7 @@
 """Tests for mockagents.client — response parsing logic."""
 
+from unittest.mock import Mock
+
 from mockagents.client import MockAgentClient
 
 
@@ -147,3 +149,36 @@ def test_parse_anthropic_response_multiple_text_blocks():
     }
     resp = client._parse_anthropic_response(data, 200, 5.0)
     assert resp.content == "Part 1 Part 2"
+
+
+def test_run_pipeline_returns_typed_node_trajectory():
+    client = MockAgentClient("http://mock", api_key="viewer-key")
+    response = Mock()
+    response.json.return_value = {
+        "pipeline_name": "research",
+        "topology": "sequential",
+        "nodes": [
+            {
+                "node_id": "plan", "agent_name": "planner",
+                "response": {"content": "p"}, "latency": 10,
+            },
+            {
+                "node_id": "write", "agent_name": "writer",
+                "response": {"content": "w"}, "latency": 20,
+            },
+        ],
+        "latency": 30,
+    }
+    client._session.post = Mock(return_value=response)
+
+    result = client.run_pipeline("research", "hello", "session-1")
+
+    assert result.pipeline_name == "research"
+    assert result.node_sequence == ["plan", "write"]
+    assert result.nodes[1].agent_name == "writer"
+    client._session.post.assert_called_once_with(
+        "http://mock/api/v1/pipelines/research/run",
+        json={"input": "hello", "session_id": "session-1"},
+        headers={"Content-Type": "application/json", "Authorization": "Bearer viewer-key"},
+        timeout=30.0,
+    )

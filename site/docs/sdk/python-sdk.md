@@ -290,9 +290,12 @@ and `mockagents test` without changing meaning:
 - Outcome assertions (`to_have_response_containing`, `to_have_status`,
   `to_have_finish_reason`) read the **final** turn.
 
-`node_sequence`, the pipeline-trajectory assertion, is YAML-only: pipelines
-have no HTTP execution surface for an SDK to drive yet
-([#33](https://github.com/mockagents/mockagents/issues/33)).
+Pipeline trajectories are typed and use the same exact-order rule:
+
+```python
+result = client.run_pipeline("research", "summarize the evidence")
+expect(result).to_have_node_sequence(["plan", "research", "write"])
+```
 
 ## Framework adapters & MCP
 

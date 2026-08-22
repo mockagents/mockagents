@@ -10,12 +10,8 @@ across every turn of a scenario, matching the Go runner: a multi-turn
 conversation's trajectory is every tool call it made, in order — not just the
 final turn's.
 
-``node_sequence`` has deliberately **not** been ported. It asserts the ordered
-pipeline nodes that ran, and a ``kind: Pipeline`` can only be executed by the
-in-process CLI runner — there is no HTTP route that runs one, so an SDK client
-has no way to produce the data. Tracked as
-https://github.com/mockagents/mockagents/issues/33; until that lands,
-``node_sequence`` remains YAML-only.
+``to_have_node_sequence`` applies the same exact-order semantics to a typed
+``PipelineResult`` returned by ``MockAgentClient.run_pipeline``.
 """
 
 from __future__ import annotations
@@ -23,10 +19,10 @@ from __future__ import annotations
 from typing import Any, Optional, Union
 
 from .scenario import ScenarioResult
-from .types import ChatResponse
+from .types import ChatResponse, PipelineResult
 
 
-def expect(value: Any) -> Union[ResponseExpect, ValueExpect]:
+def expect(value: Any) -> Union[ResponseExpect, PipelineExpect, ValueExpect]:
     """Entry point for fluent assertions.
 
     Args:
@@ -47,7 +43,24 @@ def expect(value: Any) -> Union[ResponseExpect, ValueExpect]:
             scenario=None,  # type: ignore[arg-type]
             interactions=[_interaction_from_response(value)],
         ))
+    if isinstance(value, PipelineResult):
+        return PipelineExpect(value)
     return ValueExpect(value)
+
+
+class PipelineExpect:
+    """Fluent assertions for an HTTP pipeline result."""
+
+    def __init__(self, result: PipelineResult):
+        self._result = result
+
+    def to_have_node_sequence(self, node_ids: list[str]) -> PipelineExpect:
+        """Assert exact ordered node ids; this is not a subsequence check."""
+        expected = list(node_ids)
+        got = self._result.node_sequence
+        if got != expected:
+            raise AssertionError(f"Expected node sequence {expected}, but got {got}")
+        return self
 
 
 class ResponseExpect:

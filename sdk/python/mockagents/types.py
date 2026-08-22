@@ -136,6 +136,55 @@ class Interaction:
     latency_ms: float = 0.0
 
 
+@dataclass
+class PipelineNodeResult:
+    """One agent invocation in an HTTP pipeline run."""
+
+    node_id: str = ""
+    agent_name: str = ""
+    response: dict[str, Any] = field(default_factory=dict)
+    latency_ns: int = 0
+
+    @classmethod
+    def from_wire(cls, data: dict[str, Any]) -> PipelineNodeResult:
+        return cls(
+            node_id=str(data.get("node_id", "")),
+            agent_name=str(data.get("agent_name", "")),
+            response=data.get("response") if isinstance(data.get("response"), dict) else {},
+            latency_ns=int(data.get("latency", 0)),
+        )
+
+
+@dataclass
+class PipelineResult:
+    """Typed result returned by ``MockAgentClient.run_pipeline``."""
+
+    pipeline_name: str = ""
+    topology: str = ""
+    nodes: list[PipelineNodeResult] = field(default_factory=list)
+    latency_ns: int = 0
+
+    @property
+    def node_sequence(self) -> list[str]:
+        """Ordered node ids executed by the pipeline."""
+        return [node.node_id for node in self.nodes]
+
+    @classmethod
+    def from_wire(cls, data: dict[str, Any]) -> PipelineResult:
+        raw_nodes = data.get("nodes", [])
+        nodes = [
+            PipelineNodeResult.from_wire(node)
+            for node in raw_nodes
+            if isinstance(node, dict)
+        ] if isinstance(raw_nodes, list) else []
+        return cls(
+            pipeline_name=str(data.get("pipeline_name", "")),
+            topology=str(data.get("topology", "")),
+            nodes=nodes,
+            latency_ns=int(data.get("latency", 0)),
+        )
+
+
 class ConfigError(Exception):
     """Raised when agent configuration is invalid."""
 

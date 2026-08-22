@@ -167,3 +167,12 @@ func TestLoadAllDocuments_LoadsNestedAgent(t *testing.T) {
 	require.Len(t, docs.Agents, 1)
 	assert.Equal(t, "nested-agent", docs.Agents[0].Definition.Metadata.Name)
 }
+
+func TestLoadAllDocumentsLoadsNestedVectorCollection(t *testing.T) {
+	dir := t.TempDir()
+	writeNested(t, dir, "fixtures/vectors.yaml", "apiVersion: mockagents/v1\nkind: VectorCollection\nmetadata:\n  name: docs\nspec:\n  dimension: 1\n  metric: cosine\n  points:\n    - id: one\n      vector: [1]\n")
+	docs, errs := LoadAllDocuments(dir)
+	require.Empty(t, errs)
+	require.Len(t, docs.Vectors, 1)
+	assert.Equal(t, "docs", docs.Vectors[0].Definition.Metadata.Name)
+}

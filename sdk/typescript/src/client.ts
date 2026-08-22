@@ -6,6 +6,7 @@ import {
   ChatMessage,
   ChatResponse,
   HTTPError,
+  PipelineResult,
   parseToolCallAnthropic,
   parseToolCallOpenAI,
   parseUsageAnthropic,
@@ -19,6 +20,8 @@ export interface MockAgentClientOptions {
   timeoutMs?: number;
   /** Override the global fetch implementation (useful for tests). */
   fetch?: typeof fetch;
+  /** Viewer-or-higher management API key for multi-tenant deployments. */
+  apiKey?: string;
 }
 
 export interface ChatOptions {
@@ -44,11 +47,13 @@ export class MockAgentClient {
   public readonly baseUrl: string;
   public readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly apiKey?: string;
 
   constructor(options: MockAgentClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "http://localhost:8080").replace(/\/+$/, "");
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.fetchImpl = options.fetch ?? fetch;
+    this.apiKey = options.apiKey;
   }
 
   /** Send an OpenAI Chat Completions request. */
@@ -214,6 +219,32 @@ export class MockAgentClient {
     ).body;
   }
 
+  /** Execute a loaded pipeline and return its ordered node trajectory. */
+  async runPipeline(name: string, input: string, sessionId?: string): Promise<PipelineResult> {
+    const payload: Record<string, unknown> = { input };
+    if (sessionId) payload.session_id = sessionId;
+    const wire = (
+      await this.requestJSON(
+        "POST",
+        `/api/v1/pipelines/${encodeURIComponent(name)}/run`,
+        { "Content-Type": "application/json" },
+        payload,
+      )
+    ).body as any;
+    const rawNodes = Array.isArray(wire?.nodes) ? wire.nodes : [];
+    return {
+      pipelineName: String(wire?.pipeline_name ?? ""),
+      topology: String(wire?.topology ?? ""),
+      nodes: rawNodes.map((node: any) => ({
+        nodeId: String(node?.node_id ?? ""),
+        agentName: String(node?.agent_name ?? ""),
+        response: node?.response && typeof node.response === "object" ? node.response : {},
+        latencyNs: Number(node?.latency ?? 0),
+      })),
+      latencyNs: Number(wire?.latency ?? 0),
+    };
+  }
+
   // --- internals ---
 
   /** POST a JSON body to ``path`` and yield parsed SSE events. Each
@@ -296,9 +327,13 @@ export class MockAgentClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
+      const requestHeaders = { ...headers };
+      if (this.apiKey && requestHeaders.Authorization === undefined) {
+        requestHeaders.Authorization = `Bearer ${this.apiKey}`;
+      }
       const resp = await this.fetchImpl(`${this.baseUrl}${path}`, {
         method,
-        headers,
+        headers: requestHeaders,
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,
       });

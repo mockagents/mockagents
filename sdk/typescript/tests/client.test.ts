@@ -72,6 +72,18 @@ beforeAll(async () => {
       sendJSON(res, 404, { error: "not found" });
       return;
     }
+    if (req.method === "POST" && req.url === "/api/v1/pipelines/research/run") {
+      sendJSON(res, 200, {
+        pipeline_name: "research",
+        topology: "sequential",
+        nodes: [
+          { node_id: "plan", agent_name: "planner", response: { content: "p" }, latency: 10 },
+          { node_id: "write", agent_name: "writer", response: { content: "w" }, latency: 20 },
+        ],
+        latency: 30,
+      });
+      return;
+    }
     res.writeHead(404);
     res.end();
   });
@@ -142,6 +154,25 @@ describe("MockAgentClient management API", () => {
   it("throws HTTPError on 404", async () => {
     const client = new MockAgentClient({ baseUrl: `http://localhost:${port}` });
     await vexpect(client.getAgent("boom")).rejects.toBeInstanceOf(HTTPError);
+  });
+
+  it("runs a pipeline and parses the ordered node trajectory", async () => {
+    const seenAuth: string[] = [];
+    const spyFetch: typeof fetch = (input, init) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      if (headers?.Authorization) seenAuth.push(headers.Authorization);
+      return fetch(input, init);
+    };
+    const client = new MockAgentClient({
+      baseUrl: `http://localhost:${port}`,
+      apiKey: "viewer-key",
+      fetch: spyFetch,
+    });
+    const result = await client.runPipeline("research", "hello", "session-1");
+    vexpect(result.pipelineName).toBe("research");
+    vexpect(result.nodes.map((node) => node.nodeId)).toEqual(["plan", "write"]);
+    vexpect(result.nodes[1].agentName).toBe("writer");
+    vexpect(seenAuth).toEqual(["Bearer viewer-key"]);
   });
 });
 

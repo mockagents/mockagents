@@ -48,6 +48,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	var allTestSuiteResults []*config.TestSuiteLoadResult
 	var allMCPServerResults []*config.MCPServerLoadResult
 	var allA2AServerResults []*config.A2AServerLoadResult
+	var allVectorResults []*config.VectorCollectionLoadResult
 	var allLoadErrors []error
 
 	for _, p := range paths {
@@ -74,6 +75,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 				allTestSuiteResults = append(allTestSuiteResults, docs.TestSuites...)
 				allMCPServerResults = append(allMCPServerResults, docs.MCPServers...)
 				allA2AServerResults = append(allA2AServerResults, docs.A2AServers...)
+				allVectorResults = append(allVectorResults, docs.Vectors...)
 			}
 			allLoadErrors = append(allLoadErrors, errs...)
 		} else {
@@ -100,6 +102,10 @@ func runValidate(cmd *cobra.Command, args []string) error {
 			}
 			if a2aResult, aerr := config.LoadA2AServerFile(absPath); aerr == nil {
 				allA2AServerResults = append(allA2AServerResults, a2aResult)
+				continue
+			}
+			if vectorResult, verr := config.LoadVectorCollectionFile(absPath); verr == nil {
+				allVectorResults = append(allVectorResults, vectorResult)
 				continue
 			}
 			allLoadErrors = append(allLoadErrors, err)
@@ -138,6 +144,11 @@ func runValidate(cmd *cobra.Command, args []string) error {
 			allValidationErrors = append(allValidationErrors, errList.Errors...)
 		}
 	}
+	for _, result := range allVectorResults {
+		if errList := config.ValidateVectorCollection(result.Definition, result.FilePath, result.Node); errList != nil {
+			allValidationErrors = append(allValidationErrors, errList.Errors...)
+		}
+	}
 
 	// Cross-document checks: every pipeline's agent refs and every testsuite's
 	// target must resolve against the other documents in the same run, and no
@@ -150,13 +161,14 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	// `mockagents validate` reported "all valid" for a tree where one agent
 	// silently replaced another. The pass costs one map build over the agents
 	// when there is nothing else to check.
-	if len(allAgentResults) > 0 || len(allPipelineResults) > 0 || len(allTestSuiteResults) > 0 {
+	if len(allAgentResults) > 0 || len(allPipelineResults) > 0 || len(allTestSuiteResults) > 0 || len(allVectorResults) > 0 {
 		crossDocs := &config.Documents{
 			Agents:     allAgentResults,
 			Pipelines:  allPipelineResults,
 			TestSuites: allTestSuiteResults,
 			MCPServers: allMCPServerResults,
 			A2AServers: allA2AServerResults,
+			Vectors:    allVectorResults,
 		}
 		if errList := config.ValidateDocuments(crossDocs); errList != nil {
 			allValidationErrors = append(allValidationErrors, errList.Errors...)
@@ -180,7 +192,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 
 	totalFiles := len(allAgentResults) + len(allPipelineResults) +
 		len(allTestSuiteResults) + len(allMCPServerResults) +
-		len(allA2AServerResults) + len(allLoadErrors)
+		len(allA2AServerResults) + len(allVectorResults) + len(allLoadErrors)
 	hasErrors := len(allLoadErrors) > 0 || len(allValidationErrors) > 0
 
 	// Print load errors.

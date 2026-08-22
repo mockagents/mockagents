@@ -220,8 +220,14 @@ Append-only control-plane events. `kind` is one of `tenant.created`,
 ```
 GET /api/v1/pipelines             # list kind:Pipeline documents
 GET /api/v1/pipelines/{name}      # detail incl. DAG nodes + edges
+POST /api/v1/pipelines/{name}/run # viewer — execute and return ordered nodes
 PUT /api/v1/pipelines/{name}      # editor — create-or-replace a pipeline
 ```
+
+Execute with `{"input":"...","session_id":"optional"}`. When `session_id`
+is omitted, the server isolates the run with its request ID. Successful runs
+return the ordered node results. If a node fails, the API returns 422 with an
+`error` plus the partial `result` so callers can diagnose the trajectory.
 
 ## Config Validation
 

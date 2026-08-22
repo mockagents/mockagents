@@ -44,6 +44,7 @@ nav:
     - Realtime API (Voice): guides/realtime.md
     - MCP Servers: guides/mcp.md
     - A2A Agents: guides/a2a.md
+    - VectorMock: guides/vector-mock.md
     - Drop-in Recipes: guides/drop-in-recipes.md
     - Record & Replay: guides/record-replay.md
     - CLI Reference: guides/cli-reference.md

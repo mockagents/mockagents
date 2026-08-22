@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import time
 from typing import Any, Generator, Optional
+from urllib.parse import quote
 
 import requests
 
-from .types import ChatResponse, StreamChunk, ToolCall, TokenUsage
+from .types import ChatResponse, PipelineResult, StreamChunk, ToolCall, TokenUsage
 
 
 class MockAgentClient:
@@ -21,9 +22,15 @@ class MockAgentClient:
         timeout: Request timeout in seconds.
     """
 
-    def __init__(self, base_url: str = "http://localhost:8080", timeout: float = 30.0):
+    def __init__(
+        self,
+        base_url: str = "http://localhost:8080",
+        timeout: float = 30.0,
+        api_key: Optional[str] = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.api_key = api_key
         self._session = requests.Session()
 
     def chat(
@@ -314,6 +321,31 @@ class MockAgentClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    def run_pipeline(
+        self,
+        name: str,
+        input: str,
+        session_id: Optional[str] = None,
+    ) -> PipelineResult:
+        """Execute a loaded pipeline and return its ordered node trajectory."""
+        payload: dict[str, Any] = {"input": input}
+        if session_id:
+            payload["session_id"] = session_id
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        resp = self._session.post(
+            f"{self.base_url}/api/v1/pipelines/{quote(name, safe='')}/run",
+            json=payload,
+            headers=headers,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise ValueError("pipeline response must be a JSON object")
+        return PipelineResult.from_wire(data)
 
     def close(self) -> None:
         """Close the underlying HTTP session."""

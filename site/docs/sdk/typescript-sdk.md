@@ -229,9 +229,12 @@ and the Python SDK, so a check means the same thing in all three places:
 - The two-argument `toHaveToolCallCount(n, name)` has **no YAML equivalent** —
   use the one-argument form when you want a check that transfers.
 
-`node_sequence`, the pipeline-trajectory assertion, is YAML-only: pipelines have
-no HTTP execution surface for an SDK to drive yet
-([#33](https://github.com/mockagents/mockagents/issues/33)).
+Pipeline trajectories are typed and use the same exact-order rule:
+
+```ts
+const result = await client.runPipeline("research", "summarize the evidence");
+maExpect(result).toHaveNodeSequence(["plan", "research", "write"]);
+```
 
 ## Wiring the lifecycle by hand
 

@@ -27,12 +27,32 @@ import (
 // from OOMing the process (mirrors the validate handler's cap).
 const maxPipelineBodyBytes = 1 << 20
 
+// PipelineRunRequest is the wire contract for executing a registered pipeline.
+// SessionID is optional; when omitted the HTTP request id becomes the run's
+// session id so independent calls cannot accidentally share agent turn state.
+type PipelineRunRequest struct {
+	Input     string `json:"input"`
+	SessionID string `json:"session_id,omitempty"`
+}
+
+// pipelineRunError preserves completed nodes when a later node fails. This is
+// particularly useful for parallel pipelines and trajectory assertions: the
+// caller can see what ran instead of receiving an opaque error only.
+type pipelineRunError struct {
+	Error  string                 `json:"error"`
+	Result *engine.PipelineResult `json:"result,omitempty"`
+}
+
 // PipelineHandlers serves the /api/v1/pipelines endpoints. Reads (list +
 // detail) are a thin façade over the registry; the write path (PUT, REF-07)
 // validates an edited definition, persists it atomically to its source file,
 // re-registers it, and audits the change.
 type PipelineHandlers struct {
 	Registry *engine.PipelineRegistry
+	// Executor runs registered definitions through the same Engine used by the
+	// provider adapters. Nil means execution is not configured (read/edit
+	// endpoints can still be used independently in focused tests).
+	Executor *engine.PipelineExecutor
 	// AgentRegistry resolves pipeline agent refs during write validation.
 	// Nil skips the cross-document ref check.
 	AgentRegistry *engine.AgentRegistry
@@ -45,6 +65,76 @@ type PipelineHandlers struct {
 	// writeMu serializes the read-version → write → re-register sequence so
 	// two concurrent saves can't interleave.
 	writeMu sync.Mutex
+}
+
+// RunPipeline handles POST /api/v1/pipelines/{name}/run.
+func (h *PipelineHandlers) RunPipeline(w http.ResponseWriter, r *http.Request) {
+	if h.Registry == nil || h.Executor == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "pipeline execution not configured"})
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing pipeline name"})
+		return
+	}
+	def := h.Registry.GetPipeline(name)
+	if def == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "pipeline not found"})
+		return
+	}
+
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxPipelineBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	var req PipelineRunRequest
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "request body too large"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if err := ensureJSONEOF(dec); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.Input) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "input is required"})
+		return
+	}
+	if req.SessionID == "" {
+		req.SessionID = requestIDFromContext(r.Context())
+		if req.SessionID == "" { // bare handler tests or custom embedding
+			req.SessionID = generateRequestID()
+		}
+	}
+
+	result, err := h.Executor.RunContext(r.Context(), def, req.Input, req.SessionID)
+	if err != nil {
+		// The definition exists, but one or more nodes could not execute. 422
+		// distinguishes a valid HTTP request from a runnable pipeline and keeps
+		// any completed node trajectory available to the caller.
+		writeJSON(w, http.StatusUnprocessableEntity, pipelineRunError{Error: err.Error(), Result: result})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// ensureJSONEOF rejects concatenated JSON values while allowing trailing
+// whitespace. Decoder.Decode alone would silently accept the first value.
+func ensureJSONEOF(dec *json.Decoder) error {
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("request body must contain exactly one JSON object")
+		}
+		return fmt.Errorf("invalid JSON: %w", err)
+	}
+	return nil
 }
 
 // PipelineSummary is the row shape returned by ListPipelines. It

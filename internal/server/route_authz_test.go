@@ -155,6 +155,7 @@ func TestManagementRouteFloors_Snapshot(t *testing.T) {
 		"GET /api/v1/costs":                     tenancy.RoleViewer,
 		"GET /api/v1/pipelines":                 tenancy.RoleViewer,
 		"GET /api/v1/pipelines/{name}":          tenancy.RoleViewer,
+		"POST /api/v1/pipelines/{name}/run":     tenancy.RoleViewer,
 		"PUT /api/v1/pipelines/{name}":          tenancy.RoleEditor,
 		"POST /api/v1/config/validate":          tenancy.RoleEditor,
 		"GET /api/v1/quota":                     tenancy.RoleViewer,

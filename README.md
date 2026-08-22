@@ -197,8 +197,8 @@ publication (see the table above); until then, install from the repo with
   wrong-count / wrong-order bugs that belong on every PR. Available both in
   `kind: TestSuite` YAML via `mockagents test` **and natively in your own
   pytest / Vitest / Jest suite** through the SDKs, with matching semantics.
-  (`node_sequence` is YAML-only — pipelines have no HTTP execution surface yet,
-  [#33](https://github.com/mockagents/mockagents/issues/33).)
+  Pipeline node sequences are available through the typed Python and TypeScript
+  HTTP clients as `to_have_node_sequence` / `toHaveNodeSequence`.
 - **Tool-call simulation** — return canned tool calls on every protocol surface;
   test your agent's routing and argument handling without a live model. (Tool
   `responses:` tables resolve results for the test runner and MCP servers — on
@@ -379,9 +379,11 @@ test run anyone ever did, because the model would have cited a real document
 nearly every time — and the one time it didn't would have been in production.
 The fixture makes it fail on demand instead.
 
-Retrieval is mocked as an MCP tool server, not a vector store — [VectorMock is
-planned but does not exist yet](docs/ADOPTION_REQUIREMENTS.md) — and the demo
-says so rather than implying otherwise. CI runs it on every push.
+This older demo still mocks retrieval as an MCP tool server. The server now also
+ships [VectorMock](site/docs/guides/vector-mock.md) profiles for in-memory,
+shared-store Qdrant and Pinecone collection/point/search APIs. Migrating the
+demo to that surface is part of the remaining R11 example work. CI runs it on
+every push.
 
 ## What it is *not*
 
@@ -617,6 +619,19 @@ TestSuite`) declare cases with assertions (`tool_call`, `response_contains`,
 `scenario_matched`, `latency_ms_lt`) targeting either an agent or a pipeline and
 execute under `mockagents test`. See `examples/research-pipeline.yaml` and
 `examples/research-suite.yaml`.
+
+Applications can execute a loaded pipeline through the management API and
+inspect the exact node trajectory:
+
+```bash
+curl -H "Content-Type: application/json" \
+  -d '{"input":"Research deterministic agent testing","session_id":"demo-1"}' \
+  http://localhost:8080/api/v1/pipelines/research/run
+```
+
+The response includes `pipeline_name`, `topology`, ordered `nodes`, and the
+aggregate latency. A node failure returns HTTP 422 with both `error` and the
+partial `result`, so a test can assert what ran before the failure.
 
 ## Contract Testing
 

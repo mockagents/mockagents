@@ -124,10 +124,19 @@ func ValidateBytes(data []byte) *ValidateReport {
 		if errs := ValidateA2AServer(&def, "", &doc); errs != nil {
 			report.Errors = append(report.Errors, errs.Errors...)
 		}
+	case "VectorCollection":
+		var def types.VectorCollectionDefinition
+		if err := doc.Decode(&def); err != nil {
+			report.Errors = append(report.Errors, parseErrorAsValidationError(err))
+			return report
+		}
+		if errs := ValidateVectorCollection(&def, "", &doc); errs != nil {
+			report.Errors = append(report.Errors, errs.Errors...)
+		}
 	default:
 		report.Errors = append(report.Errors, &ValidationError{
 			Field:   "kind",
-			Message: fmt.Sprintf("unknown kind %q (want Agent, Pipeline, TestSuite, MCPServer, or A2AServer)", report.Kind),
+			Message: fmt.Sprintf("unknown kind %q (want Agent, Pipeline, TestSuite, MCPServer, A2AServer, or VectorCollection)", report.Kind),
 		})
 	}
 	return report

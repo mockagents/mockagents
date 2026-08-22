@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mockagents.dev/schema/v1/vectorcollection.json",
+  "title": "MockAgents VectorCollection Definition",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": { "const": "mockagents/v1" },
+    "kind": { "const": "VectorCollection" },
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$", "maxLength": 63 },
+        "description": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "tenant_id": { "type": "string" }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": ["dimension", "metric"],
+      "additionalProperties": false,
+      "properties": {
+        "dimension": { "type": "integer", "minimum": 1, "maximum": 65536 },
+        "metric": { "type": "string", "enum": ["cosine", "dot", "euclidean"] },
+        "faults": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "partial_results": {
+              "type": "object", "required": ["max_results"], "additionalProperties": false,
+              "properties": { "max_results": { "type": "integer", "minimum": 0, "maximum": 1000 } }
+            }
+          }
+        },
+        "points": {
+          "type": "array", "maxItems": 100000,
+          "items": {
+            "type": "object", "required": ["id", "vector"], "additionalProperties": false,
+            "properties": {
+              "id": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "minimum": 0 }] },
+              "vector": { "type": "array", "items": { "type": "number" } },
+              "metadata": { "type": "object" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

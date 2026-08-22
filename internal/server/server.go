@@ -22,6 +22,7 @@ import (
 	"github.com/mockagents/mockagents/internal/streaming"
 	"github.com/mockagents/mockagents/internal/tenancy"
 	"github.com/mockagents/mockagents/internal/types"
+	"github.com/mockagents/mockagents/internal/vector"
 )
 
 const (
@@ -90,6 +91,8 @@ type Config struct {
 	// so overriding this only isolates the HTTP-level families, and is
 	// intended for tests (FR-J02).
 	Metrics *metrics.Registry
+	// VectorStore holds VectorMock collections. Nil creates an empty store.
+	VectorStore *vector.Store
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -324,7 +327,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// These stay open (no mountManaged): the outer middleware chain still
 	// applies, and tenant scope / ProcessRequestContext plumbing lives in
 	// the handlers, unchanged by the move.
-	for _, a := range adapter.DefaultRegistry(s.engine).Adapters() {
+	for _, a := range adapter.DefaultRegistryWithVectorStore(s.engine, s.config.VectorStore).Adapters() {
 		// Realtime generates responses in-process over a WebSocket, so the
 		// HTTP middleware that meters the request/response protocols never
 		// sees them — the adapter exposes per-response hooks instead.
@@ -377,14 +380,16 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	if s.config.Pipelines != nil {
 		pipelineH := &PipelineHandlers{
 			Registry:      s.config.Pipelines,
+			Executor:      engine.NewPipelineExecutor(s.engine),
 			AgentRegistry: s.engine.Registry,
 			AgentsDir:     s.config.AgentsDir,
 			Recorder:      s.recorder,
 			Logger:        s.logger,
 		}
-		s.mountManaged(mux, "GET /api/v1/pipelines", http.HandlerFunc(pipelineH.ListPipelines))         // F-PL-001
-		s.mountManaged(mux, "GET /api/v1/pipelines/{name}", http.HandlerFunc(pipelineH.GetPipeline))    // F-PL-001
-		s.mountManaged(mux, "PUT /api/v1/pipelines/{name}", http.HandlerFunc(pipelineH.UpdatePipeline)) // REF-07
+		s.mountManaged(mux, "GET /api/v1/pipelines", http.HandlerFunc(pipelineH.ListPipelines))           // F-PL-001
+		s.mountManaged(mux, "GET /api/v1/pipelines/{name}", http.HandlerFunc(pipelineH.GetPipeline))      // F-PL-001
+		s.mountManaged(mux, "POST /api/v1/pipelines/{name}/run", http.HandlerFunc(pipelineH.RunPipeline)) // R13 / #33
+		s.mountManaged(mux, "PUT /api/v1/pipelines/{name}", http.HandlerFunc(pipelineH.UpdatePipeline))   // REF-07
 	}
 
 	// Agent config validation endpoint. Open in single-tenant mode

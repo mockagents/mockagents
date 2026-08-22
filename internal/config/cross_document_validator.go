@@ -35,6 +35,22 @@ func ValidateDocuments(docs *Documents) *ValidationErrorList {
 	}
 
 	var errs []*ValidationError
+	firstVectorFile := make(map[string]string, len(docs.Vectors))
+	for _, vr := range docs.Vectors {
+		if vr == nil || vr.Definition == nil || vr.Definition.Metadata.Name == "" {
+			continue
+		}
+		key := vr.Definition.Metadata.TenantID + "\x00" + vr.Definition.Metadata.Name
+		if prev, duplicate := firstVectorFile[key]; duplicate {
+			ctx := &validationContext{file: vr.FilePath, node: vr.Node}
+			ctx.addError("metadata.name",
+				fmt.Sprintf("vector collection %q is already defined by %s", vr.Definition.Metadata.Name, prev),
+				"Rename one collection or assign it to a different tenant.")
+			errs = append(errs, ctx.errors...)
+			continue
+		}
+		firstVectorFile[key] = vr.FilePath
+	}
 
 	// Build name indexes once. Both Agents and Pipelines are
 	// keyed by metadata.name — the same identifier the refs use.

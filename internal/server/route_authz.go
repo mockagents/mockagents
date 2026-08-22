@@ -72,6 +72,9 @@ var managementRouteFloors = map[string]tenancy.Role{
 	// Pipeline topology (read) — previously ungated even in multi-tenant mode.
 	"GET /api/v1/pipelines":        tenancy.RoleViewer, // F-PL-001
 	"GET /api/v1/pipelines/{name}": tenancy.RoleViewer, // F-PL-001
+	// Execution is application behavior, not a config mutation. Viewer is the
+	// lowest authenticated role and tenant scope still flows into every node.
+	"POST /api/v1/pipelines/{name}/run": tenancy.RoleViewer, // R13 / #33
 	// Pipeline edit (write: persists YAML to disk) → editor (REF-07).
 	"PUT /api/v1/pipelines/{name}": tenancy.RoleEditor,
 

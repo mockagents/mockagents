@@ -68,6 +68,20 @@ export interface AgentSummary {
   tags?: string[];
 }
 
+export interface PipelineNodeResult {
+  nodeId: string;
+  agentName: string;
+  response: Record<string, unknown>;
+  latencyNs: number;
+}
+
+export interface PipelineResult {
+  pipelineName: string;
+  topology: string;
+  nodes: PipelineNodeResult[];
+  latencyNs: number;
+}
+
 export class MockAgentsError extends Error {
   constructor(message: string) {
     super(message);

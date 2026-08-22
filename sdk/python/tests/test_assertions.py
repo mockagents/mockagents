@@ -2,9 +2,9 @@
 
 import pytest
 
-from mockagents.assertions import expect, ResponseExpect, ValueExpect
+from mockagents.assertions import expect, PipelineExpect, ResponseExpect, ValueExpect
 from mockagents.scenario import ScenarioResult, Scenario
-from mockagents.types import ChatResponse, Interaction, ToolCall
+from mockagents.types import ChatResponse, Interaction, PipelineNodeResult, PipelineResult, ToolCall
 
 
 def make_result(*responses: ChatResponse) -> ScenarioResult:
@@ -283,3 +283,22 @@ def test_trajectory_assertions_chain():
 def test_trajectory_assertions_on_bare_chat_response():
     response = ChatResponse(tool_calls=[_call("search")])
     expect(response).to_have_tool_call_sequence(["search"]).to_have_tool_call_count(1)
+
+
+def test_pipeline_node_sequence_exact_and_chainable():
+    result = PipelineResult(nodes=[
+        PipelineNodeResult(node_id="plan"),
+        PipelineNodeResult(node_id="research"),
+        PipelineNodeResult(node_id="write"),
+    ])
+    assert isinstance(expect(result), PipelineExpect)
+    expect(result).to_have_node_sequence(["plan", "research", "write"])
+
+
+def test_pipeline_node_sequence_rejects_wrong_order():
+    result = PipelineResult(nodes=[
+        PipelineNodeResult(node_id="a"),
+        PipelineNodeResult(node_id="b"),
+    ])
+    with pytest.raises(AssertionError, match="node sequence"):
+        expect(result).to_have_node_sequence(["b", "a"])
