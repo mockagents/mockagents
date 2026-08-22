@@ -107,5 +107,6 @@ func DefaultRegistryWithVectorStore(eng *engine.Engine, vectorStore *vector.Stor
 		// collections, points, equality filters, and search.
 		NewQdrantHandler(vectorStore),
 		NewPineconeHandler(vectorStore),
+		NewChromaHandler(vectorStore),
 	)
 }

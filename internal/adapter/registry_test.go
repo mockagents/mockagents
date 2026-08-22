@@ -28,7 +28,7 @@ func TestDefaultRegistry(t *testing.T) {
 	for _, a := range reg.Adapters() {
 		names = append(names, a.Name())
 	}
-	assert.Equal(t, []string{"openai", "openai-responses", "openai-embeddings", "openai-moderations", "anthropic", "gemini", "azure-openai", "openai-files", "openai-batches", "anthropic-batches", "openai-conversations", "openai-realtime", "qdrant", "pinecone"}, names, "default adapters mount in order")
+	assert.Equal(t, []string{"openai", "openai-responses", "openai-embeddings", "openai-moderations", "anthropic", "gemini", "azure-openai", "openai-files", "openai-batches", "anthropic-batches", "openai-conversations", "openai-realtime", "qdrant", "pinecone", "chroma"}, names, "default adapters mount in order")
 
 	got := routePatterns(reg)
 	for _, want := range []string{
@@ -39,6 +39,7 @@ func TestDefaultRegistry(t *testing.T) {
 		"POST /v1/moderations",
 		"POST /pinecone/{index}/query",
 		"POST /pinecone/{index}/vectors/upsert",
+		"POST /api/v2/tenants/{tenant}/databases/{database}/collections/{collection}/query",
 		"POST /v1/messages",
 		"POST /v1beta/models/{modelmethod}",
 		"POST /openai/deployments/{deployment}/chat/completions",

@@ -1,7 +1,7 @@
 # RAG demo — a grounded answerer, and the guardrail that catches it lying
 
 A small retrieval-augmented-generation app with a real test suite, running
-entirely against [MockAgents]: **no network, no tokens, no flakes.** Eleven tests,
+entirely against [MockAgents]: **no network, no tokens, no flakes.** Ten tests,
 green in a few seconds, deterministic on every run.
 
 The point isn't that the happy path works. It's that the *failure* paths are
@@ -29,8 +29,8 @@ MOCKAGENTS_BIN=../../mockagents pytest
 ```
 
 ```
-...........                                                     [100%]
-11 passed in 5.9s
+..........                                                       [100%]
+10 passed
 ```
 
 That command is verbatim on Windows too — `make build` writes an extensionless
@@ -38,18 +38,17 @@ That command is verbatim on Windows too — `make build` writes an extensionless
 env var entirely and it is just `pytest`.
 
 Nothing else starts a server, opens a port, or needs a compose file: the pytest
-plugin that ships with the SDK spawns the mock LLM server for the session, and
-the app spawns the mock MCP server itself over stdio — exactly as it would spawn
-a real one.
+plugin that ships with the SDK spawns one MockAgents server for the session.
+The app uses its LLM and VectorMock endpoints exactly as production clients do.
 
 ## What's here
 
 ```
 agents/
-  knowledge-base.yaml   kind: MCPServer — the retrieval backend
+  knowledge-base.yaml   kind: VectorCollection — deterministic retrieval data
   rag-answerer.yaml     kind: Agent      — the generation half
 app/
-  retrieval.py          MCP client: search_docs, score filtering
+  retrieval.py          Qdrant-compatible vector client and score filtering
   rag.py                the app under test: retrieve → abstain → answer → verify
 tests/
   test_rag.py           11 tests
@@ -84,8 +83,7 @@ model has to misbehave first, and it won't on request.
 | `test_the_naive_guardrail_would_have_shipped_it` | **The guardrail *bug*.** The obvious check passes the fabrication. |
 | `test_the_fixture_declares_itself_a_hallucination` | The test knows ground truth the app doesn't. |
 | `test_unknown_question_falls_through_to_abstention` | The default scenario doesn't leak a fake answer. |
-| `test_error_flag_is_read_across_mcp_sdk_majors` | The MCP SDK's 1.x→2.0 attribute rename. |
-| `test_missing_binary_is_a_clear_error` | Backend failure produces an actionable error. |
+| `test_unavailable_vector_backend_is_a_clear_error` | Backend failure produces an actionable error. |
 
 ### The headline test
 
@@ -136,22 +134,14 @@ demand. Against a live model the naive check would have looked correct in every
 test run anyone ever did, because the model would have cited a real document
 nearly every time — and the one time it didn't would have been in production.
 
-## Why MCP, and not a vector store
+## Why VectorMock
 
-**MockAgents has no vector-database mock yet.** Pinecone/Qdrant/Chroma
-wire-compatible mocking with deterministic scores is planned — it's R11 in
-[the adoption plan](../../docs/ADOPTION_REQUIREMENTS.md), the largest item in
-Tier 2 — but it does not exist today, and this demo does not pretend otherwise.
-
-So retrieval here is modelled as an **MCP tool** instead. That is not purely a
-workaround: an increasing number of real RAG apps reach their index through an
-MCP server rather than a client library, and the failure modes that matter for
-testing the *application* — empty results, weak-only results, contradictory
-context — are identical either way. What you don't get is the vector layer's
-own failures: dimension mismatch, index-not-found, partial results under
-sharding. Those need R11.
-
-When VectorMock lands, `app/retrieval.py` is the only file that changes.
+Retrieval uses MockAgents' Qdrant-compatible VectorMock surface backed by the
+`VectorCollection` fixture. Query embeddings are deterministic local fixtures;
+ranking, metadata filters, score thresholds, empty results, and vector failure
+modes execute through the same provider-compatible HTTP layer an application
+uses in production. The same collection can also be queried through Pinecone
+and Chroma profiles.
 
 ## Notes that will save you time
 
@@ -159,24 +149,14 @@ When VectorMock lands, `app/retrieval.py` is the only file that changes.
   surfaces — there is no agent-name header. Give each agent a distinct model
   (this demo uses `gpt-4o-rag`) or requests resolve to whichever agent name
   sorts first, and the server logs a `model claimed by multiple agents` warning.
-- **MCP tool responses match arguments by exact equality**, unlike the LLM
-  agent's `content_contains` scenario matching. A retrieval index is a lookup,
-  not a fuzzy router, so every fixture in `knowledge-base.yaml` lists the exact
-  query string the app sends.
-- **One directory, two kinds.** `agents/` holds both the `kind: Agent` and the
-  `kind: MCPServer` document. `mockagents start` loads the agent and ignores the
-  rest; `mockagents mcp` does the reverse.
-- **Both MCP SDK majors work.** The 1.x → 2.0 bump renamed
-  `CallToolResult.isError` to `.is_error`; `app/retrieval.py` reads either,
-  because a demo that only runs on the version its author happened to have
-  installed is not a demo. CI installs the latest, which is how this was found.
-- **Both servers are spawned for you.** The pytest plugin owns the LLM server
-  for the session; `stdio_client` owns the MCP server per retrieval call. There
-  is no port to allocate and no teardown to write.
+- **One directory, two kinds.** `agents/` holds both the `kind: Agent` and
+  `kind: VectorCollection` documents; `mockagents start` validates and loads both.
+- **One server is spawned for you.** The pytest plugin owns the LLM and vector
+  surfaces together. There is no second process or teardown path.
 
 ## Related
 
 - [Evals vs. tests](../../docs/EVALS_VS_TESTS.md) — why this suite is a test suite and not an eval
 - [Hallucination Testing](../../site/docs/guides/hallucination-testing.md) — the fixture format
-- [MCP Servers](../../site/docs/guides/mcp.md) — the `kind: MCPServer` reference
+- [VectorMock](../../site/docs/guides/vector-mock.md) — provider routes and fixtures
 - [Testing AI Agents](../../site/docs/guides/testing-agents.md) — the tool-call cookbook

@@ -11,7 +11,7 @@ Branch/Commit: `main` at `1aacc82`
 | Per-file pass | Completed | Reviewed all three files changed by `1aacc82` plus the R13 implementation surface. |
 | Cross-file integration pass | Completed | Checked benchmark report/docs/guard and pipeline route/executor/auth/tests/docs. |
 | Tests/build checks | Completed | Focused packages and the full Go repository suite pass. |
-| Release/demo readiness | Not Ready | R1/R3 remain externally blocked; R13 is complete and R11 is in progress. |
+| Release/demo readiness | Not Ready | R1/R3 remain externally blocked; R11 and R13 are complete. |
 
 ## Findings
 
@@ -21,7 +21,7 @@ Branch/Commit: `main` at `1aacc82`
 | R-002 | P2 | Completed | Benchmark tooling | Benchguard's success text claimed B/op matched exactly even though the guard permits configured tolerance. | `tools/benchguard/main.go:203` | Report exact alloc matching and tolerance-bounded B/op accurately. |
 | R-003 | P2 | Completed | Performance docs | The performance-plan baseline table still identified the retired July Windows baseline after `1aacc82` moved it to August Linux CI. | `docs/qa/PERFORMANCE-TEST-PLAN.md:83` | Update the baseline table with the current source/date. |
 | R-004 | P1 | Completed | SDKs | Typed Python/TypeScript pipeline clients and exact node-sequence assertions now consume the HTTP contract. | `docs/ADOPTION_REQUIREMENTS.md:59` | Maintain parity tests. |
-| R-005 | P1 | In Progress | VectorMock | Deterministic bounded core, tenant-isolated Qdrant/Pinecone profiles, declarative startup fixtures, namespaces, and partial-result faults are implemented. | `internal/vector/store.go`; `internal/adapter/qdrant.go`; `internal/adapter/pinecone.go` | Add Chroma and migrate the RAG demo. |
+| R-005 | P1 | Completed | VectorMock | Deterministic bounded core, Qdrant/Pinecone/Chroma profiles, fixtures, namespaces, partial-result faults, and migrated RAG demo are implemented. | `internal/vector/store.go`; `internal/adapter/{qdrant,pinecone,chroma}.go`; `demo/rag-agent` | Maintain provider contract tests. |
 
 ## Completed Scope
 
@@ -33,7 +33,6 @@ Branch/Commit: `main` at `1aacc82`
 ## Incomplete Or Deferred Scope
 
 - R1 package publishing and R3 domain/social preview require maintainer-owned credentials or purchase authority.
-- R11 still needs the Chroma profile and migrated RAG demo.
 - R17-R19 stay deferred until the stated three-design-partner gate is met.
 
 ## Validation Evidence
@@ -50,5 +49,4 @@ Branch/Commit: `main` at `1aacc82`
 
 ## Next Actions
 
-1. Add the Chroma compatibility profile over the shared core.
-2. Migrate the RAG demo to VectorMock.
+1. Pick R12: search, rerank, and moderation mounts.

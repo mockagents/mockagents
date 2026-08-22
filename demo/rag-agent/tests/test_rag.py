@@ -3,13 +3,11 @@
 The `mockagents` fixture comes from the pytest plugin that ships with the
 mockagents SDK — there is nothing to import and no conftest.py. It starts one
 mock LLM server for the session and points `OPENAI_BASE_URL` at it, so
-`app.rag` calls `OpenAI()` exactly as it would in production. Retrieval spawns
-its own mock MCP server over stdio (see `app/retrieval.py`).
+`app.rag` calls `OpenAI()` exactly as it would in production. Retrieval uses
+the VectorMock collection on that same server.
 """
 
 from __future__ import annotations
-
-import os
 
 import pytest
 
@@ -18,13 +16,8 @@ from app.retrieval import RetrievalError, search
 
 
 @pytest.fixture(autouse=True)
-def _agents_dir(mockagents, monkeypatch):
-    """Point retrieval's MCP subprocess at the same agents directory.
-
-    Depending on `mockagents` (rather than `mockagents_server`) is what patches
-    OPENAI_BASE_URL for the app, so this one fixture wires up both halves.
-    """
-    monkeypatch.setenv("MOCKAGENTS_AGENTS_DIR", os.path.join(os.path.dirname(__file__), "..", "agents"))
+def _server(mockagents):
+    """The pytest plugin starts one server for LLM and vector calls."""
 
 
 # --------------------------------------------------------------------------
@@ -151,33 +144,8 @@ async def test_unknown_question_falls_through_to_abstention():
 # Failure of the backend itself
 # --------------------------------------------------------------------------
 
-def test_error_flag_is_read_across_mcp_sdk_majors():
-    """The MCP Python SDK renamed this attribute from `isError` (1.x) to
-    `is_error` (2.0). CI installs the latest, so pinning only one spelling
-    means the demo breaks the day the ecosystem moves -- which is exactly how
-    this was found."""
-    from app.retrieval import _is_error
-
-    class OneX:  # mcp 1.x
-        isError = True
-
-    class TwoX:  # mcp 2.0
-        is_error = True
-
-    class Fine:
-        is_error = False
-
-    assert _is_error(OneX()) is True
-    assert _is_error(TwoX()) is True
-    assert _is_error(Fine()) is False
-
-
 @pytest.mark.asyncio
-async def test_missing_binary_is_a_clear_error(monkeypatch):
-    """Retrieval failures should say what to do, not raise FileNotFoundError
-    from three frames deep."""
-    monkeypatch.setenv("MOCKAGENTS_BIN", "")
-    monkeypatch.setenv("MOCKAGENTS_BINARY", "")
-    monkeypatch.setattr("app.retrieval.shutil.which", lambda _: None)
-    with pytest.raises(RetrievalError, match="not found"):
+async def test_unavailable_vector_backend_is_a_clear_error(monkeypatch):
+    monkeypatch.setenv("MOCKAGENTS_BASE_URL", "http://127.0.0.1:1")
+    with pytest.raises(RetrievalError, match="VectorMock search failed"):
         await search("when are invoices sent?")

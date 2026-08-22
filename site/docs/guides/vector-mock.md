@@ -4,8 +4,8 @@ MockAgents includes in-memory Qdrant- and Pinecone-compatible vector surfaces
 on the same server as the LLM APIs. They share one deterministic, bounded,
 process-local store and never call a network upstream.
 
-Qdrant and Pinecone profiles are available. The Chroma profile and cross-service
-chaos remain in progress.
+Qdrant, Pinecone, and Chroma v2 profiles are available. Cross-service chaos
+remains in progress.
 
 ## Load deterministic fixtures at startup
 
@@ -117,3 +117,17 @@ data-plane API:
 The empty Pinecone namespace maps directly to the declarative collection, so
 the same fixture is queryable through both provider profiles. Named namespaces
 are created on first upsert with the index's declared dimension and metric.
+
+## Chroma v2 compatibility
+
+Chroma uses tenant/database-scoped routes. The default Chroma scope shares
+declarative fixtures with Qdrant and Pinecone:
+
+`/api/v2/tenants/default_tenant/databases/default_database/collections/{collection}`
+
+Supported operations include heartbeat, create/get/list/count/delete
+collections, and add/upsert/get/query/delete/count records. Runtime collections
+learn their dimension from the first valid embedding batch; validation is
+atomic, so a bad first batch does not partially initialize the collection.
+Chroma query responses use its column-oriented arrays and inherit deterministic
+stable-ID ordering and partial-result signaling from the shared vector core.

@@ -1,9 +1,5 @@
 # The application's own dependencies.
 openai>=1.40
-# Both MCP SDK majors work: the 1.x -> 2.0 bump renamed CallToolResult.isError
-# to .is_error, and app/retrieval.py reads either.
-mcp>=1.9
-
 # The test harness: the pytest plugin ships inside the mockagents SDK, so no
 # conftest.py and no imports are needed to get a running mock server.
 #

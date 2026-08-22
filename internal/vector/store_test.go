@@ -98,6 +98,28 @@ func TestUpsertIsAtomicOnDimensionMismatch(t *testing.T) {
 	}
 }
 
+func TestPendingCollectionLearnsDimensionAtomically(t *testing.T) {
+	s := &Store{}
+	if err := s.CreatePendingCollection("chroma", Cosine); err != nil {
+		t.Fatal(err)
+	}
+	err := s.Upsert("chroma", []Point{{ID: "a", Vector: []float64{1, 0}}, {ID: "b", Vector: []float64{1}}})
+	if !errors.Is(err, ErrDimensionMismatch) {
+		t.Fatalf("error=%v", err)
+	}
+	c, _ := s.Collection("chroma")
+	if c.Dimension != 0 || c.PointCount != 0 {
+		t.Fatalf("partial init=%+v", c)
+	}
+	if err := s.Upsert("chroma", []Point{{ID: "a", Vector: []float64{1, 0}}}); err != nil {
+		t.Fatal(err)
+	}
+	c, _ = s.Collection("chroma")
+	if c.Dimension != 2 || c.PointCount != 1 {
+		t.Fatalf("initialized=%+v", c)
+	}
+}
+
 func TestDuplicateUpsertDeleteAndDefensiveCopies(t *testing.T) {
 	s := seededStore(t, Euclidean)
 	point := Point{ID: "a", Vector: []float64{2, 0}, Metadata: map[string]any{"version": 2}}

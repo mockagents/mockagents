@@ -136,6 +136,29 @@ func (s *Store) CreateCollection(name string, dimension int, metric Metric) erro
 	return nil
 }
 
+// CreatePendingCollection reserves a collection whose dimension is learned
+// atomically from its first upsert, matching Chroma's create-before-embed flow.
+func (s *Store) CreatePendingCollection(name string, metric Metric) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("collection name is required")
+	}
+	metric = Metric(strings.ToLower(string(metric)))
+	if metric != Cosine && metric != Dot && metric != Euclidean {
+		return fmt.Errorf("%w: %q", ErrInvalidMetric, metric)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.collections == nil {
+		s.collections = make(map[string]*collection)
+	}
+	if _, ok := s.collections[name]; ok {
+		return fmt.Errorf("%w: %q", ErrCollectionExists, name)
+	}
+	s.collections[name] = &collection{metric: metric, points: make(map[string]Point)}
+	return nil
+}
+
 func (s *Store) Collection(name string) (CollectionConfig, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -161,6 +184,17 @@ func (s *Store) CollectionsWithPrefix(prefix string) []CollectionConfig {
 	return out
 }
 
+func (s *Store) Collections() []CollectionConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]CollectionConfig, 0, len(s.collections))
+	for name, c := range s.collections {
+		out = append(out, CollectionConfig{Name: name, Dimension: c.dimension, Metric: c.metric, PointCount: len(c.points)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 func (s *Store) DeleteCollection(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -180,12 +214,16 @@ func (s *Store) Upsert(name string, points []Point) error {
 	}
 	// Validate the entire batch before mutating so a bad final point cannot
 	// leave a partially-applied upsert.
+	targetDimension := c.dimension
+	if targetDimension == 0 && len(points) > 0 {
+		targetDimension = len(points[0].Vector)
+	}
 	for i, point := range points {
 		if point.ID == "" {
 			return fmt.Errorf("point %d: id is required", i)
 		}
-		if len(point.Vector) != c.dimension {
-			return fmt.Errorf("point %q: %w: got %d, want %d", point.ID, ErrDimensionMismatch, len(point.Vector), c.dimension)
+		if len(point.Vector) != targetDimension {
+			return fmt.Errorf("point %q: %w: got %d, want %d", point.ID, ErrDimensionMismatch, len(point.Vector), targetDimension)
 		}
 		for _, value := range point.Vector {
 			if math.IsNaN(value) || math.IsInf(value, 0) {
@@ -202,6 +240,7 @@ func (s *Store) Upsert(name string, points []Point) error {
 	if len(c.points)+len(newIDs) > MaxPoints {
 		return fmt.Errorf("%w: maximum %d", ErrCollectionFull, MaxPoints)
 	}
+	c.dimension = targetDimension
 	for _, point := range points {
 		c.points[point.ID] = clonePoint(point)
 	}
@@ -220,6 +259,38 @@ func (s *Store) Fetch(name string, ids []string) ([]Point, error) {
 		if point, ok := c.points[id]; ok {
 			out = append(out, clonePoint(point))
 		}
+	}
+	return out, nil
+}
+
+// List returns a stable-ID ordered page, optionally filtered by metadata.
+func (s *Store) List(name string, filter map[string]any, limit, offset int) ([]Point, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c := s.collections[name]
+	if c == nil {
+		return nil, fmt.Errorf("%w: %q", ErrCollectionNotFound, name)
+	}
+	ids := make([]string, 0, len(c.points))
+	for id, p := range c.points {
+		if metadataMatches(p.Metadata, filter) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(ids) {
+		return []Point{}, nil
+	}
+	ids = ids[offset:]
+	if limit > 0 && len(ids) > limit {
+		ids = ids[:limit]
+	}
+	out := make([]Point, len(ids))
+	for i, id := range ids {
+		out[i] = clonePoint(c.points[id])
 	}
 	return out, nil
 }

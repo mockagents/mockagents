@@ -379,11 +379,9 @@ test run anyone ever did, because the model would have cited a real document
 nearly every time — and the one time it didn't would have been in production.
 The fixture makes it fail on demand instead.
 
-This older demo still mocks retrieval as an MCP tool server. The server now also
-ships [VectorMock](site/docs/guides/vector-mock.md) profiles for in-memory,
-shared-store Qdrant and Pinecone collection/point/search APIs. Migrating the
-demo to that surface is part of the remaining R11 example work. CI runs it on
-every push.
+The demo retrieves through [VectorMock](site/docs/guides/vector-mock.md), using
+the shared-store Qdrant profile and a declarative `VectorCollection`; Pinecone
+and Chroma profiles expose the same store. CI runs it on every push.
 
 ## What it is *not*
 
