@@ -108,5 +108,6 @@ func DefaultRegistryWithVectorStore(eng *engine.Engine, vectorStore *vector.Stor
 		NewQdrantHandler(vectorStore),
 		NewPineconeHandler(vectorStore),
 		NewChromaHandler(vectorStore),
+		&CohereRerankHandler{},
 	)
 }
