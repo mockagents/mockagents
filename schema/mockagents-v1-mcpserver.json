@@ -24,6 +24,16 @@
       "properties": {
         "protocolVersion": { "type": "string", "description": "MCP protocol version returned by initialize." },
         "strictArgs": { "type": "boolean", "description": "Validate tools/call arguments against each tool's inputSchema (default true). Violations return an isError:true execution result. Set false to accept any arguments.", "default": true },
+        "faults": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "seed": { "type": "integer" },
+            "rate": { "type": "number", "minimum": 0, "maximum": 1 },
+            "latency_ms": { "type": "integer", "minimum": 0, "maximum": 60000 },
+            "error": { "type": "boolean" }
+          }
+        },
         "capabilities": {
           "type": "object",
           "additionalProperties": false,

@@ -35,7 +35,17 @@ type MCPServerSpec struct {
 	// do. Invalid argument VALUES are reported as an isError:true execution
 	// result per the 2025-11-25 revision — never a -32602 protocol error.
 	// Set strictArgs: false to restore the old accept-anything behavior.
-	StrictArgs *bool `yaml:"strictArgs,omitempty" json:"strictArgs,omitempty"`
+	StrictArgs *bool     `yaml:"strictArgs,omitempty" json:"strictArgs,omitempty"`
+	Faults     MCPFaults `yaml:"faults,omitempty" json:"faults,omitempty"`
+}
+
+// MCPFaults configures deterministic faults for HTTP client requests. A nil
+// Rate preserves always-on semantics when an action is configured.
+type MCPFaults struct {
+	Seed      int64    `yaml:"seed,omitempty" json:"seed,omitempty"`
+	Rate      *float64 `yaml:"rate,omitempty" json:"rate,omitempty"`
+	LatencyMs int      `yaml:"latency_ms,omitempty" json:"latency_ms,omitempty"`
+	Error     bool     `yaml:"error,omitempty" json:"error,omitempty"`
 }
 
 // MCPCapabilities controls which sections the server advertises during

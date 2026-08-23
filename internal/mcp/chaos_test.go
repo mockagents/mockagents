@@ -1,0 +1,64 @@
+package mcp
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/mockagents/mockagents/internal/types"
+)
+
+func TestChaosHTTPHandlerForceErrorAndOffPrecedence(t *testing.T) {
+	zero := 0.0
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	h := NewChaosHTTPHandler(next, types.MCPFaults{Rate: &zero, Error: true})
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/rpc", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"ping"}`))
+	req.Header.Set("X-Mockagents-Chaos", "error")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Header().Get("X-Mockagents-Chaos-Source") != "request-force" {
+		t.Fatalf("forced status=%d source=%q body=%s", rec.Code, rec.Header().Get("X-Mockagents-Chaos-Source"), rec.Body.String())
+	}
+	var body struct {
+		ID    int `json:"id"`
+		Error struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.ID != 7 || body.Error.Code != -32000 {
+		t.Fatalf("response=%+v err=%v", body, err)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/mcp/rpc", strings.NewReader(`{"jsonrpc":"2.0","id":8,"method":"ping"}`))
+	req.Header.Set("X-Mockagents-Chaos", "off")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("off status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestChaosHTTPHandlerSeededDecisionUsesRequestID(t *testing.T) {
+	rate := 0.5
+	h := NewChaosHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), types.MCPFaults{Seed: 99, Rate: &rate, Error: true})
+	result := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+		req.Header.Set("X-Request-Id", "stable-request")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	want := result()
+	for i := 0; i < 10; i++ {
+		if got := result(); got != want {
+			t.Fatalf("same request id changed status from %d to %d", want, got)
+		}
+	}
+}

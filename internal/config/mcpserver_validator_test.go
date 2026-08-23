@@ -54,6 +54,30 @@ spec:
 	}
 }
 
+func TestValidateMCPServer_ChaosBounds(t *testing.T) {
+	def, node := decodeMCPServerYAML(t, `apiVersion: mockagents/v1
+kind: MCPServer
+metadata:
+  name: chaos-mcp
+spec:
+  faults:
+    seed: 42
+    rate: 1.1
+    latency_ms: 60001
+  tools:
+    - name: ping
+      responses:
+        - default: true
+          content:
+            - type: text
+              text: ok
+`)
+	errs := ValidateMCPServer(def, "", node)
+	if errs == nil || !containsField(errs, "spec.faults.rate") || !containsField(errs, "spec.faults.latency_ms") {
+		t.Fatalf("expected chaos bound errors: %v", errs)
+	}
+}
+
 func TestValidateMCPServer_EmptyServer(t *testing.T) {
 	def, node := decodeMCPServerYAML(t, `apiVersion: mockagents/v1
 kind: MCPServer
