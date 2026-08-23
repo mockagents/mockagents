@@ -1,0 +1,37 @@
+name: Provider drift
+
+on:
+  schedule:
+    - cron: "17 6 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run offline three-way baseline
+        run: |
+          mkdir -p drift-reports
+          go run ./cmd/mockagents drift \
+            --operation cohere.rerank \
+            --adapter internal/adapter/cohere_rerank.go \
+            --sdk testdata/drift/cohere/sdk.json \
+            --provider testdata/drift/cohere/provider.json \
+            --mock testdata/drift/cohere/mock.json \
+            --format json \
+            --output drift-reports/cohere-rerank.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: provider-drift-offline
+          path: drift-reports/
+
+  # Credentialed collectors are added provider-by-provider. They must remain
+  # schedule/workflow_dispatch-only, scrub responses before artifact upload,
+  # and skip when that provider's least-privilege secret is absent.

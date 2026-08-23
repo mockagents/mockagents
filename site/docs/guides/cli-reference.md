@@ -325,6 +325,21 @@ written, and `--redact-pattern <regexp>` (repeatable; implies `--redact`) for
 your own formats. Redaction rewrites JSON string values only, so it never breaks
 the cassette or replay matching — see the [record/replay guide](record-replay.md).
 
+## `mockagents drift`
+
+Compare scrubbed SDK, live-provider, and MockAgents JSON response shapes without
+making a network request:
+
+```bash
+mockagents drift --operation cohere.rerank \
+  --adapter internal/adapter/cohere_rerank.go \
+  --sdk sdk.json --provider provider.json --mock mock.json \
+  --format json --output drift-report.json
+```
+
+Critical missing fields, type changes, or nullability changes exit nonzero.
+Provider-only additions warn. See [Provider drift detection](provider-drift.md).
+
 ---
 
 ## `mockagents import`
