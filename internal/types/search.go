@@ -42,10 +42,11 @@ type SearchResponse struct {
 	Results []SearchResult `yaml:"results,omitempty" json:"results,omitempty"`
 }
 type SearchResult struct {
-	Title      string  `yaml:"title" json:"title"`
-	URL        string  `yaml:"url" json:"url"`
-	Content    string  `yaml:"content" json:"content"`
-	Score      float64 `yaml:"score" json:"score"`
-	RawContent *string `yaml:"raw_content,omitempty" json:"raw_content,omitempty"`
-	Favicon    string  `yaml:"favicon,omitempty" json:"favicon,omitempty"`
+	Title         string  `yaml:"title" json:"title"`
+	URL           string  `yaml:"url" json:"url"`
+	Content       string  `yaml:"content" json:"content"`
+	Score         float64 `yaml:"score" json:"score"`
+	RawContent    *string `yaml:"raw_content,omitempty" json:"raw_content,omitempty"`
+	Favicon       string  `yaml:"favicon,omitempty" json:"favicon,omitempty"`
+	PublishedDate string  `yaml:"published_date,omitempty" json:"published_date,omitempty"`
 }

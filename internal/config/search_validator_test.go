@@ -34,3 +34,8 @@ func TestValidateCommonServiceFaultProviders(t *testing.T) {
 		require.Emptyf(t, report.Errors, "%s: %+v", provider, report.Errors)
 	}
 }
+
+func TestValidateSearchResultDateAndURL(t *testing.T) {
+	report := ValidateBytes([]byte("apiVersion: mockagents/v1\nkind: SearchService\nmetadata:\n  name: search\nspec:\n  provider: tavily\n  scenarios:\n    - name: bad-result\n      match:\n        default: true\n      response:\n        results:\n          - title: bad\n            url: ftp://example.com/file\n            published_date: 07/10/2025\n"))
+	require.Len(t, report.Errors, 2)
+}

@@ -26,6 +26,7 @@ spec:
             url: https://example.test/mockagents
             content: Offline fixture content
             score: 0.95
+            published_date: 2026-08-20
     - name: safe-empty
       match:
         default: true
@@ -36,7 +37,23 @@ spec:
 `POST /search` selects the first case-insensitive `query_contains` or
 `query_regex` match, then the explicit default. With no match it returns a safe
 empty result set and never makes an upstream request. `max_results` is bounded
-to 1–20.
+to 1–20 and is applied after filtering, preserving fixture order as Tavily's
+bounded result window.
+
+Requests also support Tavily's date and domain controls:
+
+- `include_domains` (up to 300) accepts exact domains, subdomains, paths, and
+  `*.suffix` patterns.
+- `exclude_domains` (up to 150) is applied after inclusion.
+- `start_date` and `end_date` use `YYYY-MM-DD` and follow Tavily's exclusive
+  “after”/“before” semantics.
+- `time_range` accepts `day`, `week`, `month`, `year`, or `d`/`w`/`m`/`y`, and
+  cannot be combined with absolute dates.
+
+Fixture results use optional `published_date: YYYY-MM-DD`. When a date filter
+is active, undated results are omitted. Tavily does not expose a cursor or page
+token on `POST /search`; `max_results` is its provider-compatible pagination
+boundary, so MockAgents does not invent extra response fields.
 
 The optional `spec.faults` block applies deterministic service faults:
 `latency_ms` (0–60000), `status_code` (400–599), `malformed_json`, `disconnect`,

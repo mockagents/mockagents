@@ -2,8 +2,10 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/mockagents/mockagents/internal/types"
 	"gopkg.in/yaml.v3"
@@ -64,6 +66,16 @@ func ValidateSearchService(def *types.SearchServiceDefinition, filePath string, 
 		for j, result := range scenario.Response.Results {
 			if strings.TrimSpace(result.Title) == "" || strings.TrimSpace(result.URL) == "" {
 				ctx.addError(fmt.Sprintf("%s.response.results.%d", field, j), "title and url are required", "")
+			}
+			if parsed, err := url.ParseRequestURI(result.URL); err != nil || parsed.Host == "" {
+				ctx.addError(fmt.Sprintf("%s.response.results.%d.url", field, j), "url must be an absolute HTTP(S) URL", "")
+			} else if parsed.Scheme != "http" && parsed.Scheme != "https" {
+				ctx.addError(fmt.Sprintf("%s.response.results.%d.url", field, j), "url must use http or https", "")
+			}
+			if result.PublishedDate != "" {
+				if _, err := time.Parse("2006-01-02", result.PublishedDate); err != nil {
+					ctx.addError(fmt.Sprintf("%s.response.results.%d.published_date", field, j), "published_date must use YYYY-MM-DD", "")
+				}
 			}
 			if result.Score < 0 || result.Score > 1 {
 				ctx.addError(fmt.Sprintf("%s.response.results.%d.score", field, j), "score must be between 0 and 1", "")

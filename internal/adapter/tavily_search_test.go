@@ -7,7 +7,56 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
+
+func TestTavilyDomainDateFilteringBeforeResultWindow(t *testing.T) {
+	results := []types.SearchResult{
+		{Title: "old", URL: "https://docs.example.com/old", Score: .9, PublishedDate: "2025-01-01"},
+		{Title: "wanted", URL: "https://docs.example.com/new", Score: .8, PublishedDate: "2025-06-15"},
+		{Title: "excluded", URL: "https://blog.example.com/new", Score: .7, PublishedDate: "2025-06-16"},
+		{Title: "other", URL: "https://other.test/new", Score: .6, PublishedDate: "2025-06-17"},
+	}
+	h, err := NewTavilySearchHandler([]types.SearchScenario{{Name: "all", Match: types.SearchMatch{Default: true}, Response: types.SearchResponse{Results: results}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"query":"news","include_domains":["*.example.com"],"exclude_domains":["blog.example.com"],"start_date":"2025-06-01","end_date":"2025-07-01","max_results":1}`
+	w := httptest.NewRecorder()
+	h.Search(w, httptest.NewRequest(http.MethodPost, "/search", bytes.NewBufferString(body)))
+	var got struct {
+		Results []types.SearchResult `json:"results"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Results) != 1 || got.Results[0].Title != "wanted" || got.Results[0].PublishedDate != "2025-06-15" {
+		t.Fatalf("results=%+v body=%s", got.Results, w.Body.String())
+	}
+}
+
+func TestTavilyRelativeDateRangeAndValidation(t *testing.T) {
+	h, err := NewTavilySearchHandler([]types.SearchScenario{{Name: "all", Match: types.SearchMatch{Default: true}, Response: types.SearchResponse{Results: []types.SearchResult{
+		{Title: "recent", URL: "https://example.com/recent", PublishedDate: "2025-07-09"},
+		{Title: "old", URL: "https://example.com/old", PublishedDate: "2025-06-01"},
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.now = func() time.Time { return time.Date(2025, 7, 10, 12, 0, 0, 0, time.UTC) }
+	w := httptest.NewRecorder()
+	h.Search(w, httptest.NewRequest(http.MethodPost, "/search", bytes.NewBufferString(`{"query":"q","time_range":"week"}`)))
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"title":"recent"`)) || bytes.Contains(w.Body.Bytes(), []byte(`"title":"old"`)) {
+		t.Fatalf("body=%s", w.Body.String())
+	}
+	for _, body := range []string{`{"query":"q","time_range":"quarter"}`, `{"query":"q","start_date":"07/01/2025"}`, `{"query":"q","start_date":"2025-08-01","end_date":"2025-07-01"}`, `{"query":"q","time_range":"week","start_date":"2025-07-01"}`} {
+		w = httptest.NewRecorder()
+		h.Search(w, httptest.NewRequest(http.MethodPost, "/search", bytes.NewBufferString(body)))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("body %s status=%d response=%s", body, w.Code, w.Body.String())
+		}
+	}
+}
 
 func TestTavilyDeclarativeServiceFaults(t *testing.T) {
 	def := &types.SearchServiceDefinition{Spec: types.SearchServiceSpec{
