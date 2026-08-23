@@ -52,6 +52,29 @@ mockagents a2a --agents-dir examples --server weather-a2a
 
 `--server` is only needed when more than one `A2AServer` document is loaded.
 
+### Deterministic chaos
+
+The JSON-RPC endpoint accepts the shared bounded chaos policy:
+
+```yaml
+spec:
+  faults:
+    seed: 42
+    rate: 0.25
+    latency_ms: 100
+    error: true
+```
+
+An omitted `rate` preserves always-on behavior for configured actions. With a
+rate, the decision is stable for the seed, request ID, and action. Set
+`X-Mockagents-Chaos: error` or `latency` to force that configured action for one
+request; `X-Mockagents-Chaos: off` suppresses configured A2A chaos. Request
+overrides take precedence over the seeded rate, then latency precedes the
+protocol-shaped JSON-RPC internal error (`-32603`). The response preserves the
+request ID and exposes `X-Mockagents-Chaos-Action` and
+`X-Mockagents-Chaos-Source`. Agent Card discovery and `/healthz` are never
+faulted, and `latency_ms` is capped at 60 seconds.
+
 Fetch the Agent Card:
 
 ```bash

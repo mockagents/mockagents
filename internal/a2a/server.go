@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	commonchaos "github.com/mockagents/mockagents/internal/chaos"
 	"github.com/mockagents/mockagents/internal/types"
 )
 
@@ -444,7 +445,11 @@ func (s *Server) RPCHandler() http.HandlerFunc {
 		}
 		// Peek the method so message/stream can be served as Server-Sent Events.
 		var probe rpcRequest
-		if json.Unmarshal(body, &probe) == nil && probe.Method == "message/stream" {
+		probeOK := json.Unmarshal(body, &probe) == nil
+		if s.applyChaos(w, r, probe.ID) {
+			return
+		}
+		if probeOK && probe.Method == "message/stream" {
 			s.serveStream(w, r, &probe)
 			return
 		}
@@ -461,6 +466,48 @@ func (s *Server) RPCHandler() http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(out)
 	}
+}
+
+// applyChaos applies A2A request fault precedence: bounded latency, then a
+// protocol-shaped JSON-RPC internal error. Request force/off overrides the
+// seeded rate. It returns true when the response is fully handled.
+func (s *Server) applyChaos(w http.ResponseWriter, r *http.Request, id json.RawMessage) bool {
+	faults := s.def.Spec.Faults
+	key := r.Header.Get("X-Request-Id")
+	if key == "" {
+		key = r.Method + " " + r.URL.Path
+	}
+	force := r.Header.Get(commonchaos.ForceHeader)
+	policy := commonchaos.Policy{Seed: faults.Seed, Rate: faults.Rate}
+	applies := func(action string) (bool, string) {
+		decision := commonchaos.Decide(policy, key, action, force)
+		return decision.Apply, decision.Source
+	}
+	if faults.LatencyMs > 0 {
+		if apply, source := applies("latency"); apply {
+			stampA2AChaos(w, "latency", source)
+			timer := time.NewTimer(time.Duration(faults.LatencyMs) * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-r.Context().Done():
+				return true
+			}
+		}
+	}
+	if faults.Error {
+		if apply, source := applies("error"); apply {
+			stampA2AChaos(w, "error", source)
+			writeJSON(w, http.StatusOK, newError(id, errInternal, "mock A2A chaos fault", nil))
+			return true
+		}
+	}
+	return false
+}
+
+func stampA2AChaos(w http.ResponseWriter, action, source string) {
+	w.Header().Set("X-Mockagents-Chaos-Action", action)
+	w.Header().Set("X-Mockagents-Chaos-Source", source)
 }
 
 // serveStream answers message/stream as Server-Sent Events: each event's data

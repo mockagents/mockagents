@@ -50,3 +50,13 @@ func TestValidateA2AServer_Errors(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateA2AServer_ChaosBounds(t *testing.T) {
+	d := validA2ADef()
+	rate := 1.1
+	d.Spec.Faults = types.A2AFaults{Rate: &rate, LatencyMs: 60_001}
+	errs := ValidateA2AServer(d, "", nil)
+	if errs == nil || !containsField(errs, "spec.faults.rate") || !containsField(errs, "spec.faults.latency_ms") {
+		t.Fatalf("expected chaos bound errors: %v", errs)
+	}
+}

@@ -1,0 +1,63 @@
+package a2a
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/mockagents/mockagents/internal/types"
+)
+
+func TestA2AChaosForceErrorAndOffPrecedence(t *testing.T) {
+	zero := 0.0
+	def := testDef()
+	def.Spec.Faults = types.A2AFaults{Rate: &zero, Error: true}
+	h := NewServer(def).RPCHandler()
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"message/send","params":{}}`))
+	req.Header.Set("X-Mockagents-Chaos", "error")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Header().Get("X-Mockagents-Chaos-Source") != "request-force" {
+		t.Fatalf("forced status=%d source=%q body=%s", rec.Code, rec.Header().Get("X-Mockagents-Chaos-Source"), rec.Body.String())
+	}
+	var body struct {
+		ID    int `json:"id"`
+		Error struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.ID != 7 || body.Error.Code != errInternal {
+		t.Fatalf("response=%+v err=%v", body, err)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":8,"method":"message/send","params":{}}`))
+	req.Header.Set("X-Mockagents-Chaos", "off")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Header().Get("X-Mockagents-Chaos-Action") != "" || rec.Code != http.StatusOK {
+		t.Fatalf("off status=%d action=%q body=%s", rec.Code, rec.Header().Get("X-Mockagents-Chaos-Action"), rec.Body.String())
+	}
+}
+
+func TestA2AChaosSeededDecisionUsesRequestID(t *testing.T) {
+	rate := 0.5
+	def := testDef()
+	def.Spec.Faults = types.A2AFaults{Seed: 99, Rate: &rate, Error: true}
+	h := NewServer(def).RPCHandler()
+	result := func() string {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"message/send","params":{}}`))
+		req.Header.Set("X-Request-Id", "stable-request")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Header().Get("X-Mockagents-Chaos-Action")
+	}
+	want := result()
+	for i := 0; i < 10; i++ {
+		if got := result(); got != want {
+			t.Fatalf("same request id changed action from %q to %q", want, got)
+		}
+	}
+}
