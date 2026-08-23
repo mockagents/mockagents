@@ -109,6 +109,9 @@ func TestQdrantSearchSignalsConfiguredPartialResults(t *testing.T) {
 	if rec.Code != http.StatusOK || rec.Header().Get("X-Mockagents-Vector-Partial") != "true" {
 		t.Fatalf("status=%d partial=%q body=%s", rec.Code, rec.Header().Get("X-Mockagents-Vector-Partial"), rec.Body.String())
 	}
+	if rec.Header().Get("X-Mockagents-Chaos-Action") != "partial" || rec.Header().Get("X-Mockagents-Chaos-Source") != "configured" {
+		t.Fatalf("chaos action=%q source=%q", rec.Header().Get("X-Mockagents-Chaos-Action"), rec.Header().Get("X-Mockagents-Chaos-Source"))
+	}
 	var body struct {
 		Result []any `json:"result"`
 	}
