@@ -45,3 +45,11 @@ func TestValidateVectorCollectionRejectsInvalidPartialLimit(t *testing.T) {
 	require.NotNil(t, errs)
 	require.Contains(t, errs.Errors[0].Field, "partial_results.max_results")
 }
+
+func TestValidateVectorCollectionChaosRate(t *testing.T) {
+	valid := ValidateBytes([]byte("apiVersion: mockagents/v1\nkind: VectorCollection\nmetadata:\n  name: docs\nspec:\n  dimension: 1\n  metric: dot\n  faults:\n    seed: 42\n    rate: 0.5\n    partial_results:\n      max_results: 1\n"))
+	require.Empty(t, valid.Errors)
+
+	invalid := ValidateBytes([]byte("apiVersion: mockagents/v1\nkind: VectorCollection\nmetadata:\n  name: docs\nspec:\n  dimension: 1\n  metric: dot\n  faults:\n    rate: -0.1\n"))
+	require.Len(t, invalid.Errors, 1)
+}

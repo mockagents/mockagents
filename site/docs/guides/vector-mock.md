@@ -43,9 +43,17 @@ spec:
 ```
 
 Ranking and filtering happen first, then the response is truncated to
-`max_results`. Qdrant searches set `X-Mockagents-Vector-Partial: true` only when
-the fault actually drops matches. `max_results: 0` produces an explicitly
+`max_results`. Provider searches set `X-Mockagents-Vector-Partial: true` only
+when the fault actually drops matches. `max_results: 0` produces an explicitly
 partial empty page.
+
+Add `faults.seed` and `faults.rate` to gate truncation with the same stable
+request decision used by search/rerank/moderation. Omitting `rate` keeps the
+legacy always-on behavior. `X-Mockagents-Chaos: partial` forces configured
+truncation for one query, while `X-Mockagents-Chaos: off` suppresses it. The
+request override wins over the seeded rate; ranking and filtering still happen
+before truncation. Qdrant, Pinecone, and Chroma responses expose the effective
+decision through `X-Mockagents-Chaos-Action` and `X-Mockagents-Chaos-Source`.
 
 ## Create and seed a collection
 

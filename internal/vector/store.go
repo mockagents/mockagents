@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	commonchaos "github.com/mockagents/mockagents/internal/chaos"
 )
 
 const (
@@ -62,11 +64,17 @@ type Query struct {
 	TopK     int
 	Filter   map[string]any
 	MinScore *float64
+	// RequestKey and ForcedChaos provide request-scoped deterministic chaos
+	// context without coupling the provider-neutral store to HTTP.
+	RequestKey  string
+	ForcedChaos string
 }
 
 type QueryResult struct {
-	Matches []Match
-	Partial bool
+	Matches     []Match
+	Partial     bool
+	ChaosAction string
+	ChaosSource string
 }
 
 type collection struct {
@@ -74,11 +82,19 @@ type collection struct {
 	metric             Metric
 	points             map[string]Point
 	partialResultLimit *int
+	chaosSeed          int64
+	chaosRate          *float64
 }
 
 // SetPartialResultLimit configures deterministic post-ranking truncation for a
 // collection. A nil limit disables the fault; zero returns an empty partial page.
 func (s *Store) SetPartialResultLimit(name string, limit *int) error {
+	return s.SetPartialResultPolicy(name, limit, 0, nil)
+}
+
+// SetPartialResultPolicy configures truncation plus an optional deterministic
+// rate. A nil rate preserves the legacy always-on partial-result fixture.
+func (s *Store) SetPartialResultPolicy(name string, limit *int, seed int64, rate *float64) error {
 	if limit != nil && (*limit < 0 || *limit > MaxTopK) {
 		return fmt.Errorf("partial result limit must be between 0 and %d", MaxTopK)
 	}
@@ -93,6 +109,13 @@ func (s *Store) SetPartialResultLimit(name string, limit *int) error {
 	} else {
 		value := *limit
 		c.partialResultLimit = &value
+	}
+	c.chaosSeed = seed
+	if rate == nil {
+		c.chaosRate = nil
+	} else {
+		value := *rate
+		c.chaosRate = &value
 	}
 	return nil
 }
@@ -370,11 +393,17 @@ func (s *Store) QueryWithInfo(name string, query Query) (QueryResult, error) {
 		matches = matches[:query.TopK]
 	}
 	partial := false
-	if c.partialResultLimit != nil && len(matches) > *c.partialResultLimit {
+	decision := commonchaos.Decide(commonchaos.Policy{Seed: c.chaosSeed, Rate: c.chaosRate}, query.RequestKey, "partial", query.ForcedChaos)
+	if c.partialResultLimit != nil && len(matches) > *c.partialResultLimit && decision.Apply {
 		matches = matches[:*c.partialResultLimit]
 		partial = true
 	}
-	return QueryResult{Matches: matches, Partial: partial}, nil
+	result := QueryResult{Matches: matches, Partial: partial}
+	if partial {
+		result.ChaosAction = "partial"
+		result.ChaosSource = decision.Source
+	}
+	return result, nil
 }
 
 func similarity(metric Metric, a, b []float64) float64 {

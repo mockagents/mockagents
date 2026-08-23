@@ -188,16 +188,14 @@ func (h *QdrantHandler) SearchPoints(w http.ResponseWriter, r *http.Request) {
 		writeQdrantError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	queryResult, err := h.Store.QueryWithInfo(qdrantCollectionKey(r), vector.Query{
+	queryResult, err := h.Store.QueryWithInfo(qdrantCollectionKey(r), vectorChaosQuery(r, vector.Query{
 		Vector: req.Vector, TopK: req.Limit, Filter: filter, MinScore: req.ScoreThreshold,
-	})
+	}))
 	if err != nil {
 		h.writeStoreError(w, err)
 		return
 	}
-	if queryResult.Partial {
-		w.Header().Set("X-Mockagents-Vector-Partial", "true")
-	}
+	stampVectorChaos(w, queryResult)
 	matches := queryResult.Matches
 	withPayload := req.WithPayload == nil || *req.WithPayload
 	result := make([]map[string]any, len(matches))

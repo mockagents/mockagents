@@ -102,14 +102,12 @@ func (h *PineconeHandler) Query(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, err)
 		return
 	}
-	result, err := h.Store.QueryWithInfo(key, vector.Query{Vector: req.Vector, TopK: req.TopK, Filter: filter})
+	result, err := h.Store.QueryWithInfo(key, vectorChaosQuery(r, vector.Query{Vector: req.Vector, TopK: req.TopK, Filter: filter}))
 	if err != nil {
 		h.writeError(w, err)
 		return
 	}
-	if result.Partial {
-		w.Header().Set("X-Mockagents-Vector-Partial", "true")
-	}
+	stampVectorChaos(w, result)
 	matches := make([]map[string]any, len(result.Matches))
 	for i, match := range result.Matches {
 		item := map[string]any{"id": externalID(match.ID, match.ExternalID), "score": match.Score}

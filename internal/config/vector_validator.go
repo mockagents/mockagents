@@ -39,6 +39,9 @@ func ValidateVectorCollection(def *types.VectorCollectionDefinition, filePath st
 		ctx.addError("spec.faults.partial_results.max_results",
 			fmt.Sprintf("max_results must be between 0 and %d", vector.MaxTopK), "")
 	}
+	if rate := def.Spec.Faults.Rate; rate != nil && (*rate < 0 || *rate > 1) {
+		ctx.addError("spec.faults.rate", "rate must be between 0 and 1", "")
+	}
 	ids := make(map[string]struct{}, len(def.Spec.Points))
 	for i, point := range def.Spec.Points {
 		field := fmt.Sprintf("spec.points.%d", i)

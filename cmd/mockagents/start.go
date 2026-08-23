@@ -374,7 +374,7 @@ func registerVectorCollections(results []*config.VectorCollectionLoadResult, log
 			continue
 		}
 		if partial := def.Spec.Faults.PartialResults; partial != nil {
-			if err := store.SetPartialResultLimit(name, &partial.MaxResults); err != nil {
+			if err := store.SetPartialResultPolicy(name, &partial.MaxResults, def.Spec.Faults.Seed, def.Spec.Faults.Rate); err != nil {
 				logger.Warn("skipping vector collection fault", "file", result.FilePath, "error", err)
 				_ = store.DeleteCollection(name)
 				continue

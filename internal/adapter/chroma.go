@@ -219,14 +219,12 @@ func (h *ChromaHandler) Query(w http.ResponseWriter, r *http.Request) {
 	metas := [][]map[string]any{}
 	embeds := [][][]float64{}
 	for _, v := range q.QueryEmbeddings {
-		res, x := h.Store.QueryWithInfo(h.key(r), vector.Query{Vector: v, TopK: q.NResults, Filter: f})
+		res, x := h.Store.QueryWithInfo(h.key(r), vectorChaosQuery(r, vector.Query{Vector: v, TopK: q.NResults, Filter: f}))
 		if x != nil {
 			h.err(w, x)
 			return
 		}
-		if res.Partial {
-			w.Header().Set("X-Mockagents-Vector-Partial", "true")
-		}
+		stampVectorChaos(w, res)
 		ii := []string{}
 		dd := []float64{}
 		mm := []map[string]any{}

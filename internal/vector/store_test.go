@@ -83,6 +83,30 @@ func TestQueryPartialResultsDoesNotClaimPartialWhenNothingWasDropped(t *testing.
 	}
 }
 
+func TestQueryPartialResultsSeedAndRequestOverride(t *testing.T) {
+	s := seededStore(t, Cosine)
+	limit := 1
+	zero := 0.0
+	if err := s.SetPartialResultPolicy("docs", &limit, 42, &zero); err != nil {
+		t.Fatal(err)
+	}
+	base := Query{Vector: []float64{1, 0}, TopK: 3, RequestKey: "request-1"}
+	result, err := s.QueryWithInfo("docs", base)
+	if err != nil || result.Partial || len(result.Matches) != 3 {
+		t.Fatalf("zero-rate result=%+v err=%v", result, err)
+	}
+	base.ForcedChaos = "partial"
+	result, err = s.QueryWithInfo("docs", base)
+	if err != nil || !result.Partial || len(result.Matches) != 1 || result.ChaosSource != "request-force" {
+		t.Fatalf("forced result=%+v err=%v", result, err)
+	}
+	base.ForcedChaos = "off"
+	result, err = s.QueryWithInfo("docs", base)
+	if err != nil || result.Partial || len(result.Matches) != 3 {
+		t.Fatalf("off result=%+v err=%v", result, err)
+	}
+}
+
 func TestUpsertIsAtomicOnDimensionMismatch(t *testing.T) {
 	s := seededStore(t, Dot)
 	err := s.Upsert("docs", []Point{
