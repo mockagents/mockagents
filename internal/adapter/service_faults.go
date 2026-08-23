@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	commonchaos "github.com/mockagents/mockagents/internal/chaos"
 	"github.com/mockagents/mockagents/internal/types"
 )
 
@@ -11,7 +12,21 @@ import (
 // used by search, rerank, and moderation. It returns true when the request is
 // fully handled by a fault.
 func applyServiceFaults(w http.ResponseWriter, r *http.Request, faults types.SearchFaults, errorBody func(int)) bool {
-	if faults.LatencyMs > 0 {
+	requestKey := r.Header.Get("X-Request-Id")
+	if requestKey == "" {
+		requestKey = r.Method + " " + r.URL.Path
+	}
+	forced := r.Header.Get(commonchaos.ForceHeader)
+	policy := commonchaos.Policy{Seed: faults.Seed, Rate: faults.Rate}
+	applies := func(action string) bool {
+		decision := commonchaos.Decide(policy, requestKey, action, forced)
+		if decision.Apply {
+			w.Header().Set("X-Mockagents-Chaos-Action", action)
+			w.Header().Set("X-Mockagents-Chaos-Source", decision.Source)
+		}
+		return decision.Apply
+	}
+	if faults.LatencyMs > 0 && applies("latency") {
 		timer := time.NewTimer(time.Duration(faults.LatencyMs) * time.Millisecond)
 		defer timer.Stop()
 		select {
@@ -20,17 +35,17 @@ func applyServiceFaults(w http.ResponseWriter, r *http.Request, faults types.Sea
 			return true
 		}
 	}
-	if faults.Disconnect {
+	if faults.Disconnect && applies("disconnect") {
 		if !connectionFault(w, "empty") {
 			errorBody(http.StatusBadGateway)
 		}
 		return true
 	}
-	if faults.StatusCode != 0 {
+	if faults.StatusCode != 0 && applies("status") {
 		errorBody(faults.StatusCode)
 		return true
 	}
-	if faults.MalformedJSON {
+	if faults.MalformedJSON && applies("malformed") {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"error":`))

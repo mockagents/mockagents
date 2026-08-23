@@ -16,6 +16,11 @@ type SearchServiceSpec struct {
 }
 
 type SearchFaults struct {
+	// Seed and Rate gate configured faults deterministically per request. A nil
+	// Rate preserves the legacy always-on behavior. X-Mockagents-Chaos can force
+	// a configured action or disable chaos for one request.
+	Seed           int64                      `yaml:"seed,omitempty" json:"seed,omitempty"`
+	Rate           *float64                   `yaml:"rate,omitempty" json:"rate,omitempty"`
 	LatencyMs      int                        `yaml:"latency_ms,omitempty" json:"latency_ms,omitempty"`
 	StatusCode     int                        `yaml:"status_code,omitempty" json:"status_code,omitempty"`
 	MalformedJSON  bool                       `yaml:"malformed_json,omitempty" json:"malformed_json,omitempty"`
