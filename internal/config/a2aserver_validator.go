@@ -13,6 +13,8 @@ var validA2ATaskStates = []string{
 	"submitted", "working", "input-required", "completed", "canceled", "failed", "rejected",
 }
 
+const maxA2ALatencyMs = 60_000
+
 // ValidateA2AServer runs rule-based validation against an A2AServerDefinition
 // (NF-04). Mirrors ValidateMCPServer so every document kind flows through the
 // same plumbing. Returns nil on success.
@@ -45,6 +47,12 @@ func ValidateA2AServer(def *types.A2AServerDefinition, filePath string, node *ya
 			fmt.Sprintf("Use kind: %s", types.A2AServerKind))
 	}
 	validateMetadataName(ctx, def.Metadata.Name, "metadata.name", "a2a-server")
+	if def.Spec.Faults.LatencyMs < 0 || def.Spec.Faults.LatencyMs > maxA2ALatencyMs {
+		ctx.addError("spec.faults.latency_ms", fmt.Sprintf("latency_ms must be between 0 and %d", maxA2ALatencyMs), "")
+	}
+	if rate := def.Spec.Faults.Rate; rate != nil && (*rate < 0 || *rate > 1) {
+		ctx.addError("spec.faults.rate", "rate must be between 0 and 1", "")
+	}
 
 	if def.Spec.Card.Name == "" {
 		ctx.addError("spec.card.name", "required field missing",
