@@ -23,7 +23,7 @@ inputs:
     description: >-
       Build the CLI from a local checkout instead of installing a published
       release (runs 'go build ./cmd/mockagents' from this path). Use
-      ${{ github.workspace }} to test your working tree, or the repo's own CI
+      the workflow workspace path to test your working tree, or the repo's own CI
       before a release is published. Takes precedence over 'version'.
     required: false
     default: ""

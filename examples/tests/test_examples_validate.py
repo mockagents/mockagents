@@ -38,6 +38,7 @@ NON_AGENT_REQUIRED_SPEC_FIELDS = {
     "MCPServer": ("capabilities",),
     "Pipeline": ("topology", "agents"),
     "TestSuite": ("target", "cases"),
+    "VectorCollection": ("dimension", "metric"),
 }
 
 # Every kind internal/config/loader.go LoadDirectory dispatches on, plus the
