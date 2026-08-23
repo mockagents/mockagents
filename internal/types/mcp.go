@@ -39,8 +39,9 @@ type MCPServerSpec struct {
 	Faults     MCPFaults `yaml:"faults,omitempty" json:"faults,omitempty"`
 }
 
-// MCPFaults configures deterministic faults for HTTP client requests. A nil
-// Rate preserves always-on semantics when an action is configured.
+// MCPFaults configures deterministic faults for HTTP and stdio client
+// requests. A nil Rate preserves always-on semantics when an action is
+// configured.
 type MCPFaults struct {
 	Seed      int64    `yaml:"seed,omitempty" json:"seed,omitempty"`
 	Rate      *float64 `yaml:"rate,omitempty" json:"rate,omitempty"`

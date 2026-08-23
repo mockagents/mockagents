@@ -106,7 +106,7 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	case "http":
 		return serveMCPHTTP(server, mcpBind, mcpPort)
 	case "stdio":
-		return mcp.ServeStdio(server, os.Stdin, os.Stdout)
+		return mcp.ServeStdioWithFaults(server, os.Stdin, os.Stdout, server.Definition().Spec.Faults)
 	default:
 		return fmt.Errorf("unknown transport %q (valid: http, stdio)", mcpTransport)
 	}

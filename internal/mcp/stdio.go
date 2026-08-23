@@ -8,6 +8,10 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
+
+	commonchaos "github.com/mockagents/mockagents/internal/chaos"
+	"github.com/mockagents/mockagents/internal/types"
 )
 
 // maxStdioFrameBytes caps one newline-delimited MCP frame — some image
@@ -24,6 +28,15 @@ const maxStdioFrameBytes = 10 * 1024 * 1024
 // previously bufio.Scanner hit ErrTooLong and the whole process exited,
 // killing the session for every later request (round-10 R10-22).
 func ServeStdio(s *Server, r io.Reader, w io.Writer) error {
+	return ServeStdioWithFaults(s, r, w, types.MCPFaults{})
+}
+
+// ServeStdioWithFaults is ServeStdio with the MCPServer's deterministic chaos
+// policy applied at the transport boundary. stdio has no HTTP headers, so a
+// request can force or suppress a configured action with the optional
+// top-level "mockagentsChaos" member. The member is ignored by the JSON-RPC
+// dispatcher after the transport consumes it.
+func ServeStdioWithFaults(s *Server, r io.Reader, w io.Writer, faults types.MCPFaults) error {
 	br := bufio.NewReaderSize(r, 64*1024)
 
 	var writeMu sync.Mutex
@@ -48,6 +61,20 @@ func ServeStdio(s *Server, r io.Reader, w io.Writer) error {
 		} else {
 			line := bytes.TrimSpace(frame)
 			if len(line) > 0 {
+				if out, handled := applyStdioChaos(line, faults); handled {
+					if out != nil {
+						if werr := write(out); werr != nil {
+							return werr
+						}
+					}
+					if err != nil {
+						if errors.Is(err, io.EOF) {
+							return nil
+						}
+						return err
+					}
+					continue
+				}
 				out, herr := s.HandleBytes(line)
 				if herr != nil {
 					return fmt.Errorf("handler error: %w", herr)
@@ -76,6 +103,40 @@ func ServeStdio(s *Server, r io.Reader, w io.Writer) error {
 			return err
 		}
 	}
+}
+
+// applyStdioChaos returns handled=true when a configured fault consumed the
+// frame. A nil payload represents a JSON-RPC notification, which must not get a
+// response even when the error action is selected.
+func applyStdioChaos(frame []byte, faults types.MCPFaults) ([]byte, bool) {
+	var envelope struct {
+		ID              json.RawMessage `json:"id"`
+		Method          string          `json:"method"`
+		MockagentsChaos string          `json:"mockagentsChaos"`
+	}
+	if json.Unmarshal(frame, &envelope) != nil || envelope.Method == "" {
+		return nil, false
+	}
+	key := envelope.Method + ":" + string(envelope.ID)
+	policy := commonchaos.Policy{Seed: faults.Seed, Rate: faults.Rate}
+	if faults.LatencyMs > 0 && commonchaos.Decide(policy, key, "latency", envelope.MockagentsChaos).Apply {
+		time.Sleep(time.Duration(faults.LatencyMs) * time.Millisecond)
+	}
+	decision := commonchaos.Decide(policy, key, "error", envelope.MockagentsChaos)
+	if !faults.Error || !decision.Apply {
+		return nil, false
+	}
+	if len(envelope.ID) == 0 || string(envelope.ID) == "null" {
+		return nil, true
+	}
+	resp := newError(envelope.ID, -32000, "mock MCP chaos fault", map[string]any{
+		"chaos": map[string]string{"action": "error", "source": decision.Source},
+	})
+	out, marshalErr := json.Marshal(resp)
+	if marshalErr != nil {
+		return nil, false
+	}
+	return out, true
 }
 
 // readStdioFrame reads one newline-delimited frame of at most max bytes. When the
