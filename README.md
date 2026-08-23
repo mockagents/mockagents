@@ -488,6 +488,13 @@ The `initialize` response mints an `Mcp-Session-Id` the client must echo on
 later requests; the `Origin` and `MCP-Protocol-Version` headers are validated. A
 plain POST-JSON transport (no sessions) remains at `/mcp/rpc`.
 
+An MCPServer `spec.faults` block can set `seed`, `rate`, `latency_ms`, and
+`error` for deterministic chaos on both transports. HTTP requests override the
+configured decision with `X-Mockagents-Chaos: error|latency|off`; stdio frames
+use the equivalent optional top-level `mockagentsChaos` member. Injected stdio
+errors use JSON-RPC code `-32000` and include the selected action and decision
+source in `error.data.chaos`.
+
 Supported methods (v0.3): `initialize`, `tools/list`, `tools/call`,
 `resources/list`, `resources/read`, `resources/subscribe`,
 `resources/unsubscribe`, `prompts/list`, `prompts/get`, `completion/complete`,
