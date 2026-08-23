@@ -207,8 +207,9 @@ func newMCPMux(server *mcp.Server) *http.ServeMux {
 	// older clients, and `/mcp/notify` pushes a server notification onto every
 	// live streamable session's GET stream.
 	streamable := mcp.NewStreamableHTTPHandler(server)
-	mux.Handle("/mcp", streamable)
-	mux.Handle("/mcp/rpc", mcp.NewHTTPHandler(server))
+	faults := server.Definition().Spec.Faults
+	mux.Handle("/mcp", mcp.NewChaosHTTPHandler(streamable, faults))
+	mux.Handle("/mcp/rpc", mcp.NewChaosHTTPHandler(mcp.NewHTTPHandler(server), faults))
 	mux.Handle("/mcp/notify", mcp.NewStreamableNotifyHandler(streamable))
 	// The bidirectional/admin surface (v0.3): a server-initiated SSE stream +
 	// the response route back, plus the sampling/roots admin triggers. These

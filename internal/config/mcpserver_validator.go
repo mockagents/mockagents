@@ -11,6 +11,8 @@ import (
 // server understands. Keep in sync with internal/mcp/server.go.
 var validMCPContentTypes = []string{"text", "image", "audio", "resource"}
 
+const maxMCPLatencyMs = 60_000
+
 // ValidateMCPServer runs rule-based validation against an
 // MCPServerDefinition. Mirrors the shape of ValidatePipeline and
 // ValidateTestSuite so every document kind flows through the same
@@ -49,6 +51,12 @@ func ValidateMCPServer(def *types.MCPServerDefinition, filePath string, node *ya
 			fmt.Sprintf("Use kind: %s", types.MCPServerKind))
 	}
 	validateMetadataName(ctx, def.Metadata.Name, "metadata.name", "mcp-server")
+	if def.Spec.Faults.LatencyMs < 0 || def.Spec.Faults.LatencyMs > maxMCPLatencyMs {
+		ctx.addError("spec.faults.latency_ms", fmt.Sprintf("latency_ms must be between 0 and %d", maxMCPLatencyMs), "")
+	}
+	if rate := def.Spec.Faults.Rate; rate != nil && (*rate < 0 || *rate > 1) {
+		ctx.addError("spec.faults.rate", "rate must be between 0 and 1", "")
+	}
 
 	// An MCP server that exposes none of tools/resources/prompts
 	// is legal per the protocol (initialize still works) but is

@@ -84,6 +84,7 @@ All fields live under `spec` (schema:
 |---|---|
 | `protocolVersion` | Version echoed by `initialize`. Default `2025-11-25`. |
 | `strictArgs` | Validate `tools/call` arguments against `inputSchema`. **Default `true`** — set `false` to accept anything. |
+| `faults` | Deterministic HTTP chaos policy: `seed`, `rate`, `latency_ms`, and protocol-shaped `error`. |
 | `capabilities` | Booleans `tools` / `resources` / `prompts` / `logging` advertised on `initialize` (sections with content are advertised automatically). |
 | `tools[]` | `name` (required), `description`, `inputSchema` (JSON Schema), `responses[]`. |
 | `resources[]` | `uri` (required), `name`, `description`, `mimeType`, and `text` **or** `blob` (base64). |
@@ -112,6 +113,29 @@ spec:
 ```
 
 ## Transports
+
+### Deterministic HTTP chaos
+
+The client-facing `/mcp` and `/mcp/rpc` endpoints accept a bounded chaos policy:
+
+```yaml
+spec:
+  faults:
+    seed: 42
+    rate: 0.25
+    latency_ms: 100
+    error: true
+```
+
+An omitted `rate` preserves always-on behavior for configured actions. With a
+rate, the decision is stable for the seed, request ID, and action. Set
+`X-Mockagents-Chaos: error` or `latency` to force that configured action for one
+request; `X-Mockagents-Chaos: off` suppresses all configured MCP chaos. Request
+overrides take precedence over the seeded rate, then latency precedes the MCP
+error. Errors use HTTP 200 with JSON-RPC code `-32000` and preserve the request
+ID. `X-Mockagents-Chaos-Action` and `X-Mockagents-Chaos-Source` expose the
+effective decision. Health and notification-control endpoints are never
+faulted, and `latency_ms` is capped at 60 seconds.
 
 ### Streamable HTTP (`/mcp`)
 
