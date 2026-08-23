@@ -35,6 +35,20 @@ func ValidateDocuments(docs *Documents) *ValidationErrorList {
 	}
 
 	var errs []*ValidationError
+	firstSearchProvider := make(map[string]string, len(docs.SearchServices))
+	for _, sr := range docs.SearchServices {
+		if sr == nil || sr.Definition == nil {
+			continue
+		}
+		provider := sr.Definition.Spec.Provider
+		if prev, duplicate := firstSearchProvider[provider]; duplicate {
+			ctx := &validationContext{file: sr.FilePath, node: sr.Node}
+			ctx.addError("spec.provider", fmt.Sprintf("search provider %q is already defined by %s", provider, prev), "Keep one SearchService per provider.")
+			errs = append(errs, ctx.errors...)
+		} else {
+			firstSearchProvider[provider] = sr.FilePath
+		}
+	}
 	firstVectorFile := make(map[string]string, len(docs.Vectors))
 	for _, vr := range docs.Vectors {
 		if vr == nil || vr.Definition == nil || vr.Definition.Metadata.Name == "" {

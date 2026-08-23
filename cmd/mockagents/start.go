@@ -26,6 +26,7 @@ import (
 	"github.com/mockagents/mockagents/internal/server"
 	"github.com/mockagents/mockagents/internal/storage"
 	"github.com/mockagents/mockagents/internal/tenancy"
+	"github.com/mockagents/mockagents/internal/types"
 	"github.com/mockagents/mockagents/internal/vector"
 	"github.com/spf13/cobra"
 )
@@ -127,6 +128,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if vectorCount > 0 {
 		logger.Info("loaded vector collections", "collections", vectorCount)
 	}
+	searchService := registerSearchService(docs.SearchServices, logger)
 
 	// Initialize engine.
 	store := state.NewMemoryStore(state.DefaultSessionTTL)
@@ -156,6 +158,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	cfg.LogStore = logStore
 	cfg.Pipelines = pipelineReg
 	cfg.VectorStore = vectorStore
+	cfg.SearchService = searchService
 
 	// Stamp the real build version onto mockagents_build_info. The default
 	// registry is created at package init, before the ldflags-set version is
@@ -318,6 +321,20 @@ func runStart(cmd *cobra.Command, args []string) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+func registerSearchService(results []*config.SearchServiceLoadResult, logger *slog.Logger) *types.SearchServiceDefinition {
+	for _, result := range results {
+		if result == nil || result.Definition == nil {
+			continue
+		}
+		if errs := config.ValidateSearchService(result.Definition, result.FilePath, result.Node); errs != nil {
+			logger.Warn("skipping invalid search service", "file", result.FilePath, "errors", errs.Error())
+			continue
+		}
+		return result.Definition
+	}
+	return nil
 }
 
 // registerVectorCollections validates and seeds declarative VectorMock

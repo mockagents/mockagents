@@ -49,14 +49,21 @@ type VectorCollectionLoadResult struct {
 	FilePath   string
 }
 
+type SearchServiceLoadResult struct {
+	Definition *types.SearchServiceDefinition
+	Node       *yaml.Node
+	FilePath   string
+}
+
 // Documents is a bucketed collection of parsed mockagents YAML/JSON files.
 type Documents struct {
-	Agents     []*LoadResult
-	Pipelines  []*PipelineLoadResult
-	TestSuites []*TestSuiteLoadResult
-	MCPServers []*MCPServerLoadResult
-	A2AServers []*A2AServerLoadResult
-	Vectors    []*VectorCollectionLoadResult
+	Agents         []*LoadResult
+	Pipelines      []*PipelineLoadResult
+	TestSuites     []*TestSuiteLoadResult
+	MCPServers     []*MCPServerLoadResult
+	A2AServers     []*A2AServerLoadResult
+	Vectors        []*VectorCollectionLoadResult
+	SearchServices []*SearchServiceLoadResult
 }
 
 // A2AServerLoadResult is a parsed kind:A2AServer document (NF-04).
@@ -220,6 +227,21 @@ func LoadVectorCollectionFile(path string) (*VectorCollectionLoadResult, error) 
 	return &VectorCollectionLoadResult{Definition: &def, Node: doc, FilePath: path}, nil
 }
 
+func LoadSearchServiceFile(path string) (*SearchServiceLoadResult, error) {
+	_, doc, err := readAndParse(path)
+	if err != nil {
+		return nil, err
+	}
+	if k := peekKind(doc); k != types.SearchServiceKind {
+		return nil, fmt.Errorf("%s: kind %q is not %s", path, k, types.SearchServiceKind)
+	}
+	var def types.SearchServiceDefinition
+	if err := doc.Decode(&def); err != nil {
+		return nil, &ParseError{File: path, Err: err}
+	}
+	return &SearchServiceLoadResult{Definition: &def, Node: doc, FilePath: path}, nil
+}
+
 // LoadDir scans a directory for agent definition files (.yaml, .yml, .json)
 // and loads each one. Files whose `kind` is not "Agent" (or unset) are
 // silently skipped so pipelines and test suites can live in the same
@@ -315,6 +337,13 @@ func LoadAllDocuments(dir string) (*Documents, []error) {
 				continue
 			}
 			docs.Vectors = append(docs.Vectors, &VectorCollectionLoadResult{Definition: &def, Node: doc, FilePath: path})
+		case types.SearchServiceKind:
+			var def types.SearchServiceDefinition
+			if err := doc.Decode(&def); err != nil {
+				errs = append(errs, &ParseError{File: path, Err: err})
+				continue
+			}
+			docs.SearchServices = append(docs.SearchServices, &SearchServiceLoadResult{Definition: &def, Node: doc, FilePath: path})
 		default:
 			errs = append(errs, fmt.Errorf("%s: unrecognized kind %q", path, peekKind(doc)))
 		}
@@ -439,6 +468,7 @@ var documentKinds = map[string]struct{}{
 	types.MCPServerKind:        {},
 	types.A2AServerKind:        {},
 	types.VectorCollectionKind: {},
+	types.SearchServiceKind:    {},
 }
 
 // ParseError wraps a YAML/JSON parse error with file context.

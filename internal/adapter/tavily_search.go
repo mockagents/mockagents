@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/mockagents/mockagents/internal/types"
 )
@@ -16,7 +17,10 @@ type compiledSearchScenario struct {
 	scenario types.SearchScenario
 	regex    *regexp.Regexp
 }
-type TavilySearchHandler struct{ scenarios []compiledSearchScenario }
+type TavilySearchHandler struct {
+	scenarios []compiledSearchScenario
+	faults    types.SearchFaults
+}
 
 func NewTavilySearchHandler(scenarios []types.SearchScenario) (*TavilySearchHandler, error) {
 	h := &TavilySearchHandler{}
@@ -31,6 +35,18 @@ func NewTavilySearchHandler(scenarios []types.SearchScenario) (*TavilySearchHand
 		}
 		h.scenarios = append(h.scenarios, c)
 	}
+	return h, nil
+}
+
+func NewTavilySearchService(def *types.SearchServiceDefinition) (*TavilySearchHandler, error) {
+	if def == nil {
+		return NewTavilySearchHandler(nil)
+	}
+	h, err := NewTavilySearchHandler(def.Spec.Scenarios)
+	if err != nil {
+		return nil, err
+	}
+	h.faults = def.Spec.Faults
 	return h, nil
 }
 func (h *TavilySearchHandler) Name() string { return ProtocolTavily }
@@ -48,6 +64,31 @@ type tavilySearchRequest struct {
 }
 
 func (h *TavilySearchHandler) Search(w http.ResponseWriter, r *http.Request) {
+	if h.faults.LatencyMs > 0 {
+		timer := time.NewTimer(time.Duration(h.faults.LatencyMs) * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-r.Context().Done():
+			return
+		}
+	}
+	if h.faults.Disconnect {
+		if !connectionFault(w, "empty") {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"detail": map[string]any{"error": "disconnect fault could not be delivered"}})
+		}
+		return
+	}
+	if h.faults.StatusCode != 0 {
+		writeJSON(w, h.faults.StatusCode, map[string]any{"detail": map[string]any{"error": "injected search fault"}})
+		return
+	}
+	if h.faults.MalformedJSON {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"query":`))
+		return
+	}
 	var q tavilySearchRequest
 	if !decodeQdrant(w, r, &q) {
 		return
@@ -82,6 +123,9 @@ func (h *TavilySearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(results) > q.MaxResults {
 		results = results[:q.MaxResults]
+	}
+	if partial := h.faults.PartialResults; partial != nil && len(results) > partial.MaxResults {
+		results = results[:partial.MaxResults]
 	}
 	hash := fnv.New64a()
 	_, _ = hash.Write([]byte(q.Query))

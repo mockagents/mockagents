@@ -93,6 +93,8 @@ type Config struct {
 	Metrics *metrics.Registry
 	// VectorStore holds VectorMock collections. Nil creates an empty store.
 	VectorStore *vector.Store
+	// SearchService supplies declarative Tavily fixtures and service faults.
+	SearchService *types.SearchServiceDefinition
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -327,7 +329,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// These stay open (no mountManaged): the outer middleware chain still
 	// applies, and tenant scope / ProcessRequestContext plumbing lives in
 	// the handlers, unchanged by the move.
-	for _, a := range adapter.DefaultRegistryWithVectorStore(s.engine, s.config.VectorStore).Adapters() {
+	for _, a := range adapter.DefaultRegistryWithServices(s.engine, s.config.VectorStore, s.config.SearchService).Adapters() {
 		// Realtime generates responses in-process over a WebSocket, so the
 		// HTTP middleware that meters the request/response protocols never
 		// sees them — the adapter exposes per-response hooks instead.

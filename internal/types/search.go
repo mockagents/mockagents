@@ -1,5 +1,32 @@
 package types
 
+const SearchServiceKind = "SearchService"
+
+type SearchServiceDefinition struct {
+	APIVersion string            `yaml:"apiVersion" json:"apiVersion"`
+	Kind       string            `yaml:"kind" json:"kind"`
+	Metadata   Metadata          `yaml:"metadata" json:"metadata"`
+	Spec       SearchServiceSpec `yaml:"spec" json:"spec"`
+}
+
+type SearchServiceSpec struct {
+	Provider  string           `yaml:"provider" json:"provider"`
+	Scenarios []SearchScenario `yaml:"scenarios,omitempty" json:"scenarios,omitempty"`
+	Faults    SearchFaults     `yaml:"faults,omitempty" json:"faults,omitempty"`
+}
+
+type SearchFaults struct {
+	LatencyMs      int                        `yaml:"latency_ms,omitempty" json:"latency_ms,omitempty"`
+	StatusCode     int                        `yaml:"status_code,omitempty" json:"status_code,omitempty"`
+	MalformedJSON  bool                       `yaml:"malformed_json,omitempty" json:"malformed_json,omitempty"`
+	Disconnect     bool                       `yaml:"disconnect,omitempty" json:"disconnect,omitempty"`
+	PartialResults *SearchPartialResultsFault `yaml:"partial_results,omitempty" json:"partial_results,omitempty"`
+}
+
+type SearchPartialResultsFault struct {
+	MaxResults int `yaml:"max_results" json:"max_results"`
+}
+
 type SearchScenario struct {
 	Name     string         `yaml:"name" json:"name"`
 	Match    SearchMatch    `yaml:"match,omitempty" json:"match,omitempty"`

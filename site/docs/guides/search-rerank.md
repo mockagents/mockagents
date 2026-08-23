@@ -1,8 +1,47 @@
 # Search, rerank, and moderation mocks
 
 R12 brings deterministic retrieval-adjacent services onto the same MockAgents
-server. The first slice includes Cohere v2 reranking and the existing OpenAI
-moderation profile; Tavily-shaped declarative search fixtures are in progress.
+server: Tavily-shaped declarative search, Cohere v2 reranking, and the existing
+OpenAI moderation profile.
+
+## Tavily search
+
+Declare offline search results beside your agents:
+
+```yaml
+apiVersion: mockagents/v1
+kind: SearchService
+metadata:
+  name: web-search
+spec:
+  provider: tavily
+  scenarios:
+    - name: mockagents-docs
+      match:
+        query_contains: mockagents
+      response:
+        answer: MockAgents provides deterministic AI service mocks.
+        results:
+          - title: MockAgents docs
+            url: https://example.test/mockagents
+            content: Offline fixture content
+            score: 0.95
+    - name: safe-empty
+      match:
+        default: true
+      response:
+        results: []
+```
+
+`POST /search` selects the first case-insensitive `query_contains` or
+`query_regex` match, then the explicit default. With no match it returns a safe
+empty result set and never makes an upstream request. `max_results` is bounded
+to 1–20.
+
+The optional `spec.faults` block applies deterministic service faults:
+`latency_ms` (0–60000), `status_code` (400–599), `malformed_json`, `disconnect`,
+and `partial_results.max_results` (0–20). Configure one fault behavior per
+fixture when you need an unambiguous client test.
 
 ## Cohere v2 rerank
 

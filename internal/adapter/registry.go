@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/mockagents/mockagents/internal/engine"
+	"github.com/mockagents/mockagents/internal/types"
 	"github.com/mockagents/mockagents/internal/vector"
 )
 
@@ -61,6 +62,10 @@ func DefaultRegistry(eng *engine.Engine) *Registry {
 // DefaultRegistryWithVectorStore mounts the built-ins against a shared vector
 // store, allowing declarative startup fixtures and HTTP mutations to coexist.
 func DefaultRegistryWithVectorStore(eng *engine.Engine, vectorStore *vector.Store) *Registry {
+	return DefaultRegistryWithServices(eng, vectorStore, nil)
+}
+
+func DefaultRegistryWithServices(eng *engine.Engine, vectorStore *vector.Store, search *types.SearchServiceDefinition) *Registry {
 	if vectorStore == nil {
 		vectorStore = &vector.Store{}
 	}
@@ -85,7 +90,7 @@ func DefaultRegistryWithVectorStore(eng *engine.Engine, vectorStore *vector.Stor
 	// /v1/messages handler (A-08; the inline, file-free sibling of the OpenAI
 	// Batch API).
 	anthropicBatches := NewAnthropicBatchesHandler(anthropic.HandleMessages)
-	tavily, _ := NewTavilySearchHandler(nil)
+	tavily, _ := NewTavilySearchService(search)
 	return NewRegistry(
 		oai,
 		resp,
