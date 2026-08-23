@@ -22,8 +22,9 @@ func ValidateSearchService(def *types.SearchServiceDefinition, filePath string, 
 	if def.Metadata.Name == "" || !metadataNameRe.MatchString(def.Metadata.Name) {
 		ctx.addError("metadata.name", "service name must be lowercase kebab-case", "")
 	}
-	if strings.ToLower(def.Spec.Provider) != "tavily" {
-		ctx.addError("spec.provider", fmt.Sprintf("unsupported provider %q", def.Spec.Provider), "Use tavily.")
+	provider := strings.ToLower(def.Spec.Provider)
+	if provider != "tavily" && provider != "cohere-rerank" && provider != "openai-moderations" {
+		ctx.addError("spec.provider", fmt.Sprintf("unsupported provider %q", def.Spec.Provider), "Use tavily, cohere-rerank, or openai-moderations.")
 	}
 	if def.Spec.Faults.LatencyMs < 0 || def.Spec.Faults.LatencyMs > maxSearchLatencyMs {
 		ctx.addError("spec.faults.latency_ms", fmt.Sprintf("latency_ms must be between 0 and %d", maxSearchLatencyMs), "")
@@ -35,6 +36,9 @@ func ValidateSearchService(def *types.SearchServiceDefinition, filePath string, 
 		ctx.addError("spec.faults.partial_results.max_results", "max_results must be between 0 and 20", "")
 	}
 	defaults := 0
+	if provider != "tavily" && len(def.Spec.Scenarios) > 0 {
+		ctx.addError("spec.scenarios", "scenarios are only supported by the tavily provider", "Remove scenarios and use the deterministic provider response.")
+	}
 	for i, scenario := range def.Spec.Scenarios {
 		field := fmt.Sprintf("spec.scenarios.%d", i)
 		if strings.TrimSpace(scenario.Name) == "" {

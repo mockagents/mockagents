@@ -7,12 +7,14 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/mockagents/mockagents/internal/types"
 )
 
 const ProtocolCohereRerank = "cohere-rerank"
 const maxRerankDocuments = 1000
 
-type CohereRerankHandler struct{}
+type CohereRerankHandler struct{ Faults types.SearchFaults }
 
 func (h *CohereRerankHandler) Name() string { return ProtocolCohereRerank }
 func (h *CohereRerankHandler) Routes() []Route {
@@ -31,6 +33,9 @@ type cohereRerankResult struct {
 }
 
 func (h *CohereRerankHandler) Rerank(w http.ResponseWriter, r *http.Request) {
+	if applyServiceFaults(w, r, h.Faults, func(status int) { writeJSON(w, status, map[string]any{"message": "injected rerank fault"}) }) {
+		return
+	}
 	var req cohereRerankRequest
 	if !decodeQdrant(w, r, &req) {
 		return
@@ -63,6 +68,7 @@ func (h *CohereRerankHandler) Rerank(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.SliceStable(results, func(i, j int) bool { return results[i].RelevanceScore > results[j].RelevanceScore })
 	results = results[:top]
+	results = results[:partialResultLimit(h.Faults, len(results))]
 	hash := fnv.New64a()
 	_, _ = hash.Write([]byte(req.Model))
 	_, _ = hash.Write([]byte{0})

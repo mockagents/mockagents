@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/mockagents/mockagents/internal/engine"
+	"github.com/mockagents/mockagents/internal/types"
 )
 
 // ProtocolOpenAIModerations is the wire-protocol label recorded for the OpenAI
@@ -96,7 +97,7 @@ type ModerationResult struct {
 // ModerationsHandler serves the OpenAI Moderations API (POST /v1/moderations).
 // Like EmbeddingsHandler it is engine-free: moderation is a pure deterministic
 // function of the input text, so there is no agent/scenario/session to resolve.
-type ModerationsHandler struct{}
+type ModerationsHandler struct{ Faults types.SearchFaults }
 
 // Name identifies this adapter in logs and diagnostics.
 func (h *ModerationsHandler) Name() string { return "openai-moderations" }
@@ -113,6 +114,12 @@ func (h *ModerationsHandler) HandleModerations(w http.ResponseWriter, r *http.Re
 	meta := engine.RequestMetaFromContext(r.Context())
 	if meta != nil {
 		meta.Protocol = ProtocolOpenAIModerations
+	}
+	if applyServiceFaults(w, r, h.Faults, func(status int) {
+		errType, code := openAIChaosError(status)
+		writeErrorCode(w, status, errType, code, "injected moderation fault")
+	}) {
+		return
 	}
 
 	var req ModerationsRequest
@@ -145,6 +152,7 @@ func (h *ModerationsHandler) HandleModerations(w http.ResponseWriter, r *http.Re
 	for i, text := range inputs {
 		results[i] = moderateText(text)
 	}
+	results = results[:partialResultLimit(h.Faults, len(results))]
 
 	writeJSON(w, http.StatusOK, ModerationsResponse{
 		ID:      "modr-" + generateID(),

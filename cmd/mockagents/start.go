@@ -128,7 +128,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if vectorCount > 0 {
 		logger.Info("loaded vector collections", "collections", vectorCount)
 	}
-	searchService := registerSearchService(docs.SearchServices, logger)
+	searchService, serviceFaults := registerSearchServices(docs.SearchServices, logger)
 
 	// Initialize engine.
 	store := state.NewMemoryStore(state.DefaultSessionTTL)
@@ -159,6 +159,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	cfg.Pipelines = pipelineReg
 	cfg.VectorStore = vectorStore
 	cfg.SearchService = searchService
+	cfg.ServiceFaults = serviceFaults
 
 	// Stamp the real build version onto mockagents_build_info. The default
 	// registry is created at package init, before the ldflags-set version is
@@ -323,7 +324,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 }
 
-func registerSearchService(results []*config.SearchServiceLoadResult, logger *slog.Logger) *types.SearchServiceDefinition {
+func registerSearchServices(results []*config.SearchServiceLoadResult, logger *slog.Logger) (*types.SearchServiceDefinition, map[string]types.SearchFaults) {
+	var search *types.SearchServiceDefinition
+	faults := make(map[string]types.SearchFaults)
 	for _, result := range results {
 		if result == nil || result.Definition == nil {
 			continue
@@ -332,9 +335,13 @@ func registerSearchService(results []*config.SearchServiceLoadResult, logger *sl
 			logger.Warn("skipping invalid search service", "file", result.FilePath, "errors", errs.Error())
 			continue
 		}
-		return result.Definition
+		provider := strings.ToLower(result.Definition.Spec.Provider)
+		faults[provider] = result.Definition.Spec.Faults
+		if provider == "tavily" {
+			search = result.Definition
+		}
 	}
-	return nil
+	return search, faults
 }
 
 // registerVectorCollections validates and seeds declarative VectorMock

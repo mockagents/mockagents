@@ -95,6 +95,8 @@ type Config struct {
 	VectorStore *vector.Store
 	// SearchService supplies declarative Tavily fixtures and service faults.
 	SearchService *types.SearchServiceDefinition
+	// ServiceFaults applies common deterministic controls by adapter protocol.
+	ServiceFaults map[string]types.SearchFaults
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -329,7 +331,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// These stay open (no mountManaged): the outer middleware chain still
 	// applies, and tenant scope / ProcessRequestContext plumbing lives in
 	// the handlers, unchanged by the move.
-	for _, a := range adapter.DefaultRegistryWithServices(s.engine, s.config.VectorStore, s.config.SearchService).Adapters() {
+	for _, a := range adapter.DefaultRegistryWithServiceFaults(s.engine, s.config.VectorStore, s.config.SearchService, s.config.ServiceFaults).Adapters() {
 		// Realtime generates responses in-process over a WebSocket, so the
 		// HTTP middleware that meters the request/response protocols never
 		// sees them — the adapter exposes per-response hooks instead.

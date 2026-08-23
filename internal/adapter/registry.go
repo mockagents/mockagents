@@ -66,6 +66,10 @@ func DefaultRegistryWithVectorStore(eng *engine.Engine, vectorStore *vector.Stor
 }
 
 func DefaultRegistryWithServices(eng *engine.Engine, vectorStore *vector.Store, search *types.SearchServiceDefinition) *Registry {
+	return DefaultRegistryWithServiceFaults(eng, vectorStore, search, nil)
+}
+
+func DefaultRegistryWithServiceFaults(eng *engine.Engine, vectorStore *vector.Store, search *types.SearchServiceDefinition, faults map[string]types.SearchFaults) *Registry {
 	if vectorStore == nil {
 		vectorStore = &vector.Store{}
 	}
@@ -95,7 +99,7 @@ func DefaultRegistryWithServices(eng *engine.Engine, vectorStore *vector.Store, 
 		oai,
 		resp,
 		emb,
-		&ModerationsHandler{},
+		&ModerationsHandler{Faults: faults[ProtocolOpenAIModerations]},
 		anthropic,
 		&GeminiHandler{Engine: eng},
 		// Azure OpenAI URL surface, delegating to the OpenAI handlers above.
@@ -114,7 +118,7 @@ func DefaultRegistryWithServices(eng *engine.Engine, vectorStore *vector.Store, 
 		NewQdrantHandler(vectorStore),
 		NewPineconeHandler(vectorStore),
 		NewChromaHandler(vectorStore),
-		&CohereRerankHandler{},
+		&CohereRerankHandler{Faults: faults[ProtocolCohereRerank]},
 		tavily,
 	)
 }

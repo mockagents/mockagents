@@ -6,7 +6,34 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/mockagents/mockagents/internal/types"
 )
+
+func TestCohereRerankCommonServiceFaults(t *testing.T) {
+	body := `{"model":"m","query":"q","documents":["q one","q two"]}`
+	h := &CohereRerankHandler{Faults: types.SearchFaults{PartialResults: &types.SearchPartialResultsFault{MaxResults: 1}}}
+	w := httptest.NewRecorder()
+	h.Rerank(w, httptest.NewRequest(http.MethodPost, "/v2/rerank", bytes.NewBufferString(body)))
+	var got struct {
+		Results []cohereRerankResult `json:"results"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || len(got.Results) != 1 {
+		t.Fatalf("partial response: %s (%v)", w.Body.String(), err)
+	}
+	h.Faults = types.SearchFaults{StatusCode: 503}
+	w = httptest.NewRecorder()
+	h.Rerank(w, httptest.NewRequest(http.MethodPost, "/v2/rerank", bytes.NewBufferString(body)))
+	if w.Code != 503 {
+		t.Fatalf("status=%d", w.Code)
+	}
+	h.Faults = types.SearchFaults{MalformedJSON: true}
+	w = httptest.NewRecorder()
+	h.Rerank(w, httptest.NewRequest(http.MethodPost, "/v2/rerank", bytes.NewBufferString(body)))
+	if json.Valid(w.Body.Bytes()) {
+		t.Fatalf("expected malformed JSON: %q", w.Body.String())
+	}
+}
 
 func TestCohereRerankOrdersAndLimitsDeterministically(t *testing.T) {
 	h := &CohereRerankHandler{}

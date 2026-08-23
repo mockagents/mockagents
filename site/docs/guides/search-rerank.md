@@ -43,6 +43,41 @@ The optional `spec.faults` block applies deterministic service faults:
 and `partial_results.max_results` (0–20). Configure one fault behavior per
 fixture when you need an unambiguous client test.
 
+The same document kind configures faults for rerank and moderation. Add one
+document per provider (metadata names must be unique):
+
+`cohere-rerank.yaml`:
+
+```yaml
+apiVersion: mockagents/v1
+kind: SearchService
+metadata:
+  name: cohere-rerank
+spec:
+  provider: cohere-rerank
+  faults:
+    status_code: 429
+```
+
+`openai-moderations.yaml`:
+
+```yaml
+apiVersion: mockagents/v1
+kind: SearchService
+metadata:
+  name: openai-moderations
+spec:
+  provider: openai-moderations
+  faults:
+    partial_results:
+      max_results: 1
+```
+
+All three services use the same precedence: latency, disconnect, HTTP status,
+malformed JSON, then partial-result truncation on an otherwise valid response.
+HTTP faults retain the provider envelope: Tavily `detail`, Cohere `message`, and
+OpenAI `error`.
+
 ## Cohere v2 rerank
 
 `POST /v2/rerank` accepts `model`, `query`, `documents`, and optional `top_n`.

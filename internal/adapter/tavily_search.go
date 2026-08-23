@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/mockagents/mockagents/internal/types"
 )
@@ -64,29 +63,9 @@ type tavilySearchRequest struct {
 }
 
 func (h *TavilySearchHandler) Search(w http.ResponseWriter, r *http.Request) {
-	if h.faults.LatencyMs > 0 {
-		timer := time.NewTimer(time.Duration(h.faults.LatencyMs) * time.Millisecond)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-		case <-r.Context().Done():
-			return
-		}
-	}
-	if h.faults.Disconnect {
-		if !connectionFault(w, "empty") {
-			writeJSON(w, http.StatusBadGateway, map[string]any{"detail": map[string]any{"error": "disconnect fault could not be delivered"}})
-		}
-		return
-	}
-	if h.faults.StatusCode != 0 {
-		writeJSON(w, h.faults.StatusCode, map[string]any{"detail": map[string]any{"error": "injected search fault"}})
-		return
-	}
-	if h.faults.MalformedJSON {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"query":`))
+	if applyServiceFaults(w, r, h.faults, func(status int) {
+		writeJSON(w, status, map[string]any{"detail": map[string]any{"error": "injected search fault"}})
+	}) {
 		return
 	}
 	var q tavilySearchRequest
@@ -124,9 +103,7 @@ func (h *TavilySearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 	if len(results) > q.MaxResults {
 		results = results[:q.MaxResults]
 	}
-	if partial := h.faults.PartialResults; partial != nil && len(results) > partial.MaxResults {
-		results = results[:partial.MaxResults]
-	}
+	results = results[:partialResultLimit(h.faults, len(results))]
 	hash := fnv.New64a()
 	_, _ = hash.Write([]byte(q.Query))
 	writeJSON(w, 200, map[string]any{"query": q.Query, "answer": response.Answer, "images": []any{}, "results": results, "response_time": 0, "usage": map[string]any{"credits": map[bool]int{true: 2, false: 1}[depth == "advanced"]}, "request_id": fmt.Sprintf("search-%016x", hash.Sum64())})

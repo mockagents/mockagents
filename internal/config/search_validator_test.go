@@ -26,3 +26,11 @@ func TestValidateSearchServiceRejectsUnsafeFixture(t *testing.T) {
 	report := ValidateBytes([]byte("apiVersion: mockagents/v1\nkind: SearchService\nmetadata:\n  name: search\nspec:\n  provider: tavily\n  scenarios:\n    - name: broken\n      match:\n        query_regex: '['\n      response: {}\n  faults:\n    status_code: 200\n    latency_ms: 60001\n"))
 	require.Len(t, report.Errors, 3)
 }
+
+func TestValidateCommonServiceFaultProviders(t *testing.T) {
+	for _, provider := range []string{"cohere-rerank", "openai-moderations"} {
+		yaml := []byte("apiVersion: mockagents/v1\nkind: SearchService\nmetadata:\n  name: " + provider + "\nspec:\n  provider: " + provider + "\n  faults:\n    status_code: 429\n")
+		report := ValidateBytes(yaml)
+		require.Emptyf(t, report.Errors, "%s: %+v", provider, report.Errors)
+	}
+}

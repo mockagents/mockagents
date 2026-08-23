@@ -7,9 +7,27 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mockagents/mockagents/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestModerationsCommonServiceFaults(t *testing.T) {
+	h := &ModerationsHandler{Faults: types.SearchFaults{PartialResults: &types.SearchPartialResultsFault{MaxResults: 1}}}
+	rec := doModerations(t, h, `{"input":["hello","attack"]}`)
+	var got ModerationsResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Len(t, got.Results, 1)
+	h.Faults = types.SearchFaults{StatusCode: 429}
+	rec = doModerations(t, h, `{"input":"hello"}`)
+	require.Equal(t, 429, rec.Code)
+	var errBody map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errBody))
+	require.NotNil(t, errBody["error"])
+	h.Faults = types.SearchFaults{MalformedJSON: true}
+	rec = doModerations(t, h, `{"input":"hello"}`)
+	require.False(t, json.Valid(rec.Body.Bytes()))
+}
 
 func doModerations(t *testing.T, h *ModerationsHandler, body string) *httptest.ResponseRecorder {
 	t.Helper()
