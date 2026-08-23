@@ -23,3 +23,41 @@ func TestCommonServiceFaultLatencyAndDisconnectFallback(t *testing.T) {
 		t.Fatalf("disconnect handled=%v status=%d", handled, w.Code)
 	}
 }
+
+func TestCommonServiceFaultRequestForcePrecedence(t *testing.T) {
+	rate := 0.0
+	faults := types.SearchFaults{Rate: &rate, StatusCode: http.StatusServiceUnavailable, MalformedJSON: true}
+	req := httptest.NewRequest(http.MethodPost, "/v2/rerank", nil)
+	req.Header.Set("X-Mockagents-Chaos", "status")
+	w := httptest.NewRecorder()
+	handled := applyServiceFaults(w, req, faults, func(status int) { w.WriteHeader(status) })
+	if !handled || w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("forced status handled=%v status=%d", handled, w.Code)
+	}
+	if got := w.Header().Get("X-Mockagents-Chaos-Action"); got != "status" {
+		t.Fatalf("action header=%q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v2/rerank", nil)
+	req.Header.Set("X-Mockagents-Chaos", "off")
+	w = httptest.NewRecorder()
+	if applyServiceFaults(w, req, faults, func(status int) { w.WriteHeader(status) }) {
+		t.Fatal("off request unexpectedly applied chaos")
+	}
+}
+
+func TestCommonServiceFaultSeededDecisionUsesRequestID(t *testing.T) {
+	rate := 0.5
+	faults := types.SearchFaults{Seed: 1234, Rate: &rate, StatusCode: http.StatusServiceUnavailable}
+	result := func(id string) bool {
+		req := httptest.NewRequest(http.MethodPost, "/search", nil)
+		req.Header.Set("X-Request-Id", id)
+		return applyServiceFaults(httptest.NewRecorder(), req, faults, func(int) {})
+	}
+	first := result("stable-request")
+	for i := 0; i < 10; i++ {
+		if got := result("stable-request"); got != first {
+			t.Fatalf("same request id changed from %v to %v", first, got)
+		}
+	}
+}

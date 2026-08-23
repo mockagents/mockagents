@@ -1,0 +1,44 @@
+package chaos
+
+import "testing"
+
+func TestDecidePrecedence(t *testing.T) {
+	zero := 0.0
+	policy := Policy{Seed: 42, Rate: &zero}
+	if got := Decide(policy, "req-1", "status", "status"); !got.Apply || got.Source != "request-force" {
+		t.Fatalf("force matching action = %+v", got)
+	}
+	if got := Decide(policy, "req-1", "status", "off"); got.Apply || got.Source != "request-off" {
+		t.Fatalf("request off = %+v", got)
+	}
+	if got := Decide(policy, "req-1", "status", "disconnect"); got.Apply {
+		t.Fatalf("different forced action selected status: %+v", got)
+	}
+}
+
+func TestDecideFixedSeedIsStableAndActionScoped(t *testing.T) {
+	rate := 0.5
+	p := Policy{Seed: 8675309, Rate: &rate}
+	first := Decide(p, "request-123", "malformed", "")
+	for i := 0; i < 20; i++ {
+		if got := Decide(p, "request-123", "malformed", ""); got != first {
+			t.Fatalf("decision changed: first=%+v got=%+v", first, got)
+		}
+	}
+
+	seenApply, seenSkip := false, false
+	for i := 0; i < 100; i++ {
+		got := Decide(p, string(rune(i)), "malformed", "")
+		seenApply = seenApply || got.Apply
+		seenSkip = seenSkip || !got.Apply
+	}
+	if !seenApply || !seenSkip {
+		t.Fatalf("seeded sample did not exercise both outcomes")
+	}
+}
+
+func TestDecideNilRatePreservesAlwaysOn(t *testing.T) {
+	if got := Decide(Policy{}, "any", "status", ""); !got.Apply || got.Source != "configured" {
+		t.Fatalf("legacy decision = %+v", got)
+	}
+}

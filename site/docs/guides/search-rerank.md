@@ -95,6 +95,16 @@ malformed JSON, then partial-result truncation on an otherwise valid response.
 HTTP faults retain the provider envelope: Tavily `detail`, Cohere `message`, and
 OpenAI `error`.
 
+Set `faults.seed` and `faults.rate` to gate each configured pre-response fault
+with a stable decision derived from the seed, request ID, and action. Omitting
+`rate` preserves the existing always-on behavior. `X-Mockagents-Chaos: off`
+suppresses configured chaos for one request; naming an action (`latency`,
+`disconnect`, `status`, or `malformed`) forces that configured action even when
+its seeded decision would skip it. Request overrides take precedence over the
+seeded rate, and the normal action order above breaks ties. Responses identify
+the selected action and source in `X-Mockagents-Chaos-Action` and
+`X-Mockagents-Chaos-Source`.
+
 ## Cohere v2 rerank
 
 `POST /v2/rerank` accepts `model`, `query`, `documents`, and optional `top_n`.

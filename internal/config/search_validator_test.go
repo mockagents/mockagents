@@ -35,6 +35,14 @@ func TestValidateCommonServiceFaultProviders(t *testing.T) {
 	}
 }
 
+func TestValidateSearchServiceChaosRate(t *testing.T) {
+	valid := ValidateBytes([]byte("apiVersion: mockagents/v1\nkind: SearchService\nmetadata:\n  name: search\nspec:\n  provider: tavily\n  faults:\n    seed: 42\n    rate: 0.25\n    status_code: 503\n"))
+	require.Empty(t, valid.Errors)
+
+	invalid := ValidateBytes([]byte("apiVersion: mockagents/v1\nkind: SearchService\nmetadata:\n  name: search\nspec:\n  provider: tavily\n  faults:\n    rate: 1.01\n"))
+	require.Len(t, invalid.Errors, 1)
+}
+
 func TestValidateSearchResultDateAndURL(t *testing.T) {
 	report := ValidateBytes([]byte("apiVersion: mockagents/v1\nkind: SearchService\nmetadata:\n  name: search\nspec:\n  provider: tavily\n  scenarios:\n    - name: bad-result\n      match:\n        default: true\n      response:\n        results:\n          - title: bad\n            url: ftp://example.com/file\n            published_date: 07/10/2025\n"))
 	require.Len(t, report.Errors, 2)
