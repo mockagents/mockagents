@@ -85,6 +85,7 @@ func DefaultRegistryWithVectorStore(eng *engine.Engine, vectorStore *vector.Stor
 	// /v1/messages handler (A-08; the inline, file-free sibling of the OpenAI
 	// Batch API).
 	anthropicBatches := NewAnthropicBatchesHandler(anthropic.HandleMessages)
+	tavily, _ := NewTavilySearchHandler(nil)
 	return NewRegistry(
 		oai,
 		resp,
@@ -109,5 +110,6 @@ func DefaultRegistryWithVectorStore(eng *engine.Engine, vectorStore *vector.Stor
 		NewPineconeHandler(vectorStore),
 		NewChromaHandler(vectorStore),
 		&CohereRerankHandler{},
+		tavily,
 	)
 }
