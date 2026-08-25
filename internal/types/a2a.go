@@ -38,6 +38,7 @@ type A2AFaults struct {
 	Seed      int64    `yaml:"seed,omitempty" json:"seed,omitempty"`
 	Rate      *float64 `yaml:"rate,omitempty" json:"rate,omitempty"`
 	LatencyMs int      `yaml:"latency_ms,omitempty" json:"latency_ms,omitempty"`
+	TimeoutMs int      `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
 	Malformed bool     `yaml:"malformed,omitempty" json:"malformed,omitempty"`
 	Error     bool     `yaml:"error,omitempty" json:"error,omitempty"`
 }

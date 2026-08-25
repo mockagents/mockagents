@@ -92,3 +92,39 @@ func TestA2AChaosForceMalformedAndActionPrecedence(t *testing.T) {
 		t.Fatalf("off action=%q body=%q", rec.Header().Get("X-Mockagents-Chaos-Action"), rec.Body.String())
 	}
 }
+
+func TestA2AChaosForceTimeoutAndOff(t *testing.T) {
+	zero := 0.0
+	def := testDef()
+	def.Spec.Faults = types.A2AFaults{Rate: &zero, TimeoutMs: 1}
+	h := NewServer(def).RPCHandler()
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":12,"method":"message/send","params":{}}`))
+	req.Header.Set("X-Mockagents-Chaos", "timeout")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var body struct {
+		ID    int `json:"id"`
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Data    struct {
+				Chaos struct {
+					Action string `json:"action"`
+					Source string `json:"source"`
+				} `json:"chaos"`
+			} `json:"data"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.ID != 12 || body.Error.Code != errInternal || body.Error.Message != "mock A2A timeout" || body.Error.Data.Chaos.Action != "timeout" || body.Error.Data.Chaos.Source != "request-force" {
+		t.Fatalf("timeout response=%+v err=%v body=%s", body, err, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":13,"method":"message/send","params":{}}`))
+	req.Header.Set("X-Mockagents-Chaos", "off")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Header().Get("X-Mockagents-Chaos-Action") != "" || !json.Valid(rec.Body.Bytes()) {
+		t.Fatalf("off action=%q body=%q", rec.Header().Get("X-Mockagents-Chaos-Action"), rec.Body.String())
+	}
+}

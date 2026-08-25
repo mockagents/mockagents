@@ -188,8 +188,9 @@ publication (see the table above); until then, install from the repo with
   multi-agent systems that speak Google's Agent2Agent protocol: serves the Agent
   Card at `/.well-known/agent-card.json` and answers `message/send` / `tasks/get`
   / `tasks/cancel` with canned, match-based task responses. A2A `spec.faults`
-  supports seeded latency, malformed JSON, and protocol-shaped errors; use
-  `X-Mockagents-Chaos: latency|malformed|error|off` to force a configured action.
+  supports seeded latency, bounded timeouts, malformed JSON, and protocol-shaped
+  errors; use `X-Mockagents-Chaos: latency|timeout|malformed|error|off` to force
+  a configured action.
 - **Multi-agent pipelines** (`kind: Pipeline`) — sequential, parallel, and graph
   topologies with conditional edges.
 - **Agent-trajectory assertions** — assert the *shape* of an agent's behavior,

@@ -50,6 +50,9 @@ func ValidateA2AServer(def *types.A2AServerDefinition, filePath string, node *ya
 	if def.Spec.Faults.LatencyMs < 0 || def.Spec.Faults.LatencyMs > maxA2ALatencyMs {
 		ctx.addError("spec.faults.latency_ms", fmt.Sprintf("latency_ms must be between 0 and %d", maxA2ALatencyMs), "")
 	}
+	if def.Spec.Faults.TimeoutMs < 0 || def.Spec.Faults.TimeoutMs > maxA2ALatencyMs {
+		ctx.addError("spec.faults.timeout_ms", fmt.Sprintf("timeout_ms must be between 0 and %d", maxA2ALatencyMs), "")
+	}
 	if rate := def.Spec.Faults.Rate; rate != nil && (*rate < 0 || *rate > 1) {
 		ctx.addError("spec.faults.rate", "rate must be between 0 and 1", "")
 	}
