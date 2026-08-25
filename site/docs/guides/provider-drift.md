@@ -15,6 +15,9 @@ mockagents drift \
   --sdk-enums sdk-enums.json \
   --provider-enums provider-enums.json \
   --mock-enums mock-enums.json \
+  --sdk-events sdk-events.json \
+  --provider-events provider-events.json \
+  --mock-events mock-events.json \
   --ignore-path '$.created' \
   --format markdown
 ```
@@ -46,9 +49,14 @@ report path to its complete supported string values, for example
 `{"$.status":["queued","running","done"]}`. Missing SDK-required values are
 critical, provider-only values warn, and mock-only values are informational.
 
+Stream event artifacts are an optional all-or-none trio of JSON string arrays.
+Their order and duplicates are significant: any SDK/provider/mock sequence
+mismatch is critical and appears at `$events`. Use `--ignore-path '$events'`
+when an operation intentionally has no stable stream-order contract.
+
 Use `--format json` for automation, `--format sarif` for code scanning, or
 `--format junit` for CI test reporting. Use `--output` to write an artifact. The
 schedule-only `provider-drift.yml` workflow currently exercises a scrubbed
-offline Cohere baseline. Credentialed collectors, error/event
+offline Cohere baseline. Credentialed collectors, error
 comparisons, versioned baselines, and expiring exceptions remain later R14
 slices.
