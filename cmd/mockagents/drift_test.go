@@ -217,3 +217,35 @@ func TestRunDriftComparesStreamEventOrder(t *testing.T) {
 		t.Fatalf("output=%s", out.String())
 	}
 }
+
+func TestRunDriftComparesErrorContracts(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	driftSDKPath = write("sdk.json", `{"id":"x"}`)
+	driftProviderPath = write("provider.json", `{"id":"x"}`)
+	driftMockPath = write("mock.json", `{"id":"x"}`)
+	driftSDKErrors = write("sdk-errors.json", `{"rate_limit":{"status":429,"code":"rate_limit","body":{"error":{"message":"wait"}}}}`)
+	driftProvErrors = write("provider-errors.json", `{"rate_limit":{"status":429,"code":"rate_limit","body":{"error":{"message":"wait"}}}}`)
+	driftMockErrors = write("mock-errors.json", `{"rate_limit":{"status":400,"code":"bad_request","body":{"error":{"message":12}}}}`)
+	driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", ""
+	driftSDKEnums, driftProvEnums, driftMockEnums = "", "", ""
+	driftSDKEvents, driftProvEvents, driftMockEvents = "", "", ""
+	driftOperation, driftFormat, driftOutput, driftIgnorePaths = "test.operation", "json", "", nil
+	t.Cleanup(func() { driftSDKErrors, driftProvErrors, driftMockErrors = "", "", "" })
+	var out bytes.Buffer
+	driftCmd.SetOut(&out)
+	if err := runDrift(driftCmd, nil); !errors.Is(err, errCriticalDrift) {
+		t.Fatalf("err=%v output=%s", err, out.String())
+	}
+	if !bytes.Contains(out.Bytes(), []byte(`"path": "$errors.rate_limit"`)) ||
+		!bytes.Contains(out.Bytes(), []byte(`"rule": "sdk-mock-error-status-mismatch"`)) ||
+		!bytes.Contains(out.Bytes(), []byte(`"path": "$errors.rate_limit.body.error.message"`)) {
+		t.Fatalf("output=%s", out.String())
+	}
+}

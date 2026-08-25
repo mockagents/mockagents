@@ -31,6 +31,9 @@ var (
 	driftSDKEvents    string
 	driftProvEvents   string
 	driftMockEvents   string
+	driftSDKErrors    string
+	driftProvErrors   string
+	driftMockErrors   string
 )
 
 var driftCmd = &cobra.Command{
@@ -61,6 +64,9 @@ func init() {
 	driftCmd.Flags().StringVar(&driftSDKEvents, "sdk-events", "", "SDK stream event sequence JSON artifact (requires all event flags)")
 	driftCmd.Flags().StringVar(&driftProvEvents, "provider-events", "", "Live-provider stream event sequence JSON artifact (requires all event flags)")
 	driftCmd.Flags().StringVar(&driftMockEvents, "mock-events", "", "MockAgents stream event sequence JSON artifact (requires all event flags)")
+	driftCmd.Flags().StringVar(&driftSDKErrors, "sdk-errors", "", "SDK error contract JSON artifact (requires all error flags)")
+	driftCmd.Flags().StringVar(&driftProvErrors, "provider-errors", "", "Live-provider error contract JSON artifact (requires all error flags)")
+	driftCmd.Flags().StringVar(&driftMockErrors, "mock-errors", "", "MockAgents error contract JSON artifact (requires all error flags)")
 	_ = driftCmd.MarkFlagRequired("sdk")
 	_ = driftCmd.MarkFlagRequired("provider")
 	_ = driftCmd.MarkFlagRequired("mock")
@@ -214,6 +220,46 @@ func runDrift(cmd *cobra.Command, _ []string) error {
 			return loadErr
 		}
 		report = drift.MergeFindings(report, drift.CompareEvents(driftOperation, sdkEvents, providerEvents, mockEvents))
+	}
+	errorPaths := []string{driftSDKErrors, driftProvErrors, driftMockErrors}
+	errorCount := 0
+	for _, path := range errorPaths {
+		if path != "" {
+			errorCount++
+		}
+	}
+	if errorCount != 0 && errorCount != len(errorPaths) {
+		return errors.New("--sdk-errors, --provider-errors, and --mock-errors must be provided together")
+	}
+	if errorCount == len(errorPaths) {
+		loadErrors := func(label, path string) (drift.ErrorSet, error) {
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil, fmt.Errorf("reading %s error artifact %s: %w", label, path, readErr)
+			}
+			cases, extractErr := drift.ExtractErrors(data)
+			if extractErr != nil {
+				return nil, fmt.Errorf("%s error artifact %s: %w", label, path, extractErr)
+			}
+			return cases, nil
+		}
+		sdkErrors, loadErr := loadErrors("SDK", driftSDKErrors)
+		if loadErr != nil {
+			return loadErr
+		}
+		providerErrors, loadErr := loadErrors("provider", driftProvErrors)
+		if loadErr != nil {
+			return loadErr
+		}
+		mockErrors, loadErr := loadErrors("mock", driftMockErrors)
+		if loadErr != nil {
+			return loadErr
+		}
+		report = drift.MergeFindings(report, drift.CompareErrors(driftOperation, sdkErrors, providerErrors, mockErrors))
+	}
+	report, err = drift.FilterFindings(report, driftIgnorePaths)
+	if err != nil {
+		return err
 	}
 	report.Adapter = driftAdapter
 	var output []byte
