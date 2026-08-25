@@ -39,7 +39,7 @@ func init() {
 	driftCmd.Flags().StringVar(&driftMockPath, "mock", "", "MockAgents JSON artifact (required)")
 	driftCmd.Flags().StringVar(&driftOperation, "operation", "", "Operation label, e.g. openai.chat.completions (required)")
 	driftCmd.Flags().StringVar(&driftAdapter, "adapter", "", "Adapter source file responsible for fixes")
-	driftCmd.Flags().StringVar(&driftFormat, "format", "markdown", "Output format: markdown or json")
+	driftCmd.Flags().StringVar(&driftFormat, "format", "markdown", "Output format: markdown, json, or sarif")
 	driftCmd.Flags().StringVarP(&driftOutput, "output", "o", "", "Write report to a file (default: stdout)")
 	_ = driftCmd.MarkFlagRequired("sdk")
 	_ = driftCmd.MarkFlagRequired("provider")
@@ -81,8 +81,10 @@ func runDrift(cmd *cobra.Command, _ []string) error {
 		output = append(output, '\n')
 	case "markdown":
 		output = []byte(renderDriftMarkdown(report))
+	case "sarif":
+		output, err = drift.SARIF(report)
 	default:
-		return fmt.Errorf("unsupported format %q (want markdown or json)", driftFormat)
+		return fmt.Errorf("unsupported format %q (want markdown, json, or sarif)", driftFormat)
 	}
 	if err != nil {
 		return err
