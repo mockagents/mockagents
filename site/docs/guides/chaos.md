@@ -128,6 +128,11 @@ Vector collections accept the same path-keyed `operation_rates` for partial
 result faults, so Qdrant, Pinecone, and Chroma query routes can be controlled
 independently while sharing one deterministic collection policy.
 
+MCP and A2A HTTP transports also support `faults.disconnect: true`. HTTP/1.x
+connections close before a response; transports that cannot be hijacked (such
+as HTTP/2) receive a deterministic `502` fallback. Request force/off and all
+configured rate scopes apply to the `disconnect` action.
+
 ## Provider-faithful error shapes
 
 An injected error is rendered in each protocol's own envelope — an OpenAI

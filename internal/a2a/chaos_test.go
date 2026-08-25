@@ -184,3 +184,22 @@ func TestA2AChaosForceTimeoutAndOff(t *testing.T) {
 		t.Fatalf("off action=%q body=%q", rec.Header().Get("X-Mockagents-Chaos-Action"), rec.Body.String())
 	}
 }
+
+func TestA2AChaosDisconnectFallbackAndOff(t *testing.T) {
+	def := testDef()
+	def.Spec.Faults = types.A2AFaults{Disconnect: true}
+	s := NewServer(def)
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tasks/get"}`))
+	rec := httptest.NewRecorder()
+	s.RPCHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway || rec.Header().Get("X-Mockagents-Chaos-Action") != "disconnect" {
+		t.Fatalf("disconnect status=%d action=%q", rec.Code, rec.Header().Get("X-Mockagents-Chaos-Action"))
+	}
+	req = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tasks/get"}`))
+	req.Header.Set("X-Mockagents-Chaos", "off")
+	rec = httptest.NewRecorder()
+	s.RPCHandler().ServeHTTP(rec, req)
+	if rec.Code == http.StatusBadGateway {
+		t.Fatal("off request disconnected")
+	}
+}

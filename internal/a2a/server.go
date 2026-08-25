@@ -516,6 +516,15 @@ func (s *Server) applyChaos(w http.ResponseWriter, r *http.Request, id json.RawM
 			return true
 		}
 	}
+	if faults.Disconnect {
+		if apply, source := applies("disconnect"); apply {
+			stampA2AChaos(w, "disconnect", source)
+			if !commonchaos.DisconnectHTTP(w) {
+				http.Error(w, "mock A2A disconnect", http.StatusBadGateway)
+			}
+			return true
+		}
+	}
 	if faults.Malformed {
 		if apply, source := applies("malformed"); apply {
 			stampA2AChaos(w, "malformed", source)
