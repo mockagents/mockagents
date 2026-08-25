@@ -32,6 +32,56 @@ jobs:
           name: provider-drift-offline
           path: drift-reports/
 
-  # Credentialed collectors are added provider-by-provider. They must remain
-  # schedule/workflow_dispatch-only, scrub responses before artifact upload,
-  # and skip when that provider's least-privilege secret is absent.
+  cohere-live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Check Cohere credentials
+        id: credentials
+        env:
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+        run: |
+          if [ -z "$COHERE_API_KEY" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping Cohere drift collection because COHERE_API_KEY is unavailable"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Collect and scrub one bounded Cohere rerank response
+        if: steps.credentials.outputs.enabled == 'true'
+        env:
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+        run: |
+          mkdir -p drift-reports
+          raw="$RUNNER_TEMP/cohere-rerank-raw.json"
+          trap 'rm -f "$raw"' EXIT
+          status=$(curl --silent --show-error --output "$raw" --write-out '%{http_code}' \
+            --request POST 'https://api.cohere.com/v2/rerank' \
+            --header "Authorization: Bearer $COHERE_API_KEY" \
+            --header 'Content-Type: application/json' \
+            --data '{"model":"rerank-v3.5","query":"Which document describes deterministic testing?","documents":["MockAgents provides deterministic fixtures.","Weather is sunny.","A third bounded candidate."],"top_n":2}')
+          if [ "$status" != "200" ]; then
+            echo "::error::Cohere rerank collector returned HTTP $status"
+            exit 1
+          fi
+          go run ./tools/coheredriftscrub < "$raw" > drift-reports/cohere-provider.json
+      - name: Compare credentialed Cohere response
+        if: steps.credentials.outputs.enabled == 'true'
+        run: |
+          go run ./cmd/mockagents drift \
+            --operation cohere.rerank \
+            --adapter internal/adapter/cohere_rerank.go \
+            --sdk testdata/drift/cohere/sdk.json \
+            --provider drift-reports/cohere-provider.json \
+            --mock testdata/drift/cohere/mock.json \
+            --ignore-path '$.id' \
+            --format json \
+            --output drift-reports/cohere-live-report.json
+      - uses: actions/upload-artifact@v4
+        if: steps.credentials.outputs.enabled == 'true'
+        with:
+          name: provider-drift-cohere-live
+          path: drift-reports/
