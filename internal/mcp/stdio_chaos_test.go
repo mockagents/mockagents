@@ -66,3 +66,20 @@ func TestStdioChaosNotificationDoesNotReceiveErrorResponse(t *testing.T) {
 		t.Fatalf("notification chaos=(%s,%v), want nil,true", out, handled)
 	}
 }
+
+func TestStdioChaosForceMalformedAndOff(t *testing.T) {
+	zero := 0.0
+	faults := types.MCPFaults{Rate: &zero, Malformed: true}
+	in := strings.NewReader(
+		`{"jsonrpc":"2.0","id":11,"method":"ping","mockagentsChaos":"malformed"}` + "\n" +
+			`{"jsonrpc":"2.0","id":12,"method":"ping","mockagentsChaos":"off"}` + "\n",
+	)
+	var out bytes.Buffer
+	if err := ServeStdioWithFaults(newTestMCPServer(), in, &out, faults); err != nil {
+		t.Fatalf("ServeStdioWithFaults: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 2 || json.Valid([]byte(lines[0])) || !json.Valid([]byte(lines[1])) {
+		t.Fatalf("stdio malformed/off output=%q", out.String())
+	}
+}

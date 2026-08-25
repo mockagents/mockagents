@@ -62,3 +62,26 @@ func TestChaosHTTPHandlerSeededDecisionUsesRequestID(t *testing.T) {
 		}
 	}
 }
+
+func TestChaosHTTPHandlerForceMalformedAndActionPrecedence(t *testing.T) {
+	zero := 0.0
+	h := NewChaosHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), types.MCPFaults{Rate: &zero, Malformed: true, Error: true})
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/rpc", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"ping"}`))
+	req.Header.Set("X-Mockagents-Chaos", "malformed")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Header().Get("X-Mockagents-Chaos-Action") != "malformed" || json.Valid(rec.Body.Bytes()) {
+		t.Fatalf("malformed status=%d action=%q body=%q", rec.Code, rec.Header().Get("X-Mockagents-Chaos-Action"), rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/mcp/rpc", strings.NewReader(`{"jsonrpc":"2.0","id":10,"method":"ping"}`))
+	req.Header.Set("X-Mockagents-Chaos", "error")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Header().Get("X-Mockagents-Chaos-Action") != "error" || !json.Valid(rec.Body.Bytes()) {
+		t.Fatalf("error action=%q body=%q", rec.Header().Get("X-Mockagents-Chaos-Action"), rec.Body.String())
+	}
+}

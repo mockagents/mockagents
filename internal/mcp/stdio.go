@@ -122,6 +122,13 @@ func applyStdioChaos(frame []byte, faults types.MCPFaults) ([]byte, bool) {
 	if faults.LatencyMs > 0 && commonchaos.Decide(policy, key, "latency", envelope.MockagentsChaos).Apply {
 		time.Sleep(time.Duration(faults.LatencyMs) * time.Millisecond)
 	}
+	malformed := commonchaos.Decide(policy, key, "malformed", envelope.MockagentsChaos)
+	if faults.Malformed && malformed.Apply {
+		if len(envelope.ID) == 0 || string(envelope.ID) == "null" {
+			return nil, true
+		}
+		return []byte(`{"jsonrpc":"2.0","id":`), true
+	}
 	decision := commonchaos.Decide(policy, key, "error", envelope.MockagentsChaos)
 	if !faults.Error || !decision.Apply {
 		return nil, false
