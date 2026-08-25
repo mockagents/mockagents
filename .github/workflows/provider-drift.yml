@@ -27,6 +27,10 @@ jobs:
             --baseline testdata/drift/openai-moderation/baseline.json \
             --format json \
             --output drift-reports/openai-moderation.json
+          go run ./cmd/mockagents drift \
+            --baseline testdata/drift/tavily/baseline.json \
+            --format json \
+            --output drift-reports/tavily-search.json
       - uses: actions/upload-artifact@v4
         with:
           name: provider-drift-offline
@@ -137,4 +141,57 @@ jobs:
         if: steps.credentials.outputs.enabled == 'true'
         with:
           name: provider-drift-openai-moderation-live
+          path: drift-reports/
+
+  tavily-live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Check Tavily credentials
+        id: credentials
+        env:
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        run: |
+          if [ -z "$TAVILY_API_KEY" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping Tavily drift collection because TAVILY_API_KEY is unavailable"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Collect and scrub one bounded Tavily search response
+        if: steps.credentials.outputs.enabled == 'true'
+        env:
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        run: |
+          mkdir -p drift-reports
+          raw="$RUNNER_TEMP/tavily-search-raw.json"
+          trap 'rm -f "$raw"' EXIT
+          status=$(curl --silent --show-error --output "$raw" --write-out '%{http_code}' \
+            --request POST 'https://api.tavily.com/search' \
+            --header "Authorization: Bearer $TAVILY_API_KEY" \
+            --header 'Content-Type: application/json' \
+            --data '{"query":"MockAgents deterministic testing","search_depth":"basic","include_answer":true,"include_raw_content":true,"max_results":2}')
+          if [ "$status" != "200" ]; then
+            echo "::error::Tavily search collector returned HTTP $status"
+            exit 1
+          fi
+          go run ./tools/tavilydriftscrub < "$raw" > drift-reports/tavily-provider.json
+      - name: Compare credentialed Tavily search response
+        if: steps.credentials.outputs.enabled == 'true'
+        run: |
+          go run ./cmd/mockagents drift \
+            --operation tavily.search \
+            --adapter internal/adapter/tavily_search.go \
+            --sdk testdata/drift/tavily/sdk.json \
+            --provider drift-reports/tavily-provider.json \
+            --mock testdata/drift/tavily/mock.json \
+            --format json \
+            --output drift-reports/tavily-live-report.json
+      - uses: actions/upload-artifact@v4
+        if: steps.credentials.outputs.enabled == 'true'
+        with:
+          name: provider-drift-tavily-live
           path: drift-reports/

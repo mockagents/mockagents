@@ -1,0 +1,10 @@
+{
+  "version": "mockagents-drift-baseline/v1",
+  "name": "tavily-search",
+  "revision": 1,
+  "operation": "tavily.search",
+  "adapter": "internal/adapter/tavily_search.go",
+  "sdk": "sdk.json",
+  "provider": "provider.json",
+  "mock": "mock.json"
+}
