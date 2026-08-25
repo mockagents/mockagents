@@ -110,10 +110,20 @@ func MergeFindings(report Report, findings []Finding) Report {
 
 func FindingDetail(finding Finding) string {
 	detail := fmt.Sprintf("%s provider drift at %s (%s)", finding.Severity, finding.Path, finding.Rule)
-	if len(finding.Values) != 0 {
-		detail += fmt.Sprintf(" values=%q", finding.Values)
+	if values := FindingValueSummary(finding); values != "" {
+		detail += " " + values
 	}
 	return detail
+}
+
+func FindingValueSummary(finding Finding) string {
+	if len(finding.Values) != 0 {
+		return fmt.Sprintf("values=%q", finding.Values)
+	}
+	if len(finding.SDKValues) != 0 || len(finding.ProviderValues) != 0 || len(finding.MockValues) != 0 {
+		return fmt.Sprintf("sdk=%q provider=%q mock=%q", finding.SDKValues, finding.ProviderValues, finding.MockValues)
+	}
+	return ""
 }
 
 func difference(left, right []string) []string {

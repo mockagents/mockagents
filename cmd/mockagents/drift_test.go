@@ -13,6 +13,7 @@ func TestRunDriftCriticalAndCompatible(t *testing.T) {
 	driftIgnorePaths = nil
 	driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", ""
 	driftSDKEnums, driftProvEnums, driftMockEnums = "", "", ""
+	driftSDKEvents, driftProvEvents, driftMockEvents = "", "", ""
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -48,6 +49,7 @@ func TestRunDriftSARIF(t *testing.T) {
 	driftIgnorePaths = nil
 	driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", ""
 	driftSDKEnums, driftProvEnums, driftMockEnums = "", "", ""
+	driftSDKEvents, driftProvEvents, driftMockEvents = "", "", ""
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -75,6 +77,7 @@ func TestRunDriftJUnit(t *testing.T) {
 	driftIgnorePaths = nil
 	driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", ""
 	driftSDKEnums, driftProvEnums, driftMockEnums = "", "", ""
+	driftSDKEvents, driftProvEvents, driftMockEvents = "", "", ""
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -101,6 +104,7 @@ func TestRunDriftJUnit(t *testing.T) {
 func TestRunDriftIgnoresConfiguredVolatilePaths(t *testing.T) {
 	driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", ""
 	driftSDKEnums, driftProvEnums, driftMockEnums = "", "", ""
+	driftSDKEvents, driftProvEvents, driftMockEvents = "", "", ""
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -127,6 +131,7 @@ func TestRunDriftIgnoresConfiguredVolatilePaths(t *testing.T) {
 
 func TestRunDriftComparesCaseInsensitiveHeaders(t *testing.T) {
 	driftSDKEnums, driftProvEnums, driftMockEnums = "", "", ""
+	driftSDKEvents, driftProvEvents, driftMockEvents = "", "", ""
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -154,6 +159,7 @@ func TestRunDriftComparesCaseInsensitiveHeaders(t *testing.T) {
 }
 
 func TestRunDriftComparesEnumInventories(t *testing.T) {
+	driftSDKEvents, driftProvEvents, driftMockEvents = "", "", ""
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -178,6 +184,36 @@ func TestRunDriftComparesEnumInventories(t *testing.T) {
 	}
 	if !bytes.Contains(out.Bytes(), []byte(`"rule": "sdk-required-enum-missing"`)) ||
 		!bytes.Contains(out.Bytes(), []byte(`"rule": "provider-only-enum-value"`)) {
+		t.Fatalf("output=%s", out.String())
+	}
+}
+
+func TestRunDriftComparesStreamEventOrder(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	driftSDKPath = write("sdk.json", `{"id":"x"}`)
+	driftProviderPath = write("provider.json", `{"id":"x"}`)
+	driftMockPath = write("mock.json", `{"id":"x"}`)
+	driftSDKEvents = write("sdk-events.json", `["created","delta","done"]`)
+	driftProvEvents = write("provider-events.json", `["created","delta","done"]`)
+	driftMockEvents = write("mock-events.json", `["created","done","delta"]`)
+	driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", ""
+	driftSDKEnums, driftProvEnums, driftMockEnums = "", "", ""
+	driftOperation, driftFormat, driftOutput, driftIgnorePaths = "test.operation", "json", "", nil
+	t.Cleanup(func() { driftSDKEvents, driftProvEvents, driftMockEvents = "", "", "" })
+	var out bytes.Buffer
+	driftCmd.SetOut(&out)
+	if err := runDrift(driftCmd, nil); !errors.Is(err, errCriticalDrift) {
+		t.Fatalf("err=%v output=%s", err, out.String())
+	}
+	if !bytes.Contains(out.Bytes(), []byte(`"path": "$events"`)) ||
+		!bytes.Contains(out.Bytes(), []byte(`"rule": "sdk-mock-event-order-mismatch"`)) {
 		t.Fatalf("output=%s", out.String())
 	}
 }

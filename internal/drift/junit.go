@@ -58,8 +58,8 @@ func JUnit(report Report) ([]byte, error) {
 
 func junitDetails(report Report, finding Finding) string {
 	details := fmt.Sprintf("severity=%s rule=%s path=%s", finding.Severity, finding.Rule, finding.Path)
-	if len(finding.Values) != 0 {
-		details += fmt.Sprintf(" values=%q", finding.Values)
+	if values := FindingValueSummary(finding); values != "" {
+		details += " " + values
 	}
 	if report.Adapter != "" {
 		details += " adapter=" + report.Adapter

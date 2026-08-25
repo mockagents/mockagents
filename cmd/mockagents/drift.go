@@ -28,6 +28,9 @@ var (
 	driftSDKEnums     string
 	driftProvEnums    string
 	driftMockEnums    string
+	driftSDKEvents    string
+	driftProvEvents   string
+	driftMockEvents   string
 )
 
 var driftCmd = &cobra.Command{
@@ -55,6 +58,9 @@ func init() {
 	driftCmd.Flags().StringVar(&driftSDKEnums, "sdk-enums", "", "SDK enum inventory JSON artifact (requires all enum flags)")
 	driftCmd.Flags().StringVar(&driftProvEnums, "provider-enums", "", "Live-provider enum inventory JSON artifact (requires all enum flags)")
 	driftCmd.Flags().StringVar(&driftMockEnums, "mock-enums", "", "MockAgents enum inventory JSON artifact (requires all enum flags)")
+	driftCmd.Flags().StringVar(&driftSDKEvents, "sdk-events", "", "SDK stream event sequence JSON artifact (requires all event flags)")
+	driftCmd.Flags().StringVar(&driftProvEvents, "provider-events", "", "Live-provider stream event sequence JSON artifact (requires all event flags)")
+	driftCmd.Flags().StringVar(&driftMockEvents, "mock-events", "", "MockAgents stream event sequence JSON artifact (requires all event flags)")
 	_ = driftCmd.MarkFlagRequired("sdk")
 	_ = driftCmd.MarkFlagRequired("provider")
 	_ = driftCmd.MarkFlagRequired("mock")
@@ -173,6 +179,42 @@ func runDrift(cmd *cobra.Command, _ []string) error {
 		}
 		report = drift.MergeFindings(report, drift.CompareEnums(driftOperation, sdkEnums, providerEnums, mockEnums))
 	}
+	eventPaths := []string{driftSDKEvents, driftProvEvents, driftMockEvents}
+	eventCount := 0
+	for _, path := range eventPaths {
+		if path != "" {
+			eventCount++
+		}
+	}
+	if eventCount != 0 && eventCount != len(eventPaths) {
+		return errors.New("--sdk-events, --provider-events, and --mock-events must be provided together")
+	}
+	if eventCount == len(eventPaths) && !containsString(driftIgnorePaths, "$events") && !containsString(driftIgnorePaths, "$") {
+		loadEvents := func(label, path string) ([]string, error) {
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil, fmt.Errorf("reading %s event artifact %s: %w", label, path, readErr)
+			}
+			events, extractErr := drift.ExtractEvents(data)
+			if extractErr != nil {
+				return nil, fmt.Errorf("%s event artifact %s: %w", label, path, extractErr)
+			}
+			return events, nil
+		}
+		sdkEvents, loadErr := loadEvents("SDK", driftSDKEvents)
+		if loadErr != nil {
+			return loadErr
+		}
+		providerEvents, loadErr := loadEvents("provider", driftProvEvents)
+		if loadErr != nil {
+			return loadErr
+		}
+		mockEvents, loadErr := loadEvents("mock", driftMockEvents)
+		if loadErr != nil {
+			return loadErr
+		}
+		report = drift.MergeFindings(report, drift.CompareEvents(driftOperation, sdkEvents, providerEvents, mockEvents))
+	}
 	report.Adapter = driftAdapter
 	var output []byte
 	switch driftFormat {
@@ -205,6 +247,15 @@ func runDrift(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) == want {
+			return true
+		}
+	}
+	return false
+}
+
 func renderDriftMarkdown(report drift.Report) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Provider drift: %s\n\n", report.Operation)
@@ -217,7 +268,7 @@ func renderDriftMarkdown(report drift.Report) string {
 	}
 	b.WriteString("| Severity | JSON path | Rule | Values |\n|---|---|---|---|\n")
 	for _, finding := range report.Findings {
-		fmt.Fprintf(&b, "| %s | `%s` | %s | %s |\n", finding.Severity, finding.Path, finding.Rule, strings.Join(finding.Values, ", "))
+		fmt.Fprintf(&b, "| %s | `%s` | %s | %s |\n", finding.Severity, finding.Path, finding.Rule, drift.FindingValueSummary(finding))
 	}
 	return b.String()
 }

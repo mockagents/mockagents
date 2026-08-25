@@ -17,7 +17,7 @@ func IgnorePaths(shape map[string]Shape, paths []string) (map[string]Shape, erro
 	for _, path := range paths {
 		path = strings.TrimSpace(path)
 		if !validDriftPath(path) {
-			return nil, fmt.Errorf("invalid ignored JSON path %q (want $, $.field, $[], or $headers.field)", path)
+			return nil, fmt.Errorf("invalid ignored JSON path %q (want $, $.field, $[], $headers.field, or $events)", path)
 		}
 		ignored = append(ignored, path)
 	}
@@ -31,7 +31,7 @@ func IgnorePaths(shape map[string]Shape, paths []string) (map[string]Shape, erro
 }
 
 func validDriftPath(path string) bool {
-	return path == "$" || path == "$headers" || strings.HasPrefix(path, "$.") || strings.HasPrefix(path, "$[]") || strings.HasPrefix(path, "$headers.")
+	return path == "$" || path == "$headers" || path == "$events" || strings.HasPrefix(path, "$.") || strings.HasPrefix(path, "$[]") || strings.HasPrefix(path, "$headers.")
 }
 
 func isIgnoredPath(path string, ignored []string) bool {
