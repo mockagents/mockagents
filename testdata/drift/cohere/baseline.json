@@ -1,0 +1,10 @@
+{
+  "version": "mockagents-drift-baseline/v1",
+  "name": "cohere-rerank",
+  "revision": 1,
+  "operation": "cohere.rerank",
+  "adapter": "internal/adapter/cohere_rerank.go",
+  "sdk": "sdk.json",
+  "provider": "provider.json",
+  "mock": "mock.json"
+}

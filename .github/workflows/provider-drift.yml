@@ -20,11 +20,7 @@ jobs:
         run: |
           mkdir -p drift-reports
           go run ./cmd/mockagents drift \
-            --operation cohere.rerank \
-            --adapter internal/adapter/cohere_rerank.go \
-            --sdk testdata/drift/cohere/sdk.json \
-            --provider testdata/drift/cohere/provider.json \
-            --mock testdata/drift/cohere/mock.json \
+            --baseline testdata/drift/cohere/baseline.json \
             --format json \
             --output drift-reports/cohere-rerank.json
       - uses: actions/upload-artifact@v4
