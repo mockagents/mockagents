@@ -25,8 +25,9 @@ shapes, and nullability. Findings are deterministic and ordered by JSON path:
   an additive provider change.
 - `info`: a field exists only in MockAgents.
 
-Use `--format json` for automation and `--output` to write an artifact. The
+Use `--format json` for automation, `--format sarif` for code scanning, or
+`--format junit` for CI test reporting. Use `--output` to write an artifact. The
 schedule-only `provider-drift.yml` workflow currently exercises a scrubbed
-offline Cohere baseline. Credentialed collectors, SARIF/JUnit rendering,
-headers/enums/error/event comparisons, versioned baselines, and expiring
-exceptions remain later R14 slices.
+offline Cohere baseline. Credentialed collectors, headers/enums/error/event
+comparisons, versioned baselines, and expiring exceptions remain later R14
+slices.
