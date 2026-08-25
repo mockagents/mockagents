@@ -81,6 +81,24 @@ func TestA2AChaosOperationRateOverridesServiceRate(t *testing.T) {
 	}
 }
 
+func TestA2AChaosSequenceRatePrecedence(t *testing.T) {
+	one, zero := 1.0, 0.0
+	def := testDef()
+	def.Spec.Faults = types.A2AFaults{Rate: &zero, Error: true, SequenceRates: map[uint64]float64{2: one}}
+	s := NewServer(def)
+	for sequence := 1; sequence <= 2; sequence++ {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tasks/get"}`))
+		rec := httptest.NewRecorder()
+		s.RPCHandler().ServeHTTP(rec, req)
+		if sequence == 1 && rec.Header().Get("X-Mockagents-Chaos-Action") != "" {
+			t.Fatalf("first faulted: %s", rec.Body.String())
+		}
+		if sequence == 2 && rec.Header().Get("X-Mockagents-Chaos-Source") != "sequence-rate" {
+			t.Fatalf("second source=%q", rec.Header().Get("X-Mockagents-Chaos-Source"))
+		}
+	}
+}
+
 func TestA2AChaosForceMalformedAndActionPrecedence(t *testing.T) {
 	zero := 0.0
 	def := testDef()

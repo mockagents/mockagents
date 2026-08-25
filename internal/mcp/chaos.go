@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	commonchaos "github.com/mockagents/mockagents/internal/chaos"
@@ -14,8 +15,9 @@ import (
 // ChaosHTTPHandler applies MCP-scoped deterministic faults to client-facing
 // HTTP transports. Admin notification routes and health checks are not wrapped.
 type ChaosHTTPHandler struct {
-	Next   http.Handler
-	Faults types.MCPFaults
+	Next     http.Handler
+	Faults   types.MCPFaults
+	sequence atomic.Uint64
 }
 
 func NewChaosHTTPHandler(next http.Handler, faults types.MCPFaults) *ChaosHTTPHandler {
@@ -42,6 +44,8 @@ func (h *ChaosHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	force := r.Header.Get(commonchaos.ForceHeader)
 	policy, operation := commonchaos.ForOperation(commonchaos.Policy{Seed: h.Faults.Seed, Rate: h.Faults.Rate}, operation, h.Faults.OperationRates)
+	sequence := h.sequence.Add(1)
+	policy = commonchaos.ForSequence(policy, sequence, h.Faults.SequenceRates)
 	key += "\x00" + operation
 	applies := func(action string) (bool, string) {
 		decision := commonchaos.Decide(policy, key, action, force)

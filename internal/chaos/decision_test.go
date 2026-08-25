@@ -55,3 +55,15 @@ func TestForOperationOverridesServiceRate(t *testing.T) {
 		t.Fatalf("service fallback = %+v", got)
 	}
 }
+
+func TestForSequenceOverridesOperationRate(t *testing.T) {
+	zero, one := 0.0, 1.0
+	policy, _ := ForOperation(Policy{Rate: &one}, "tools/call", map[string]float64{"tools/call": one})
+	policy = ForSequence(policy, 2, map[uint64]float64{2: zero})
+	if got := Decide(policy, "req-2", "error", ""); got.Apply || got.Source != "sequence-rate" {
+		t.Fatalf("sequence override = %+v", got)
+	}
+	if got := Decide(policy, "req-2", "error", "error"); !got.Apply || got.Source != "request-force" {
+		t.Fatalf("request force = %+v", got)
+	}
+}
