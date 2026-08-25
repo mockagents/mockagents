@@ -26,15 +26,22 @@ func NewChaosHTTPHandler(next http.Handler, faults types.MCPFaults) *ChaosHTTPHa
 
 func (h *ChaosHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	operation := r.Method + " " + r.URL.Path
+	fixture := ""
 	if r.Method == http.MethodPost && r.Body != nil {
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxMCPBodyBytes+1))
 		if err == nil {
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			var request struct {
 				Method string `json:"method"`
+				Params struct {
+					Name string `json:"name"`
+				} `json:"params"`
 			}
 			if len(body) <= maxMCPBodyBytes && json.Unmarshal(body, &request) == nil && request.Method != "" {
 				operation = request.Method
+				if request.Method == "tools/call" {
+					fixture = request.Params.Name
+				}
 			}
 		}
 	}
@@ -44,6 +51,7 @@ func (h *ChaosHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	force := r.Header.Get(commonchaos.ForceHeader)
 	policy, operation := commonchaos.ForOperation(commonchaos.Policy{Seed: h.Faults.Seed, Rate: h.Faults.Rate}, operation, h.Faults.OperationRates)
+	policy = commonchaos.ForFixture(policy, fixture, h.Faults.FixtureRates)
 	sequence := h.sequence.Add(1)
 	policy = commonchaos.ForSequence(policy, sequence, h.Faults.SequenceRates)
 	key += "\x00" + operation

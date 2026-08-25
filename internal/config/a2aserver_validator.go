@@ -61,6 +61,11 @@ func ValidateA2AServer(def *types.A2AServerDefinition, filePath string, node *ya
 			ctx.addError("spec.faults.operation_rates", "operation names must be non-empty and rates between 0 and 1", "")
 		}
 	}
+	for fixture, rate := range def.Spec.Faults.FixtureRates {
+		if fixture == "" || rate < 0 || rate > 1 {
+			ctx.addError("spec.faults.fixture_rates", "fixture names must be non-empty and rates between 0 and 1", "")
+		}
+	}
 	for sequence, rate := range def.Spec.Faults.SequenceRates {
 		if sequence == 0 || rate < 0 || rate > 1 {
 			ctx.addError("spec.faults.sequence_rates", "sequence indexes must start at 1 and rates be between 0 and 1", "")

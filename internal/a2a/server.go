@@ -448,7 +448,7 @@ func (s *Server) RPCHandler() http.HandlerFunc {
 		// Peek the method so message/stream can be served as Server-Sent Events.
 		var probe rpcRequest
 		probeOK := json.Unmarshal(body, &probe) == nil
-		if s.applyChaos(w, r, probe.ID, probe.Method) {
+		if s.applyChaos(w, r, probe.ID, probe.Method, s.chaosFixture(&probe)) {
 			return
 		}
 		if probeOK && probe.Method == "message/stream" {
@@ -473,7 +473,7 @@ func (s *Server) RPCHandler() http.HandlerFunc {
 // applyChaos applies A2A request fault precedence: bounded latency, timeout,
 // malformed JSON, then a protocol-shaped JSON-RPC internal error. Request
 // force/off overrides the seeded rate. It returns true when handled.
-func (s *Server) applyChaos(w http.ResponseWriter, r *http.Request, id json.RawMessage, operation string) bool {
+func (s *Server) applyChaos(w http.ResponseWriter, r *http.Request, id json.RawMessage, operation, fixture string) bool {
 	faults := s.def.Spec.Faults
 	key := r.Header.Get("X-Request-Id")
 	if key == "" {
@@ -481,6 +481,7 @@ func (s *Server) applyChaos(w http.ResponseWriter, r *http.Request, id json.RawM
 	}
 	force := r.Header.Get(commonchaos.ForceHeader)
 	policy, operation := commonchaos.ForOperation(commonchaos.Policy{Seed: faults.Seed, Rate: faults.Rate}, operation, faults.OperationRates)
+	policy = commonchaos.ForFixture(policy, fixture, faults.FixtureRates)
 	sequence := s.chaosSequence.Add(1)
 	policy = commonchaos.ForSequence(policy, sequence, faults.SequenceRates)
 	key += "\x00" + operation
@@ -532,6 +533,27 @@ func (s *Server) applyChaos(w http.ResponseWriter, r *http.Request, id json.RawM
 		}
 	}
 	return false
+}
+
+func (s *Server) chaosFixture(req *rpcRequest) string {
+	if req.Method != "message/send" && req.Method != "message/stream" {
+		return ""
+	}
+	var params messageSendParams
+	if json.Unmarshal(req.Params, &params) != nil {
+		return ""
+	}
+	resp := s.matchResponse(partsText(params.Message.Parts))
+	if resp == nil {
+		return ""
+	}
+	if resp.Match != "" {
+		return resp.Match
+	}
+	if resp.Default {
+		return "default"
+	}
+	return ""
 }
 
 func stampA2AChaos(w http.ResponseWriter, action, source string) {

@@ -80,6 +80,19 @@ func TestStdioChaosSequenceRatePrecedence(t *testing.T) {
 	}
 }
 
+func TestStdioChaosFixtureRatePrecedence(t *testing.T) {
+	one, zero := 1.0, 0.0
+	faults := types.MCPFaults{Rate: &one, Error: true, FixtureRates: map[string]float64{"weather": zero}}
+	frame := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather"}}`)
+	if _, handled := applyStdioChaos(frame, faults, 1); handled {
+		t.Fatal("weather fixture unexpectedly faulted")
+	}
+	frame = []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"other"}}`)
+	if _, handled := applyStdioChaos(frame, faults, 2); !handled {
+		t.Fatal("unscoped fixture did not use service rate")
+	}
+}
+
 func TestStdioChaosForceMalformedAndOff(t *testing.T) {
 	zero := 0.0
 	faults := types.MCPFaults{Rate: &zero, Malformed: true}
