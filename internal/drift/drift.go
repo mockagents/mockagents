@@ -94,11 +94,12 @@ type Finding struct {
 }
 
 type Report struct {
-	Version    string      `json:"version"`
-	Operation  string      `json:"operation"`
-	Adapter    string      `json:"adapter,omitempty"`
-	Findings   []Finding   `json:"findings"`
-	Exceptions []Exception `json:"applied_exceptions,omitempty"`
+	Version    string             `json:"version"`
+	Operation  string             `json:"operation"`
+	Adapter    string             `json:"adapter,omitempty"`
+	Baseline   *BaselineReference `json:"baseline,omitempty"`
+	Findings   []Finding          `json:"findings"`
+	Exceptions []Exception        `json:"applied_exceptions,omitempty"`
 }
 
 func Extract(data []byte) (map[string]Shape, error) {

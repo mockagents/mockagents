@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ var errCriticalDrift = errors.New("critical provider drift detected")
 
 var (
 	driftSDKPath      string
+	driftBaseline     string
 	driftProviderPath string
 	driftMockPath     string
 	driftOperation    string
@@ -50,6 +52,7 @@ makes network calls. Critical type/nullability/missing-field drift exits nonzero
 
 func init() {
 	driftCmd.Flags().StringVar(&driftSDKPath, "sdk", "", "Scrubbed SDK/type JSON artifact (required)")
+	driftCmd.Flags().StringVar(&driftBaseline, "baseline", "", "Versioned drift baseline manifest")
 	driftCmd.Flags().StringVar(&driftProviderPath, "provider", "", "Scrubbed live-provider JSON artifact (required)")
 	driftCmd.Flags().StringVar(&driftMockPath, "mock", "", "MockAgents JSON artifact (required)")
 	driftCmd.Flags().StringVar(&driftOperation, "operation", "", "Operation label, e.g. openai.chat.completions (required)")
@@ -70,14 +73,40 @@ func init() {
 	driftCmd.Flags().StringVar(&driftProvErrors, "provider-errors", "", "Live-provider error contract JSON artifact (requires all error flags)")
 	driftCmd.Flags().StringVar(&driftMockErrors, "mock-errors", "", "MockAgents error contract JSON artifact (requires all error flags)")
 	driftCmd.Flags().StringVar(&driftExceptions, "exceptions", "", "Owner-approved expiring drift exceptions JSON file")
-	_ = driftCmd.MarkFlagRequired("sdk")
-	_ = driftCmd.MarkFlagRequired("provider")
-	_ = driftCmd.MarkFlagRequired("mock")
-	_ = driftCmd.MarkFlagRequired("operation")
 	rootCmd.AddCommand(driftCmd)
 }
 
 func runDrift(cmd *cobra.Command, _ []string) error {
+	sdkPath, providerPath, mockPath := driftSDKPath, driftProviderPath, driftMockPath
+	operation, adapter, ignorePaths := driftOperation, driftAdapter, driftIgnorePaths
+	var baselineRef *drift.BaselineReference
+	if driftBaseline != "" {
+		if sdkPath != "" || providerPath != "" || mockPath != "" || operation != "" || adapter != "" || len(ignorePaths) != 0 {
+			return errors.New("--baseline cannot be combined with --sdk, --provider, --mock, --operation, --adapter, or --ignore-path")
+		}
+		data, err := os.ReadFile(driftBaseline)
+		if err != nil {
+			return fmt.Errorf("reading drift baseline %s: %w", driftBaseline, err)
+		}
+		baseline, err := drift.ParseBaseline(data)
+		if err != nil {
+			return err
+		}
+		baseDir := filepath.Dir(driftBaseline)
+		if sdkPath, err = resolveBaselineArtifact(baseDir, baseline.SDK); err != nil {
+			return fmt.Errorf("baseline sdk: %w", err)
+		}
+		if providerPath, err = resolveBaselineArtifact(baseDir, baseline.Provider); err != nil {
+			return fmt.Errorf("baseline provider: %w", err)
+		}
+		if mockPath, err = resolveBaselineArtifact(baseDir, baseline.Mock); err != nil {
+			return fmt.Errorf("baseline mock: %w", err)
+		}
+		operation, adapter, ignorePaths = baseline.Operation, baseline.Adapter, baseline.IgnorePaths
+		baselineRef = &drift.BaselineReference{Name: baseline.Name, Revision: baseline.Revision}
+	} else if sdkPath == "" || providerPath == "" || mockPath == "" || operation == "" {
+		return errors.New("provide --baseline or all of --sdk, --provider, --mock, and --operation")
+	}
 	load := func(label, path string) (map[string]drift.Shape, error) {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -89,15 +118,15 @@ func runDrift(cmd *cobra.Command, _ []string) error {
 		}
 		return shape, nil
 	}
-	sdk, err := load("SDK", driftSDKPath)
+	sdk, err := load("SDK", sdkPath)
 	if err != nil {
 		return err
 	}
-	provider, err := load("provider", driftProviderPath)
+	provider, err := load("provider", providerPath)
 	if err != nil {
 		return err
 	}
-	mock, err := load("mock", driftMockPath)
+	mock, err := load("mock", mockPath)
 	if err != nil {
 		return err
 	}
@@ -139,19 +168,20 @@ func runDrift(cmd *cobra.Command, _ []string) error {
 		provider = drift.MergeShapes(provider, providerHeaders)
 		mock = drift.MergeShapes(mock, mockHeaders)
 	}
-	sdk, err = drift.IgnorePaths(sdk, driftIgnorePaths)
+	sdk, err = drift.IgnorePaths(sdk, ignorePaths)
 	if err != nil {
 		return fmt.Errorf("SDK artifact: %w", err)
 	}
-	provider, err = drift.IgnorePaths(provider, driftIgnorePaths)
+	provider, err = drift.IgnorePaths(provider, ignorePaths)
 	if err != nil {
 		return fmt.Errorf("provider artifact: %w", err)
 	}
-	mock, err = drift.IgnorePaths(mock, driftIgnorePaths)
+	mock, err = drift.IgnorePaths(mock, ignorePaths)
 	if err != nil {
 		return fmt.Errorf("mock artifact: %w", err)
 	}
-	report := drift.Compare(driftOperation, sdk, provider, mock)
+	report := drift.Compare(operation, sdk, provider, mock)
+	report.Baseline = baselineRef
 	enumPaths := []string{driftSDKEnums, driftProvEnums, driftMockEnums}
 	enumCount := 0
 	for _, path := range enumPaths {
@@ -172,7 +202,7 @@ func runDrift(cmd *cobra.Command, _ []string) error {
 			if extractErr != nil {
 				return nil, fmt.Errorf("%s enum artifact %s: %w", label, path, extractErr)
 			}
-			return drift.IgnoreEnumPaths(values, driftIgnorePaths)
+			return drift.IgnoreEnumPaths(values, ignorePaths)
 		}
 		sdkEnums, loadErr := loadEnums("SDK", driftSDKEnums)
 		if loadErr != nil {
@@ -186,7 +216,7 @@ func runDrift(cmd *cobra.Command, _ []string) error {
 		if loadErr != nil {
 			return loadErr
 		}
-		report = drift.MergeFindings(report, drift.CompareEnums(driftOperation, sdkEnums, providerEnums, mockEnums))
+		report = drift.MergeFindings(report, drift.CompareEnums(operation, sdkEnums, providerEnums, mockEnums))
 	}
 	eventPaths := []string{driftSDKEvents, driftProvEvents, driftMockEvents}
 	eventCount := 0
@@ -198,7 +228,7 @@ func runDrift(cmd *cobra.Command, _ []string) error {
 	if eventCount != 0 && eventCount != len(eventPaths) {
 		return errors.New("--sdk-events, --provider-events, and --mock-events must be provided together")
 	}
-	if eventCount == len(eventPaths) && !containsString(driftIgnorePaths, "$events") && !containsString(driftIgnorePaths, "$") {
+	if eventCount == len(eventPaths) && !containsString(ignorePaths, "$events") && !containsString(ignorePaths, "$") {
 		loadEvents := func(label, path string) ([]string, error) {
 			data, readErr := os.ReadFile(path)
 			if readErr != nil {
@@ -222,7 +252,7 @@ func runDrift(cmd *cobra.Command, _ []string) error {
 		if loadErr != nil {
 			return loadErr
 		}
-		report = drift.MergeFindings(report, drift.CompareEvents(driftOperation, sdkEvents, providerEvents, mockEvents))
+		report = drift.MergeFindings(report, drift.CompareEvents(operation, sdkEvents, providerEvents, mockEvents))
 	}
 	errorPaths := []string{driftSDKErrors, driftProvErrors, driftMockErrors}
 	errorCount := 0
@@ -258,9 +288,9 @@ func runDrift(cmd *cobra.Command, _ []string) error {
 		if loadErr != nil {
 			return loadErr
 		}
-		report = drift.MergeFindings(report, drift.CompareErrors(driftOperation, sdkErrors, providerErrors, mockErrors))
+		report = drift.MergeFindings(report, drift.CompareErrors(operation, sdkErrors, providerErrors, mockErrors))
 	}
-	report, err = drift.FilterFindings(report, driftIgnorePaths)
+	report, err = drift.FilterFindings(report, ignorePaths)
 	if err != nil {
 		return err
 	}
@@ -274,7 +304,7 @@ func runDrift(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
-	report.Adapter = driftAdapter
+	report.Adapter = adapter
 	var output []byte
 	switch driftFormat {
 	case "json":
@@ -306,6 +336,18 @@ func runDrift(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+func resolveBaselineArtifact(baseDir, reference string) (string, error) {
+	if filepath.IsAbs(reference) {
+		return "", fmt.Errorf("artifact path %q must be relative", reference)
+	}
+	path := filepath.Join(baseDir, filepath.Clean(reference))
+	relative, err := filepath.Rel(baseDir, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("artifact path %q escapes the baseline directory", reference)
+	}
+	return path, nil
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if strings.TrimSpace(value) == want {
@@ -320,6 +362,9 @@ func renderDriftMarkdown(report drift.Report) string {
 	fmt.Fprintf(&b, "# Provider drift: %s\n\n", report.Operation)
 	if report.Adapter != "" {
 		fmt.Fprintf(&b, "Adapter: `%s`\n\n", report.Adapter)
+	}
+	if report.Baseline != nil {
+		fmt.Fprintf(&b, "Baseline: `%s` revision %d\n\n", report.Baseline.Name, report.Baseline.Revision)
 	}
 	if len(report.Exceptions) > 0 {
 		b.WriteString("## Applied exceptions\n\n| Owner | Expires | JSON path | Rule |\n|---|---|---|---|\n")
