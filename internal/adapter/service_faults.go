@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	commonchaos "github.com/mockagents/mockagents/internal/chaos"
@@ -24,6 +25,10 @@ func applyServiceFaults(w http.ResponseWriter, r *http.Request, faults types.Sea
 		if decision.Apply {
 			w.Header().Set("X-Mockagents-Chaos-Action", action)
 			w.Header().Set("X-Mockagents-Chaos-Source", decision.Source)
+			w.Header().Set("X-Mockagents-Chaos-Seed", strconv.FormatInt(policy.Seed, 10))
+			if policy.Rate != nil {
+				w.Header().Set("X-Mockagents-Chaos-Rate", strconv.FormatFloat(*policy.Rate, 'g', -1, 64))
+			}
 		}
 		return decision.Apply
 	}

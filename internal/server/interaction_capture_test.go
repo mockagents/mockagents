@@ -117,6 +117,8 @@ func TestInteractionCapture_RecordsChaosMetadata(t *testing.T) {
 	handler := InteractionCapture(worker, LogBodyFull)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("X-Mockagents-Chaos-Action", "status")
 		w.Header().Set("X-Mockagents-Chaos-Source", "operation-rate")
+		w.Header().Set("X-Mockagents-Chaos-Seed", "42")
+		w.Header().Set("X-Mockagents-Chaos-Rate", "0.25")
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/moderations", nil))
@@ -129,6 +131,9 @@ func TestInteractionCapture_RecordsChaosMetadata(t *testing.T) {
 	}
 	if logs[0].ChaosAction != "status" || logs[0].ChaosSource != "operation-rate" {
 		t.Fatalf("chaos action=%q source=%q", logs[0].ChaosAction, logs[0].ChaosSource)
+	}
+	if logs[0].ChaosSeed == nil || *logs[0].ChaosSeed != 42 || logs[0].ChaosRate == nil || *logs[0].ChaosRate != 0.25 {
+		t.Fatalf("chaos seed=%v rate=%v", logs[0].ChaosSeed, logs[0].ChaosRate)
 	}
 }
 

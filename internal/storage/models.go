@@ -2,24 +2,26 @@ package storage
 
 // InteractionLog represents a single request/response interaction record.
 type InteractionLog struct {
-	ID             int64  `json:"id"`
-	Timestamp      string `json:"timestamp"`
-	TenantID       string `json:"tenant_id,omitempty"`
-	AgentName      string `json:"agent_name"`
-	SessionID      string `json:"session_id"`
-	Protocol       string `json:"protocol"`
-	RequestMethod  string `json:"request_method"`
-	RequestPath    string `json:"request_path"`
-	RequestBody    string `json:"request_body,omitempty"`
-	ResponseStatus int    `json:"response_status"`
-	ResponseBody   string `json:"response_body,omitempty"`
-	LatencyMs      int64  `json:"latency_ms"`
-	ToolCallsCount int    `json:"tool_calls_count"`
-	Streaming      bool   `json:"streaming"`
-	Error          string `json:"error,omitempty"`
-	ScenarioName   string `json:"scenario_name,omitempty"`
-	ChaosAction    string `json:"chaos_action,omitempty"`
-	ChaosSource    string `json:"chaos_source,omitempty"`
+	ID             int64    `json:"id"`
+	Timestamp      string   `json:"timestamp"`
+	TenantID       string   `json:"tenant_id,omitempty"`
+	AgentName      string   `json:"agent_name"`
+	SessionID      string   `json:"session_id"`
+	Protocol       string   `json:"protocol"`
+	RequestMethod  string   `json:"request_method"`
+	RequestPath    string   `json:"request_path"`
+	RequestBody    string   `json:"request_body,omitempty"`
+	ResponseStatus int      `json:"response_status"`
+	ResponseBody   string   `json:"response_body,omitempty"`
+	LatencyMs      int64    `json:"latency_ms"`
+	ToolCallsCount int      `json:"tool_calls_count"`
+	Streaming      bool     `json:"streaming"`
+	Error          string   `json:"error,omitempty"`
+	ScenarioName   string   `json:"scenario_name,omitempty"`
+	ChaosAction    string   `json:"chaos_action,omitempty"`
+	ChaosSource    string   `json:"chaos_source,omitempty"`
+	ChaosSeed      *int64   `json:"chaos_seed,omitempty"`
+	ChaosRate      *float64 `json:"chaos_rate,omitempty"`
 	// Truncated reports that the request and/or response body exceeded
 	// the capture cap and the stored body is clipped, so a consumer
 	// knows the persisted body is not the complete payload.

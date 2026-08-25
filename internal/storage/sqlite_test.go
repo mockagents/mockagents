@@ -80,7 +80,7 @@ func TestSQLiteStore_MigratesTenantColumn(t *testing.T) {
 	ok, err = columnExists(store.db, "interaction_logs", "truncated")
 	require.NoError(t, err)
 	assert.True(t, ok, "truncated column should be added by migrate")
-	for _, column := range []string{"chaos_action", "chaos_source"} {
+	for _, column := range []string{"chaos_action", "chaos_source", "chaos_seed", "chaos_rate"} {
 		ok, err = columnExists(store.db, "interaction_logs", column)
 		require.NoError(t, err)
 		assert.True(t, ok, "%s column should be added by migrate", column)
@@ -126,6 +126,8 @@ func TestSQLiteStore_ChaosMetadataRoundTrip(t *testing.T) {
 	entry := sampleLog("agent-a", "sess-1")
 	entry.ChaosAction = "status"
 	entry.ChaosSource = "operation-rate"
+	seed, rate := int64(42), 0.25
+	entry.ChaosSeed, entry.ChaosRate = &seed, &rate
 	require.NoError(t, store.Log(t.Context(), entry))
 
 	logs, err := store.Query(t.Context(), InteractionFilter{})
@@ -133,12 +135,16 @@ func TestSQLiteStore_ChaosMetadataRoundTrip(t *testing.T) {
 	require.Len(t, logs, 1)
 	assert.Equal(t, "status", logs[0].ChaosAction)
 	assert.Equal(t, "operation-rate", logs[0].ChaosSource)
+	assert.Equal(t, int64(42), *logs[0].ChaosSeed)
+	assert.Equal(t, 0.25, *logs[0].ChaosRate)
 
 	got, err := store.GetByID(t.Context(), logs[0].ID)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, "status", got.ChaosAction)
 	assert.Equal(t, "operation-rate", got.ChaosSource)
+	assert.Equal(t, int64(42), *got.ChaosSeed)
+	assert.Equal(t, 0.25, *got.ChaosRate)
 }
 
 func TestSQLiteStore_LogAndQuery(t *testing.T) {
