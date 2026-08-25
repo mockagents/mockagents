@@ -26,7 +26,7 @@ func TestCommonServiceFaultLatencyAndDisconnectFallback(t *testing.T) {
 
 func TestCommonServiceFaultRequestForcePrecedence(t *testing.T) {
 	rate := 0.0
-	faults := types.SearchFaults{Rate: &rate, StatusCode: http.StatusServiceUnavailable, MalformedJSON: true}
+	faults := types.SearchFaults{Seed: 7, Rate: &rate, StatusCode: http.StatusServiceUnavailable, MalformedJSON: true}
 	req := httptest.NewRequest(http.MethodPost, "/v2/rerank", nil)
 	req.Header.Set("X-Mockagents-Chaos", "status")
 	w := httptest.NewRecorder()
@@ -36,6 +36,12 @@ func TestCommonServiceFaultRequestForcePrecedence(t *testing.T) {
 	}
 	if got := w.Header().Get("X-Mockagents-Chaos-Action"); got != "status" {
 		t.Fatalf("action header=%q", got)
+	}
+	if got := w.Header().Get("X-Mockagents-Chaos-Seed"); got != "7" {
+		t.Fatalf("seed header=%q", got)
+	}
+	if got := w.Header().Get("X-Mockagents-Chaos-Rate"); got != "0" {
+		t.Fatalf("rate header=%q", got)
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/v2/rerank", nil)

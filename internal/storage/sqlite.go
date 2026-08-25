@@ -42,7 +42,9 @@ CREATE TABLE IF NOT EXISTS interaction_logs (
     scenario_name   TEXT    DEFAULT '',
     truncated       INTEGER DEFAULT 0,
     chaos_action    TEXT    DEFAULT '',
-    chaos_source    TEXT    DEFAULT ''
+    chaos_source    TEXT    DEFAULT '',
+    chaos_seed      INTEGER,
+    chaos_rate      REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_logs_agent     ON interaction_logs(agent_name);
@@ -131,6 +133,17 @@ func migrate(db *sql.DB) error {
 			}
 		}
 	}
+	for column, kind := range map[string]string{"chaos_seed": "INTEGER", "chaos_rate": "REAL"} {
+		exists, columnErr := columnExists(db, "interaction_logs", column)
+		if columnErr != nil {
+			return columnErr
+		}
+		if !exists {
+			if _, columnErr = db.Exec(`ALTER TABLE interaction_logs ADD COLUMN ` + column + ` ` + kind); columnErr != nil {
+				return columnErr
+			}
+		}
+	}
 	// Composite (tenant_id, id DESC) index for the tenant-scoped dashboard query
 	// `WHERE tenant_id = ? ORDER BY id DESC LIMIT ?`: it serves both the equality
 	// filter and the id-desc ordering from one index, so SQLite skips a separate
@@ -173,13 +186,13 @@ func (s *SQLiteStore) Log(ctx context.Context, entry *InteractionLog) error {
 		INSERT INTO interaction_logs
 			(timestamp, tenant_id, agent_name, session_id, protocol, request_method, request_path,
 			 request_body, response_status, response_body, latency_ms,
-			 tool_calls_count, streaming, error, scenario_name, truncated, chaos_action, chaos_source)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 tool_calls_count, streaming, error, scenario_name, truncated, chaos_action, chaos_source, chaos_seed, chaos_rate)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.Timestamp, entry.TenantID, entry.AgentName, entry.SessionID, entry.Protocol,
 		entry.RequestMethod, entry.RequestPath,
 		entry.RequestBody, entry.ResponseStatus, entry.ResponseBody,
 		entry.LatencyMs, entry.ToolCallsCount, boolToInt(entry.Streaming),
-		entry.Error, entry.ScenarioName, boolToInt(entry.Truncated), entry.ChaosAction, entry.ChaosSource,
+		entry.Error, entry.ScenarioName, boolToInt(entry.Truncated), entry.ChaosAction, entry.ChaosSource, entry.ChaosSeed, entry.ChaosRate,
 	)
 	if err != nil {
 		return err
@@ -198,7 +211,7 @@ func (s *SQLiteStore) Log(ctx context.Context, entry *InteractionLog) error {
 func (s *SQLiteStore) Query(ctx context.Context, filter InteractionFilter) ([]InteractionLog, error) {
 	query := `SELECT id, timestamp, tenant_id, agent_name, session_id, protocol,
 		request_method, request_path, request_body, response_status,
-		response_body, latency_ms, tool_calls_count, streaming, error, scenario_name, truncated, chaos_action, chaos_source
+		response_body, latency_ms, tool_calls_count, streaming, error, scenario_name, truncated, chaos_action, chaos_source, chaos_seed, chaos_rate
 		FROM interaction_logs WHERE 1=1`
 
 	var args []any
@@ -252,12 +265,14 @@ func (s *SQLiteStore) Query(ctx context.Context, filter InteractionFilter) ([]In
 		var log InteractionLog
 		var streaming, truncated int
 		var errStr, reqBody, respBody, scenarioName, chaosAction, chaosSource sql.NullString
+		var chaosSeed sql.NullInt64
+		var chaosRate sql.NullFloat64
 		if err := rows.Scan(
 			&log.ID, &log.Timestamp, &log.TenantID, &log.AgentName, &log.SessionID,
 			&log.Protocol, &log.RequestMethod, &log.RequestPath,
 			&reqBody, &log.ResponseStatus,
 			&respBody, &log.LatencyMs, &log.ToolCallsCount,
-			&streaming, &errStr, &scenarioName, &truncated, &chaosAction, &chaosSource,
+			&streaming, &errStr, &scenarioName, &truncated, &chaosAction, &chaosSource, &chaosSeed, &chaosRate,
 		); err != nil {
 			return nil, fmt.Errorf("scanning row: %w", err)
 		}
@@ -269,6 +284,12 @@ func (s *SQLiteStore) Query(ctx context.Context, filter InteractionFilter) ([]In
 		log.ScenarioName = scenarioName.String
 		log.ChaosAction = chaosAction.String
 		log.ChaosSource = chaosSource.String
+		if chaosSeed.Valid {
+			log.ChaosSeed = &chaosSeed.Int64
+		}
+		if chaosRate.Valid {
+			log.ChaosRate = &chaosRate.Float64
+		}
 		logs = append(logs, log)
 	}
 	return logs, rows.Err()
@@ -279,18 +300,20 @@ func (s *SQLiteStore) GetByID(ctx context.Context, id int64) (*InteractionLog, e
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, timestamp, tenant_id, agent_name, session_id, protocol,
 			request_method, request_path, request_body, response_status,
-			response_body, latency_ms, tool_calls_count, streaming, error, scenario_name, truncated, chaos_action, chaos_source
+			response_body, latency_ms, tool_calls_count, streaming, error, scenario_name, truncated, chaos_action, chaos_source, chaos_seed, chaos_rate
 		FROM interaction_logs WHERE id = ?`, id)
 
 	var log InteractionLog
 	var streaming, truncated int
 	var errStr, reqBody, respBody, scenarioName, chaosAction, chaosSource sql.NullString
+	var chaosSeed sql.NullInt64
+	var chaosRate sql.NullFloat64
 	if err := row.Scan(
 		&log.ID, &log.Timestamp, &log.TenantID, &log.AgentName, &log.SessionID,
 		&log.Protocol, &log.RequestMethod, &log.RequestPath,
 		&reqBody, &log.ResponseStatus,
 		&respBody, &log.LatencyMs, &log.ToolCallsCount,
-		&streaming, &errStr, &scenarioName, &truncated, &chaosAction, &chaosSource,
+		&streaming, &errStr, &scenarioName, &truncated, &chaosAction, &chaosSource, &chaosSeed, &chaosRate,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -305,6 +328,12 @@ func (s *SQLiteStore) GetByID(ctx context.Context, id int64) (*InteractionLog, e
 	log.ScenarioName = scenarioName.String
 	log.ChaosAction = chaosAction.String
 	log.ChaosSource = chaosSource.String
+	if chaosSeed.Valid {
+		log.ChaosSeed = &chaosSeed.Int64
+	}
+	if chaosRate.Valid {
+		log.ChaosRate = &chaosRate.Float64
+	}
 	return &log, nil
 }
 

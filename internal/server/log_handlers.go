@@ -447,6 +447,8 @@ func InteractionCapture(worker *LogWorker, bodyMode LogBodyMode, spendHook ...fu
 				ScenarioName:   meta.ScenarioName,
 				ChaosAction:    cw.Header().Get("X-Mockagents-Chaos-Action"),
 				ChaosSource:    cw.Header().Get("X-Mockagents-Chaos-Source"),
+				ChaosSeed:      parseOptionalInt64(cw.Header().Get("X-Mockagents-Chaos-Seed")),
+				ChaosRate:      parseOptionalFloat64(cw.Header().Get("X-Mockagents-Chaos-Rate")),
 				ToolCallsCount: meta.ToolCallsCount,
 				Error:          meta.Error,
 				Truncated:      truncated,
@@ -478,6 +480,28 @@ func InteractionCapture(worker *LogWorker, bodyMode LogBodyMode, spendHook ...fu
 			}
 		})
 	}
+}
+
+func parseOptionalInt64(value string) *int64 {
+	if value == "" {
+		return nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return nil
+	}
+	return &parsed
+}
+
+func parseOptionalFloat64(value string) *float64 {
+	if value == "" {
+		return nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return nil
+	}
+	return &parsed
 }
 
 // probeModel scans a response body for a top-level "model" string field and
