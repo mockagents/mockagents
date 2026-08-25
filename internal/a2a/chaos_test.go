@@ -242,3 +242,22 @@ func TestA2AChaosMalformedSchemaFault(t *testing.T) {
 		t.Fatalf("result=%v", body["result"])
 	}
 }
+
+func TestA2AChaosTruncationFaultAndOff(t *testing.T) {
+	def := testDef()
+	def.Spec.Faults = types.A2AFaults{TruncateAfterBytes: 27}
+	h := NewServer(def).RPCHandler()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":42,"method":"tasks/get"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Body.Len() != 27 || json.Valid(rec.Body.Bytes()) || rec.Header().Get("X-Mockagents-Chaos-Action") != "truncate" || rec.Header().Get("X-Mockagents-Chaos-Source") != "configured" {
+		t.Fatalf("headers=%v body=%q", rec.Header(), rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":43,"method":"tasks/get"}`))
+	req.Header.Set("X-Mockagents-Chaos", "off")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Header().Get("X-Mockagents-Chaos-Action") != "" || !json.Valid(rec.Body.Bytes()) {
+		t.Fatalf("off headers=%v body=%q", rec.Header(), rec.Body.String())
+	}
+}

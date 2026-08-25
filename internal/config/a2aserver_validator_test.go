@@ -54,9 +54,9 @@ func TestValidateA2AServer_Errors(t *testing.T) {
 func TestValidateA2AServer_ChaosBounds(t *testing.T) {
 	d := validA2ADef()
 	rate := 1.1
-	d.Spec.Faults = types.A2AFaults{Rate: &rate, LatencyMs: 60_001, TimeoutMs: 60_001, StatusCode: 399}
+	d.Spec.Faults = types.A2AFaults{Rate: &rate, LatencyMs: 60_001, TimeoutMs: 60_001, StatusCode: 399, TruncateAfterBytes: 1<<20 + 1}
 	errs := ValidateA2AServer(d, "", nil)
-	if errs == nil || !containsField(errs, "spec.faults.rate") || !containsField(errs, "spec.faults.latency_ms") || !containsField(errs, "spec.faults.timeout_ms") || !containsField(errs, "spec.faults.status_code") {
+	if errs == nil || !containsField(errs, "spec.faults.rate") || !containsField(errs, "spec.faults.latency_ms") || !containsField(errs, "spec.faults.timeout_ms") || !containsField(errs, "spec.faults.status_code") || !containsField(errs, "spec.faults.truncate_after_bytes") {
 		t.Fatalf("expected chaos bound errors: %v", errs)
 	}
 }

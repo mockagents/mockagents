@@ -143,6 +143,11 @@ Set `faults.malformed_schema: true` on MCP or A2A to return valid JSON whose
 `faults.malformed`, which emits syntactically invalid JSON. The force value is
 `malformed-schema`, and the same deterministic scope precedence applies.
 
+Set `faults.truncate_after_bytes` on MCP or A2A to end a valid protocol
+response after exactly that many bytes, producing a deterministic incomplete
+JSON body. Values are bounded to 1 MiB. The force value is `truncate`; request
+off and all configured rate scopes remain authoritative.
+
 ## Provider-faithful error shapes
 
 An injected error is rendered in each protocol's own envelope — an OpenAI

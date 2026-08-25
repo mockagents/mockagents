@@ -11,7 +11,10 @@ import (
 // server understands. Keep in sync with internal/mcp/server.go.
 var validMCPContentTypes = []string{"text", "image", "audio", "resource"}
 
-const maxMCPLatencyMs = 60_000
+const (
+	maxMCPLatencyMs     = 60_000
+	maxMCPTruncateBytes = 1 << 20
+)
 
 // ValidateMCPServer runs rule-based validation against an
 // MCPServerDefinition. Mirrors the shape of ValidatePipeline and
@@ -59,6 +62,9 @@ func ValidateMCPServer(def *types.MCPServerDefinition, filePath string, node *ya
 	}
 	if code := def.Spec.Faults.StatusCode; code != 0 && (code < 400 || code > 599) {
 		ctx.addError("spec.faults.status_code", "status_code must be between 400 and 599", "")
+	}
+	if size := def.Spec.Faults.TruncateAfterBytes; size < 0 || size > maxMCPTruncateBytes {
+		ctx.addError("spec.faults.truncate_after_bytes", fmt.Sprintf("truncate_after_bytes must be between 0 and %d", maxMCPTruncateBytes), "")
 	}
 	if rate := def.Spec.Faults.Rate; rate != nil && (*rate < 0 || *rate > 1) {
 		ctx.addError("spec.faults.rate", "rate must be between 0 and 1", "")
