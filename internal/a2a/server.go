@@ -468,9 +468,9 @@ func (s *Server) RPCHandler() http.HandlerFunc {
 	}
 }
 
-// applyChaos applies A2A request fault precedence: bounded latency, then a
-// protocol-shaped JSON-RPC internal error. Request force/off overrides the
-// seeded rate. It returns true when the response is fully handled.
+// applyChaos applies A2A request fault precedence: bounded latency, malformed
+// JSON, then a protocol-shaped JSON-RPC internal error. Request force/off
+// overrides the seeded rate. It returns true when the response is fully handled.
 func (s *Server) applyChaos(w http.ResponseWriter, r *http.Request, id json.RawMessage) bool {
 	faults := s.def.Spec.Faults
 	key := r.Header.Get("X-Request-Id")
@@ -493,6 +493,15 @@ func (s *Server) applyChaos(w http.ResponseWriter, r *http.Request, id json.RawM
 			case <-r.Context().Done():
 				return true
 			}
+		}
+	}
+	if faults.Malformed {
+		if apply, source := applies("malformed"); apply {
+			stampA2AChaos(w, "malformed", source)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":`))
+			return true
 		}
 	}
 	if faults.Error {
