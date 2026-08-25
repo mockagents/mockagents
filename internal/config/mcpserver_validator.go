@@ -54,6 +54,9 @@ func ValidateMCPServer(def *types.MCPServerDefinition, filePath string, node *ya
 	if def.Spec.Faults.LatencyMs < 0 || def.Spec.Faults.LatencyMs > maxMCPLatencyMs {
 		ctx.addError("spec.faults.latency_ms", fmt.Sprintf("latency_ms must be between 0 and %d", maxMCPLatencyMs), "")
 	}
+	if def.Spec.Faults.TimeoutMs < 0 || def.Spec.Faults.TimeoutMs > maxMCPLatencyMs {
+		ctx.addError("spec.faults.timeout_ms", fmt.Sprintf("timeout_ms must be between 0 and %d", maxMCPLatencyMs), "")
+	}
 	if rate := def.Spec.Faults.Rate; rate != nil && (*rate < 0 || *rate > 1) {
 		ctx.addError("spec.faults.rate", "rate must be between 0 and 1", "")
 	}

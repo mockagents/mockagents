@@ -83,3 +83,36 @@ func TestStdioChaosForceMalformedAndOff(t *testing.T) {
 		t.Fatalf("stdio malformed/off output=%q", out.String())
 	}
 }
+
+func TestStdioChaosForceTimeoutAndOff(t *testing.T) {
+	zero := 0.0
+	faults := types.MCPFaults{Rate: &zero, TimeoutMs: 1}
+	in := strings.NewReader(
+		`{"jsonrpc":"2.0","id":15,"method":"ping","mockagentsChaos":"timeout"}` + "\n" +
+			`{"jsonrpc":"2.0","id":16,"method":"ping","mockagentsChaos":"off"}` + "\n",
+	)
+	var out bytes.Buffer
+	if err := ServeStdioWithFaults(newTestMCPServer(), in, &out, faults); err != nil {
+		t.Fatalf("ServeStdioWithFaults: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("responses=%d, want 2: %s", len(lines), out.String())
+	}
+	var timedOut Response
+	if err := json.Unmarshal([]byte(lines[0]), &timedOut); err != nil {
+		t.Fatalf("decode timeout response: %v", err)
+	}
+	if timedOut.Error == nil || timedOut.Error.Message != "mock MCP timeout" || string(timedOut.ID) != "15" {
+		t.Fatalf("timeout response=%+v", timedOut)
+	}
+	data, ok := timedOut.Error.Data.(map[string]any)
+	chaos, _ := data["chaos"].(map[string]any)
+	if !ok || chaos["action"] != "timeout" || chaos["source"] != "request-force" {
+		t.Fatalf("timeout metadata=%+v", timedOut.Error.Data)
+	}
+	var allowed Response
+	if err := json.Unmarshal([]byte(lines[1]), &allowed); err != nil || allowed.Error != nil || string(allowed.ID) != "16" {
+		t.Fatalf("off response=%+v err=%v", allowed, err)
+	}
+}

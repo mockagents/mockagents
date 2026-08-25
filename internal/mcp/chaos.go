@@ -45,6 +45,19 @@ func (h *ChaosHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if r.Method == http.MethodPost && h.Faults.TimeoutMs > 0 {
+		if apply, source := applies("timeout"); apply {
+			stampMCPChaos(w, "timeout", source)
+			timer := time.NewTimer(time.Duration(h.Faults.TimeoutMs) * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				writeMCPChaosError(w, r, "timeout", source, "mock MCP timeout")
+			case <-r.Context().Done():
+			}
+			return
+		}
+	}
 	if r.Method == http.MethodPost && h.Faults.Malformed {
 		if apply, source := applies("malformed"); apply {
 			stampMCPChaos(w, "malformed", source)
@@ -57,7 +70,7 @@ func (h *ChaosHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost && h.Faults.Error {
 		if apply, source := applies("error"); apply {
 			stampMCPChaos(w, "error", source)
-			writeMCPChaosError(w, r)
+			writeMCPChaosError(w, r, "error", source, "mock MCP chaos fault")
 			return
 		}
 	}
@@ -69,7 +82,7 @@ func stampMCPChaos(w http.ResponseWriter, action, source string) {
 	w.Header().Set("X-Mockagents-Chaos-Source", source)
 }
 
-func writeMCPChaosError(w http.ResponseWriter, r *http.Request) {
+func writeMCPChaosError(w http.ResponseWriter, r *http.Request, action, source, message string) {
 	var id json.RawMessage
 	if r.Body != nil {
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxMCPBodyBytes+1))
@@ -94,7 +107,10 @@ func writeMCPChaosError(w http.ResponseWriter, r *http.Request) {
 		"id":      id,
 		"error": map[string]any{
 			"code":    -32000,
-			"message": "mock MCP chaos fault",
+			"message": message,
+			"data": map[string]any{
+				"chaos": map[string]string{"action": action, "source": source},
+			},
 		},
 	})
 }

@@ -64,6 +64,7 @@ spec:
     seed: 42
     rate: 1.1
     latency_ms: 60001
+    timeout_ms: 60001
   tools:
     - name: ping
       responses:
@@ -73,7 +74,7 @@ spec:
               text: ok
 `)
 	errs := ValidateMCPServer(def, "", node)
-	if errs == nil || !containsField(errs, "spec.faults.rate") || !containsField(errs, "spec.faults.latency_ms") {
+	if errs == nil || !containsField(errs, "spec.faults.rate") || !containsField(errs, "spec.faults.latency_ms") || !containsField(errs, "spec.faults.timeout_ms") {
 		t.Fatalf("expected chaos bound errors: %v", errs)
 	}
 }
