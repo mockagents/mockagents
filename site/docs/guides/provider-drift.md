@@ -18,6 +18,9 @@ mockagents drift \
   --sdk-events sdk-events.json \
   --provider-events provider-events.json \
   --mock-events mock-events.json \
+  --sdk-errors sdk-errors.json \
+  --provider-errors provider-errors.json \
+  --mock-errors mock-errors.json \
   --ignore-path '$.created' \
   --format markdown
 ```
@@ -54,9 +57,15 @@ Their order and duplicates are significant: any SDK/provider/mock sequence
 mismatch is critical and appears at `$events`. Use `--ignore-path '$events'`
 when an operation intentionally has no stable stream-order contract.
 
+Error contracts are an optional all-or-none trio keyed by stable case name.
+Each case declares `status`, `code`, and `body`; for example,
+`{"rate_limit":{"status":429,"code":"rate_limit","body":{"error":{"message":"wait"}}}}`.
+The comparison catches missing cases, exact status/code mismatches, and nested
+body-shape drift under `$errors.<case>.body`.
+
 Use `--format json` for automation, `--format sarif` for code scanning, or
 `--format junit` for CI test reporting. Use `--output` to write an artifact. The
 schedule-only `provider-drift.yml` workflow currently exercises a scrubbed
-offline Cohere baseline. Credentialed collectors, error
-comparisons, versioned baselines, and expiring exceptions remain later R14
+offline Cohere baseline. Credentialed collectors, versioned baselines, and
+expiring exceptions remain later R14
 slices.

@@ -13,13 +13,9 @@ import (
 // Paths use the same notation emitted in findings, such as $.created or
 // $.data[].id. This keeps volatile values out of comparison inputs.
 func IgnorePaths(shape map[string]Shape, paths []string) (map[string]Shape, error) {
-	ignored := make([]string, 0, len(paths))
-	for _, path := range paths {
-		path = strings.TrimSpace(path)
-		if !validDriftPath(path) {
-			return nil, fmt.Errorf("invalid ignored JSON path %q (want $, $.field, $[], $headers.field, or $events)", path)
-		}
-		ignored = append(ignored, path)
+	ignored, err := normalizeIgnoredPaths(paths)
+	if err != nil {
+		return nil, err
 	}
 	filtered := make(map[string]Shape, len(shape))
 	for path, value := range shape {
@@ -30,8 +26,35 @@ func IgnorePaths(shape map[string]Shape, paths []string) (map[string]Shape, erro
 	return filtered, nil
 }
 
+func FilterFindings(report Report, paths []string) (Report, error) {
+	ignored, err := normalizeIgnoredPaths(paths)
+	if err != nil {
+		return report, err
+	}
+	filtered := make([]Finding, 0, len(report.Findings))
+	for _, finding := range report.Findings {
+		if !isIgnoredPath(finding.Path, ignored) {
+			filtered = append(filtered, finding)
+		}
+	}
+	report.Findings = filtered
+	return report, nil
+}
+
+func normalizeIgnoredPaths(paths []string) ([]string, error) {
+	ignored := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if !validDriftPath(path) {
+			return nil, fmt.Errorf("invalid ignored JSON path %q (want $, $.field, $[], $headers.field, $events, or $errors.field)", path)
+		}
+		ignored = append(ignored, path)
+	}
+	return ignored, nil
+}
+
 func validDriftPath(path string) bool {
-	return path == "$" || path == "$headers" || path == "$events" || strings.HasPrefix(path, "$.") || strings.HasPrefix(path, "$[]") || strings.HasPrefix(path, "$headers.")
+	return path == "$" || path == "$headers" || path == "$events" || path == "$errors" || strings.HasPrefix(path, "$.") || strings.HasPrefix(path, "$[]") || strings.HasPrefix(path, "$headers.") || strings.HasPrefix(path, "$errors.")
 }
 
 func isIgnoredPath(path string, ignored []string) bool {
