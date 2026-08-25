@@ -83,6 +83,16 @@ body tells you what drifted, instead of just a hash:
 }
 ```
 
+For an explicit no-egress contract, enable strict replay:
+
+```bash
+mockagents replay --strict --cassette fixtures/checkout-flow.jsonl
+```
+
+Strict replay returns `503` with the same diagnostics on a miss and refuses
+`--upstream`, `--api-key`, or any `--record-mode` other than `none`. It never
+invokes a fallback or injects chaos; cassette hits retain their recorded bytes.
+
 `nearest` is the closest recorded interaction **on the same method+path**, scored
 by top-level field overlap; the `diff` lists `changed` / `missing_in_request` /
 `extra_in_request` fields (bounded, with long values truncated). A drifted prompt
@@ -128,6 +138,9 @@ mockagents replay \
 | `new_episodes` | replay | forward + record | grow a cassette as new requests appear |
 | `once` | replay | forward + record **only if the cassette is empty/new** | record a flow the first time, replay forever after |
 | `all` | — (never replays) | forward + record every request | re-record a whole session / use as a recording proxy |
+
+Add `--strict` to the default `none` mode when a miss must fail with `503` and
+the process must reject every configuration that could enable upstream egress.
 
 Record-on-miss reuses the same `--api-key`, `--redact`, and `--redact-pattern`
 flags as `mockagents record`, and never caches a transient failure: a 4xx/5xx

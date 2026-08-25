@@ -32,6 +32,7 @@ var (
 	replayAPIKey         string
 	replayRedact         bool
 	replayRedactPatterns []string
+	replayStrict         bool
 )
 
 func init() {
@@ -43,6 +44,7 @@ func init() {
 	replayCmd.Flags().StringVar(&replayAPIKey, "api-key", "", "API key to forward to the upstream when recording on miss")
 	replayCmd.Flags().BoolVar(&replayRedact, "redact", false, "Mask secrets in newly-recorded cassette bodies (see `mockagents record --redact`)")
 	replayCmd.Flags().StringArrayVar(&replayRedactPatterns, "redact-pattern", nil, "Additional regexp to mask in newly-recorded bodies (repeatable; implies --redact)")
+	replayCmd.Flags().BoolVar(&replayStrict, "strict", false, "Return 503 on misses and reject upstream or record-on-miss configuration")
 	rootCmd.AddCommand(replayCmd)
 }
 
@@ -71,6 +73,9 @@ func buildRecordProxy(cass *recording.Cassette, skipOnError bool) (*recording.Pr
 func runReplay(cmd *cobra.Command, args []string) error {
 	mode, err := recording.ParseRecordMode(replayRecordMode)
 	if err != nil {
+		return err
+	}
+	if err := validateStrictReplay(replayStrict, mode, replayUpstream, replayAPIKey); err != nil {
 		return err
 	}
 
@@ -111,6 +116,7 @@ func runReplay(cmd *cobra.Command, args []string) error {
 		fmt.Printf("mockagents replay: record-mode=all → forwarding + recording every request to %s\n", replayUpstream)
 	default: // none or new_episodes
 		rp := recording.NewReplay(cass)
+		rp.Strict = replayStrict
 		if len(replayMatchIgnore) > 0 {
 			rp.Matcher = recording.NewMatcher(replayMatchIgnore)
 			fmt.Printf("mockagents replay: match-ignore=%v (%d field(s))\n", replayMatchIgnore, len(replayMatchIgnore))
@@ -161,4 +167,20 @@ func runReplay(cmd *cobra.Command, args []string) error {
 		}
 		return err
 	}
+}
+
+func validateStrictReplay(strict bool, mode recording.RecordMode, upstream, apiKey string) error {
+	if !strict {
+		return nil
+	}
+	if mode != recording.RecordModeNone {
+		return fmt.Errorf("--strict requires --record-mode=none")
+	}
+	if upstream != "" {
+		return fmt.Errorf("--strict cannot be combined with --upstream")
+	}
+	if apiKey != "" {
+		return fmt.Errorf("--strict cannot be combined with --api-key")
+	}
+	return nil
 }
