@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -37,5 +38,29 @@ func TestRunDriftCriticalAndCompatible(t *testing.T) {
 	}
 	if !bytes.Contains(out.Bytes(), []byte("No drift detected")) {
 		t.Fatalf("output=%s", out.String())
+	}
+}
+
+func TestRunDriftSARIF(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	driftSDKPath = write("sdk.json", `{"id":"x"}`)
+	driftProviderPath = write("provider.json", `{"id":"x"}`)
+	driftMockPath = write("mock.json", `{"id":1}`)
+	driftOperation, driftAdapter, driftFormat, driftOutput = "test.operation", "internal/adapter/openai.go", "sarif", ""
+	var out bytes.Buffer
+	driftCmd.SetOut(&out)
+	if err := runDrift(driftCmd, nil); !errors.Is(err, errCriticalDrift) {
+		t.Fatalf("err=%v output=%s", err, out.String())
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil || doc["version"] != "2.1.0" {
+		t.Fatalf("SARIF output=%s err=%v", out.String(), err)
 	}
 }
