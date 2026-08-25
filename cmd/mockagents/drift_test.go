@@ -10,6 +10,7 @@ import (
 )
 
 func TestRunDriftCriticalAndCompatible(t *testing.T) {
+	driftExceptions = ""
 	driftIgnorePaths = nil
 	driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", ""
 	driftSDKEnums, driftProvEnums, driftMockEnums = "", "", ""
@@ -41,6 +42,36 @@ func TestRunDriftCriticalAndCompatible(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Contains(out.Bytes(), []byte("No drift detected")) {
+		t.Fatalf("output=%s", out.String())
+	}
+}
+
+func TestRunDriftAppliesExpiringExceptions(t *testing.T) {
+	driftIgnorePaths = nil
+	driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", ""
+	driftSDKEnums, driftProvEnums, driftMockEnums = "", "", ""
+	driftSDKEvents, driftProvEvents, driftMockEvents = "", "", ""
+	driftSDKErrors, driftProvErrors, driftMockErrors = "", "", ""
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	driftSDKPath = write("sdk.json", `{"id":"x"}`)
+	driftProviderPath = write("provider.json", `{"id":"x"}`)
+	driftMockPath = write("mock.json", `{"id":1}`)
+	driftExceptions = write("exceptions.json", `{"version":"mockagents-drift-exceptions/v1","exceptions":[{"operation":"test.operation","path":"$.id","rule":"sdk-mock-type-mismatch","owner":"sdk-team","expires":"2099-01-01"}]}`)
+	driftOperation, driftFormat, driftOutput = "test.operation", "json", ""
+	t.Cleanup(func() { driftExceptions = "" })
+	var out bytes.Buffer
+	driftCmd.SetOut(&out)
+	if err := runDrift(driftCmd, nil); err != nil {
+		t.Fatalf("err=%v output=%s", err, out.String())
+	}
+	if !bytes.Contains(out.Bytes(), []byte(`"applied_exceptions"`)) || !bytes.Contains(out.Bytes(), []byte(`"owner": "sdk-team"`)) {
 		t.Fatalf("output=%s", out.String())
 	}
 }
