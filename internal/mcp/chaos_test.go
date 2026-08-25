@@ -225,3 +225,20 @@ func TestChaosHTTPHandlerMalformedSchemaFault(t *testing.T) {
 		t.Fatalf("result=%v", body["result"])
 	}
 }
+
+func TestChaosHTTPHandlerTruncationFaultAndOff(t *testing.T) {
+	h := NewChaosHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }), types.MCPFaults{TruncateAfterBytes: 24})
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":41,"method":"tools/list"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Body.Len() != 24 || json.Valid(rec.Body.Bytes()) || rec.Header().Get("X-Mockagents-Chaos-Action") != "truncate" || rec.Header().Get("X-Mockagents-Chaos-Source") != "configured" {
+		t.Fatalf("headers=%v body=%q", rec.Header(), rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.Header.Set("X-Mockagents-Chaos", "off")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("off status=%d", rec.Code)
+	}
+}

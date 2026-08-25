@@ -545,6 +545,21 @@ func (s *Server) applyChaos(w http.ResponseWriter, r *http.Request, id json.RawM
 			return true
 		}
 	}
+	if faults.TruncateAfterBytes > 0 {
+		if apply, source := applies("truncate"); apply {
+			stampA2AChaos(w, "truncate", source)
+			payload, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      id,
+				"result": map[string]any{
+					"artifacts": []any{map[string]any{"parts": []any{map[string]any{"kind": "text", "text": strings.Repeat("x", faults.TruncateAfterBytes+1)}}}},
+				},
+			})
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(payload[:faults.TruncateAfterBytes])
+			return true
+		}
+	}
 	if faults.Malformed {
 		if apply, source := applies("malformed"); apply {
 			stampA2AChaos(w, "malformed", source)

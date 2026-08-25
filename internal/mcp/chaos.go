@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -107,6 +108,13 @@ func (h *ChaosHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if r.Method == http.MethodPost && h.Faults.TruncateAfterBytes > 0 {
+		if apply, source := applies("truncate"); apply {
+			stampMCPChaos(w, "truncate", source)
+			writeMCPTruncated(w, r, h.Faults.TruncateAfterBytes)
+			return
+		}
+	}
 	if r.Method == http.MethodPost && h.Faults.Malformed {
 		if apply, source := applies("malformed"); apply {
 			stampMCPChaos(w, "malformed", source)
@@ -159,6 +167,18 @@ func writeMCPMalformedSchema(w http.ResponseWriter, r *http.Request) {
 		"id":      readMCPRequestID(r),
 		"result":  map[string]any{"unexpected": true},
 	})
+}
+
+func writeMCPTruncated(w http.ResponseWriter, r *http.Request, after int) {
+	payload, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      readMCPRequestID(r),
+		"result": map[string]any{
+			"content": []map[string]string{{"type": "text", "text": strings.Repeat("x", after+1)}},
+		},
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(payload[:after])
 }
 
 func readMCPRequestID(r *http.Request) json.RawMessage {

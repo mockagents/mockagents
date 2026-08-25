@@ -13,7 +13,10 @@ var validA2ATaskStates = []string{
 	"submitted", "working", "input-required", "completed", "canceled", "failed", "rejected",
 }
 
-const maxA2ALatencyMs = 60_000
+const (
+	maxA2ALatencyMs     = 60_000
+	maxA2ATruncateBytes = 1 << 20
+)
 
 // ValidateA2AServer runs rule-based validation against an A2AServerDefinition
 // (NF-04). Mirrors ValidateMCPServer so every document kind flows through the
@@ -55,6 +58,9 @@ func ValidateA2AServer(def *types.A2AServerDefinition, filePath string, node *ya
 	}
 	if code := def.Spec.Faults.StatusCode; code != 0 && (code < 400 || code > 599) {
 		ctx.addError("spec.faults.status_code", "status_code must be between 400 and 599", "")
+	}
+	if size := def.Spec.Faults.TruncateAfterBytes; size < 0 || size > maxA2ATruncateBytes {
+		ctx.addError("spec.faults.truncate_after_bytes", fmt.Sprintf("truncate_after_bytes must be between 0 and %d", maxA2ATruncateBytes), "")
 	}
 	if rate := def.Spec.Faults.Rate; rate != nil && (*rate < 0 || *rate > 1) {
 		ctx.addError("spec.faults.rate", "rate must be between 0 and 1", "")
