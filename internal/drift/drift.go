@@ -16,7 +16,7 @@ func IgnorePaths(shape map[string]Shape, paths []string) (map[string]Shape, erro
 	ignored := make([]string, 0, len(paths))
 	for _, path := range paths {
 		path = strings.TrimSpace(path)
-		if path == "" || (path != "$" && path != "$headers" && !strings.HasPrefix(path, "$.") && !strings.HasPrefix(path, "$[]") && !strings.HasPrefix(path, "$headers.")) {
+		if !validDriftPath(path) {
 			return nil, fmt.Errorf("invalid ignored JSON path %q (want $, $.field, $[], or $headers.field)", path)
 		}
 		ignored = append(ignored, path)
@@ -28,6 +28,10 @@ func IgnorePaths(shape map[string]Shape, paths []string) (map[string]Shape, erro
 		}
 	}
 	return filtered, nil
+}
+
+func validDriftPath(path string) bool {
+	return path == "$" || path == "$headers" || strings.HasPrefix(path, "$.") || strings.HasPrefix(path, "$[]") || strings.HasPrefix(path, "$headers.")
 }
 
 func isIgnoredPath(path string, ignored []string) bool {
@@ -53,13 +57,17 @@ type Shape struct {
 }
 
 type Finding struct {
-	Operation string   `json:"operation"`
-	Path      string   `json:"path"`
-	Severity  Severity `json:"severity"`
-	Rule      string   `json:"rule"`
-	SDK       *Shape   `json:"sdk,omitempty"`
-	Provider  *Shape   `json:"provider,omitempty"`
-	Mock      *Shape   `json:"mock,omitempty"`
+	Operation      string   `json:"operation"`
+	Path           string   `json:"path"`
+	Severity       Severity `json:"severity"`
+	Rule           string   `json:"rule"`
+	SDK            *Shape   `json:"sdk,omitempty"`
+	Provider       *Shape   `json:"provider,omitempty"`
+	Mock           *Shape   `json:"mock,omitempty"`
+	Values         []string `json:"values,omitempty"`
+	SDKValues      []string `json:"sdk_values,omitempty"`
+	ProviderValues []string `json:"provider_values,omitempty"`
+	MockValues     []string `json:"mock_values,omitempty"`
 }
 
 type Report struct {
