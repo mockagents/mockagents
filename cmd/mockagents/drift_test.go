@@ -11,6 +11,7 @@ import (
 
 func TestRunDriftCriticalAndCompatible(t *testing.T) {
 	driftIgnorePaths = nil
+	driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", ""
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -44,6 +45,7 @@ func TestRunDriftCriticalAndCompatible(t *testing.T) {
 
 func TestRunDriftSARIF(t *testing.T) {
 	driftIgnorePaths = nil
+	driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", ""
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -69,6 +71,7 @@ func TestRunDriftSARIF(t *testing.T) {
 
 func TestRunDriftJUnit(t *testing.T) {
 	driftIgnorePaths = nil
+	driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", ""
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -93,6 +96,7 @@ func TestRunDriftJUnit(t *testing.T) {
 }
 
 func TestRunDriftIgnoresConfiguredVolatilePaths(t *testing.T) {
+	driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", ""
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -113,6 +117,33 @@ func TestRunDriftIgnoresConfiguredVolatilePaths(t *testing.T) {
 		t.Fatalf("ignored volatile drift failed: %v output=%s", err, out.String())
 	}
 	if !bytes.Contains(out.Bytes(), []byte(`"findings": []`)) {
+		t.Fatalf("output=%s", out.String())
+	}
+}
+
+func TestRunDriftComparesCaseInsensitiveHeaders(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	driftSDKPath = write("sdk.json", `{"id":"x"}`)
+	driftProviderPath = write("provider.json", `{"id":"x"}`)
+	driftMockPath = write("mock.json", `{"id":"x"}`)
+	driftSDKHeaders = write("sdk-headers.json", `{"Content-Type":"application/json"}`)
+	driftProvHeaders = write("provider-headers.json", `{"content-type":"application/json"}`)
+	driftMockHeaders = write("mock-headers.json", `{"CONTENT-TYPE":["application/json"]}`)
+	driftOperation, driftFormat, driftOutput, driftIgnorePaths = "test.operation", "json", "", nil
+	t.Cleanup(func() { driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", "" })
+	var out bytes.Buffer
+	driftCmd.SetOut(&out)
+	if err := runDrift(driftCmd, nil); !errors.Is(err, errCriticalDrift) {
+		t.Fatalf("err=%v output=%s", err, out.String())
+	}
+	if !bytes.Contains(out.Bytes(), []byte(`"path": "$headers.content-type"`)) {
 		t.Fatalf("output=%s", out.String())
 	}
 }

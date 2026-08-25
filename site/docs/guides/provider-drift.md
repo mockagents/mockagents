@@ -9,6 +9,9 @@ mockagents drift \
   --sdk sdk-shape.json \
   --provider scrubbed-provider-response.json \
   --mock mockagents-response.json \
+  --sdk-headers sdk-headers.json \
+  --provider-headers provider-headers.json \
+  --mock-headers mock-headers.json \
   --ignore-path '$.created' \
   --format markdown
 ```
@@ -30,9 +33,14 @@ Repeat `--ignore-path` to exclude volatile paths from all three inputs. Each
 value uses the JSON-path notation shown in reports and excludes the named path
 plus descendants; for example, `$.created` and `$.data[].request_id`.
 
+To compare response headers, provide all three optional header artifacts. Each
+must be a JSON object. Header names are normalized case-insensitively and appear
+under `$headers`, so `--ignore-path '$headers.date'` can suppress a volatile
+header without hiding body drift.
+
 Use `--format json` for automation, `--format sarif` for code scanning, or
 `--format junit` for CI test reporting. Use `--output` to write an artifact. The
 schedule-only `provider-drift.yml` workflow currently exercises a scrubbed
-offline Cohere baseline. Credentialed collectors, headers/enums/error/event
+offline Cohere baseline. Credentialed collectors, enums/error/event
 comparisons, versioned baselines, and expiring exceptions remain later R14
 slices.
