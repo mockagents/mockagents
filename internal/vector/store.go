@@ -68,6 +68,7 @@ type Query struct {
 	// context without coupling the provider-neutral store to HTTP.
 	RequestKey  string
 	ForcedChaos string
+	Operation   string
 }
 
 type QueryResult struct {
@@ -84,6 +85,7 @@ type collection struct {
 	partialResultLimit *int
 	chaosSeed          int64
 	chaosRate          *float64
+	operationRates     map[string]float64
 }
 
 // SetPartialResultLimit configures deterministic post-ranking truncation for a
@@ -95,6 +97,11 @@ func (s *Store) SetPartialResultLimit(name string, limit *int) error {
 // SetPartialResultPolicy configures truncation plus an optional deterministic
 // rate. A nil rate preserves the legacy always-on partial-result fixture.
 func (s *Store) SetPartialResultPolicy(name string, limit *int, seed int64, rate *float64) error {
+	return s.SetPartialResultScopedPolicy(name, limit, seed, rate, nil)
+}
+
+// SetPartialResultScopedPolicy adds exact provider-operation rate overrides.
+func (s *Store) SetPartialResultScopedPolicy(name string, limit *int, seed int64, rate *float64, operationRates map[string]float64) error {
 	if limit != nil && (*limit < 0 || *limit > MaxTopK) {
 		return fmt.Errorf("partial result limit must be between 0 and %d", MaxTopK)
 	}
@@ -116,6 +123,10 @@ func (s *Store) SetPartialResultPolicy(name string, limit *int, seed int64, rate
 	} else {
 		value := *rate
 		c.chaosRate = &value
+	}
+	c.operationRates = make(map[string]float64, len(operationRates))
+	for operation, value := range operationRates {
+		c.operationRates[operation] = value
 	}
 	return nil
 }
@@ -393,7 +404,8 @@ func (s *Store) QueryWithInfo(name string, query Query) (QueryResult, error) {
 		matches = matches[:query.TopK]
 	}
 	partial := false
-	decision := commonchaos.Decide(commonchaos.Policy{Seed: c.chaosSeed, Rate: c.chaosRate}, query.RequestKey, "partial", query.ForcedChaos)
+	policy, operation := commonchaos.ForOperation(commonchaos.Policy{Seed: c.chaosSeed, Rate: c.chaosRate}, query.Operation, c.operationRates)
+	decision := commonchaos.Decide(policy, query.RequestKey+"\x00"+operation, "partial", query.ForcedChaos)
 	if c.partialResultLimit != nil && len(matches) > *c.partialResultLimit && decision.Apply {
 		matches = matches[:*c.partialResultLimit]
 		partial = true
