@@ -6,7 +6,38 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 )
+
+// IgnorePaths removes exact JSON paths and their descendants from a shape.
+// Paths use the same notation emitted in findings, such as $.created or
+// $.data[].id. This keeps volatile values out of comparison inputs.
+func IgnorePaths(shape map[string]Shape, paths []string) (map[string]Shape, error) {
+	ignored := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" || (path != "$" && !strings.HasPrefix(path, "$.") && !strings.HasPrefix(path, "$[]")) {
+			return nil, fmt.Errorf("invalid ignored JSON path %q (want $, $.field, or $[])", path)
+		}
+		ignored = append(ignored, path)
+	}
+	filtered := make(map[string]Shape, len(shape))
+	for path, value := range shape {
+		if !isIgnoredPath(path, ignored) {
+			filtered[path] = value
+		}
+	}
+	return filtered, nil
+}
+
+func isIgnoredPath(path string, ignored []string) bool {
+	for _, prefix := range ignored {
+		if path == prefix || strings.HasPrefix(path, prefix+".") || strings.HasPrefix(path, prefix+"[]") {
+			return true
+		}
+	}
+	return false
+}
 
 type Severity string
 

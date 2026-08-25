@@ -21,6 +21,7 @@ var (
 	driftAdapter      string
 	driftFormat       string
 	driftOutput       string
+	driftIgnorePaths  []string
 )
 
 var driftCmd = &cobra.Command{
@@ -41,6 +42,7 @@ func init() {
 	driftCmd.Flags().StringVar(&driftAdapter, "adapter", "", "Adapter source file responsible for fixes")
 	driftCmd.Flags().StringVar(&driftFormat, "format", "markdown", "Output format: markdown, json, sarif, or junit")
 	driftCmd.Flags().StringVarP(&driftOutput, "output", "o", "", "Write report to a file (default: stdout)")
+	driftCmd.Flags().StringArrayVar(&driftIgnorePaths, "ignore-path", nil, "Volatile JSON path to exclude, including descendants (repeatable, e.g. $.created)")
 	_ = driftCmd.MarkFlagRequired("sdk")
 	_ = driftCmd.MarkFlagRequired("provider")
 	_ = driftCmd.MarkFlagRequired("mock")
@@ -71,6 +73,18 @@ func runDrift(cmd *cobra.Command, _ []string) error {
 	mock, err := load("mock", driftMockPath)
 	if err != nil {
 		return err
+	}
+	sdk, err = drift.IgnorePaths(sdk, driftIgnorePaths)
+	if err != nil {
+		return fmt.Errorf("SDK artifact: %w", err)
+	}
+	provider, err = drift.IgnorePaths(provider, driftIgnorePaths)
+	if err != nil {
+		return fmt.Errorf("provider artifact: %w", err)
+	}
+	mock, err = drift.IgnorePaths(mock, driftIgnorePaths)
+	if err != nil {
+		return fmt.Errorf("mock artifact: %w", err)
 	}
 	report := drift.Compare(driftOperation, sdk, provider, mock)
 	report.Adapter = driftAdapter
