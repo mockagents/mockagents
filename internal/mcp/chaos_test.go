@@ -63,6 +63,25 @@ func TestChaosHTTPHandlerSeededDecisionUsesRequestID(t *testing.T) {
 	}
 }
 
+func TestChaosHTTPHandlerOperationRateOverridesServiceRate(t *testing.T) {
+	one, zero := 1.0, 0.0
+	h := NewChaosHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }), types.MCPFaults{
+		Rate: &one, Error: true, OperationRates: map[string]float64{"tools/list": zero},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("tools/list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call"}`))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Header().Get("X-Mockagents-Chaos-Source") != "seeded-rate" {
+		t.Fatalf("tools/call source=%q", rec.Header().Get("X-Mockagents-Chaos-Source"))
+	}
+}
+
 func TestChaosHTTPHandlerForceMalformedAndActionPrecedence(t *testing.T) {
 	zero := 0.0
 	h := NewChaosHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

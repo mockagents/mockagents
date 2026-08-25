@@ -56,6 +56,11 @@ func ValidateA2AServer(def *types.A2AServerDefinition, filePath string, node *ya
 	if rate := def.Spec.Faults.Rate; rate != nil && (*rate < 0 || *rate > 1) {
 		ctx.addError("spec.faults.rate", "rate must be between 0 and 1", "")
 	}
+	for operation, rate := range def.Spec.Faults.OperationRates {
+		if operation == "" || rate < 0 || rate > 1 {
+			ctx.addError("spec.faults.operation_rates", "operation names must be non-empty and rates between 0 and 1", "")
+		}
+	}
 
 	if def.Spec.Card.Name == "" {
 		ctx.addError("spec.card.name", "required field missing",

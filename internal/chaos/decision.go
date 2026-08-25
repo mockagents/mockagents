@@ -14,6 +14,9 @@ const ForceHeader = "X-Mockagents-Chaos"
 type Policy struct {
 	Seed int64
 	Rate *float64
+	// Source labels the configured scope that supplied Rate. Empty preserves
+	// the legacy configured/seeded-rate labels.
+	Source string
 }
 
 // Decision describes why a configured fault should or should not run.
@@ -35,14 +38,22 @@ func Decide(policy Policy, requestKey, configuredAction, forcedAction string) De
 		return Decision{Apply: force == action, Source: "request-force"}
 	}
 	if policy.Rate == nil {
-		return Decision{Apply: true, Source: "configured"}
+		source := policy.Source
+		if source == "" {
+			source = "configured"
+		}
+		return Decision{Apply: true, Source: source}
+	}
+	source := policy.Source
+	if source == "" {
+		source = "seeded-rate"
 	}
 	rate := *policy.Rate
 	if rate <= 0 {
-		return Decision{Source: "seeded-rate"}
+		return Decision{Source: source}
 	}
 	if rate >= 1 {
-		return Decision{Apply: true, Source: "seeded-rate"}
+		return Decision{Apply: true, Source: source}
 	}
 	h := fnv.New64a()
 	var seed [8]byte
@@ -54,5 +65,15 @@ func Decide(policy Policy, requestKey, configuredAction, forcedAction string) De
 	_, _ = h.Write([]byte(action))
 	// Use the top 53 bits, matching float64's exact integer precision.
 	sample := float64(h.Sum64()>>11) / float64(uint64(1)<<53)
-	return Decision{Apply: sample < rate, Source: "seeded-rate"}
+	return Decision{Apply: sample < rate, Source: source}
+}
+
+// ForOperation applies an exact operation-rate override ahead of the service
+// rate. The operation name also enters the deterministic sampling key.
+func ForOperation(base Policy, operation string, rates map[string]float64) (Policy, string) {
+	if rate, ok := rates[operation]; ok {
+		base.Rate = &rate
+		base.Source = "operation-rate"
+	}
+	return base, operation
 }

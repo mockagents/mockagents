@@ -23,12 +23,26 @@ func NewChaosHTTPHandler(next http.Handler, faults types.MCPFaults) *ChaosHTTPHa
 }
 
 func (h *ChaosHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	operation := r.Method + " " + r.URL.Path
+	if r.Method == http.MethodPost && r.Body != nil {
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxMCPBodyBytes+1))
+		if err == nil {
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			var request struct {
+				Method string `json:"method"`
+			}
+			if len(body) <= maxMCPBodyBytes && json.Unmarshal(body, &request) == nil && request.Method != "" {
+				operation = request.Method
+			}
+		}
+	}
 	key := r.Header.Get("X-Request-Id")
 	if key == "" {
 		key = r.Method + " " + r.URL.Path
 	}
 	force := r.Header.Get(commonchaos.ForceHeader)
-	policy := commonchaos.Policy{Seed: h.Faults.Seed, Rate: h.Faults.Rate}
+	policy, operation := commonchaos.ForOperation(commonchaos.Policy{Seed: h.Faults.Seed, Rate: h.Faults.Rate}, operation, h.Faults.OperationRates)
+	key += "\x00" + operation
 	applies := func(action string) (bool, string) {
 		decision := commonchaos.Decide(policy, key, action, force)
 		return decision.Apply, decision.Source
