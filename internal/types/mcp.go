@@ -49,6 +49,7 @@ type MCPFaults struct {
 	TimeoutMs          int                `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
 	StatusCode         int                `yaml:"status_code,omitempty" json:"status_code,omitempty"`
 	Disconnect         bool               `yaml:"disconnect,omitempty" json:"disconnect,omitempty"`
+	Reset              bool               `yaml:"reset,omitempty" json:"reset,omitempty"`
 	Malformed          bool               `yaml:"malformed,omitempty" json:"malformed,omitempty"`
 	MalformedSchema    bool               `yaml:"malformed_schema,omitempty" json:"malformed_schema,omitempty"`
 	TruncateAfterBytes int                `yaml:"truncate_after_bytes,omitempty" json:"truncate_after_bytes,omitempty"`

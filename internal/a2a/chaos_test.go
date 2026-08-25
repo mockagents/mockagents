@@ -204,6 +204,25 @@ func TestA2AChaosDisconnectFallbackAndOff(t *testing.T) {
 	}
 }
 
+func TestA2AChaosResetFallbackAndOff(t *testing.T) {
+	def := testDef()
+	def.Spec.Faults = types.A2AFaults{Reset: true}
+	h := NewServer(def).RPCHandler()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":52,"method":"tasks/get"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway || rec.Header().Get("X-Mockagents-Chaos-Action") != "reset" || rec.Header().Get("X-Mockagents-Chaos-Source") != "configured" {
+		t.Fatalf("reset status=%d headers=%v", rec.Code, rec.Header())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":53,"method":"tasks/get"}`))
+	req.Header.Set("X-Mockagents-Chaos", "off")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusBadGateway {
+		t.Fatal("off request reset")
+	}
+}
+
 func TestA2AChaosStatusFaultAndOff(t *testing.T) {
 	def := testDef()
 	def.Spec.Faults = types.A2AFaults{StatusCode: http.StatusServiceUnavailable}

@@ -525,6 +525,15 @@ func (s *Server) applyChaos(w http.ResponseWriter, r *http.Request, id json.RawM
 			return true
 		}
 	}
+	if faults.Reset {
+		if apply, source := applies("reset"); apply {
+			stampA2AChaos(w, "reset", source)
+			if !commonchaos.ResetHTTP(w) {
+				http.Error(w, "mock A2A connection reset", http.StatusBadGateway)
+			}
+			return true
+		}
+	}
 	if faults.StatusCode != 0 {
 		if apply, source := applies("status"); apply {
 			stampA2AChaos(w, "status", source)
