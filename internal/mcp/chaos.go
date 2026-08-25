@@ -84,6 +84,15 @@ func (h *ChaosHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if h.Faults.Disconnect {
+		if apply, source := applies("disconnect"); apply {
+			stampMCPChaos(w, "disconnect", source)
+			if !commonchaos.DisconnectHTTP(w) {
+				http.Error(w, "mock MCP disconnect", http.StatusBadGateway)
+			}
+			return
+		}
+	}
 	if r.Method == http.MethodPost && h.Faults.Malformed {
 		if apply, source := applies("malformed"); apply {
 			stampMCPChaos(w, "malformed", source)

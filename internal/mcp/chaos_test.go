@@ -173,3 +173,20 @@ func TestChaosHTTPHandlerForceTimeoutAndOff(t *testing.T) {
 		t.Fatalf("off status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestChaosHTTPHandlerDisconnectFallbackAndOff(t *testing.T) {
+	h := NewChaosHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }), types.MCPFaults{Disconnect: true})
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway || rec.Header().Get("X-Mockagents-Chaos-Action") != "disconnect" {
+		t.Fatalf("disconnect status=%d action=%q", rec.Code, rec.Header().Get("X-Mockagents-Chaos-Action"))
+	}
+	req = httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.Header.Set("X-Mockagents-Chaos", "off")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("off status=%d", rec.Code)
+	}
+}
