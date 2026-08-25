@@ -43,17 +43,18 @@ type MCPServerSpec struct {
 // requests. A nil Rate preserves always-on semantics when an action is
 // configured.
 type MCPFaults struct {
-	Seed           int64              `yaml:"seed,omitempty" json:"seed,omitempty"`
-	Rate           *float64           `yaml:"rate,omitempty" json:"rate,omitempty"`
-	LatencyMs      int                `yaml:"latency_ms,omitempty" json:"latency_ms,omitempty"`
-	TimeoutMs      int                `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
-	StatusCode     int                `yaml:"status_code,omitempty" json:"status_code,omitempty"`
-	Disconnect     bool               `yaml:"disconnect,omitempty" json:"disconnect,omitempty"`
-	Malformed      bool               `yaml:"malformed,omitempty" json:"malformed,omitempty"`
-	Error          bool               `yaml:"error,omitempty" json:"error,omitempty"`
-	OperationRates map[string]float64 `yaml:"operation_rates,omitempty" json:"operation_rates,omitempty"`
-	FixtureRates   map[string]float64 `yaml:"fixture_rates,omitempty" json:"fixture_rates,omitempty"`
-	SequenceRates  map[uint64]float64 `yaml:"sequence_rates,omitempty" json:"sequence_rates,omitempty"`
+	Seed            int64              `yaml:"seed,omitempty" json:"seed,omitempty"`
+	Rate            *float64           `yaml:"rate,omitempty" json:"rate,omitempty"`
+	LatencyMs       int                `yaml:"latency_ms,omitempty" json:"latency_ms,omitempty"`
+	TimeoutMs       int                `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
+	StatusCode      int                `yaml:"status_code,omitempty" json:"status_code,omitempty"`
+	Disconnect      bool               `yaml:"disconnect,omitempty" json:"disconnect,omitempty"`
+	Malformed       bool               `yaml:"malformed,omitempty" json:"malformed,omitempty"`
+	MalformedSchema bool               `yaml:"malformed_schema,omitempty" json:"malformed_schema,omitempty"`
+	Error           bool               `yaml:"error,omitempty" json:"error,omitempty"`
+	OperationRates  map[string]float64 `yaml:"operation_rates,omitempty" json:"operation_rates,omitempty"`
+	FixtureRates    map[string]float64 `yaml:"fixture_rates,omitempty" json:"fixture_rates,omitempty"`
+	SequenceRates   map[uint64]float64 `yaml:"sequence_rates,omitempty" json:"sequence_rates,omitempty"`
 }
 
 // MCPCapabilities controls which sections the server advertises during

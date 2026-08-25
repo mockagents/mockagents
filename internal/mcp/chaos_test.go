@@ -210,3 +210,18 @@ func TestChaosHTTPHandlerStatusFaultAndOff(t *testing.T) {
 		t.Fatalf("off status=%d", rec.Code)
 	}
 }
+
+func TestChaosHTTPHandlerMalformedSchemaFault(t *testing.T) {
+	h := NewChaosHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }), types.MCPFaults{MalformedSchema: true})
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":31,"method":"tools/list"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body["id"] != float64(31) || body["error"] != nil || rec.Header().Get("X-Mockagents-Chaos-Action") != "malformed-schema" || rec.Header().Get("X-Mockagents-Chaos-Source") != "configured" {
+		t.Fatalf("headers=%v body=%s err=%v", rec.Header(), rec.Body.String(), err)
+	}
+	result, ok := body["result"].(map[string]any)
+	if !ok || result["unexpected"] != true {
+		t.Fatalf("result=%v", body["result"])
+	}
+}

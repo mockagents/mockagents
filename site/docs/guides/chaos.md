@@ -138,6 +138,11 @@ status from `400` through `599`. The response keeps the protocol's JSON-RPC
 error envelope (including the request ID) while returning that HTTP status;
 request force/off and every configured rate scope apply to the `status` action.
 
+Set `faults.malformed_schema: true` on MCP or A2A to return valid JSON whose
+`result` deliberately violates the protocol result schema. This differs from
+`faults.malformed`, which emits syntactically invalid JSON. The force value is
+`malformed-schema`, and the same deterministic scope precedence applies.
+
 ## Provider-faithful error shapes
 
 An injected error is rendered in each protocol's own envelope — an OpenAI
