@@ -124,6 +124,10 @@ Tavily, Cohere rerank, and OpenAI moderation services also accept
 `/v1/moderations`). A path override takes precedence over the service `rate`;
 the request force/off header remains authoritative.
 
+Vector collections accept the same path-keyed `operation_rates` for partial
+result faults, so Qdrant, Pinecone, and Chroma query routes can be controlled
+independently while sharing one deterministic collection policy.
+
 ## Provider-faithful error shapes
 
 An injected error is rendered in each protocol's own envelope — an OpenAI

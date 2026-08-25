@@ -53,3 +53,10 @@ func TestValidateVectorCollectionChaosRate(t *testing.T) {
 	invalid := ValidateBytes([]byte("apiVersion: mockagents/v1\nkind: VectorCollection\nmetadata:\n  name: docs\nspec:\n  dimension: 1\n  metric: dot\n  faults:\n    rate: -0.1\n"))
 	require.Len(t, invalid.Errors, 1)
 }
+
+func TestValidateVectorCollectionOperationRates(t *testing.T) {
+	valid := ValidateBytes([]byte("apiVersion: mockagents/v1\nkind: VectorCollection\nmetadata:\n  name: docs\nspec:\n  dimension: 1\n  metric: dot\n  faults:\n    operation_rates:\n      /indexes/docs/query: 0.5\n"))
+	require.Empty(t, valid.Errors)
+	invalid := ValidateBytes([]byte("apiVersion: mockagents/v1\nkind: VectorCollection\nmetadata:\n  name: docs\nspec:\n  dimension: 1\n  metric: dot\n  faults:\n    operation_rates:\n      indexes/docs/query: -1\n"))
+	require.Len(t, invalid.Errors, 1)
+}

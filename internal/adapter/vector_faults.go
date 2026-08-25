@@ -13,6 +13,7 @@ func vectorChaosQuery(r *http.Request, query vector.Query) vector.Query {
 		query.RequestKey = r.Method + " " + r.URL.Path
 	}
 	query.ForcedChaos = r.Header.Get(commonchaos.ForceHeader)
+	query.Operation = r.URL.Path
 	return query
 }
 

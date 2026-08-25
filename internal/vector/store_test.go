@@ -107,6 +107,24 @@ func TestQueryPartialResultsSeedAndRequestOverride(t *testing.T) {
 	}
 }
 
+func TestQueryPartialResultOperationRate(t *testing.T) {
+	s := seededStore(t, Cosine)
+	limit, one, zero := 1, 1.0, 0.0
+	if err := s.SetPartialResultScopedPolicy("docs", &limit, 42, &one, map[string]float64{"/collections/docs/points/search": zero}); err != nil {
+		t.Fatal(err)
+	}
+	query := Query{Vector: []float64{1, 0}, TopK: 3, RequestKey: "req", Operation: "/collections/docs/points/search"}
+	result, err := s.QueryWithInfo("docs", query)
+	if err != nil || result.Partial {
+		t.Fatalf("scoped result=%+v err=%v", result, err)
+	}
+	query.Operation = "/indexes/docs/query"
+	result, err = s.QueryWithInfo("docs", query)
+	if err != nil || !result.Partial || result.ChaosSource != "seeded-rate" {
+		t.Fatalf("fallback result=%+v err=%v", result, err)
+	}
+}
+
 func TestUpsertIsAtomicOnDimensionMismatch(t *testing.T) {
 	s := seededStore(t, Dot)
 	err := s.Upsert("docs", []Point{

@@ -22,6 +22,7 @@ type VectorCollectionSpec struct {
 type VectorFaults struct {
 	Seed           int64                      `yaml:"seed,omitempty" json:"seed,omitempty"`
 	Rate           *float64                   `yaml:"rate,omitempty" json:"rate,omitempty"`
+	OperationRates map[string]float64         `yaml:"operation_rates,omitempty" json:"operation_rates,omitempty"`
 	PartialResults *VectorPartialResultsFault `yaml:"partial_results,omitempty" json:"partial_results,omitempty"`
 }
 
