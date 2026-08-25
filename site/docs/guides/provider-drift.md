@@ -9,6 +9,7 @@ mockagents drift \
   --sdk sdk-shape.json \
   --provider scrubbed-provider-response.json \
   --mock mockagents-response.json \
+  --ignore-path '$.created' \
   --format markdown
 ```
 
@@ -24,6 +25,10 @@ shapes, and nullability. Findings are deterministic and ordered by JSON path:
 - `warning`: a field exists only in the provider response. This is treated as
   an additive provider change.
 - `info`: a field exists only in MockAgents.
+
+Repeat `--ignore-path` to exclude volatile paths from all three inputs. Each
+value uses the JSON-path notation shown in reports and excludes the named path
+plus descendants; for example, `$.created` and `$.data[].request_id`.
 
 Use `--format json` for automation, `--format sarif` for code scanning, or
 `--format junit` for CI test reporting. Use `--output` to write an artifact. The

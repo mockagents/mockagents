@@ -33,3 +33,23 @@ func TestCompareCompatibleAndInvalidJSON(t *testing.T) {
 		t.Fatal("expected parse error")
 	}
 }
+
+func TestIgnorePathsRemovesExactPathsAndDescendants(t *testing.T) {
+	shape := mustShape(t, `{"created":123,"data":[{"id":"volatile","value":1}]}`)
+	filtered, err := IgnorePaths(shape, []string{"$.created", " $.data[].id "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := filtered["$.created"]; ok {
+		t.Fatal("created path was not ignored")
+	}
+	if _, ok := filtered["$.data[].id"]; ok {
+		t.Fatal("array item id path was not ignored")
+	}
+	if _, ok := filtered["$.data[].value"]; !ok {
+		t.Fatal("unrelated path was removed")
+	}
+	if _, err := IgnorePaths(shape, []string{"created"}); err == nil {
+		t.Fatal("invalid path must fail")
+	}
+}
