@@ -61,3 +61,34 @@ func TestA2AChaosSeededDecisionUsesRequestID(t *testing.T) {
 		}
 	}
 }
+
+func TestA2AChaosForceMalformedAndActionPrecedence(t *testing.T) {
+	zero := 0.0
+	def := testDef()
+	def.Spec.Faults = types.A2AFaults{Rate: &zero, Malformed: true, Error: true}
+	h := NewServer(def).RPCHandler()
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"message/send","params":{}}`))
+	req.Header.Set("X-Mockagents-Chaos", "malformed")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Header().Get("X-Mockagents-Chaos-Action") != "malformed" || rec.Header().Get("X-Mockagents-Chaos-Source") != "request-force" || json.Valid(rec.Body.Bytes()) {
+		t.Fatalf("malformed status=%d action=%q source=%q body=%q", rec.Code, rec.Header().Get("X-Mockagents-Chaos-Action"), rec.Header().Get("X-Mockagents-Chaos-Source"), rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":10,"method":"message/send","params":{}}`))
+	req.Header.Set("X-Mockagents-Chaos", "error")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Header().Get("X-Mockagents-Chaos-Action") != "error" || !json.Valid(rec.Body.Bytes()) {
+		t.Fatalf("error action=%q body=%q", rec.Header().Get("X-Mockagents-Chaos-Action"), rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":11,"method":"message/send","params":{}}`))
+	req.Header.Set("X-Mockagents-Chaos", "off")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Header().Get("X-Mockagents-Chaos-Action") != "" || !json.Valid(rec.Body.Bytes()) {
+		t.Fatalf("off action=%q body=%q", rec.Header().Get("X-Mockagents-Chaos-Action"), rec.Body.String())
+	}
+}
