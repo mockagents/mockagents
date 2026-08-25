@@ -48,9 +48,9 @@ func TestStdioChaosSeededDecisionUsesMethodAndID(t *testing.T) {
 	rate := 0.5
 	faults := types.MCPFaults{Seed: 99, Rate: &rate, Error: true}
 	frame := []byte(`{"jsonrpc":"2.0","id":"stable","method":"ping"}`)
-	first, firstHandled := applyStdioChaos(frame, faults)
+	first, firstHandled := applyStdioChaos(frame, faults, 1)
 	for i := 0; i < 10; i++ {
-		got, handled := applyStdioChaos(frame, faults)
+		got, handled := applyStdioChaos(frame, faults, 1)
 		if handled != firstHandled || !bytes.Equal(got, first) {
 			t.Fatalf("same method/id produced a different decision on iteration %d", i)
 		}
@@ -61,9 +61,22 @@ func TestStdioChaosNotificationDoesNotReceiveErrorResponse(t *testing.T) {
 	faults := types.MCPFaults{Error: true}
 	out, handled := applyStdioChaos([]byte(
 		`{"jsonrpc":"2.0","method":"notifications/initialized","mockagentsChaos":"error"}`,
-	), faults)
+	), faults, 1)
 	if !handled || out != nil {
 		t.Fatalf("notification chaos=(%s,%v), want nil,true", out, handled)
+	}
+}
+
+func TestStdioChaosSequenceRatePrecedence(t *testing.T) {
+	one, zero := 1.0, 0.0
+	faults := types.MCPFaults{Rate: &zero, Error: true, SequenceRates: map[uint64]float64{2: one}}
+	frame := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if _, handled := applyStdioChaos(frame, faults, 1); handled {
+		t.Fatal("first frame unexpectedly faulted")
+	}
+	out, handled := applyStdioChaos(frame, faults, 2)
+	if !handled || !bytes.Contains(out, []byte(`"source":"sequence-rate"`)) {
+		t.Fatalf("second frame=(%s,%v)", out, handled)
 	}
 }
 

@@ -107,11 +107,15 @@ faults:
   operation_rates:
     tools/list: 0       # MCP discovery stays healthy
     tools/call: 1       # every MCP tool invocation faults
+  sequence_rates:
+    3: 0                # third request stays healthy
 ```
 
 A2A uses the same field with method names such as `message/send` and
-`message/stream`. Decisions expose `X-Mockagents-Chaos-Source:
-operation-rate` when an operation override wins.
+`message/stream`. One-based `sequence_rates` override operation rates, and an
+explicit request force/off override wins over both. Decisions expose
+`X-Mockagents-Chaos-Source: operation-rate` or `sequence-rate` for the
+effective scope.
 
 ## Provider-faithful error shapes
 

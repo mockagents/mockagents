@@ -77,3 +77,14 @@ func ForOperation(base Policy, operation string, rates map[string]float64) (Poli
 	}
 	return base, operation
 }
+
+// ForSequence applies a one-based request-sequence override. Call it after
+// broader scopes so sequence policy wins while request force/off remains
+// authoritative in Decide.
+func ForSequence(base Policy, sequence uint64, rates map[uint64]float64) Policy {
+	if rate, ok := rates[sequence]; ok {
+		base.Rate = &rate
+		base.Source = "sequence-rate"
+	}
+	return base
+}

@@ -50,6 +50,7 @@ type MCPFaults struct {
 	Malformed      bool               `yaml:"malformed,omitempty" json:"malformed,omitempty"`
 	Error          bool               `yaml:"error,omitempty" json:"error,omitempty"`
 	OperationRates map[string]float64 `yaml:"operation_rates,omitempty" json:"operation_rates,omitempty"`
+	SequenceRates  map[uint64]float64 `yaml:"sequence_rates,omitempty" json:"sequence_rates,omitempty"`
 }
 
 // MCPCapabilities controls which sections the server advertises during

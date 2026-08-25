@@ -42,6 +42,7 @@ type A2AFaults struct {
 	Malformed      bool               `yaml:"malformed,omitempty" json:"malformed,omitempty"`
 	Error          bool               `yaml:"error,omitempty" json:"error,omitempty"`
 	OperationRates map[string]float64 `yaml:"operation_rates,omitempty" json:"operation_rates,omitempty"`
+	SequenceRates  map[uint64]float64 `yaml:"sequence_rates,omitempty" json:"sequence_rates,omitempty"`
 }
 
 // A2AAgentCard is the public Agent Card (the A2A discovery document). The server

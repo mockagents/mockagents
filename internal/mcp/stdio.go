@@ -50,6 +50,7 @@ func ServeStdioWithFaults(s *Server, r io.Reader, w io.Writer, faults types.MCPF
 		return err
 	}
 
+	var sequence uint64
 	for {
 		frame, tooLong, err := readStdioFrame(br, maxStdioFrameBytes)
 		if tooLong {
@@ -61,7 +62,8 @@ func ServeStdioWithFaults(s *Server, r io.Reader, w io.Writer, faults types.MCPF
 		} else {
 			line := bytes.TrimSpace(frame)
 			if len(line) > 0 {
-				if out, handled := applyStdioChaos(line, faults); handled {
+				sequence++
+				if out, handled := applyStdioChaos(line, faults, sequence); handled {
 					if out != nil {
 						if werr := write(out); werr != nil {
 							return werr
@@ -108,7 +110,7 @@ func ServeStdioWithFaults(s *Server, r io.Reader, w io.Writer, faults types.MCPF
 // applyStdioChaos returns handled=true when a configured fault consumed the
 // frame. A nil payload represents a JSON-RPC notification, which must not get a
 // response even when the error action is selected.
-func applyStdioChaos(frame []byte, faults types.MCPFaults) ([]byte, bool) {
+func applyStdioChaos(frame []byte, faults types.MCPFaults, sequence uint64) ([]byte, bool) {
 	var envelope struct {
 		ID              json.RawMessage `json:"id"`
 		Method          string          `json:"method"`
@@ -118,7 +120,8 @@ func applyStdioChaos(frame []byte, faults types.MCPFaults) ([]byte, bool) {
 		return nil, false
 	}
 	key := envelope.Method + ":" + string(envelope.ID)
-	policy := commonchaos.Policy{Seed: faults.Seed, Rate: faults.Rate}
+	policy, _ := commonchaos.ForOperation(commonchaos.Policy{Seed: faults.Seed, Rate: faults.Rate}, envelope.Method, faults.OperationRates)
+	policy = commonchaos.ForSequence(policy, sequence, faults.SequenceRates)
 	if faults.LatencyMs > 0 && commonchaos.Decide(policy, key, "latency", envelope.MockagentsChaos).Apply {
 		time.Sleep(time.Duration(faults.LatencyMs) * time.Millisecond)
 	}

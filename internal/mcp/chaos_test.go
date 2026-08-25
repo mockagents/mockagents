@@ -82,6 +82,22 @@ func TestChaosHTTPHandlerOperationRateOverridesServiceRate(t *testing.T) {
 	}
 }
 
+func TestChaosHTTPHandlerSequenceRatePrecedence(t *testing.T) {
+	one, zero := 1.0, 0.0
+	h := NewChaosHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }), types.MCPFaults{Rate: &zero, Error: true, SequenceRates: map[uint64]float64{2: one}})
+	for sequence := 1; sequence <= 2; sequence++ {
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if sequence == 1 && rec.Code != http.StatusNoContent {
+			t.Fatalf("first status=%d", rec.Code)
+		}
+		if sequence == 2 && rec.Header().Get("X-Mockagents-Chaos-Source") != "sequence-rate" {
+			t.Fatalf("second source=%q", rec.Header().Get("X-Mockagents-Chaos-Source"))
+		}
+	}
+}
+
 func TestChaosHTTPHandlerForceMalformedAndActionPrecedence(t *testing.T) {
 	zero := 0.0
 	h := NewChaosHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

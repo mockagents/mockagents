@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	commonchaos "github.com/mockagents/mockagents/internal/chaos"
@@ -138,10 +139,11 @@ type artifactUpdateEvent struct {
 // Server is a mock A2A server bound to one A2AServerDefinition. Safe for
 // concurrent use.
 type Server struct {
-	def   *types.A2AServerDefinition
-	mu    sync.Mutex
-	tasks map[string]*Task
-	seq   int
+	def           *types.A2AServerDefinition
+	mu            sync.Mutex
+	tasks         map[string]*Task
+	seq           int
+	chaosSequence atomic.Uint64
 }
 
 // NewServer builds a Server for def.
@@ -479,6 +481,8 @@ func (s *Server) applyChaos(w http.ResponseWriter, r *http.Request, id json.RawM
 	}
 	force := r.Header.Get(commonchaos.ForceHeader)
 	policy, operation := commonchaos.ForOperation(commonchaos.Policy{Seed: faults.Seed, Rate: faults.Rate}, operation, faults.OperationRates)
+	sequence := s.chaosSequence.Add(1)
+	policy = commonchaos.ForSequence(policy, sequence, faults.SequenceRates)
 	key += "\x00" + operation
 	applies := func(action string) (bool, string) {
 		decision := commonchaos.Decide(policy, key, action, force)
