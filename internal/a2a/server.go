@@ -534,6 +534,17 @@ func (s *Server) applyChaos(w http.ResponseWriter, r *http.Request, id json.RawM
 			return true
 		}
 	}
+	if faults.MalformedSchema {
+		if apply, source := applies("malformed-schema"); apply {
+			stampA2AChaos(w, "malformed-schema", source)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      id,
+				"result":  map[string]any{"unexpected": true},
+			})
+			return true
+		}
+	}
 	if faults.Malformed {
 		if apply, source := applies("malformed"); apply {
 			stampA2AChaos(w, "malformed", source)

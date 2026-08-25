@@ -100,6 +100,13 @@ func (h *ChaosHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if r.Method == http.MethodPost && h.Faults.MalformedSchema {
+		if apply, source := applies("malformed-schema"); apply {
+			stampMCPChaos(w, "malformed-schema", source)
+			writeMCPMalformedSchema(w, r)
+			return
+		}
+	}
 	if r.Method == http.MethodPost && h.Faults.Malformed {
 		if apply, source := applies("malformed"); apply {
 			stampMCPChaos(w, "malformed", source)
@@ -129,6 +136,32 @@ func writeMCPChaosError(w http.ResponseWriter, r *http.Request, action, source, 
 }
 
 func writeMCPChaosErrorStatus(w http.ResponseWriter, r *http.Request, status int, action, source, message string) {
+	id := readMCPRequestID(r)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"error": map[string]any{
+			"code":    -32000,
+			"message": message,
+			"data": map[string]any{
+				"chaos": map[string]string{"action": action, "source": source},
+			},
+		},
+	})
+}
+
+func writeMCPMalformedSchema(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      readMCPRequestID(r),
+		"result":  map[string]any{"unexpected": true},
+	})
+}
+
+func readMCPRequestID(r *http.Request) json.RawMessage {
 	var id json.RawMessage
 	if r.Body != nil {
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxMCPBodyBytes+1))
@@ -147,17 +180,5 @@ func writeMCPChaosErrorStatus(w http.ResponseWriter, r *http.Request, status int
 	if len(id) == 0 {
 		id = json.RawMessage("null")
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"error": map[string]any{
-			"code":    -32000,
-			"message": message,
-			"data": map[string]any{
-				"chaos": map[string]string{"action": action, "source": source},
-			},
-		},
-	})
+	return id
 }

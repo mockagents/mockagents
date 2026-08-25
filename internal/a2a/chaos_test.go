@@ -225,3 +225,20 @@ func TestA2AChaosStatusFaultAndOff(t *testing.T) {
 		t.Fatal("off request received status fault")
 	}
 }
+
+func TestA2AChaosMalformedSchemaFault(t *testing.T) {
+	def := testDef()
+	def.Spec.Faults = types.A2AFaults{MalformedSchema: true}
+	h := NewServer(def).RPCHandler()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":32,"method":"tasks/get"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body["id"] != float64(32) || body["error"] != nil || rec.Header().Get("X-Mockagents-Chaos-Action") != "malformed-schema" || rec.Header().Get("X-Mockagents-Chaos-Source") != "configured" {
+		t.Fatalf("headers=%v body=%s err=%v", rec.Header(), rec.Body.String(), err)
+	}
+	result, ok := body["result"].(map[string]any)
+	if !ok || result["unexpected"] != true {
+		t.Fatalf("result=%v", body["result"])
+	}
+}
