@@ -22,6 +22,9 @@ var (
 	driftFormat       string
 	driftOutput       string
 	driftIgnorePaths  []string
+	driftSDKHeaders   string
+	driftProvHeaders  string
+	driftMockHeaders  string
 )
 
 var driftCmd = &cobra.Command{
@@ -43,6 +46,9 @@ func init() {
 	driftCmd.Flags().StringVar(&driftFormat, "format", "markdown", "Output format: markdown, json, sarif, or junit")
 	driftCmd.Flags().StringVarP(&driftOutput, "output", "o", "", "Write report to a file (default: stdout)")
 	driftCmd.Flags().StringArrayVar(&driftIgnorePaths, "ignore-path", nil, "Volatile JSON path to exclude, including descendants (repeatable, e.g. $.created)")
+	driftCmd.Flags().StringVar(&driftSDKHeaders, "sdk-headers", "", "Scrubbed SDK/type header JSON artifact (requires all header flags)")
+	driftCmd.Flags().StringVar(&driftProvHeaders, "provider-headers", "", "Scrubbed live-provider header JSON artifact (requires all header flags)")
+	driftCmd.Flags().StringVar(&driftMockHeaders, "mock-headers", "", "MockAgents header JSON artifact (requires all header flags)")
 	_ = driftCmd.MarkFlagRequired("sdk")
 	_ = driftCmd.MarkFlagRequired("provider")
 	_ = driftCmd.MarkFlagRequired("mock")
@@ -73,6 +79,44 @@ func runDrift(cmd *cobra.Command, _ []string) error {
 	mock, err := load("mock", driftMockPath)
 	if err != nil {
 		return err
+	}
+	headerPaths := []string{driftSDKHeaders, driftProvHeaders, driftMockHeaders}
+	headerCount := 0
+	for _, path := range headerPaths {
+		if path != "" {
+			headerCount++
+		}
+	}
+	if headerCount != 0 && headerCount != len(headerPaths) {
+		return errors.New("--sdk-headers, --provider-headers, and --mock-headers must be provided together")
+	}
+	if headerCount == len(headerPaths) {
+		loadHeaders := func(label, path string) (map[string]drift.Shape, error) {
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil, fmt.Errorf("reading %s header artifact %s: %w", label, path, readErr)
+			}
+			shape, extractErr := drift.ExtractHeaders(data)
+			if extractErr != nil {
+				return nil, fmt.Errorf("%s header artifact %s: %w", label, path, extractErr)
+			}
+			return shape, nil
+		}
+		sdkHeaders, loadErr := loadHeaders("SDK", driftSDKHeaders)
+		if loadErr != nil {
+			return loadErr
+		}
+		providerHeaders, loadErr := loadHeaders("provider", driftProvHeaders)
+		if loadErr != nil {
+			return loadErr
+		}
+		mockHeaders, loadErr := loadHeaders("mock", driftMockHeaders)
+		if loadErr != nil {
+			return loadErr
+		}
+		sdk = drift.MergeShapes(sdk, sdkHeaders)
+		provider = drift.MergeShapes(provider, providerHeaders)
+		mock = drift.MergeShapes(mock, mockHeaders)
 	}
 	sdk, err = drift.IgnorePaths(sdk, driftIgnorePaths)
 	if err != nil {

@@ -16,8 +16,8 @@ func IgnorePaths(shape map[string]Shape, paths []string) (map[string]Shape, erro
 	ignored := make([]string, 0, len(paths))
 	for _, path := range paths {
 		path = strings.TrimSpace(path)
-		if path == "" || (path != "$" && !strings.HasPrefix(path, "$.") && !strings.HasPrefix(path, "$[]")) {
-			return nil, fmt.Errorf("invalid ignored JSON path %q (want $, $.field, or $[])", path)
+		if path == "" || (path != "$" && path != "$headers" && !strings.HasPrefix(path, "$.") && !strings.HasPrefix(path, "$[]") && !strings.HasPrefix(path, "$headers.")) {
+			return nil, fmt.Errorf("invalid ignored JSON path %q (want $, $.field, $[], or $headers.field)", path)
 		}
 		ignored = append(ignored, path)
 	}
@@ -77,6 +77,49 @@ func Extract(data []byte) (map[string]Shape, error) {
 	shapes := make(map[string]Shape)
 	walk(value, "$", shapes)
 	return shapes, nil
+}
+
+// ExtractHeaders canonicalizes an HTTP-header JSON object into drift paths.
+// Header names are case-insensitive and are reported below $headers.
+func ExtractHeaders(data []byte) (map[string]Shape, error) {
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(data, &values); err != nil {
+		return nil, fmt.Errorf("invalid header JSON object: %w", err)
+	}
+	if values == nil {
+		return nil, fmt.Errorf("header artifact must be a JSON object")
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	shapes := map[string]Shape{"$headers": {Types: []string{"object"}}}
+	seen := make(map[string]string, len(keys))
+	for _, key := range keys {
+		canonical := strings.ToLower(strings.TrimSpace(key))
+		if canonical == "" {
+			return nil, fmt.Errorf("header name cannot be empty")
+		}
+		if previous, ok := seen[canonical]; ok {
+			return nil, fmt.Errorf("duplicate case-insensitive header %q and %q", previous, key)
+		}
+		seen[canonical] = key
+		var value any
+		if err := json.Unmarshal(values[key], &value); err != nil {
+			return nil, fmt.Errorf("header %q: %w", key, err)
+		}
+		walk(value, "$headers."+canonical, shapes)
+	}
+	return shapes, nil
+}
+
+// MergeShapes adds source paths to destination and returns destination.
+func MergeShapes(destination, source map[string]Shape) map[string]Shape {
+	for path, shape := range source {
+		destination[path] = shape
+	}
+	return destination
 }
 
 func walk(value any, path string, out map[string]Shape) {
