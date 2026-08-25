@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/mockagents/mockagents/internal/drift"
 	"github.com/spf13/cobra"
@@ -34,6 +35,7 @@ var (
 	driftSDKErrors    string
 	driftProvErrors   string
 	driftMockErrors   string
+	driftExceptions   string
 )
 
 var driftCmd = &cobra.Command{
@@ -67,6 +69,7 @@ func init() {
 	driftCmd.Flags().StringVar(&driftSDKErrors, "sdk-errors", "", "SDK error contract JSON artifact (requires all error flags)")
 	driftCmd.Flags().StringVar(&driftProvErrors, "provider-errors", "", "Live-provider error contract JSON artifact (requires all error flags)")
 	driftCmd.Flags().StringVar(&driftMockErrors, "mock-errors", "", "MockAgents error contract JSON artifact (requires all error flags)")
+	driftCmd.Flags().StringVar(&driftExceptions, "exceptions", "", "Owner-approved expiring drift exceptions JSON file")
 	_ = driftCmd.MarkFlagRequired("sdk")
 	_ = driftCmd.MarkFlagRequired("provider")
 	_ = driftCmd.MarkFlagRequired("mock")
@@ -261,6 +264,16 @@ func runDrift(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	if driftExceptions != "" {
+		data, readErr := os.ReadFile(driftExceptions)
+		if readErr != nil {
+			return fmt.Errorf("reading drift exceptions %s: %w", driftExceptions, readErr)
+		}
+		report, err = drift.ApplyExceptions(report, data, time.Now())
+		if err != nil {
+			return err
+		}
+	}
 	report.Adapter = driftAdapter
 	var output []byte
 	switch driftFormat {
@@ -307,6 +320,13 @@ func renderDriftMarkdown(report drift.Report) string {
 	fmt.Fprintf(&b, "# Provider drift: %s\n\n", report.Operation)
 	if report.Adapter != "" {
 		fmt.Fprintf(&b, "Adapter: `%s`\n\n", report.Adapter)
+	}
+	if len(report.Exceptions) > 0 {
+		b.WriteString("## Applied exceptions\n\n| Owner | Expires | JSON path | Rule |\n|---|---|---|---|\n")
+		for _, exception := range report.Exceptions {
+			fmt.Fprintf(&b, "| %s | %s | `%s` | %s |\n", exception.Owner, exception.Expires, exception.Path, exception.Rule)
+		}
+		b.WriteString("\n")
 	}
 	if len(report.Findings) == 0 {
 		b.WriteString("No drift detected.\n")

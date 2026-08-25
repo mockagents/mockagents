@@ -66,6 +66,16 @@ body-shape drift under `$errors.<case>.body`.
 Use `--format json` for automation, `--format sarif` for code scanning, or
 `--format junit` for CI test reporting. Use `--output` to write an artifact. The
 schedule-only `provider-drift.yml` workflow currently exercises a scrubbed
-offline Cohere baseline. Credentialed collectors, versioned baselines, and
-expiring exceptions remain later R14
-slices.
+offline Cohere baseline.
+
+Use `--exceptions exceptions.json` for narrow, owner-approved temporary
+exceptions. Each entry must exactly match an operation, JSON path, and rule,
+and must name an owner and `YYYY-MM-DD` expiry. Expired entries fail the run so
+stale approvals cannot silently become permanent:
+
+```json
+{"version":"mockagents-drift-exceptions/v1","exceptions":[{"operation":"cohere.rerank","path":"$.meta.api_version","rule":"provider-only-addition","owner":"rerank-team","expires":"2026-09-30"}]}
+```
+
+Applied exceptions remain visible in JSON and Markdown reports. Credentialed
+collectors and versioned baselines remain later R14 slices.
