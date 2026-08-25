@@ -93,6 +93,13 @@ func (h *ChaosHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if r.Method == http.MethodPost && h.Faults.StatusCode != 0 {
+		if apply, source := applies("status"); apply {
+			stampMCPChaos(w, "status", source)
+			writeMCPChaosErrorStatus(w, r, h.Faults.StatusCode, "status", source, "mock MCP HTTP status fault")
+			return
+		}
+	}
 	if r.Method == http.MethodPost && h.Faults.Malformed {
 		if apply, source := applies("malformed"); apply {
 			stampMCPChaos(w, "malformed", source)
@@ -118,6 +125,10 @@ func stampMCPChaos(w http.ResponseWriter, action, source string) {
 }
 
 func writeMCPChaosError(w http.ResponseWriter, r *http.Request, action, source, message string) {
+	writeMCPChaosErrorStatus(w, r, http.StatusOK, action, source, message)
+}
+
+func writeMCPChaosErrorStatus(w http.ResponseWriter, r *http.Request, status int, action, source, message string) {
 	var id json.RawMessage
 	if r.Body != nil {
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxMCPBodyBytes+1))
@@ -137,6 +148,7 @@ func writeMCPChaosError(w http.ResponseWriter, r *http.Request, action, source, 
 		id = json.RawMessage("null")
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
