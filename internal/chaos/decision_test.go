@@ -67,3 +67,16 @@ func TestForSequenceOverridesOperationRate(t *testing.T) {
 		t.Fatalf("request force = %+v", got)
 	}
 }
+
+func TestForFixturePrecedence(t *testing.T) {
+	one, zero := 1.0, 0.0
+	policy, _ := ForOperation(Policy{Rate: &one}, "tools/call", map[string]float64{"tools/call": one})
+	policy = ForFixture(policy, "weather", map[string]float64{"weather": zero})
+	if got := Decide(policy, "req", "error", ""); got.Apply || got.Source != "fixture-rate" {
+		t.Fatalf("fixture override = %+v", got)
+	}
+	policy = ForSequence(policy, 2, map[uint64]float64{2: one})
+	if got := Decide(policy, "req", "error", ""); !got.Apply || got.Source != "sequence-rate" {
+		t.Fatalf("sequence override = %+v", got)
+	}
+}

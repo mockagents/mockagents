@@ -115,12 +115,20 @@ func applyStdioChaos(frame []byte, faults types.MCPFaults, sequence uint64) ([]b
 		ID              json.RawMessage `json:"id"`
 		Method          string          `json:"method"`
 		MockagentsChaos string          `json:"mockagentsChaos"`
+		Params          struct {
+			Name string `json:"name"`
+		} `json:"params"`
 	}
 	if json.Unmarshal(frame, &envelope) != nil || envelope.Method == "" {
 		return nil, false
 	}
 	key := envelope.Method + ":" + string(envelope.ID)
 	policy, _ := commonchaos.ForOperation(commonchaos.Policy{Seed: faults.Seed, Rate: faults.Rate}, envelope.Method, faults.OperationRates)
+	fixture := ""
+	if envelope.Method == "tools/call" {
+		fixture = envelope.Params.Name
+	}
+	policy = commonchaos.ForFixture(policy, fixture, faults.FixtureRates)
 	policy = commonchaos.ForSequence(policy, sequence, faults.SequenceRates)
 	if faults.LatencyMs > 0 && commonchaos.Decide(policy, key, "latency", envelope.MockagentsChaos).Apply {
 		time.Sleep(time.Duration(faults.LatencyMs) * time.Millisecond)

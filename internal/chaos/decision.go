@@ -78,6 +78,18 @@ func ForOperation(base Policy, operation string, rates map[string]float64) (Poli
 	return base, operation
 }
 
+// ForFixture applies an exact fixture-rate override after broader service and
+// operation scopes. Empty fixture names never match.
+func ForFixture(base Policy, fixture string, rates map[string]float64) Policy {
+	if fixture != "" {
+		if rate, ok := rates[fixture]; ok {
+			base.Rate = &rate
+			base.Source = "fixture-rate"
+		}
+	}
+	return base
+}
+
 // ForSequence applies a one-based request-sequence override. Call it after
 // broader scopes so sequence policy wins while request force/off remains
 // authoritative in Decide.

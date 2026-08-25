@@ -99,6 +99,25 @@ func TestA2AChaosSequenceRatePrecedence(t *testing.T) {
 	}
 }
 
+func TestA2AChaosFixtureRatePrecedence(t *testing.T) {
+	one, zero := 1.0, 0.0
+	def := testDef()
+	def.Spec.Faults = types.A2AFaults{Rate: &one, Error: true, FixtureRates: map[string]float64{"weather": zero}}
+	s := NewServer(def)
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"parts":[{"kind":"text","text":"weather please"}]}}}`))
+	rec := httptest.NewRecorder()
+	s.RPCHandler().ServeHTTP(rec, req)
+	if rec.Header().Get("X-Mockagents-Chaos-Action") != "" {
+		t.Fatalf("weather faulted: %s", rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"message/send","params":{"message":{"parts":[{"kind":"text","text":"unknown"}]}}}`))
+	rec = httptest.NewRecorder()
+	s.RPCHandler().ServeHTTP(rec, req)
+	if rec.Header().Get("X-Mockagents-Chaos-Source") != "seeded-rate" {
+		t.Fatalf("unknown source=%q", rec.Header().Get("X-Mockagents-Chaos-Source"))
+	}
+}
+
 func TestA2AChaosForceMalformedAndActionPrecedence(t *testing.T) {
 	zero := 0.0
 	def := testDef()
