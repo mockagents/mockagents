@@ -45,6 +45,15 @@ func (h *ChaosHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if r.Method == http.MethodPost && h.Faults.Malformed {
+		if apply, source := applies("malformed"); apply {
+			stampMCPChaos(w, "malformed", source)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":`))
+			return
+		}
+	}
 	if r.Method == http.MethodPost && h.Faults.Error {
 		if apply, source := applies("error"); apply {
 			stampMCPChaos(w, "error", source)
