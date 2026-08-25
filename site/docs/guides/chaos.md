@@ -119,6 +119,11 @@ Precedence is request force/off, sequence, fixture, operation, then service
 rate. Decisions expose the effective scope in `X-Mockagents-Chaos-Source`
 (`sequence-rate`, `fixture-rate`, or `operation-rate`).
 
+Tavily, Cohere rerank, and OpenAI moderation services also accept
+`operation_rates`, keyed by HTTP path (for example `/search`, `/v2/rerank`, or
+`/v1/moderations`). A path override takes precedence over the service `rate`;
+the request force/off header remains authoritative.
+
 ## Provider-faithful error shapes
 
 An injected error is rendered in each protocol's own envelope — an OpenAI

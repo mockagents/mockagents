@@ -61,3 +61,21 @@ func TestCommonServiceFaultSeededDecisionUsesRequestID(t *testing.T) {
 		}
 	}
 }
+
+func TestCommonServiceFaultOperationRatePrecedence(t *testing.T) {
+	one, zero := 1.0, 0.0
+	faults := types.SearchFaults{Rate: &one, StatusCode: http.StatusServiceUnavailable, OperationRates: map[string]float64{"/v2/rerank": zero}}
+	req := httptest.NewRequest(http.MethodPost, "/v2/rerank", nil)
+	w := httptest.NewRecorder()
+	if applyServiceFaults(w, req, faults, func(status int) { w.WriteHeader(status) }) {
+		t.Fatal("rerank operation unexpectedly faulted")
+	}
+	req = httptest.NewRequest(http.MethodPost, "/v1/moderations", nil)
+	w = httptest.NewRecorder()
+	if !applyServiceFaults(w, req, faults, func(status int) { w.WriteHeader(status) }) {
+		t.Fatal("moderation did not inherit service rate")
+	}
+	if got := w.Header().Get("X-Mockagents-Chaos-Source"); got != "seeded-rate" {
+		t.Fatalf("moderation source=%q", got)
+	}
+}
