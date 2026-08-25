@@ -93,6 +93,26 @@ chaos:
 Order per request: rate limit → errors → connection faults, then latency on
 the way out.
 
+### MCP and A2A operation overrides
+
+Protocol mocks can override their service-level deterministic `rate` for an
+exact JSON-RPC method. The request force/off header still has highest
+precedence, followed by `operation_rates`, then the service `rate`:
+
+```yaml
+faults:
+  seed: 42
+  rate: 0.25
+  error: true
+  operation_rates:
+    tools/list: 0       # MCP discovery stays healthy
+    tools/call: 1       # every MCP tool invocation faults
+```
+
+A2A uses the same field with method names such as `message/send` and
+`message/stream`. Decisions expose `X-Mockagents-Chaos-Source:
+operation-rate` when an operation override wins.
+
 ## Provider-faithful error shapes
 
 An injected error is rendered in each protocol's own envelope — an OpenAI

@@ -446,7 +446,7 @@ func (s *Server) RPCHandler() http.HandlerFunc {
 		// Peek the method so message/stream can be served as Server-Sent Events.
 		var probe rpcRequest
 		probeOK := json.Unmarshal(body, &probe) == nil
-		if s.applyChaos(w, r, probe.ID) {
+		if s.applyChaos(w, r, probe.ID, probe.Method) {
 			return
 		}
 		if probeOK && probe.Method == "message/stream" {
@@ -471,14 +471,15 @@ func (s *Server) RPCHandler() http.HandlerFunc {
 // applyChaos applies A2A request fault precedence: bounded latency, timeout,
 // malformed JSON, then a protocol-shaped JSON-RPC internal error. Request
 // force/off overrides the seeded rate. It returns true when handled.
-func (s *Server) applyChaos(w http.ResponseWriter, r *http.Request, id json.RawMessage) bool {
+func (s *Server) applyChaos(w http.ResponseWriter, r *http.Request, id json.RawMessage, operation string) bool {
 	faults := s.def.Spec.Faults
 	key := r.Header.Get("X-Request-Id")
 	if key == "" {
 		key = r.Method + " " + r.URL.Path
 	}
 	force := r.Header.Get(commonchaos.ForceHeader)
-	policy := commonchaos.Policy{Seed: faults.Seed, Rate: faults.Rate}
+	policy, operation := commonchaos.ForOperation(commonchaos.Policy{Seed: faults.Seed, Rate: faults.Rate}, operation, faults.OperationRates)
+	key += "\x00" + operation
 	applies := func(action string) (bool, string) {
 		decision := commonchaos.Decide(policy, key, action, force)
 		return decision.Apply, decision.Source

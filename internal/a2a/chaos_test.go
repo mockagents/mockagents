@@ -62,6 +62,25 @@ func TestA2AChaosSeededDecisionUsesRequestID(t *testing.T) {
 	}
 }
 
+func TestA2AChaosOperationRateOverridesServiceRate(t *testing.T) {
+	one, zero := 1.0, 0.0
+	def := testDef()
+	def.Spec.Faults = types.A2AFaults{Rate: &one, Error: true, OperationRates: map[string]float64{"message/send": zero}}
+	s := NewServer(def)
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"parts":[{"kind":"text","text":"hello"}]}}}`))
+	rec := httptest.NewRecorder()
+	s.RPCHandler().ServeHTTP(rec, req)
+	if rec.Header().Get("X-Mockagents-Chaos-Action") != "" {
+		t.Fatalf("message/send unexpectedly faulted: %s", rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tasks/get"}`))
+	rec = httptest.NewRecorder()
+	s.RPCHandler().ServeHTTP(rec, req)
+	if rec.Header().Get("X-Mockagents-Chaos-Source") != "seeded-rate" {
+		t.Fatalf("tasks/get source=%q", rec.Header().Get("X-Mockagents-Chaos-Source"))
+	}
+}
+
 func TestA2AChaosForceMalformedAndActionPrecedence(t *testing.T) {
 	zero := 0.0
 	def := testDef()

@@ -43,12 +43,13 @@ type MCPServerSpec struct {
 // requests. A nil Rate preserves always-on semantics when an action is
 // configured.
 type MCPFaults struct {
-	Seed      int64    `yaml:"seed,omitempty" json:"seed,omitempty"`
-	Rate      *float64 `yaml:"rate,omitempty" json:"rate,omitempty"`
-	LatencyMs int      `yaml:"latency_ms,omitempty" json:"latency_ms,omitempty"`
-	TimeoutMs int      `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
-	Malformed bool     `yaml:"malformed,omitempty" json:"malformed,omitempty"`
-	Error     bool     `yaml:"error,omitempty" json:"error,omitempty"`
+	Seed           int64              `yaml:"seed,omitempty" json:"seed,omitempty"`
+	Rate           *float64           `yaml:"rate,omitempty" json:"rate,omitempty"`
+	LatencyMs      int                `yaml:"latency_ms,omitempty" json:"latency_ms,omitempty"`
+	TimeoutMs      int                `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
+	Malformed      bool               `yaml:"malformed,omitempty" json:"malformed,omitempty"`
+	Error          bool               `yaml:"error,omitempty" json:"error,omitempty"`
+	OperationRates map[string]float64 `yaml:"operation_rates,omitempty" json:"operation_rates,omitempty"`
 }
 
 // MCPCapabilities controls which sections the server advertises during

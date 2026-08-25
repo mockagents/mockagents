@@ -42,3 +42,16 @@ func TestDecideNilRatePreservesAlwaysOn(t *testing.T) {
 		t.Fatalf("legacy decision = %+v", got)
 	}
 }
+
+func TestForOperationOverridesServiceRate(t *testing.T) {
+	one, zero := 1.0, 0.0
+	base := Policy{Seed: 7, Rate: &one}
+	policy, operation := ForOperation(base, "tools/call", map[string]float64{"tools/call": zero})
+	if got := Decide(policy, "req-1\x00"+operation, "error", ""); got.Apply || got.Source != "operation-rate" {
+		t.Fatalf("operation override = %+v", got)
+	}
+	policy, _ = ForOperation(base, "tools/list", map[string]float64{"tools/call": zero})
+	if got := Decide(policy, "req-1", "error", ""); !got.Apply || got.Source != "seeded-rate" {
+		t.Fatalf("service fallback = %+v", got)
+	}
+}
