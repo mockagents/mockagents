@@ -203,3 +203,25 @@ func TestA2AChaosDisconnectFallbackAndOff(t *testing.T) {
 		t.Fatal("off request disconnected")
 	}
 }
+
+func TestA2AChaosStatusFaultAndOff(t *testing.T) {
+	def := testDef()
+	def.Spec.Faults = types.A2AFaults{StatusCode: http.StatusServiceUnavailable}
+	h := NewServer(def).RPCHandler()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":22,"method":"tasks/get"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var body struct {
+		ID int `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || rec.Code != http.StatusServiceUnavailable || body.ID != 22 || rec.Header().Get("X-Mockagents-Chaos-Action") != "status" || rec.Header().Get("X-Mockagents-Chaos-Source") != "configured" {
+		t.Fatalf("status=%d headers=%v body=%s err=%v", rec.Code, rec.Header(), rec.Body.String(), err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":23,"method":"tasks/get"}`))
+	req.Header.Set("X-Mockagents-Chaos", "off")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusServiceUnavailable {
+		t.Fatal("off request received status fault")
+	}
+}

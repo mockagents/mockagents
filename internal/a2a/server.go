@@ -525,6 +525,15 @@ func (s *Server) applyChaos(w http.ResponseWriter, r *http.Request, id json.RawM
 			return true
 		}
 	}
+	if faults.StatusCode != 0 {
+		if apply, source := applies("status"); apply {
+			stampA2AChaos(w, "status", source)
+			writeJSON(w, faults.StatusCode, newError(id, errInternal, "mock A2A HTTP status fault", map[string]any{
+				"chaos": map[string]string{"action": "status", "source": source},
+			}))
+			return true
+		}
+	}
 	if faults.Malformed {
 		if apply, source := applies("malformed"); apply {
 			stampA2AChaos(w, "malformed", source)
