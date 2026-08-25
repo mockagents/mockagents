@@ -11,9 +11,12 @@ import (
 
 // Replay is an HTTP handler that serves previously recorded interactions
 // from a Cassette. Unknown requests either fall through to Fallback (if
-// set) or return 404.
+// set) or return a diagnostic miss response.
 type Replay struct {
 	Cassette *Cassette
+	// Strict guarantees that a miss never invokes Fallback and returns 503.
+	// Recorded hits are still served byte-for-byte without chaos injection.
+	Strict bool
 	// Fallback is invoked when no matching interaction is found. If nil,
 	// replay returns a 404 with a descriptive error body.
 	Fallback http.Handler
@@ -132,6 +135,10 @@ func (rp *Replay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		it = rp.next(hash)
 	}
 	if it == nil {
+		if rp.Strict {
+			rp.serveMissDiagnostics(w, r.Method, r.URL.Path, hash, body)
+			return
+		}
 		if rp.Fallback != nil {
 			// Reset the body so the fallback can read it.
 			r.Body = io.NopCloser(bytes.NewReader(body))

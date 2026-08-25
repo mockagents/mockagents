@@ -164,6 +164,33 @@ func TestReplayMissReturns404(t *testing.T) {
 	}
 }
 
+func TestStrictReplayMissReturns503WithoutFallback(t *testing.T) {
+	fallbackCalls := 0
+	rp := NewReplay(New(""))
+	rp.Strict = true
+	rp.Fallback = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackCalls++
+		w.WriteHeader(http.StatusOK)
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"x"}`))
+	rp.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if got := rec.Header().Get("X-Mockagents-Replay"); got != "miss-strict" {
+		t.Errorf("X-Mockagents-Replay = %q, want miss-strict", got)
+	}
+	if fallbackCalls != 0 {
+		t.Errorf("fallback called %d times, want 0", fallbackCalls)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"error":"no cassette match"`)) {
+		t.Errorf("missing diagnostic body: %s", rec.Body.String())
+	}
+}
+
 func TestRecordThenReplayEndToEnd(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

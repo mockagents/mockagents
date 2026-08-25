@@ -10,7 +10,7 @@ import (
 	"unicode/utf8"
 )
 
-// missResponse is the JSON body returned on a replay miss (404). It carries the
+// missResponse is the JSON body returned on a replay miss. It carries the
 // request's hash plus, when the cassette is non-empty, the nearest recorded
 // interaction and a field-level diff so a drifted request is debuggable.
 type missResponse struct {
@@ -44,7 +44,7 @@ const (
 	maxDiffValueLen = 200
 )
 
-// serveMissDiagnostics writes a structured 404 describing the miss and (when the
+// serveMissDiagnostics writes a structured response describing the miss and (when the
 // cassette is non-empty) the nearest recorded interaction with a field diff.
 func (rp *Replay) serveMissDiagnostics(w http.ResponseWriter, method, path, hash string, body []byte) {
 	resp := missResponse{
@@ -55,8 +55,14 @@ func (rp *Replay) serveMissDiagnostics(w http.ResponseWriter, method, path, hash
 		Nearest: nearestDiff(rp.Cassette, method, path, body),
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Mockagents-Replay", "miss")
-	w.WriteHeader(http.StatusNotFound)
+	status := http.StatusNotFound
+	state := "miss"
+	if rp.Strict {
+		status = http.StatusServiceUnavailable
+		state = "miss-strict"
+	}
+	w.Header().Set("X-Mockagents-Replay", state)
+	w.WriteHeader(status)
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(resp)
