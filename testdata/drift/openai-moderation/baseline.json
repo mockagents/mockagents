@@ -1,0 +1,10 @@
+{
+  "version": "mockagents-drift-baseline/v1",
+  "name": "openai-moderation",
+  "revision": 1,
+  "operation": "openai.moderations.create",
+  "adapter": "internal/adapter/moderations.go",
+  "sdk": "sdk.json",
+  "provider": "provider.json",
+  "mock": "mock.json"
+}

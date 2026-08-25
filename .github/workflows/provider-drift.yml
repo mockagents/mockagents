@@ -23,6 +23,10 @@ jobs:
             --baseline testdata/drift/cohere/baseline.json \
             --format json \
             --output drift-reports/cohere-rerank.json
+          go run ./cmd/mockagents drift \
+            --baseline testdata/drift/openai-moderation/baseline.json \
+            --format json \
+            --output drift-reports/openai-moderation.json
       - uses: actions/upload-artifact@v4
         with:
           name: provider-drift-offline
@@ -80,4 +84,57 @@ jobs:
         if: steps.credentials.outputs.enabled == 'true'
         with:
           name: provider-drift-cohere-live
+          path: drift-reports/
+
+  openai-moderation-live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Check OpenAI credentials
+        id: credentials
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping OpenAI moderation drift collection because OPENAI_API_KEY is unavailable"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Collect and scrub one bounded OpenAI moderation response
+        if: steps.credentials.outputs.enabled == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          mkdir -p drift-reports
+          raw="$RUNNER_TEMP/openai-moderation-raw.json"
+          trap 'rm -f "$raw"' EXIT
+          status=$(curl --silent --show-error --output "$raw" --write-out '%{http_code}' \
+            --request POST 'https://api.openai.com/v1/moderations' \
+            --header "Authorization: Bearer $OPENAI_API_KEY" \
+            --header 'Content-Type: application/json' \
+            --data '{"model":"omni-moderation-latest","input":"A calm deterministic test fixture."}')
+          if [ "$status" != "200" ]; then
+            echo "::error::OpenAI moderation collector returned HTTP $status"
+            exit 1
+          fi
+          go run ./tools/openaimoderationdriftscrub < "$raw" > drift-reports/openai-moderation-provider.json
+      - name: Compare credentialed OpenAI moderation response
+        if: steps.credentials.outputs.enabled == 'true'
+        run: |
+          go run ./cmd/mockagents drift \
+            --operation openai.moderations.create \
+            --adapter internal/adapter/moderations.go \
+            --sdk testdata/drift/openai-moderation/sdk.json \
+            --provider drift-reports/openai-moderation-provider.json \
+            --mock testdata/drift/openai-moderation/mock.json \
+            --format json \
+            --output drift-reports/openai-moderation-live-report.json
+      - uses: actions/upload-artifact@v4
+        if: steps.credentials.outputs.enabled == 'true'
+        with:
+          name: provider-drift-openai-moderation-live
           path: drift-reports/
