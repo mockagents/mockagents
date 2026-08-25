@@ -37,7 +37,7 @@ func SARIF(report Report) ([]byte, error) {
 		results = append(results, result{
 			RuleID:    finding.Rule,
 			Level:     sarifLevel(finding.Severity),
-			Message:   map[string]any{"text": string(finding.Severity) + " provider drift at " + finding.Path},
+			Message:   map[string]any{"text": FindingDetail(finding)},
 			Locations: []location{loc},
 		})
 	}

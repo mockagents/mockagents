@@ -12,6 +12,7 @@ import (
 func TestRunDriftCriticalAndCompatible(t *testing.T) {
 	driftIgnorePaths = nil
 	driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", ""
+	driftSDKEnums, driftProvEnums, driftMockEnums = "", "", ""
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -46,6 +47,7 @@ func TestRunDriftCriticalAndCompatible(t *testing.T) {
 func TestRunDriftSARIF(t *testing.T) {
 	driftIgnorePaths = nil
 	driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", ""
+	driftSDKEnums, driftProvEnums, driftMockEnums = "", "", ""
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -72,6 +74,7 @@ func TestRunDriftSARIF(t *testing.T) {
 func TestRunDriftJUnit(t *testing.T) {
 	driftIgnorePaths = nil
 	driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", ""
+	driftSDKEnums, driftProvEnums, driftMockEnums = "", "", ""
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -97,6 +100,7 @@ func TestRunDriftJUnit(t *testing.T) {
 
 func TestRunDriftIgnoresConfiguredVolatilePaths(t *testing.T) {
 	driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", ""
+	driftSDKEnums, driftProvEnums, driftMockEnums = "", "", ""
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -122,6 +126,7 @@ func TestRunDriftIgnoresConfiguredVolatilePaths(t *testing.T) {
 }
 
 func TestRunDriftComparesCaseInsensitiveHeaders(t *testing.T) {
+	driftSDKEnums, driftProvEnums, driftMockEnums = "", "", ""
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -144,6 +149,35 @@ func TestRunDriftComparesCaseInsensitiveHeaders(t *testing.T) {
 		t.Fatalf("err=%v output=%s", err, out.String())
 	}
 	if !bytes.Contains(out.Bytes(), []byte(`"path": "$headers.content-type"`)) {
+		t.Fatalf("output=%s", out.String())
+	}
+}
+
+func TestRunDriftComparesEnumInventories(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	driftSDKPath = write("sdk.json", `{"status":"queued"}`)
+	driftProviderPath = write("provider.json", `{"status":"queued"}`)
+	driftMockPath = write("mock.json", `{"status":"queued"}`)
+	driftSDKEnums = write("sdk-enums.json", `{"$.status":["queued","done"]}`)
+	driftProvEnums = write("provider-enums.json", `{"$.status":["queued","done","running"]}`)
+	driftMockEnums = write("mock-enums.json", `{"$.status":["queued"]}`)
+	driftSDKHeaders, driftProvHeaders, driftMockHeaders = "", "", ""
+	driftOperation, driftFormat, driftOutput, driftIgnorePaths = "test.operation", "json", "", nil
+	t.Cleanup(func() { driftSDKEnums, driftProvEnums, driftMockEnums = "", "", "" })
+	var out bytes.Buffer
+	driftCmd.SetOut(&out)
+	if err := runDrift(driftCmd, nil); !errors.Is(err, errCriticalDrift) {
+		t.Fatalf("err=%v output=%s", err, out.String())
+	}
+	if !bytes.Contains(out.Bytes(), []byte(`"rule": "sdk-required-enum-missing"`)) ||
+		!bytes.Contains(out.Bytes(), []byte(`"rule": "provider-only-enum-value"`)) {
 		t.Fatalf("output=%s", out.String())
 	}
 }

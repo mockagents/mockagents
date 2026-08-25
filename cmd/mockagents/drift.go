@@ -25,6 +25,9 @@ var (
 	driftSDKHeaders   string
 	driftProvHeaders  string
 	driftMockHeaders  string
+	driftSDKEnums     string
+	driftProvEnums    string
+	driftMockEnums    string
 )
 
 var driftCmd = &cobra.Command{
@@ -49,6 +52,9 @@ func init() {
 	driftCmd.Flags().StringVar(&driftSDKHeaders, "sdk-headers", "", "Scrubbed SDK/type header JSON artifact (requires all header flags)")
 	driftCmd.Flags().StringVar(&driftProvHeaders, "provider-headers", "", "Scrubbed live-provider header JSON artifact (requires all header flags)")
 	driftCmd.Flags().StringVar(&driftMockHeaders, "mock-headers", "", "MockAgents header JSON artifact (requires all header flags)")
+	driftCmd.Flags().StringVar(&driftSDKEnums, "sdk-enums", "", "SDK enum inventory JSON artifact (requires all enum flags)")
+	driftCmd.Flags().StringVar(&driftProvEnums, "provider-enums", "", "Live-provider enum inventory JSON artifact (requires all enum flags)")
+	driftCmd.Flags().StringVar(&driftMockEnums, "mock-enums", "", "MockAgents enum inventory JSON artifact (requires all enum flags)")
 	_ = driftCmd.MarkFlagRequired("sdk")
 	_ = driftCmd.MarkFlagRequired("provider")
 	_ = driftCmd.MarkFlagRequired("mock")
@@ -131,6 +137,42 @@ func runDrift(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("mock artifact: %w", err)
 	}
 	report := drift.Compare(driftOperation, sdk, provider, mock)
+	enumPaths := []string{driftSDKEnums, driftProvEnums, driftMockEnums}
+	enumCount := 0
+	for _, path := range enumPaths {
+		if path != "" {
+			enumCount++
+		}
+	}
+	if enumCount != 0 && enumCount != len(enumPaths) {
+		return errors.New("--sdk-enums, --provider-enums, and --mock-enums must be provided together")
+	}
+	if enumCount == len(enumPaths) {
+		loadEnums := func(label, path string) (drift.EnumSet, error) {
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil, fmt.Errorf("reading %s enum artifact %s: %w", label, path, readErr)
+			}
+			values, extractErr := drift.ExtractEnums(data)
+			if extractErr != nil {
+				return nil, fmt.Errorf("%s enum artifact %s: %w", label, path, extractErr)
+			}
+			return drift.IgnoreEnumPaths(values, driftIgnorePaths)
+		}
+		sdkEnums, loadErr := loadEnums("SDK", driftSDKEnums)
+		if loadErr != nil {
+			return loadErr
+		}
+		providerEnums, loadErr := loadEnums("provider", driftProvEnums)
+		if loadErr != nil {
+			return loadErr
+		}
+		mockEnums, loadErr := loadEnums("mock", driftMockEnums)
+		if loadErr != nil {
+			return loadErr
+		}
+		report = drift.MergeFindings(report, drift.CompareEnums(driftOperation, sdkEnums, providerEnums, mockEnums))
+	}
 	report.Adapter = driftAdapter
 	var output []byte
 	switch driftFormat {
@@ -173,9 +215,9 @@ func renderDriftMarkdown(report drift.Report) string {
 		b.WriteString("No drift detected.\n")
 		return b.String()
 	}
-	b.WriteString("| Severity | JSON path | Rule |\n|---|---|---|\n")
+	b.WriteString("| Severity | JSON path | Rule | Values |\n|---|---|---|---|\n")
 	for _, finding := range report.Findings {
-		fmt.Fprintf(&b, "| %s | `%s` | %s |\n", finding.Severity, finding.Path, finding.Rule)
+		fmt.Fprintf(&b, "| %s | `%s` | %s | %s |\n", finding.Severity, finding.Path, finding.Rule, strings.Join(finding.Values, ", "))
 	}
 	return b.String()
 }

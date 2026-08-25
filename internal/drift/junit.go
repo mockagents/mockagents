@@ -37,7 +37,7 @@ func JUnit(report Report) ([]byte, error) {
 	} else {
 		suite.Cases = make([]junitCase, 0, len(report.Findings))
 		for _, finding := range report.Findings {
-			message := fmt.Sprintf("%s provider drift at %s (%s)", finding.Severity, finding.Path, finding.Rule)
+			message := FindingDetail(finding)
 			item := junitCase{Name: finding.Rule + " " + finding.Path, Classname: finding.Operation}
 			if finding.Severity == SeverityCritical {
 				item.Failure = &junitFailure{Message: message, Type: finding.Rule, Body: junitDetails(report, finding)}
@@ -58,6 +58,9 @@ func JUnit(report Report) ([]byte, error) {
 
 func junitDetails(report Report, finding Finding) string {
 	details := fmt.Sprintf("severity=%s rule=%s path=%s", finding.Severity, finding.Rule, finding.Path)
+	if len(finding.Values) != 0 {
+		details += fmt.Sprintf(" values=%q", finding.Values)
+	}
 	if report.Adapter != "" {
 		details += " adapter=" + report.Adapter
 	}
