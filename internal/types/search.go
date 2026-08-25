@@ -21,6 +21,7 @@ type SearchFaults struct {
 	// a configured action or disable chaos for one request.
 	Seed           int64                      `yaml:"seed,omitempty" json:"seed,omitempty"`
 	Rate           *float64                   `yaml:"rate,omitempty" json:"rate,omitempty"`
+	OperationRates map[string]float64         `yaml:"operation_rates,omitempty" json:"operation_rates,omitempty"`
 	LatencyMs      int                        `yaml:"latency_ms,omitempty" json:"latency_ms,omitempty"`
 	StatusCode     int                        `yaml:"status_code,omitempty" json:"status_code,omitempty"`
 	MalformedJSON  bool                       `yaml:"malformed_json,omitempty" json:"malformed_json,omitempty"`
