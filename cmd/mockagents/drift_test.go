@@ -64,3 +64,27 @@ func TestRunDriftSARIF(t *testing.T) {
 		t.Fatalf("SARIF output=%s err=%v", out.String(), err)
 	}
 }
+
+func TestRunDriftJUnit(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	driftSDKPath = write("sdk.json", `{"id":"x"}`)
+	driftProviderPath = write("provider.json", `{"id":"x"}`)
+	driftMockPath = write("mock.json", `{"id":1}`)
+	driftOperation, driftAdapter, driftFormat, driftOutput = "test.operation", "internal/adapter/openai.go", "junit", ""
+	var out bytes.Buffer
+	driftCmd.SetOut(&out)
+	if err := runDrift(driftCmd, nil); !errors.Is(err, errCriticalDrift) {
+		t.Fatalf("err=%v output=%s", err, out.String())
+	}
+	if !bytes.Contains(out.Bytes(), []byte(`<testsuite name="MockAgents provider drift: test.operation"`)) ||
+		!bytes.Contains(out.Bytes(), []byte(`<failure message="critical provider drift`)) {
+		t.Fatalf("JUnit output=%s", out.String())
+	}
+}
