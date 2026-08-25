@@ -10,3 +10,9 @@ func TestDisconnectHTTPNonHijackable(t *testing.T) {
 		t.Fatal("recorder unexpectedly supported disconnect")
 	}
 }
+
+func TestResetHTTPNonHijackable(t *testing.T) {
+	if ResetHTTP(httptest.NewRecorder()) {
+		t.Fatal("recorder unexpectedly supported reset")
+	}
+}

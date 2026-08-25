@@ -191,6 +191,23 @@ func TestChaosHTTPHandlerDisconnectFallbackAndOff(t *testing.T) {
 	}
 }
 
+func TestChaosHTTPHandlerResetFallbackAndOff(t *testing.T) {
+	h := NewChaosHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }), types.MCPFaults{Reset: true})
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":51,"method":"tools/list"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway || rec.Header().Get("X-Mockagents-Chaos-Action") != "reset" || rec.Header().Get("X-Mockagents-Chaos-Source") != "configured" {
+		t.Fatalf("reset status=%d headers=%v", rec.Code, rec.Header())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.Header.Set("X-Mockagents-Chaos", "off")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("off status=%d", rec.Code)
+	}
+}
+
 func TestChaosHTTPHandlerStatusFaultAndOff(t *testing.T) {
 	h := NewChaosHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }), types.MCPFaults{StatusCode: http.StatusTooManyRequests})
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":21,"method":"tools/list"}`))

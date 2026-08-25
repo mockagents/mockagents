@@ -94,6 +94,15 @@ func (h *ChaosHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if h.Faults.Reset {
+		if apply, source := applies("reset"); apply {
+			stampMCPChaos(w, "reset", source)
+			if !commonchaos.ResetHTTP(w) {
+				http.Error(w, "mock MCP connection reset", http.StatusBadGateway)
+			}
+			return
+		}
+	}
 	if r.Method == http.MethodPost && h.Faults.StatusCode != 0 {
 		if apply, source := applies("status"); apply {
 			stampMCPChaos(w, "status", source)

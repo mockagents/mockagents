@@ -133,6 +133,11 @@ connections close before a response; transports that cannot be hijacked (such
 as HTTP/2) receive a deterministic `502` fallback. Request force/off and all
 configured rate scopes apply to the `disconnect` action.
 
+Set `faults.reset: true` on MCP or A2A to abort hijackable HTTP/1.x TCP
+connections with zero linger, producing a connection reset rather than a
+graceful close. Non-hijackable transports receive a deterministic `502`
+fallback. Request force/off and every configured rate scope apply to `reset`.
+
 MCP and A2A definitions can also set `faults.status_code` to an HTTP error
 status from `400` through `599`. The response keeps the protocol's JSON-RPC
 error envelope (including the request ID) while returning that HTTP status;
