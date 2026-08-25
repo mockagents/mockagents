@@ -122,6 +122,21 @@ func applyStdioChaos(frame []byte, faults types.MCPFaults) ([]byte, bool) {
 	if faults.LatencyMs > 0 && commonchaos.Decide(policy, key, "latency", envelope.MockagentsChaos).Apply {
 		time.Sleep(time.Duration(faults.LatencyMs) * time.Millisecond)
 	}
+	timeout := commonchaos.Decide(policy, key, "timeout", envelope.MockagentsChaos)
+	if faults.TimeoutMs > 0 && timeout.Apply {
+		time.Sleep(time.Duration(faults.TimeoutMs) * time.Millisecond)
+		if len(envelope.ID) == 0 || string(envelope.ID) == "null" {
+			return nil, true
+		}
+		resp := newError(envelope.ID, -32000, "mock MCP timeout", map[string]any{
+			"chaos": map[string]string{"action": "timeout", "source": timeout.Source},
+		})
+		out, marshalErr := json.Marshal(resp)
+		if marshalErr != nil {
+			return nil, false
+		}
+		return out, true
+	}
 	malformed := commonchaos.Decide(policy, key, "malformed", envelope.MockagentsChaos)
 	if faults.Malformed && malformed.Apply {
 		if len(envelope.ID) == 0 || string(envelope.ID) == "null" {

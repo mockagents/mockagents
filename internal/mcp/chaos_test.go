@@ -85,3 +85,39 @@ func TestChaosHTTPHandlerForceMalformedAndActionPrecedence(t *testing.T) {
 		t.Fatalf("error action=%q body=%q", rec.Header().Get("X-Mockagents-Chaos-Action"), rec.Body.String())
 	}
 }
+
+func TestChaosHTTPHandlerForceTimeoutAndOff(t *testing.T) {
+	zero := 0.0
+	h := NewChaosHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), types.MCPFaults{Rate: &zero, TimeoutMs: 1})
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/rpc", strings.NewReader(`{"jsonrpc":"2.0","id":13,"method":"ping"}`))
+	req.Header.Set("X-Mockagents-Chaos", "timeout")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var body struct {
+		ID    int `json:"id"`
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Data    struct {
+				Chaos struct {
+					Action string `json:"action"`
+					Source string `json:"source"`
+				} `json:"chaos"`
+			} `json:"data"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.ID != 13 || body.Error.Code != -32000 || body.Error.Message != "mock MCP timeout" || body.Error.Data.Chaos.Action != "timeout" || body.Error.Data.Chaos.Source != "request-force" {
+		t.Fatalf("timeout response=%+v err=%v body=%s", body, err, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/mcp/rpc", strings.NewReader(`{"jsonrpc":"2.0","id":14,"method":"ping"}`))
+	req.Header.Set("X-Mockagents-Chaos", "off")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("off status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
