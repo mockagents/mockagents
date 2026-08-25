@@ -445,6 +445,8 @@ func InteractionCapture(worker *LogWorker, bodyMode LogBodyMode, spendHook ...fu
 				ResponseBody:   storedBody,
 				AgentName:      agentName,
 				ScenarioName:   meta.ScenarioName,
+				ChaosAction:    cw.Header().Get("X-Mockagents-Chaos-Action"),
+				ChaosSource:    cw.Header().Get("X-Mockagents-Chaos-Source"),
 				ToolCallsCount: meta.ToolCallsCount,
 				Error:          meta.Error,
 				Truncated:      truncated,
