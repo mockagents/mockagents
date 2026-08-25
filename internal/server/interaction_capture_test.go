@@ -112,6 +112,26 @@ func newTestWorker(t *testing.T) (*LogWorker, *storage.SQLiteStore) {
 	return worker, store
 }
 
+func TestInteractionCapture_RecordsChaosMetadata(t *testing.T) {
+	worker, store := newTestWorker(t)
+	handler := InteractionCapture(worker, LogBodyFull)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Mockagents-Chaos-Action", "status")
+		w.Header().Set("X-Mockagents-Chaos-Source", "operation-rate")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/moderations", nil))
+	if !waitForLog(t, store, 1, time.Second) {
+		t.Fatal("chaos interaction was not persisted")
+	}
+	logs, err := store.Query(t.Context(), storage.InteractionFilter{})
+	if err != nil || len(logs) != 1 {
+		t.Fatalf("logs=%v err=%v", logs, err)
+	}
+	if logs[0].ChaosAction != "status" || logs[0].ChaosSource != "operation-rate" {
+		t.Fatalf("chaos action=%q source=%q", logs[0].ChaosAction, logs[0].ChaosSource)
+	}
+}
+
 // TestInteractionCapture_AgentNameFromContext verifies that the
 // middleware prefers RequestMeta.AgentName (set by the adapter after
 // ProcessRequest resolves an agent) over the legacy body-probe
