@@ -51,6 +51,7 @@ spec:                         # Required. Agent specification.
 | `openai-chat-completions` | OpenAI Chat Completions API format |
 | `anthropic-messages` | Anthropic Messages API format |
 | `google-gemini` | Google Gemini `generateContent` API format |
+| `ollama-chat` | Ollama native `POST /api/chat` format |
 
 ## `spec.tools`
 

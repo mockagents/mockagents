@@ -1,0 +1,11 @@
+{
+  "version": "mockagents-drift-baseline/v1",
+  "name": "ollama-chat",
+  "revision": 1,
+  "operation": "ollama.chat",
+  "adapter": "internal/adapter/ollama.go",
+  "sdk": "sdk.json",
+  "provider": "provider.json",
+  "mock": "mock.json",
+  "ignore_paths": ["$.created_at", "$.total_duration", "$.load_duration", "$.prompt_eval_duration", "$.eval_duration"]
+}
