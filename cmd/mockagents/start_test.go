@@ -154,3 +154,19 @@ func TestRegisterPipelines_SkipsNilAndAllValid(t *testing.T) {
 		t.Fatalf("expected 2 valid pipelines registered, got %d", got)
 	}
 }
+
+func TestParseGlobalChaos(t *testing.T) {
+	seed, rate, err := parseGlobalChaos("42", "0.25", false)
+	if err != nil || seed != 42 || rate == nil || *rate != 0.25 {
+		t.Fatalf("seed=%d rate=%v err=%v", seed, rate, err)
+	}
+	_, rate, err = parseGlobalChaos("42", "invalid", true)
+	if err != nil || rate == nil || *rate != 0 {
+		t.Fatalf("off should force zero: rate=%v err=%v", rate, err)
+	}
+	for _, tc := range []struct{ seed, rate string }{{"bad", ""}, {"", "-0.1"}, {"", "1.1"}} {
+		if _, _, err := parseGlobalChaos(tc.seed, tc.rate, false); err == nil {
+			t.Fatalf("expected error for seed=%q rate=%q", tc.seed, tc.rate)
+		}
+	}
+}

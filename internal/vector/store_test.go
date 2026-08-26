@@ -203,3 +203,16 @@ func TestValidationErrors(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestPartialResultsInheritGlobalChaosPolicy(t *testing.T) {
+	s := seededStore(t, Cosine)
+	limit, one := 1, 1.0
+	if err := s.SetPartialResultPolicy("docs", &limit, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	s.SetGlobalChaosPolicy(73, &one)
+	result, err := s.QueryWithInfo("docs", Query{Vector: []float64{1, 0}, TopK: 3, RequestKey: "req", Operation: "/query"})
+	if err != nil || !result.Partial || result.ChaosSource != "global-rate" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}

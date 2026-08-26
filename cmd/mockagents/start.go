@@ -41,10 +41,13 @@ and supports hot-reload via the management API.`,
 }
 
 var (
-	host     string
-	port     int
-	jsonLogs bool
-	watchDir bool
+	host      string
+	port      int
+	jsonLogs  bool
+	watchDir  bool
+	chaosRate string
+	chaosSeed string
+	chaosOff  bool
 )
 
 func init() {
@@ -62,9 +65,44 @@ func init() {
 	startCmd.Flags().IntVarP(&port, "port", "p", defaultPort, "HTTP server port")
 	startCmd.Flags().BoolVar(&jsonLogs, "json-logs", false, "Output logs in JSON format")
 	startCmd.Flags().BoolVarP(&watchDir, "watch", "w", false, "Auto-reload agent YAML files on change (fsnotify)")
+	startCmd.Flags().StringVar(&chaosRate, "chaos-rate", strings.TrimSpace(os.Getenv("MOCKAGENTS_CHAOS_RATE")), "Lowest-precedence server-wide chaos rate (0.0-1.0; env MOCKAGENTS_CHAOS_RATE)")
+	startCmd.Flags().StringVar(&chaosSeed, "chaos-seed", strings.TrimSpace(os.Getenv("MOCKAGENTS_CHAOS_SEED")), "Server-wide deterministic chaos seed (env MOCKAGENTS_CHAOS_SEED)")
+	startCmd.Flags().BoolVar(&chaosOff, "chaos-off", envEnabled("MOCKAGENTS_CHAOS_OFF"), "Set the inherited server-wide chaos rate to zero (env MOCKAGENTS_CHAOS_OFF)")
+}
+
+func envEnabled(name string) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func parseGlobalChaos(seedText, rateText string, off bool) (int64, *float64, error) {
+	var seed int64
+	var err error
+	if seedText = strings.TrimSpace(seedText); seedText != "" {
+		seed, err = strconv.ParseInt(seedText, 10, 64)
+		if err != nil {
+			return 0, nil, fmt.Errorf("invalid --chaos-seed %q: must be an integer", seedText)
+		}
+	}
+	if off {
+		zero := 0.0
+		return seed, &zero, nil
+	}
+	if rateText = strings.TrimSpace(rateText); rateText == "" {
+		return seed, nil, nil
+	}
+	rate, err := strconv.ParseFloat(rateText, 64)
+	if err != nil || rate < 0 || rate > 1 {
+		return 0, nil, fmt.Errorf("invalid --chaos-rate %q: must be between 0 and 1", rateText)
+	}
+	return seed, &rate, nil
 }
 
 func runStart(cmd *cobra.Command, args []string) error {
+	globalSeed, globalRate, err := parseGlobalChaos(chaosSeed, chaosRate, chaosOff)
+	if err != nil {
+		return err
+	}
 	// Configure structured logger.
 	logLevel := parseLogLevel(cmd)
 	logger := newLogger(logLevel, jsonLogs)
@@ -125,10 +163,16 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// to list.
 	pipelineReg := registerPipelines(docs.Pipelines, logger)
 	vectorStore, vectorCount := registerVectorCollections(docs.Vectors, logger)
+	vectorStore.SetGlobalChaosPolicy(globalSeed, globalRate)
 	if vectorCount > 0 {
 		logger.Info("loaded vector collections", "collections", vectorCount)
 	}
 	searchService, serviceFaults := registerSearchServices(docs.SearchServices, logger)
+	for provider, faults := range serviceFaults {
+		faults.GlobalSeed = globalSeed
+		faults.GlobalRate = globalRate
+		serviceFaults[provider] = faults
+	}
 
 	// Initialize engine.
 	store := state.NewMemoryStore(state.DefaultSessionTTL)

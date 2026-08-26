@@ -80,3 +80,22 @@ func TestForFixturePrecedence(t *testing.T) {
 		t.Fatalf("sequence override = %+v", got)
 	}
 }
+
+func TestInheritGlobalIsLowestPrecedence(t *testing.T) {
+	globalOne, serviceZero := 1.0, 0.0
+	inherited := InheritGlobal(Policy{}, 42, &globalOne)
+	if inherited.Rate == nil || *inherited.Rate != 1 || inherited.Seed != 42 || inherited.Source != "global-rate" {
+		t.Fatalf("inherited policy = %+v", inherited)
+	}
+	service := InheritGlobal(Policy{Seed: 7, Rate: &serviceZero}, 42, &globalOne)
+	if service.Rate == nil || *service.Rate != 0 || service.Seed != 7 || service.Source != "" {
+		t.Fatalf("service policy changed = %+v", service)
+	}
+	operation, _ := ForOperation(inherited, "/healthy", map[string]float64{"/healthy": 0})
+	if got := Decide(operation, "req", "status", ""); got.Apply || got.Source != "operation-rate" {
+		t.Fatalf("operation did not override global = %+v", got)
+	}
+	if got := Decide(operation, "req", "status", "status"); !got.Apply || got.Source != "request-force" {
+		t.Fatalf("request did not override operation = %+v", got)
+	}
+}

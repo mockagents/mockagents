@@ -27,6 +27,10 @@ type SearchFaults struct {
 	MalformedJSON  bool                       `yaml:"malformed_json,omitempty" json:"malformed_json,omitempty"`
 	Disconnect     bool                       `yaml:"disconnect,omitempty" json:"disconnect,omitempty"`
 	PartialResults *SearchPartialResultsFault `yaml:"partial_results,omitempty" json:"partial_results,omitempty"`
+	// GlobalSeed and GlobalRate are runtime-only defaults supplied by
+	// `mockagents start`; declarative service fields remain the higher scope.
+	GlobalSeed int64    `yaml:"-" json:"-"`
+	GlobalRate *float64 `yaml:"-" json:"-"`
 }
 
 type SearchPartialResultsFault struct {
