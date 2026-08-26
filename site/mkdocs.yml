@@ -51,6 +51,7 @@ nav:
     - Record & Replay: guides/record-replay.md
     - Migrating from AIMock: guides/migrate-aimock.md
     - Migrating from MSW: guides/migrate-msw.md
+    - Migrating from Ad Hoc Mocks: guides/migrate-ad-hoc-mocks.md
     - CLI Reference: guides/cli-reference.md
     - YAML Schema: guides/yaml-schema.md
     - Management API: guides/management-api.md
