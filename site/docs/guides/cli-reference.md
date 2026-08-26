@@ -345,6 +345,30 @@ Provider-only additions warn. See [Provider drift detection](provider-drift.md).
 
 ---
 
+## `mockagents convert aimock`
+
+Convert an AIMock JSON fixture file into a validated MockAgents Agent YAML file.
+
+```bash
+mockagents convert aimock fixtures/chat.json -o agents/chat.yaml --name chat
+mockagents validate agents/chat.yaml
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output` / `-o` | `aimock-agent.yaml` | Output path, or `-` for stdout |
+| `--name` | input filename | MockAgents agent name |
+| `--protocol` | `openai-chat-completions` | Target wire protocol |
+| `--model` | `mock-agent` | Model reported by the agent |
+| `--force` | `false` | Overwrite an existing output file |
+
+The converter preserves string `userMessage` and integer `turnIndex` matchers,
+text/refusal responses, and tool calls. It prints and skips AIMock-only matchers
+instead of silently turning them into broad catch-all scenarios. See the
+[AIMock migration guide](migrate-aimock.md) for the compatibility table.
+
+---
+
 ## `mockagents import`
 
 Convert recordings from other tools into a MockAgents cassette.

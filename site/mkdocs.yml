@@ -49,6 +49,7 @@ nav:
     - Provider Drift Detection: guides/provider-drift.md
     - Drop-in Recipes: guides/drop-in-recipes.md
     - Record & Replay: guides/record-replay.md
+    - Migrating from AIMock: guides/migrate-aimock.md
     - CLI Reference: guides/cli-reference.md
     - YAML Schema: guides/yaml-schema.md
     - Management API: guides/management-api.md
