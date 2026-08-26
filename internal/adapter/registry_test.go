@@ -46,6 +46,7 @@ func TestDefaultRegistry(t *testing.T) {
 		"POST /v1beta/models/{modelmethod}",
 		"POST /api/chat",
 		"POST /model/{modelId}/converse",
+		"POST /model/{modelId}/converse-stream",
 		"POST /openai/deployments/{deployment}/chat/completions",
 		"POST /openai/deployments/{deployment}/embeddings",
 		"POST /openai/v1/chat/completions",
