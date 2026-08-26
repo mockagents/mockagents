@@ -18,7 +18,8 @@ func applyServiceFaults(w http.ResponseWriter, r *http.Request, faults types.Sea
 		requestKey = r.Method + " " + r.URL.Path
 	}
 	forced := r.Header.Get(commonchaos.ForceHeader)
-	policy, operation := commonchaos.ForOperation(commonchaos.Policy{Seed: faults.Seed, Rate: faults.Rate}, r.URL.Path, faults.OperationRates)
+	policy := commonchaos.InheritGlobal(commonchaos.Policy{Seed: faults.Seed, Rate: faults.Rate}, faults.GlobalSeed, faults.GlobalRate)
+	policy, operation := commonchaos.ForOperation(policy, r.URL.Path, faults.OperationRates)
 	requestKey += "\x00" + operation
 	applies := func(action string) bool {
 		decision := commonchaos.Decide(policy, requestKey, action, forced)

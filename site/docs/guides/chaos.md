@@ -93,6 +93,25 @@ chaos:
 Order per request: rate limit → errors → connection faults, then latency on
 the way out.
 
+### Server-wide connector defaults
+
+`mockagents start` can supply the lowest-precedence deterministic policy for
+search, rerank, moderation, and VectorMock faults:
+
+```bash
+mockagents start --chaos-rate 0.1 --chaos-seed 42
+# Equivalent environment variables:
+# MOCKAGENTS_CHAOS_RATE=0.1 MOCKAGENTS_CHAOS_SEED=42 mockagents start
+```
+
+Use `--chaos-off` (or `MOCKAGENTS_CHAOS_OFF=true`) to make the inherited rate
+zero. The global rate only gates fault actions already configured on a service
+or collection; it never invents a status, disconnect, latency, or partial-result
+fault. Precedence is request force/off, sequence, fixture, operation, service,
+then global. Consequently, an explicit service `rate`—including zero—wins over
+the server default. Response metadata reports inherited decisions as
+`X-Mockagents-Chaos-Source: global-rate`.
+
 ### MCP and A2A operation overrides
 
 Protocol mocks can override their service-level deterministic `rate` for an

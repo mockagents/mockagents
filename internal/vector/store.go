@@ -135,6 +135,22 @@ func (s *Store) SetPartialResultScopedPolicy(name string, limit *int, seed int64
 type Store struct {
 	mu          sync.RWMutex
 	collections map[string]*collection
+	globalSeed  int64
+	globalRate  *float64
+}
+
+// SetGlobalChaosPolicy supplies the lowest-precedence deterministic rate used
+// by collections that do not declare a service rate.
+func (s *Store) SetGlobalChaosPolicy(seed int64, rate *float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.globalSeed = seed
+	if rate == nil {
+		s.globalRate = nil
+		return
+	}
+	value := *rate
+	s.globalRate = &value
 }
 
 // ScopedCollectionName returns the internal collection key used for tenant
@@ -404,7 +420,8 @@ func (s *Store) QueryWithInfo(name string, query Query) (QueryResult, error) {
 		matches = matches[:query.TopK]
 	}
 	partial := false
-	policy, operation := commonchaos.ForOperation(commonchaos.Policy{Seed: c.chaosSeed, Rate: c.chaosRate}, query.Operation, c.operationRates)
+	policy := commonchaos.InheritGlobal(commonchaos.Policy{Seed: c.chaosSeed, Rate: c.chaosRate}, s.globalSeed, s.globalRate)
+	policy, operation := commonchaos.ForOperation(policy, query.Operation, c.operationRates)
 	decision := commonchaos.Decide(policy, query.RequestKey+"\x00"+operation, "partial", query.ForcedChaos)
 	if c.partialResultLimit != nil && len(matches) > *c.partialResultLimit && decision.Apply {
 		matches = matches[:*c.partialResultLimit]

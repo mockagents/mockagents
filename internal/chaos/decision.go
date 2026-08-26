@@ -25,6 +25,22 @@ type Decision struct {
 	Source string
 }
 
+// InheritGlobal supplies the lowest-precedence server policy when a service
+// does not declare its own rate. A service seed remains authoritative when it
+// is non-zero; otherwise the global seed makes inherited decisions stable.
+func InheritGlobal(service Policy, globalSeed int64, globalRate *float64) Policy {
+	if service.Rate != nil || globalRate == nil {
+		return service
+	}
+	rate := *globalRate
+	service.Rate = &rate
+	service.Source = "global-rate"
+	if service.Seed == 0 {
+		service.Seed = globalSeed
+	}
+	return service
+}
+
 // Decide applies precedence: request "off", request action, legacy always-on,
 // then fixed-seed probability. A forced action only selects an action that the
 // caller has configured; it does not invent a new fault.

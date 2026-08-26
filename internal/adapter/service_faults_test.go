@@ -85,3 +85,18 @@ func TestCommonServiceFaultOperationRatePrecedence(t *testing.T) {
 		t.Fatalf("moderation source=%q", got)
 	}
 }
+
+func TestCommonServiceFaultInheritsGlobalRate(t *testing.T) {
+	one := 1.0
+	faults := types.SearchFaults{GlobalSeed: 91, GlobalRate: &one, StatusCode: http.StatusServiceUnavailable}
+	w := httptest.NewRecorder()
+	if !applyServiceFaults(w, httptest.NewRequest(http.MethodPost, "/search", nil), faults, func(status int) { w.WriteHeader(status) }) {
+		t.Fatal("configured status fault did not inherit global rate")
+	}
+	if got := w.Header().Get("X-Mockagents-Chaos-Source"); got != "global-rate" {
+		t.Fatalf("source = %q", got)
+	}
+	if got := w.Header().Get("X-Mockagents-Chaos-Seed"); got != "91" {
+		t.Fatalf("seed = %q", got)
+	}
+}
