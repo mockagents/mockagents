@@ -52,6 +52,7 @@ spec:                         # Required. Agent specification.
 | `anthropic-messages` | Anthropic Messages API format |
 | `google-gemini` | Google Gemini `generateContent` API format |
 | `ollama-chat` | Ollama native `POST /api/chat` format |
+| `bedrock-converse` | Amazon Bedrock native `POST /model/{modelId}/converse` format |
 
 ## `spec.tools`
 

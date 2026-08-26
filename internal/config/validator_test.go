@@ -276,7 +276,7 @@ spec:
 }
 
 func TestValidate_ValidProtocols(t *testing.T) {
-	for _, proto := range []string{"openai-chat-completions", "anthropic-messages", "ollama-chat"} {
+	for _, proto := range []string{"openai-chat-completions", "anthropic-messages", "ollama-chat", "bedrock-converse"} {
 		t.Run(proto, func(t *testing.T) {
 			errs := loadAndValidate(t, `
 apiVersion: mockagents/v1

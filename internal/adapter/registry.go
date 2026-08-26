@@ -103,6 +103,7 @@ func DefaultRegistryWithServiceFaults(eng *engine.Engine, vectorStore *vector.St
 		anthropic,
 		&GeminiHandler{Engine: eng},
 		&OllamaHandler{Engine: eng},
+		&BedrockHandler{Engine: eng},
 		// Azure OpenAI URL surface, delegating to the OpenAI handlers above.
 		&AzureHandler{Chat: oai, Embeddings: emb},
 		// OpenAI Files + Batch API (A-08).
