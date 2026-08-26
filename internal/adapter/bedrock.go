@@ -1,8 +1,11 @@
 package adapter
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"hash/crc32"
 	"net/http"
 	"strings"
 
@@ -15,7 +18,10 @@ type BedrockHandler struct{ Engine *engine.Engine }
 
 func (h *BedrockHandler) Name() string { return "bedrock" }
 func (h *BedrockHandler) Routes() []Route {
-	return []Route{{Pattern: "POST /model/{modelId}/converse", Handler: h.HandleConverse}}
+	return []Route{
+		{Pattern: "POST /model/{modelId}/converse", Handler: h.HandleConverse},
+		{Pattern: "POST /model/{modelId}/converse-stream", Handler: h.HandleConverseStream},
+	}
 }
 
 type BedrockConverseRequest struct {
@@ -253,4 +259,90 @@ func writeBedrockError(w http.ResponseWriter, status int, kind, message string) 
 	writeJSON(w, status, struct {
 		Message string `json:"message"`
 	}{Message: message})
+}
+
+type bedrockCapture struct {
+	header http.Header
+	body   bytes.Buffer
+	status int
+}
+
+func (c *bedrockCapture) Header() http.Header    { return c.header }
+func (c *bedrockCapture) WriteHeader(status int) { c.status = status }
+func (c *bedrockCapture) Write(data []byte) (int, error) {
+	if c.status == 0 {
+		c.status = http.StatusOK
+	}
+	return c.body.Write(data)
+}
+
+// HandleConverseStream emits the same AWS EventStream frames that SDK
+// ConverseStream decoders consume. Each frame carries the required pseudo
+// headers and CRC checksums; the JSON payload is one Bedrock stream event.
+func (h *BedrockHandler) HandleConverseStream(w http.ResponseWriter, r *http.Request) {
+	model := strings.TrimSpace(r.PathValue("modelId"))
+	if model == "" {
+		writeBedrockError(w, http.StatusBadRequest, "ValidationException", "modelId is required")
+		return
+	}
+	capture := &bedrockCapture{header: make(http.Header)}
+	inner := r.Clone(r.Context())
+	inner.SetPathValue("modelId", model)
+	h.HandleConverse(capture, inner)
+	for key, values := range capture.header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	if capture.status != http.StatusOK {
+		w.WriteHeader(capture.status)
+		_, _ = w.Write(capture.body.Bytes())
+		return
+	}
+	var response BedrockConverseResponse
+	if err := json.Unmarshal(capture.body.Bytes(), &response); err != nil {
+		writeBedrockError(w, http.StatusInternalServerError, "InternalServerException", err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+	w.WriteHeader(http.StatusOK)
+	writeBedrockEvent(w, "messageStart", map[string]any{"role": "assistant"})
+	for index, block := range response.Output.Message.Content {
+		if block.ToolUse != nil {
+			writeBedrockEvent(w, "contentBlockStart", map[string]any{"contentBlockIndex": index, "start": map[string]any{"toolUse": map[string]any{"toolUseId": block.ToolUse.ToolUseID, "name": block.ToolUse.Name}}})
+			input, _ := json.Marshal(block.ToolUse.Input)
+			writeBedrockEvent(w, "contentBlockDelta", map[string]any{"contentBlockIndex": index, "delta": map[string]any{"toolUse": map[string]any{"input": string(input)}}})
+		} else {
+			writeBedrockEvent(w, "contentBlockDelta", map[string]any{"contentBlockIndex": index, "delta": map[string]any{"text": block.Text}})
+		}
+		writeBedrockEvent(w, "contentBlockStop", map[string]any{"contentBlockIndex": index})
+	}
+	writeBedrockEvent(w, "messageStop", map[string]any{"stopReason": response.StopReason})
+	writeBedrockEvent(w, "metadata", map[string]any{"usage": response.Usage, "metrics": response.Metrics})
+}
+
+func writeBedrockEvent(w http.ResponseWriter, eventType string, value any) {
+	payload, _ := json.Marshal(value)
+	headers := appendBedrockEventHeader(nil, ":message-type", "event")
+	headers = appendBedrockEventHeader(headers, ":event-type", eventType)
+	headers = appendBedrockEventHeader(headers, ":content-type", "application/json")
+	total := 16 + len(headers) + len(payload)
+	message := make([]byte, 12, total)
+	binary.BigEndian.PutUint32(message[0:4], uint32(total))
+	binary.BigEndian.PutUint32(message[4:8], uint32(len(headers)))
+	binary.BigEndian.PutUint32(message[8:12], crc32.ChecksumIEEE(message[:8]))
+	message = append(message, headers...)
+	message = append(message, payload...)
+	checksum := crc32.ChecksumIEEE(message)
+	message = binary.BigEndian.AppendUint32(message, checksum)
+	_, _ = w.Write(message)
+}
+
+func appendBedrockEventHeader(dst []byte, name, value string) []byte {
+	dst = append(dst, byte(len(name)))
+	dst = append(dst, name...)
+	dst = append(dst, 7) // AWS EventStream string header type
+	dst = binary.BigEndian.AppendUint16(dst, uint16(len(value)))
+	dst = append(dst, value...)
+	return dst
 }
