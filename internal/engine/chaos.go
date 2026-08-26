@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	commonchaos "github.com/mockagents/mockagents/internal/chaos"
 	"github.com/mockagents/mockagents/internal/metrics"
 	"github.com/mockagents/mockagents/internal/types"
 )
@@ -76,7 +77,10 @@ type ChaosInjector struct {
 	// connCounts is the FailFirst counter for connection-layer faults, kept
 	// SEPARATE from errorCounts so an agent configuring both errors.fail_first
 	// and connection.fail_first gets independent per-fault counts.
-	connCounts map[string]int
+	connCounts   map[string]int
+	globalSeed   int64
+	globalRate   *float64
+	globalCounts map[string]uint64
 }
 
 // NewChaosInjector returns an injector that uses the real wall clock and a
@@ -84,12 +88,28 @@ type ChaosInjector struct {
 // sleep path is used; tests may set Sleep to a deterministic recorder.
 func NewChaosInjector() *ChaosInjector {
 	return &ChaosInjector{
-		Now:         time.Now,
-		RandSrc:     rand.New(rand.NewSource(time.Now().UnixNano())),
-		buckets:     make(map[string]*rateBucket),
-		errorCounts: make(map[string]int),
-		connCounts:  make(map[string]int),
+		Now:          time.Now,
+		RandSrc:      rand.New(rand.NewSource(time.Now().UnixNano())),
+		buckets:      make(map[string]*rateBucket),
+		errorCounts:  make(map[string]int),
+		connCounts:   make(map[string]int),
+		globalCounts: make(map[string]uint64),
 	}
+}
+
+// SetGlobalPolicy configures the lowest-precedence deterministic rate for
+// configured agent actions that do not have their own trigger.
+func (c *ChaosInjector) SetGlobalPolicy(seed int64, rate *float64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.globalSeed = seed
+	if rate == nil {
+		c.globalRate = nil
+	} else {
+		value := *rate
+		c.globalRate = &value
+	}
+	c.globalCounts = make(map[string]uint64)
 }
 
 // ensureMaps lazily initializes the per-agent counter maps so a
@@ -106,7 +126,32 @@ func (c *ChaosInjector) ensureMaps() {
 	if c.connCounts == nil {
 		c.connCounts = make(map[string]int)
 	}
+	if c.globalCounts == nil {
+		c.globalCounts = make(map[string]uint64)
+	}
 	c.mu.Unlock()
+}
+
+func (c *ChaosInjector) globalAllows(agentName, action string) bool {
+	c.mu.Lock()
+	if c.globalRate == nil {
+		c.mu.Unlock()
+		return true
+	}
+	rate := *c.globalRate
+	seed := c.globalSeed
+	key := agentName + "\x00" + action
+	c.globalCounts[key]++
+	sequence := c.globalCounts[key]
+	c.mu.Unlock()
+	decision := commonchaos.Decide(commonchaos.Policy{Seed: seed, Rate: &rate, Source: "global-rate"}, fmt.Sprintf("%s\x00%d", key, sequence), action, "")
+	return decision.Apply
+}
+
+func (c *ChaosInjector) hasGlobalPolicy() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.globalRate != nil
 }
 
 // shouldTrigger decides whether a fault fires this request, applying the shared
@@ -174,18 +219,42 @@ func (c *ChaosInjector) Before(ctx context.Context, agent *types.AgentDefinition
 			return err
 		}
 	}
-	if cfg.Errors != nil && (cfg.Errors.Rate > 0 || cfg.Errors.FailFirst > 0) {
-		if err := c.maybeInjectError(ctx, agent.Metadata.Name, cfg.Errors); err != nil {
-			metrics.RecordChaos(agent.Metadata.Name, metrics.ChaosError)
-			return err
+	if cfg.Errors != nil && (cfg.Errors.Rate > 0 || cfg.Errors.FailFirst > 0 || (c.hasGlobalPolicy() && hasConfiguredError(cfg.Errors))) {
+		errorCfg := cfg.Errors
+		if cfg.Errors.Rate == 0 && cfg.Errors.FailFirst == 0 {
+			if !c.globalAllows(agent.Metadata.Name, "error") {
+				errorCfg = nil
+			} else {
+				copy := *cfg.Errors
+				copy.Rate = 1
+				errorCfg = &copy
+			}
+		}
+		if errorCfg != nil {
+			if err := c.maybeInjectError(ctx, agent.Metadata.Name, errorCfg); err != nil {
+				metrics.RecordChaos(agent.Metadata.Name, metrics.ChaosError)
+				return err
+			}
 		}
 	}
 	// Connection-layer fault (FB-03 slice 5): evaluated last — a low-level test
 	// fixture below the HTTP-status faults above.
-	if cfg.Connection != nil && (cfg.Connection.Rate > 0 || cfg.Connection.FailFirst > 0) {
-		if err := c.maybeInjectConnectionFault(agent.Metadata.Name, cfg.Connection); err != nil {
-			metrics.RecordChaos(agent.Metadata.Name, metrics.ChaosConnection)
-			return err
+	if cfg.Connection != nil && (cfg.Connection.Rate > 0 || cfg.Connection.FailFirst > 0 || (c.hasGlobalPolicy() && cfg.Connection.Mode != "")) {
+		connectionCfg := cfg.Connection
+		if cfg.Connection.Rate == 0 && cfg.Connection.FailFirst == 0 {
+			if !c.globalAllows(agent.Metadata.Name, "connection") {
+				connectionCfg = nil
+			} else {
+				copy := *cfg.Connection
+				copy.Rate = 1
+				connectionCfg = &copy
+			}
+		}
+		if connectionCfg != nil {
+			if err := c.maybeInjectConnectionFault(agent.Metadata.Name, connectionCfg); err != nil {
+				metrics.RecordChaos(agent.Metadata.Name, metrics.ChaosConnection)
+				return err
+			}
 		}
 	}
 	return nil
@@ -216,8 +285,15 @@ func (c *ChaosInjector) After(ctx context.Context, agent *types.AgentDefinition)
 	if cfg == nil || cfg.Latency == nil {
 		return
 	}
+	if !c.globalAllows(agent.Metadata.Name, "latency") {
+		return
+	}
 	metrics.RecordChaos(agent.Metadata.Name, metrics.ChaosLatency)
 	c.sleep(ctx, c.sampleLatency(cfg.Latency))
+}
+
+func hasConfiguredError(cfg *types.ChaosErrorConfig) bool {
+	return cfg != nil && (cfg.StatusCode != 0 || len(cfg.StatusCodes) > 0 || cfg.Timeout || cfg.Message != "")
 }
 
 // chaosFor returns the effective chaos config for an agent, or nil when

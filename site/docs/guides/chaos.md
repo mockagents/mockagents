@@ -96,7 +96,7 @@ the way out.
 ### Server-wide connector defaults
 
 `mockagents start` can supply the lowest-precedence deterministic policy for
-search, rerank, moderation, and VectorMock faults:
+configured agent, search, rerank, moderation, and VectorMock faults:
 
 ```bash
 mockagents start --chaos-rate 0.1 --chaos-seed 42
@@ -111,6 +111,11 @@ fault. Precedence is request force/off, sequence, fixture, operation, service,
 then global. Consequently, an explicit service `rate`—including zero—wins over
 the server default. Response metadata reports inherited decisions as
 `X-Mockagents-Chaos-Source: global-rate`.
+
+For legacy agent chaos, configured latency and otherwise-unrated error or
+connection actions inherit the global rate. An agent error/connection `rate`
+or `fail_first` remains authoritative, and a global rate of zero suppresses
+only inherited actions.
 
 ### MCP and A2A operation overrides
 
