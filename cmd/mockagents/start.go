@@ -180,6 +180,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	defer stopCleanup()
 
 	eng := engine.NewEngine(registry, store, logger)
+	eng.Chaos.SetGlobalPolicy(globalSeed, globalRate)
 
 	// Initialize interaction log storage.
 	logDB := dataPath(".mockagents.db")

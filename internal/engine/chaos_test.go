@@ -56,6 +56,65 @@ func TestChaosLatencyFixed(t *testing.T) {
 	}
 }
 
+func TestGlobalChaosPolicyGatesConfiguredAgentActions(t *testing.T) {
+	zero, one := 0.0, 1.0
+	agent := agentWithChaos(&types.ChaosConfig{
+		Latency:    &types.ChaosLatencyConfig{Distribution: "fixed", MinMs: 25},
+		Errors:     &types.ChaosErrorConfig{StatusCode: http.StatusServiceUnavailable},
+		Connection: &types.ChaosConnectionConfig{Mode: "reset"},
+	})
+
+	off, sleeps, _ := newChaosInjectorForTest(1)
+	off.SetGlobalPolicy(42, &zero)
+	if err := off.Before(context.Background(), agent); err != nil {
+		t.Fatalf("global off injected: %v", err)
+	}
+	off.After(context.Background(), agent)
+	if len(*sleeps) != 0 {
+		t.Fatalf("global off slept: %v", *sleeps)
+	}
+
+	on, sleeps, _ := newChaosInjectorForTest(1)
+	on.SetGlobalPolicy(42, &one)
+	if ce := AsChaosError(on.Before(context.Background(), agent)); ce == nil || ce.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("global on error = %v", ce)
+	}
+	on.After(context.Background(), agent)
+	if len(*sleeps) != 1 || (*sleeps)[0] != 25*time.Millisecond {
+		t.Fatalf("global on sleeps = %v", *sleeps)
+	}
+}
+
+func TestAgentServiceRateOverridesGlobalOff(t *testing.T) {
+	zero := 0.0
+	inj, _, _ := newChaosInjectorForTest(1)
+	inj.SetGlobalPolicy(42, &zero)
+	agent := agentWithChaos(&types.ChaosConfig{Errors: &types.ChaosErrorConfig{Rate: 1, StatusCode: http.StatusTeapot}})
+	if ce := AsChaosError(inj.Before(context.Background(), agent)); ce == nil || ce.StatusCode != http.StatusTeapot {
+		t.Fatalf("service rate did not override global off: %v", ce)
+	}
+}
+
+func TestGlobalAgentDecisionIsSeedStable(t *testing.T) {
+	rate := 0.5
+	agent := agentWithChaos(&types.ChaosConfig{Errors: &types.ChaosErrorConfig{StatusCode: http.StatusServiceUnavailable}})
+	run := func() []bool {
+		inj, _, _ := newChaosInjectorForTest(99)
+		inj.SetGlobalPolicy(8675309, &rate)
+		out := make([]bool, 20)
+		for i := range out {
+			out[i] = AsChaosError(inj.Before(context.Background(), agent)) != nil
+		}
+		return out
+	}
+	first, second := run(), run()
+	for i := range first {
+		if first[i] != second[i] {
+			t.Fatalf("decision %d differs: %v vs %v", i, first, second)
+		}
+	}
+}
+
 func TestChaosLatencyUniformBounds(t *testing.T) {
 	inj, sleeps, _ := newChaosInjectorForTest(42)
 	agent := agentWithChaos(&types.ChaosConfig{
