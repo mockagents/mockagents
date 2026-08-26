@@ -60,7 +60,7 @@
       "properties": {
         "protocol": {
           "type": "string",
-          "enum": ["openai-chat-completions", "anthropic-messages", "google-gemini"],
+          "enum": ["openai-chat-completions", "anthropic-messages", "google-gemini", "ollama-chat"],
           "description": "Wire protocol the agent speaks."
         },
         "model": {
