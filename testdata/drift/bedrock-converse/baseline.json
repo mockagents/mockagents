@@ -1,0 +1,11 @@
+{
+  "version": "mockagents-drift-baseline/v1",
+  "name": "bedrock-converse",
+  "revision": 1,
+  "operation": "bedrock.converse",
+  "adapter": "internal/adapter/bedrock.go",
+  "sdk": "sdk.json",
+  "provider": "provider.json",
+  "mock": "mock.json",
+  "ignore_paths": ["$.metrics.latencyMs"]
+}

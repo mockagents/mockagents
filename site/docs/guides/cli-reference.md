@@ -127,6 +127,7 @@ mockagents start --json-logs --log-level warn
 | `POST`/`GET` | `/v1/messages/batches…` | Anthropic Message Batches |
 | `POST` | `/v1beta/models/{model}:generateContent` | Google Gemini |
 | `POST` | `/api/chat` | Ollama native chat (JSON or default NDJSON stream) |
+| `POST` | `/model/{modelId}/converse` | Amazon Bedrock Converse |
 | `GET` | `/v1/models` | List models |
 
 Plus the management API under `/api/v1/` (health, agents CRUD, logs + SSE
