@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mock Reliability Workbench — Release A Proposal</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="tokens.css">
+<style>
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;font-family:var(--sr-font-sans);color:var(--sr-fg);background:var(--sr-bg);font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:var(--sr-fg);text-decoration:underline;text-underline-offset:2px}
+a:hover{color:var(--sr-fg-muted)}
+.wrap{max-width:880px;margin:0 auto;padding:56px 32px 96px}
+.mono{font-family:var(--sr-font-mono)}
+h1{font-size:26px;font-weight:650;letter-spacing:-.02em;margin:0 0 6px}
+h2{font-size:17px;font-weight:650;letter-spacing:-.01em;margin:44px 0 12px;padding-top:20px;border-top:1px solid var(--sr-border)}
+h3{font-size:14px;font-weight:600;margin:22px 0 8px}
+p{margin:0 0 12px}
+.lede{color:var(--sr-fg-muted);font-size:14.5px;max-width:640px}
+.meta{display:flex;gap:14px;flex-wrap:wrap;margin:18px 0 0;font-size:12px;color:var(--sr-fg-muted)}
+.meta span{background:var(--sr-bg-muted);padding:3px 10px;border-radius:var(--sr-radius-full)}
+table{width:100%;border-collapse:collapse;font-size:13px;margin:12px 0}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--sr-border);vertical-align:top}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--sr-fg-muted);font-weight:500}
+td.mono,.tid{font-family:var(--sr-font-mono);font-size:12px;white-space:nowrap}
+.tag{display:inline-block;font-family:var(--sr-font-mono);font-size:11px;background:var(--sr-bg-muted);padding:1px 7px;border-radius:var(--sr-radius-full);color:var(--sr-fg-muted);white-space:nowrap}
+.tag.b{background:var(--sr-warning-bg);color:var(--sr-warning-fg)}
+.tag.a{background:var(--sr-success-bg);color:var(--sr-success-fg)}
+.note{background:var(--sr-bg-muted);border-radius:var(--sr-radius);padding:12px 16px;font-size:13px;color:var(--sr-fg-muted);margin:14px 0}
+.note strong{color:var(--sr-fg)}
+ol,ul{margin:0 0 12px;padding-left:22px}
+li{margin-bottom:6px}
+.journey{counter-reset:jstep;list-style:none;padding:0;margin:14px 0}
+.journey li{display:flex;gap:14px;padding:10px 0;border-bottom:1px dashed var(--sr-border);margin:0;align-items:baseline}
+.journey li::before{counter-increment:jstep;content:counter(jstep,decimal-leading-zero);font-family:var(--sr-font-mono);font-size:11px;color:var(--sr-fg-muted);flex:0 0 22px}
+.journey .sid{margin-left:auto;flex:0 0 auto}
+.kv{display:grid;grid-template-columns:190px 1fr;gap:6px 18px;font-size:13px;margin:12px 0}
+.kv dt{color:var(--sr-fg-muted)}
+.kv dd{margin:0}
+code{font-family:var(--sr-font-mono);font-size:12px;background:var(--sr-bg-muted);padding:1px 6px;border-radius:4px}
+.states{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;margin:14px 0}
+.state{border:1px solid var(--sr-border);border-radius:var(--sr-radius);padding:10px 14px;font-size:12.5px}
+.state b{display:block;font-family:var(--sr-font-mono);font-size:12px;margin-bottom:3px}
+.state span{color:var(--sr-fg-muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Mock Reliability Workbench</h1>
+<p class="lede">Release A design proposal — information architecture, primary user journey, and two visual directions. Per the epic: styling may change; the safety and data contracts must not.</p>
+<div class="meta"><span>Epic UI-01 · Revision 2</span><span>Release A scope only</span><span>Release B: labelled, out of scope</span><span>2026-09-02</span></div>
+
+<h2>1 · Information architecture</h2>
+<p>Task-oriented navigation, six sections. Mock types are filters within Mocks, not new sidebars. Existing deep links (<code>/agents/{name}</code>, <code>/pipelines/{name}</code>, <code>/logs</code>…) remain viable via redirects.</p>
+<table>
+<thead><tr><th>Section</th><th>Release A contents</th><th>Primary action</th><th>Stories</th></tr></thead>
+<tbody>
+<tr><td><strong>Overview</strong></td><td>Readiness (separate from liveness), first-run checklist, documented starter, recent failed runs, copyable SDK settings. No topology map.</td><td>Connect an SDK / investigate a failure</td><td class="tid">UX-01, UX-02</td></tr>
+<tr><td><strong>Mocks</strong></td><td>Agents + Pipelines inventory (tabs). Future kinds (vector, service fixtures) appear capability-gated, disabled with explanation — never dead buttons.</td><td>Open, author, apply a definition</td><td class="tid">UX-03</td></tr>
+<tr><td><strong>Test Lab</strong></td><td>Active-runtime pipeline runs only. Banner: “Runs against active configuration — not isolated.” Composer/preview/suites are Release B, shown as labelled design concepts, not enabled nav.</td><td>Explicit active run</td><td class="tid">UX-05</td></tr>
+<tr><td><strong>Investigate</strong></td><td>Request/session explorer: metadata-first, safe body reveal, gap states. Match Explain is Release B (proposed API).</td><td>Locate and understand a failure</td><td class="tid">UX-04</td></tr>
+<tr><td><strong>Reports</strong></td><td>Bounded loaded-snapshot exports (JSON + printable HTML): window, completeness, omissions, estimate-vs-measurement labels.</td><td>Export reviewable evidence</td><td class="tid">UX-06</td></tr>
+<tr><td><strong>Administration</strong></td><td>Identity, tenant keys, quotas, audit (admin), health. Exact-name deletion confirmation, one-time key display, role-truthful nav.</td><td>Review and confirm a change</td><td class="tid">UX-07</td></tr>
+</tbody>
+</table>
+
+<h3>Persistent context (always visible, every screen)</h3>
+<dl class="kv">
+<dt>Server identity</dt><dd class="mono">localhost:8080 · engine v0.4.2 · mode: mock</dd>
+<dt>Readiness vs liveness</dt><dd>process-up · ready · not-ready · unreachable · stale (last refresh timestamp always shown)</dd>
+<dt>Tenant / role</dt><dd class="mono">acme-prod · editor (or “local mode — unauthenticated”, an explicit state, not a synthetic viewer)</dd>
+<dt>Revision</dt><dd>Resource-specific ETag/hash on the resource header. No global server revision exists — the shell shows “revision: per-resource”, never a manufactured global number.</dd>
+<dt>Execution mode</dt><dd>“Active configuration” badge wherever a run can be triggered. Never “safe”, “isolated”, or “no egress”.</dd>
+</dl>
+
+<h3>Object model</h3>
+<p><span class="mono">Server → Tenant → {Agent, Pipeline} → Revision (ETag) → Run (session_id, nodes[], latency ns) → Log record (session-grouped) → Export snapshot</span>. Runs reference the pipeline by name, not a pinned revision — the UI says so rather than implying pinning.</p>
+
+<h3>Command palette (⌘K)</h3>
+<p>Navigate sections, open a mock by name, jump to a session ID, copy SDK base URL, toggle theme. Palette actions are the same actions as the visible UI — it never exposes anything role-gated that the chrome hides, and every action is reachable without it (it is an accelerator, not the only path).</p>
+
+<h2>2 · Primary user journey (Release A — “safe first success”)</h2>
+<ol class="journey">
+<li>Connect to existing local server → shell shows identity, readiness, last refresh <span class="sid tag">UX-02</span></li>
+<li>Overview surfaces the documented starter agent + copyable SDK settings <span class="sid tag">UX-02</span></li>
+<li>Open starter agent in Mocks → full server definition loads (never regenerated from the summary type) <span class="sid tag">UX-03</span></li>
+<li>Edit a scenario response — linked form + YAML views of one draft <span class="sid tag">UX-03</span></li>
+<li>Validate → schema errors are line-anchored and actionable <span class="sid tag">UX-03</span></li>
+<li>Review diff (before/after), explicit Apply with If-Match precondition <span class="sid tag">UX-03</span></li>
+<li>Receipt states clearly: <b>persisted to disk</b> vs <b>runtime-only</b> <span class="sid tag">UX-03</span></li>
+<li>Test Lab → preconfigured pipeline → “Run against active configuration” with input + fresh session ID <span class="sid tag">UX-05</span></li>
+<li>Inspect node results: <code>nodes[]</code> with <code>node_id</code>, <code>agent_name</code>, <code>response</code> (nullable), <code>latency</code> converted from nanoseconds; parallel order labelled “definition order, not chronology” <span class="sid tag">UX-05</span></li>
+<li>422 partial failure → inspect optional <code>result</code> + <code>error</code>; failed node highlighted <span class="sid tag">UX-05</span></li>
+<li>Investigate → session-grouped provider logs where available (no fabricated run↔log links) <span class="sid tag">UX-04</span></li>
+<li>Export bounded run evidence — snapshot scope, completeness, omissions stated <span class="sid tag">UX-06</span></li>
+</ol>
+<p><strong>Empty-install variant:</strong> onboarding checklist explains pipeline creation is not in Release A and links CLI/YAML setup guidance. The Run button never appears dead; it appears only when a pipeline exists.</p>
+
+<h3>Non-happy paths designed alongside (not after)</h3>
+<div class="states">
+<div class="state"><b>invalid-schema</b><span>line-anchored errors; Apply disabled with reason; draft kept</span></div>
+<div class="state"><b>viewer-denied</b><span>403: editing visibly locked with role explanation — not broken, not hidden</span></div>
+<div class="state"><b>conflict (stale edit)</b><span>ETag mismatch: both drafts preserved; “reload current” vs reviewed overwrite; nothing silently discarded</span></div>
+<div class="state"><b>disconnected</b><span>unreachable ≠ empty catalog; reads frozen with staleness stamp; no auto-retry of stateful runs</span></div>
+<div class="state"><b>runtime-only save</b><span>receipt distinguishes durable file write from in-memory apply; file failure ≠ durable save</span></div>
+<div class="state"><b>missing fixture</b><span>run blocked with named missing dependency and setup guidance</span></div>
+<div class="state"><b>partial failure (422)</b><span>completed nodes shown as evidence; failed node error; absent nodes “unknown”, not zero</span></div>
+<div class="state"><b>empty log store</b><span>“no records in window” with window shown — distinct from unreachable and unauthorized</span></div>
+<div class="state"><b>unknown outcome</b><span>connection lost mid-run: outcome unknown; manual re-check only, duplicate submission disabled</span></div>
+<div class="state"><b>unsupported version</b><span>GUI/backend mismatch: safe reads allowed, unsupported writes disabled, drafts exportable</span></div>
+</div>
+
+<h2>3 · Two visual directions</h2>
+<p>Both are built on the binding design-system tokens (same palette, type stack, status colors) and both are dense-and-calm per the brief — they differ in <em>structure, density, and how trust-context is carried</em>. Each is a real rendered screen of the same content: the Release A Overview (UX-02) with readiness, starter, empty-pipeline guidance, and recent failures.</p>
+<table>
+<thead><tr><th></th><th>Direction A — “Instrument”</th><th>Direction B — “Worksheet”</th></tr></thead>
+<tbody>
+<tr><td class="mono">context carrier</td><td>Full-width system status strip pinned above content: server, readiness, tenant/role, mode, freshness as instrument cells</td><td>Context woven into a page-level “connection receipt” card; slim topbar</td></tr>
+<tr><td class="mono">density</td><td>Compact 13px base, 32px rows; tables dominate; maximal rows per viewport</td><td>14px base, 40px rows; sectioned cards with generous gutters; scannable groups</td></tr>
+<tr><td class="mono">shape language</td><td>Squared (4px radii), hairline borders, flat; mono-forward labels</td><td>Softer (8–10px radii), subtle elevation on interactive surfaces only</td></tr>
+<tr><td class="mono">status language</td><td>Coded chips: <code>READY</code> / <code>NOT-READY</code> — terse, uppercase mono + dot + text</td><td>Sentence-case badges with icon + text (“Ready · checked 4s ago”)</td></tr>
+<tr><td class="mono">best for</td><td>Operators/developers living in the tool; maximum scanning throughput</td><td>Mixed personas incl. reviewers; progressive disclosure reads more naturally</td></tr>
+<tr><td class="mono">risk</td><td>Can feel severe to occasional reviewers</td><td>Slightly fewer rows per screen for power users</td></tr>
+</tbody>
+</table>
+<p><strong>Recommendation: Direction B (“Worksheet”), with Direction A's instrument strip adopted for the persistent context header.</strong> The brief spans five personas with progressive disclosure; B carries narrative states (receipts, completeness banners, guidance) more naturally, while A's strongest element — the always-on truth strip — transplants cleanly.</p>
+
+<h2>4 · Release B — labelled concepts only</h2>
+<p>Match Explain, isolated request lab, failure-to-regression, chaos matrix <span class="tag b">Release B · proposed APIs</span> will be designed as clearly watermarked prototypes in a separate file set, never mixed into Release A navigation. Historical-evidence vs current-configuration re-evaluation will be visually distinct there.</p>
+
+<h2>5 · Unresolved decisions (flagged, not designed-over)</h2>
+<ul>
+<li>Agent conditional-write route: additive <code>If-Match</code> route vs versioned transition — affects the conflict dialog's copy about legacy unconditional writers (epic §8.2). <span class="tag">product</span></li>
+<li>Draft persistence: browser-memory only for Release A (epic default) or durable drafts with retention policy. Designs assume memory + explicit draft export. <span class="tag">product</span></li>
+<li>Whether Overview shows cost summary at all in Release A, given “estimated upstream cost for captured requests” labelling burden. Designs currently omit it from Overview. <span class="tag">product</span></li>
+<li>Log recovery: without a stable cursor (NEW), reconnect shows an explicit unresolved-gap marker; if the cursor API is approved, the gap becomes backfillable. Both states designed. <span class="tag">api</span></li>
+</ul>
+
+<div class="note"><strong>Next step:</strong> approve a visual direction (or a hybrid). I'll then produce the detailed Release A screens — all states — plus components, tokens, interaction specs, the clickable prototype, and the Claude Code handoff package.</div>
+</div>
+</body>
+</html>

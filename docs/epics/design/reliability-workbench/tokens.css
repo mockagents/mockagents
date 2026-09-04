@@ -1,0 +1,93 @@
+/* ============================================================
+   SentinelRAG Design Tokens
+   Source: apps/frontend/src/app/globals.css (HSL → reference)
+   Surface: shadcn/ui on Tailwind 3.4 + Radix primitives
+   ============================================================ */
+
+:root {
+  /* ---------- Color · Surfaces ---------- */
+  --sr-bg:            hsl(0 0% 100%);
+  --sr-bg-muted:      hsl(210 40% 96.1%);
+  --sr-bg-elevated:   hsl(0 0% 100%);
+
+  /* ---------- Color · Foreground ---------- */
+  --sr-fg:            hsl(222.2 47.4% 11.2%);  /* deep navy slate */
+  --sr-fg-muted:      hsl(215.4 16.3% 46.9%);
+  --sr-fg-on-primary: hsl(210 40% 98%);
+
+  /* ---------- Color · Brand / Primary ---------- */
+  --sr-primary:       hsl(222.2 47.4% 11.2%);
+  --sr-primary-90:    hsl(222.2 47.4% 18%);
+  --sr-primary-press: hsl(222.2 47.4% 8%);
+
+  /* ---------- Color · Lines ---------- */
+  --sr-border:        hsl(214.3 31.8% 91.4%);
+  --sr-input:         hsl(214.3 31.8% 91.4%);
+  --sr-ring:          hsl(222.2 84% 4.9%);
+
+  /* ---------- Color · Semantic ---------- */
+  --sr-success-bg:    hsl(160 84% 39% / .15);
+  --sr-success-fg:    hsl(160 84% 28%);
+  --sr-warning-bg:    hsl(38 92% 50% / .15);
+  --sr-warning-fg:    hsl(32 81% 35%);
+  --sr-danger-bg:     hsl(0 84.2% 60.2% / .15);
+  --sr-danger-fg:     hsl(0 72% 45%);
+  --sr-info-bg:       hsl(217 91% 60% / .12);
+  --sr-info-fg:       hsl(217 91% 38%);
+
+  /* ---------- Type ---------- */
+  --sr-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter,
+                  Helvetica, Arial, sans-serif;
+  --sr-font-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo,
+                  "Cascadia Mono", Consolas, monospace;
+
+  /* Type scale (px / line-height) */
+  --sr-text-xs:   12px / 16px;
+  --sr-text-sm:   14px / 20px;
+  --sr-text-base: 16px / 24px;
+  --sr-text-lg:   18px / 28px;
+  --sr-text-xl:   20px / 28px;
+  --sr-text-2xl:  24px / 32px;
+  --sr-text-3xl:  30px / 36px;
+
+  /* ---------- Spacing (Tailwind 4-px scale) ---------- */
+  --sr-space-1: 4px;
+  --sr-space-2: 8px;
+  --sr-space-3: 12px;
+  --sr-space-4: 16px;
+  --sr-space-5: 20px;
+  --sr-space-6: 24px;
+  --sr-space-8: 32px;
+
+  /* ---------- Radii ---------- */
+  --sr-radius-sm: 4px;
+  --sr-radius:    8px;   /* 0.5rem — base */
+  --sr-radius-md: 8px;
+  --sr-radius-lg: 12px;
+  --sr-radius-full: 9999px;
+
+  /* ---------- Elevation ---------- */
+  --sr-shadow-sm: 0 1px 2px 0 rgb(0 0 0 / .05);
+  --sr-shadow:    0 1px 3px 0 rgb(0 0 0 / .08), 0 1px 2px -1px rgb(0 0 0 / .06);
+  --sr-shadow-md: 0 4px 6px -1px rgb(0 0 0 / .08), 0 2px 4px -2px rgb(0 0 0 / .06);
+
+  /* ---------- Layout ---------- */
+  --sr-sidebar-w: 240px;
+  --sr-topbar-h:  56px;
+  --sr-control-h: 36px;     /* button / input default */
+  --sr-control-h-sm: 32px;
+}
+
+/* Dark mirror — taken from .dark in globals.css */
+[data-theme="dark"] {
+  --sr-bg:            hsl(222.2 47.4% 7%);
+  --sr-bg-muted:      hsl(217.2 32.6% 17.5%);
+  --sr-bg-elevated:   hsl(222.2 47.4% 9%);
+  --sr-fg:            hsl(210 40% 98%);
+  --sr-fg-muted:      hsl(215 20.2% 65.1%);
+  --sr-primary:       hsl(210 40% 98%);
+  --sr-fg-on-primary: hsl(222.2 47.4% 11.2%);
+  --sr-border:        hsl(217.2 32.6% 22%);
+  --sr-input:         hsl(217.2 32.6% 22%);
+  --sr-ring:          hsl(212.7 26.8% 83.9%);
+}

@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>Mock Reliability Workbench — Release A clickable prototype</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="workbench.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>:root{--sr-font-mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace}</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="wb_data.jsx"></script>
+<script type="text/babel" src="wb_shell.jsx"></script>
+<script type="text/babel" src="wb_mocks.jsx"></script>
+<script type="text/babel" src="wb_lab.jsx"></script>
+<script type="text/babel" src="wb_admin.jsx"></script>
+<script type="text/babel">
+const { useState } = React;
+const h = React.createElement;
+function App() {
+  const [demo, setDemo] = useState({ role: "editor", conn: "ready", install: "seeded", theme: "dark" });
+  const [route, setRoute] = useState({ view: "overview", param: null });
+  function go(view, param) { setRoute({ view, param: param || null }); const c = document.querySelector(".content"); if (c) c.scrollTop = 0; }
+  const V = window;
+  const views = {
+    overview: () => h(V.WBOverview, { demo, go }),
+    mocks: () => h(V.WBMocks, { demo, go }),
+    editor: () => h(V.WBEditor, { demo, go }),
+    lab: () => h(V.WBLab, { demo, go }),
+    investigate: () => h(V.WBInvestigate, { demo, go }),
+    reports: () => h(V.WBReports, { demo, go }),
+    admin: () => h(V.WBAdmin, { demo, go }),
+  };
+  return h(V.WBShell, { demo, setDemo, route, go }, (views[route.view] || views.overview)());
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+</script>
+</body>
+</html>

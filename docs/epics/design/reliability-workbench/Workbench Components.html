@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>Workbench — Components & Tokens (Release A)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="workbench.css">
+<style>
+body{background:var(--sr-bg)}
+.wrap{max-width:920px;margin:0 auto;padding:48px 32px 96px}
+h1{font-size:24px;font-weight:650;letter-spacing:-.02em;margin:0 0 4px}
+h2{font-size:15px;font-weight:650;margin:40px 0 4px;padding-top:18px;border-top:1px solid var(--sr-border)}
+.spec{font-size:12px;color:var(--sr-fg-muted);margin:0 0 14px}
+.spec code{font-family:var(--sr-font-mono);font-size:11px;background:var(--sr-bg-muted);padding:1px 5px;border-radius:4px}
+.demo{background:var(--sr-bg-muted);border:1px solid var(--sr-border);border-radius:10px;padding:18px;display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.demo.col{flex-direction:column;align-items:stretch}
+.swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.sw{border:1px solid var(--sr-border);border-radius:8px;overflow:hidden;font-size:11px}
+.sw .c{height:44px}
+.sw .m{padding:6px 9px;font-family:var(--sr-font-mono);font-size:10px}
+.sw .m b{display:block;font-family:var(--sr-font-sans);font-size:11px;margin-bottom:1px}
+.contrast{font-size:10px;color:var(--sr-fg-muted)}
+table.spec-t{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0}
+.spec-t th,.spec-t td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--sr-border)}
+.spec-t th{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--sr-fg-muted)}
+.spec-t td.mono{font-family:var(--sr-font-mono);font-size:11px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Components & tokens</h1>
+<p class="spec">Release A component inventory in the approved hybrid direction (Worksheet + instrument strip), dark default. Every component below exists as working CSS in <code>workbench.css</code> and is exercised in the clickable prototype. Status is never conveyed by color alone — every badge carries text.</p>
+
+<h2>Color tokens & contrast</h2>
+<p class="spec">Base tokens are the binding design-system set. The four dark-mode semantic foregrounds are <b>proposed additions</b> (flagged in handoff §4): the light-canonical semantic fg values fail 4.5:1 on dark surfaces. Targets: body text ≥ 4.5:1, large/bold labels ≥ 3:1, focus ring visible on both themes.</p>
+<div class="swatches">
+<div class="sw"><div class="c" style="background:var(--sr-bg)"></div><div class="m"><b>bg</b>--sr-bg</div></div>
+<div class="sw"><div class="c" style="background:var(--sr-bg-muted)"></div><div class="m"><b>bg-muted</b>--sr-bg-muted</div></div>
+<div class="sw"><div class="c" style="background:var(--sr-fg)"></div><div class="m"><b>fg</b>--sr-fg <span class="contrast">15.9:1 on bg ✓</span></div></div>
+<div class="sw"><div class="c" style="background:var(--sr-fg-muted)"></div><div class="m"><b>fg-muted</b>--sr-fg-muted <span class="contrast">6.8:1 ✓</span></div></div>
+<div class="sw"><div class="c" style="background:var(--sr-success-fg)"></div><div class="m"><b>success-fg (dark ⊕)</b>proposed <span class="contrast">≥4.6:1 ✓</span></div></div>
+<div class="sw"><div class="c" style="background:var(--sr-warning-fg)"></div><div class="m"><b>warning-fg (dark ⊕)</b>proposed <span class="contrast">≥6.1:1 ✓</span></div></div>
+<div class="sw"><div class="c" style="background:var(--sr-danger-fg)"></div><div class="m"><b>danger-fg (dark ⊕)</b>proposed <span class="contrast">≥5.2:1 ✓</span></div></div>
+<div class="sw"><div class="c" style="background:var(--sr-info-fg)"></div><div class="m"><b>info-fg (dark ⊕)</b>proposed <span class="contrast">≥5.4:1 ✓</span></div></div>
+</div>
+
+<h2>Type, spacing, density, motion</h2>
+<table class="spec-t">
+<thead><tr><th>role</th><th>value</th><th>notes</th></tr></thead>
+<tbody>
+<tr><td>Body / controls</td><td class="mono">14px / 1.55 · --sr-font-sans</td><td>worksheet density; tables 12.5px</td></tr>
+<tr><td>Instrument strip, ids, revisions</td><td class="mono">11px · --sr-font-mono</td><td>all machine identifiers are mono</td></tr>
+<tr><td>Page title</td><td class="mono">20px / 650 / -0.02em</td><td>one per screen</td></tr>
+<tr><td>Spacing</td><td class="mono">--sr-space-1…8 (4px scale)</td><td>card pad 16, row pad 8–11</td></tr>
+<tr><td>Radii</td><td class="mono">cards 10px · controls 8px · chips 999px</td><td>hybrid: softer than Direction A</td></tr>
+<tr><td>Elevation</td><td class="mono">--sr-shadow-sm on interactive only</td><td>dark theme relies on borders, not shadows</td></tr>
+<tr><td>Focus</td><td class="mono">2px --sr-ring, offset 2px</td><td>:focus-visible everywhere, both themes</td></tr>
+<tr><td>Motion</td><td class="mono">pulse 2.2s (live dots) only</td><td>prefers-reduced-motion collapses all animation</td></tr>
+</tbody>
+</table>
+
+<h2>Status badge</h2>
+<p class="spec">Dot + text, never color-only. States: ok / warn / bad / info / neutral / outline (unknown). “Unknown” uses the outline variant with explicit text — never rendered as zero or empty.</p>
+<div class="demo">
+<span class="badge ok"><span class="dot ok"></span>200 complete</span>
+<span class="badge warn"><span class="dot warn"></span>422 partial</span>
+<span class="badge bad"><span class="dot bad"></span>failed · null response</span>
+<span class="badge info"><span class="dot info"></span>live</span>
+<span class="badge neutral"><span class="dot info"></span>draft</span>
+<span class="badge outline">not executed · unknown</span>
+<span class="mode-pill">runs against active configuration</span>
+</div>
+
+<h2>Instrument strip (persistent context)</h2>
+<p class="spec">Carries server / liveness / readiness / tenant+role / exec mode / revision / engine / freshness on every screen. <code>role="status"</code>; readiness and liveness are separate cells with distinct values (PROCESS-UP vs READY / NOT-READY / UNREACHABLE / UNKNOWN). Horizontal scroll at narrow widths — cells never drop.</p>
+<div class="demo col" style="padding:0;overflow:hidden">
+<div class="strip"><div class="cell"><span class="l">server</span><span class="v">localhost:8080</span></div><div class="cell"><span class="l">liveness</span><span class="v ok"><span class="dot ok"></span>PROCESS-UP</span></div><div class="cell"><span class="l">readiness</span><span class="v warn"><span class="dot warn"></span>NOT-READY</span></div><div class="cell"><span class="l">tenant / role</span><span class="v">acme-prod · viewer</span></div><div class="cell mode"><span class="l">exec mode</span><span class="v warn">ACTIVE CONFIG</span></div><div class="cell grow"><span class="l">last refresh</span><span class="v">14:32:04Z · 4s ago</span></div></div>
+</div>
+
+<h2>Banner (data-completeness / state)</h2>
+<p class="spec">Variants: info / ok / warn / bad. Used for: gap notices, runtime-only receipts, unreachable freezes, role explanations, active-runtime warnings. Always starts with a bold plain-language claim, then the consequence, then the action. <code>role="alert"</code> for interruptions, <code>role="status"</code> otherwise.</p>
+<div class="demo col">
+<div class="banner warn"><div><b>Feed disconnected at 14:32:04Z.</b> Rows below are the loaded snapshot. Unresolved ranges appear as gaps — never silently spliced.</div></div>
+<div class="banner bad"><div><b>Active in runtime, but NOT persisted to disk.</b> The file write failed. The change is live until restart — do not assume durability.</div></div>
+</div>
+
+<h2>Resource table</h2>
+<p class="spec">Sticky header, 8px row padding, mono for ids/revisions, right-aligned numerics, row selection with inset accent, gap rows for unresolved log ranges. Virtualize beyond 1,000 rows (server paging beyond 10,000 — epic §10).</p>
+<div class="demo col" style="padding:0;overflow:hidden">
+<table class="tbl"><thead><tr><th>session</th><th>status</th><th style="text-align:right">latency</th></tr></thead><tbody>
+<tr class="sel"><td class="mono">sess_d4e5f6</td><td><span class="badge warn"><span class="dot warn"></span>422</span></td><td class="num">222.3 ms</td></tr>
+<tr class="gap-row"><td colspan="3">⚠ unresolved gap · 13:58 – 14:20 · bounded recovery incomplete</td></tr>
+<tr><td class="mono">sess_8e07aa</td><td><span class="badge bad"><span class="dot bad"></span>503</span></td><td class="num">201.4 ms</td></tr>
+</tbody></table>
+</div>
+
+<h2>Code editor & diff view</h2>
+<p class="spec">Line-numbered textarea (error lines flagged in the gutter + inline message); diff renders del/add with +/− text markers so color is not the only signal. Both bounded and lazy — bodies over 64 KB show the truncation notice instead of rendering.</p>
+<div class="demo col">
+<div class="diff"><div class="dl ctx"><span class="dn">22</span><span class="dc">      response:</span></div><div class="dl del"><span class="dn">23</span><span class="dc">  content: "Happy to check that order for you."</span></div><div class="dl add"><span class="dn">23</span><span class="dc">  content: "Happy to check on that order right away."</span></div></div>
+</div>
+
+<h2>Confirmation dialog (destructive)</h2>
+<p class="spec">Impact summary → irreversible consequences → exact-name entry gates the destructive button. Focus trapped; Esc cancels; destructive button is the only .danger element on screen. Never auto-focused on the destructive action.</p>
+
+<h2>Receipt line / save receipt</h2>
+<p class="spec">Post-apply state card: new revision, runtime state, file state, audit ref. Two variants: persisted (ok) and runtime-only (warn). Appears only after server confirmation — no optimistic "saved" toast exists in this system.</p>
+
+<h2>Empty / error state matrix</h2>
+<p class="spec">One component, five mandatory variants — never a shared generic empty screen:</p>
+<table class="spec-t">
+<thead><tr><th>state</th><th>copy pattern</th><th>distinguishing element</th></tr></thead>
+<tbody>
+<tr><td>offline / unreachable</td><td>"Unreachable — showing data loaded at T"</td><td>red banner + frozen timestamp + retry (manual)</td></tr>
+<tr><td>not-ready</td><td>"Process up but not ready: {cause}"</td><td>warn banner + cause + fix action</td></tr>
+<tr><td>truly empty</td><td>"No records in this window (window shown)"</td><td>dashed border + window label + next step</td></tr>
+<tr><td>unauthorized</td><td>"Requires the {role} role"</td><td>info banner naming the floor; no empty list</td></tr>
+<tr><td>unsupported</td><td>"Not enabled on this server version"</td><td>capability-gated tag; reads allowed, writes disabled</td></tr>
+</tbody>
+</table>
+
+<h2>Keyboard & focus order</h2>
+<p class="spec">⌘K palette (accelerator only, never sole path) → sidebar nav (arrow keys) → instrument strip (readable, not focusable) → page content in DOM order. Tables: row focus with arrow keys, Enter opens inspector. Dialogs trap focus; conflict card is <code>role="alertdialog"</code>. All drag interactions (React Flow) retain list/table alternatives per epic §10 — the pipeline node list in Test Lab is that alternative.</p>
+</div>
+</body>
+</html>
