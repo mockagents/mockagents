@@ -12,7 +12,7 @@ every page is server-rendered on demand against the current running server.
 
 ## Client islands
 
-Eight components carry the interactive surface; everything else is a server
+Nine components carry the interactive surface; everything else is a server
 component:
 
 | Component | Route | Responsibility |
@@ -25,8 +25,24 @@ component:
 | `PipelineEditor` | `/pipelines/[name]/edit` | React Flow DAG editing |
 | `AgentEditor` + `GuidedForm` | `/agents/[name]/edit` | Form/YAML tabs, diff preview, conditional apply |
 | `RunPanel` | `/pipelines/[name]` | Explicit active-runtime pipeline execution |
+| `CopyField` | `/overview` | Copyable SDK settings |
+| `ReportExport` | `/reports` | Evidence export, incl. the included-data review |
+| `DangerConfirm` | `/admin/*`, `/account` | Impact summary + exact-name gate for irreversible actions |
 
 ## Read surfaces
+
+- **Overview** (`/overview`) — UX-02. Liveness and readiness are verified
+  *separately* (`/api/v1/health` and `/api/v1/ready`), because a server that is
+  up but cannot serve is a different problem from one that is down. Carries the
+  **instrument strip**: server, liveness, readiness, tenant/role, exec mode,
+  configuration revision, engine version and last refresh — every cell real, and
+  "unknown" where a value cannot be established rather than a placeholder.
+
+  Nothing on the page is inferred from an empty list. A catalog that could not
+  be *read* is reported as unknown, never as an empty install; readiness while
+  unreachable is unknown, never false; an empty pipeline inventory explains that
+  pipeline creation is out of scope for Release A instead of offering a dead Run
+  button. Also carries the first-run checklist and copyable SDK settings.
 
 - **Agent catalog** (`/`) — cards for every loaded agent with model, protocol,
   scenario/tool counts and tags. Search and protocol filter run client-side over
@@ -45,11 +61,26 @@ component:
   when pricing is configured — per-row cost in USD. **Live mode** is backed by a
   real SSE stream at `GET /api/v1/logs/stream` through a same-origin proxy, with
   capped-exponential reconnect.
-- **Cost estimates** (`/costs`) — the `/api/v1/costs` aggregate: total requests,
-  prompt/completion tokens, USD, plus by-model and by-agent breakdowns. These are
-  *estimated upstream cost for captured requests*, not measured spend.
+- **Cost estimates** (`/costs`) — the `/api/v1/costs` aggregate: requests
+  scanned, prompt/completion tokens, USD, plus by-model and by-agent breakdowns.
+  These are *estimated upstream cost for captured requests*, not measured spend
+  and not verified savings. The endpoint aggregates over at most a fixed number
+  of the most recent rows and reports no truncation flag, so a scan that comes
+  back at its cap is labelled a possible partial sum. A request whose model could
+  not be identified reads as **unknown**, never `$0.00`.
+- **Reports** (`/reports`) — exports the interactions already loaded in the
+  console as JSON or a self-contained printable document (UX-06). Every export
+  carries its window, source, schema version and an explicit omissions list, and
+  declares itself a bounded local snapshot — it is not server-attested and does
+  not prove what the server retained. Raw request/response bodies are excluded by
+  default; including them requires ticking the option **and** acknowledging a
+  review of exactly what would be embedded, because this console applies no
+  redaction. Captured bodies are rendered as text in the printable document,
+  never as markup.
 - **Audit log** (`/audit`) — `/api/v1/audit` with categorized badges and
-  structured detail rendering. Requires the admin role.
+  structured detail rendering. Requires the admin role. Filters cover the twelve
+  event kinds this server emits; an unrecognized kind is still filterable and
+  still rendered, so a newer server's events stay reachable.
 
 ## Authoring surfaces
 
@@ -119,13 +150,25 @@ component:
   When `MOCKAGENTS_SSO_ENABLED=1` the page also offers **Sign in with SSO**,
   linking to the backend's `/auth/login` OIDC start. SSO needs the API and GUI to
   share an origin so the backend's session cookie is readable.
-- **Tenants admin** (`/admin/tenants`) — list, create and delete tenants
-  (platform role).
+- **Tenants admin** (`/admin/tenants`) — list, create and delete tenants. The
+  tenant *collection* is **platform**-gated, not admin-gated: a tenant admin
+  manages its own keys but never sees this list, and the page says so instead of
+  offering a link that 403s. Deletion opens a confirmation naming how many keys
+  it revokes, what survives it (agent definitions on disk) and what does not,
+  and it stays disabled until the tenant name is typed **exactly**.
 - **API keys admin** (`/admin/tenants/[id]`) — list, mint and delete keys, plus
-  inline role change and an inline **Rotate** button that regenerates a key's
-  secret in place without changing its id. Newly minted and rotated keys show
-  their plaintext exactly once.
-- **Account** (`/account`) — self-service rotate and burn for your own key.
+  inline role change and **Rotate**, which regenerates a key's secret in place
+  without changing its id. Newly minted and rotated keys show their plaintext
+  exactly once, delivered through a single-read server-side flash so the secret
+  never reaches the URL. Delete, rotate and rotate-all each confirm first with
+  their own impact summary; delete and rotate-all also require typing the exact
+  name. A **platform** credential additionally gets the quota-override form
+  (`PUT /api/v1/tenants/{id}/quota`) — write-only, because the server exposes no
+  per-tenant quota read and pre-filling it would show the wrong tenant's numbers.
+- **Account** (`/account`) — self-service rotate and burn for your own key, both
+  behind a confirmation, plus your own quota and month-to-date spend from
+  `GET /api/v1/quota` (any authenticated role). A quota that cannot be read
+  reports **unknown**, not "unlimited".
 - **Logout** — clears the session cookies and redirects to `/login`.
 
 ## Header

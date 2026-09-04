@@ -6,15 +6,26 @@ import {
   APIError,
   createTenant,
   deleteTenant,
+  listAPIKeys,
   listTenants,
   Tenant,
 } from "@/lib/api";
 import { getAuthStatus } from "@/lib/auth";
 import { Icon } from "@/lib/icons";
 
+import { DangerConfirm } from "../DangerConfirm";
+
 type PageProps = {
   searchParams: Promise<{ error?: string; created?: string }>;
 };
+
+/** Impact copy for a key count that may be unknown. "0 keys" and "we could not
+ * read the keys" are different facts and only one of them is safe to act on. */
+function describeKeys(count: number | null): string {
+  if (count === null) return "revokes every API key it owns (the count could not be read — unknown, not zero)";
+  if (count === 0) return "revokes its API keys (it currently has none)";
+  return `revokes its ${count} API key${count === 1 ? "" : "s"} immediately`;
+}
 
 export default async function TenantsAdminPage({ searchParams }: PageProps) {
   const { error, created } = await searchParams;
@@ -45,12 +56,36 @@ export default async function TenantsAdminPage({ searchParams }: PageProps) {
       <div>
         <h1 className="page-title">Tenants</h1>
         <div className="banner banner-warn">
-          Your API key is valid but cannot list tenants. This page requires an
-          admin-role key. <Link href="/login">Switch keys</Link>
+          {/* UX-07: name the actual floor. The tenant collection is
+              platform-gated (route_authz.go), NOT admin-gated — a tenant admin
+              manages its own keys and never sees this list. Saying "admin" here
+              sent admins off to hunt for a broken permission. */}
+          <strong>This page requires the platform role. </strong>
+          Your credential is valid, but listing tenants is a cross-tenant
+          operator action and no tenant-scoped role has it. Platform keys are
+          minted only by the server&apos;s bootstrap path — the management API
+          refuses to assign that role, so it cannot be granted from here.{" "}
+          <Link href="/login">Switch keys</Link>
         </div>
       </div>
     );
   }
+
+  // Impact summaries need the key count per tenant. Read them alongside the
+  // list: a confirmation that cannot say what it destroys is not a
+  // confirmation. A tenant whose keys cannot be read reports "unknown" rather
+  // than a reassuring zero.
+  const keyCounts = new Map<string, number | null>();
+  await Promise.all(
+    tenants.map(async (t) => {
+      try {
+        const keys = await listAPIKeys(t.id);
+        keyCounts.set(t.id, keys === null ? null : keys.length);
+      } catch {
+        keyCounts.set(t.id, null);
+      }
+    }),
+  );
 
   async function createAction(formData: FormData) {
     "use server";
@@ -154,17 +189,30 @@ export default async function TenantsAdminPage({ searchParams }: PageProps) {
                 </span>
               </Link>
               <span className="muted txt-xs nowrap">{t.created_at}</span>
-              <form action={deleteAction} className="inline">
-                <input type="hidden" name="id" value={t.id} />
-                <button
-                  type="submit"
-                  className="btn btn-ghost btn-icon btn-xs"
-                  title="Delete tenant (cascades to its keys)"
-                  style={{ color: "var(--sr-danger-fg)" }}
-                >
-                  <Icon name="trash" size={14} />
-                </button>
-              </form>
+              <DangerConfirm
+                action={deleteAction}
+                fields={{ id: t.id }}
+                triggerLabel={<Icon name="trash" size={14} />}
+                triggerTitle={`Delete tenant ${t.name}`}
+                triggerClassName="btn btn-ghost btn-icon btn-xs danger-trigger"
+                title={`Delete tenant ${t.name}?`}
+                impact={
+                  <>
+                    This deletes the tenant record for <code>{t.id}</code> and{" "}
+                    {describeKeys(keyCounts.get(t.id) ?? null)}. There is no soft-delete
+                    and no undo.
+                  </>
+                }
+                consequences={[
+                  "Every API key in this tenant stops working immediately — any client still holding one fails on its next request.",
+                  "Audit entries that reference this tenant are left pointing at a tenant that no longer exists.",
+                  "Agent and pipeline definitions on disk are NOT deleted; they stay loaded and keep serving.",
+                  "Recreating a tenant with the same name produces a different id, so old keys cannot be restored.",
+                ]}
+                confirmPhrase={t.name}
+                confirmPhraseLabel="Type the exact tenant name to confirm"
+                confirmLabel="Delete tenant"
+              />
             </div>
           ))
         )}

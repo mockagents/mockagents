@@ -83,13 +83,18 @@
   --sr-input:         hsl(217.2 32.6% 22%);
   --sr-ring:          hsl(212.7 26.8% 83.9%);
   --sr-success-bg:    hsl(160 84% 39% / .18);
-  /* The dark theme previously inherited the LIGHT success foreground, so a
-     dark green sat on a dark tint at ~3.1:1 — a failure the smoke suite never
-     caught because it only exercised the light theme. Light green on dark
-     measures ~10:1. (Dark-theme coverage added alongside this.) */
-  --sr-success-fg:    hsl(160 84% 65%);
-  --sr-warning-bg:    hsl(38 92% 50% / .18);
-  --sr-danger-bg:     hsl(0 84.2% 60.2% / .2);
+  /* Dark semantic foregrounds and backgrounds, from the approved design
+     handoff §4 ("light-canonical values fail 4.5:1 on dark surfaces — same
+     hues, luminance only"). The dark theme previously inherited the LIGHT
+     values, so a dark green sat on a dark tint at ~3.1:1; the smoke suite never
+     caught it because it only exercised the light theme, which is why the
+     accessibility sweep now runs both. Verified by that sweep. */
+  --sr-success-fg:    hsl(160 70% 55%);
+  --sr-warning-fg:    hsl(38 92% 62%);
+  --sr-danger-fg:     hsl(0 90% 70%);
+  --sr-info-fg:       hsl(217 91% 70%);
+  --sr-warning-bg:    hsl(38 92% 50% / .16);
+  --sr-danger-bg:     hsl(0 84% 60% / .18);
   --sr-info-bg:       hsl(217 91% 60% / .16);
 }
 
@@ -569,3 +574,175 @@ form.inline select { background: var(--sr-bg); border: 1px solid var(--sr-input)
   content: ""; flex: 1; height: 1px; background: var(--sr-border);
 }
 .login-sso-btn { width: 100%; justify-content: center; }
+
+/* ============================================================
+   5. UX-02 — instrument strip and overview
+   Ported from the approved design's workbench.css. Values are the
+   design's; class names are prefixed where they would collide with
+   the existing console's vocabulary.
+   ============================================================ */
+
+/* Handoff §6: a visible focus ring on every interactive element, and
+   reduced motion collapses the only animation (the pulse dots). Neither
+   existed before; axe cannot detect either, so they are easy to lose. */
+:focus-visible {
+  outline: 2px solid var(--sr-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+/* The instrument strip: persistent server context. Scrolls horizontally at
+   narrow widths rather than dropping cells — an omitted cell reads as
+   "not applicable" when it actually means "not shown". */
+.strip {
+  display: flex;
+  border-bottom: 1px solid var(--sr-border);
+  background: var(--sr-bg);
+  font-family: var(--sr-font-mono);
+  font-size: 11px;
+  overflow-x: auto;
+  flex: 0 0 auto;
+}
+.strip .cell {
+  padding: 8px 14px;
+  border-right: 1px solid var(--sr-border);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  white-space: nowrap;
+}
+.strip .cell .l {
+  font-size: 9px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--sr-fg-muted);
+}
+.strip .cell .v { display: flex; align-items: center; gap: 6px; }
+.strip .cell.grow { flex: 1; border-right: none; }
+.strip .cell .ok { color: var(--sr-success-fg); font-weight: 600; }
+.strip .cell .bad { color: var(--sr-danger-fg); font-weight: 600; }
+.strip .cell .warn { color: var(--sr-warning-fg); font-weight: 600; }
+
+/* Status dot. Always accompanied by text — never the only signal. */
+.sdot { width: 6px; height: 6px; border-radius: 999px; display: inline-block; flex: 0 0 6px; }
+.sdot.ok { background: var(--sr-success-fg); }
+.sdot.bad { background: var(--sr-danger-fg); }
+.sdot.warn { background: var(--sr-warning-fg); }
+.sdot.none { background: var(--sr-fg-muted); }
+
+.offline-bar {
+  display: flex; gap: 10px; align-items: center;
+  padding: 9px 16px;
+  background: var(--sr-danger-bg); color: var(--sr-danger-fg);
+  font-size: 12.5px; border-bottom: 1px solid var(--sr-border);
+}
+.offline-bar .when { margin-left: auto; font-family: var(--sr-font-mono); font-size: 11px; }
+
+/* Receipt grid: the four facts an operator checks before trusting a screen. */
+.receipt-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  background: var(--sr-bg); border: 1px solid var(--sr-border);
+  border-radius: 10px; overflow: hidden;
+}
+.receipt-grid .rc { padding: 12px 16px; border-right: 1px solid var(--sr-border); }
+.receipt-grid .rc:last-child { border-right: none; }
+.receipt-grid .rc .l { font-size: 11px; color: var(--sr-fg-muted); margin-bottom: 2px; }
+.receipt-grid .rc .v { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
+.receipt-grid .rc .s { font-size: 11px; color: var(--sr-fg-muted); margin-top: 2px; }
+
+/* Story-id annotation, carried through from the design so a screen states
+   which story and data source it implements. */
+.sid {
+  font-family: var(--sr-font-mono); font-size: 10px; color: var(--sr-fg-muted);
+  background: var(--sr-bg); border: 1px solid var(--sr-border);
+  border-radius: 999px; padding: 1px 8px; white-space: nowrap;
+}
+
+.check-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 16px; border-bottom: 1px solid var(--sr-border); font-size: 13px;
+}
+.check-row:last-child { border-bottom: none; }
+.check-mark {
+  width: 19px; height: 19px; border-radius: 999px; flex: 0 0 19px;
+  display: grid; place-items: center; font-size: 11px;
+  color: var(--sr-fg-muted); border: 1.5px dashed var(--sr-border);
+}
+.check-mark.done {
+  background: var(--sr-success-bg); color: var(--sr-success-fg); border: none;
+}
+.check-row .done-label { color: var(--sr-fg-muted); text-decoration: line-through; }
+
+.codeblock {
+  font-family: var(--sr-font-mono); font-size: 11.5px; line-height: 1.6;
+  background: var(--sr-bg-muted); border: 1px solid var(--sr-border);
+  color: var(--sr-fg); border-radius: 8px; padding: 10px 12px;
+  overflow-x: auto; white-space: pre; margin: 0;
+}
+
+.prov { font-family: var(--sr-font-mono); font-size: 10px; color: var(--sr-fg-muted); }
+
+@media (max-width: 960px) {
+  /* Cells scroll; none are dropped. */
+  .receipt-grid { grid-template-columns: repeat(2, 1fr); }
+  .receipt-grid .rc { border-bottom: 1px solid var(--sr-border); }
+}
+
+/* ---- UX-06: reports ------------------------------------------------------
+   The receipt line is the design's "one decision, stated inline" row: a
+   control plus the consequence of using it, on the same line. */
+.receipt-line {
+  display: flex; gap: 10px; align-items: center;
+  padding: 10px 14px; border: 1px solid var(--sr-border);
+  border-radius: var(--sr-radius); font-size: 12.5px; background: var(--sr-bg);
+}
+
+/* Omissions are prose, not chips: each one is a sentence the reader has to be
+   able to act on, so they get reading width rather than a dense grid. */
+.omissions { margin: 0; padding-left: 18px; font-size: 12.5px; }
+.omissions li { margin-bottom: 8px; }
+.omissions li:last-child { margin-bottom: 0; }
+.omissions code {
+  font-family: var(--sr-font-mono); font-size: 11px;
+  background: var(--sr-bg-muted); padding: 1px 6px; border-radius: 4px;
+}
+
+/* ---- UX-07: role-truthful navigation -------------------------------------
+   A destination the credential cannot use stays visible and says why. Hiding
+   it would leave the operator unable to tell "not in this product" from "not
+   for this role"; leaving it live would hand them a 403 instead of a reason. */
+.nav-item-denied { cursor: not-allowed; opacity: .55; }
+.nav-item-denied:hover { background: none; color: var(--sr-fg-muted); }
+.nav-lock {
+  margin-left: auto; font-size: 10px; font-family: var(--sr-font-mono);
+  color: var(--sr-fg-muted); white-space: nowrap;
+}
+
+/* ---- UX-07: destructive confirmation dialog -------------------------------
+   The only modal in the console. It exists because tenant deletion and key
+   rotation cannot be undone, and a one-click trash icon does not give an
+   operator anywhere to notice that. */
+.overlay {
+  position: fixed; inset: 0; background: rgb(0 0 0 / .5);
+  display: grid; place-items: center; z-index: 50; padding: 20px;
+}
+.dialog {
+  background: var(--sr-bg); border: 1px solid var(--sr-border);
+  border-radius: var(--sr-radius-lg); box-shadow: var(--sr-shadow-md);
+  max-width: 560px; width: 100%; max-height: 85vh; overflow-y: auto;
+}
+.dialog-head { padding: 16px 20px 0; }
+.dialog-head h3 { margin: 0; font-size: 15px; font-weight: 650; }
+.dialog-body { padding: 12px 20px 18px; font-size: 13px; }
+.dialog-foot { display: flex; gap: 10px; justify-content: flex-end; }
+.consequences { margin: 0; padding-left: 18px; font-size: 12.5px; }
+.consequences li { margin-bottom: 4px; }
+.consequences li:last-child { margin-bottom: 0; }
+.danger-trigger { color: var(--sr-danger-fg); }

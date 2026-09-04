@@ -41,6 +41,9 @@ export default async function RootLayout({
           online={health !== null}
           version={health?.version}
           auth={auth}
+          // UX-07: null when there is no credential or the server could not be
+          // reached — the nav then makes no availability claim at all.
+          capabilities={auth && !auth.unreachable ? auth.capabilities : null}
           logoutAction={logoutAction}
         >
           {children}

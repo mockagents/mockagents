@@ -9,6 +9,8 @@
 
 import { cookies } from "next/headers";
 
+import type { ReadinessCheck, ServerStatus } from "./serverState";
+
 export const AUTH_COOKIE = "mockagents_api_key";
 // SESSION_COOKIE is the SSO session cookie the backend's OIDC callback sets
 // (REF-08 slice D). In a same-origin deployment the GUI reads it here and
@@ -520,6 +522,58 @@ export async function burnMyAPIKey(): Promise<void> {
   await fetchJSON<void>(`/api/v1/keys/me/burn`, { method: "POST" });
 }
 
+// --- Quotas (UX-07) -------------------------------------------------
+//
+// Two different floors, and the UI must not blur them: reading your own quota
+// is open to any authenticated role, while SETTING a tenant's quota is
+// platform-gated. That asymmetry is deliberate — a tenant admin raising its own
+// cap would make the cap meaningless — so the console reads for everyone and
+// offers the write only where the server would accept it.
+
+/** A tenant's effective limits. 0 means unlimited in every field. */
+export interface QuotaLimits {
+  rate_per_sec: number;
+  rate_burst: number;
+  monthly_spend_usd: number;
+}
+
+/** Consumption so far. Scoped to the current UTC month. */
+export interface QuotaUsage {
+  /** "2006-01" in UTC. */
+  month: string;
+  spend_usd: number;
+}
+
+export interface QuotaResponse {
+  tenant_id: string;
+  limits: QuotaLimits;
+  usage: QuotaUsage;
+}
+
+/** Read the caller tenant's effective quota. Returns null when quotas are not
+ * enabled on this server (503) — which is NOT the same as a quota of zero. */
+export async function getQuota(): Promise<QuotaResponse | null> {
+  try {
+    return await fetchJSON<QuotaResponse>("/api/v1/quota");
+  } catch (err) {
+    if (err instanceof APIError && err.status === 503) return null;
+    throw err;
+  }
+}
+
+/** Set a tenant's quota override. Platform-gated; the server rejects anything
+ * less, and a negative value, with a 4xx that the caller should surface rather
+ * than swallow. */
+export async function setTenantQuota(
+  tenantId: string,
+  limits: QuotaLimits,
+): Promise<{ tenant_id: string; limits: QuotaLimits }> {
+  return fetchJSON<{ tenant_id: string; limits: QuotaLimits }>(
+    `/api/v1/tenants/${encodeURIComponent(tenantId)}/quota`,
+    { method: "PUT", body: limits },
+  );
+}
+
 // --- Config editor ---
 
 export interface ValidationError {
@@ -691,6 +745,94 @@ export async function validateYAML(yaml: string): Promise<ValidateResult> {
     throw new APIError(res.status, `/api/v1/config/validate: ${res.status} ${body.slice(0, 200)}`);
   }
   return (await res.json()) as ValidateResult;
+}
+
+// --- Readiness (UX-02) ------------------------------------------------------
+
+interface ReadinessWire {
+  status?: "ready" | "not_ready";
+  checks?: Array<{ name?: string; status?: "ok" | "failed"; error?: string }>;
+}
+
+/** Probe liveness AND readiness, which are different questions.
+ *
+ * The design handoff names these endpoints `/healthz` and `/readyz`; this
+ * server actually serves `/api/v1/health` and `/api/v1/ready`. The real paths
+ * are used — a screen annotated with a route that does not exist is how a
+ * console ends up reporting a permanent outage.
+ *
+ * Readiness returns 503 with a body when a check fails, so a non-OK status is
+ * still a meaningful answer and must be parsed rather than thrown away. */
+export async function getServerStatus(): Promise<ServerStatus> {
+  const checkedAt = new Date().toISOString();
+  const key = await getAuthKey();
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (key) headers.Authorization = `Bearer ${key}`;
+
+  const probe = async (path: string): Promise<Response | null> => {
+    try {
+      return await fetch(`${baseUrl()}${path}`, { cache: "no-store", headers });
+    } catch {
+      return null;
+    }
+  };
+
+  const health = await probe("/api/v1/health");
+  if (health === null) {
+    // Cannot reach the process at all. Readiness is not false — it is unknown.
+    return {
+      liveness: "unreachable",
+      readiness: "unknown",
+      checks: [],
+      version: null,
+      checkedAt,
+      stale: true,
+    };
+  }
+
+  let version: string | null = null;
+  try {
+    const body = (await health.json()) as { version?: string };
+    version = body.version ?? null;
+  } catch {
+    version = null;
+  }
+
+  const ready = await probe("/api/v1/ready");
+  if (ready === null) {
+    return {
+      liveness: "process-up",
+      readiness: "unknown",
+      checks: [],
+      version,
+      checkedAt,
+      stale: false,
+    };
+  }
+
+  let wire: ReadinessWire = {};
+  try {
+    wire = (await ready.json()) as ReadinessWire;
+  } catch {
+    wire = {};
+  }
+
+  const checks: ReadinessCheck[] = (wire.checks ?? []).map((c) => ({
+    name: c.name ?? "unnamed",
+    status: c.status === "failed" ? "failed" : "ok",
+    error: c.error,
+  }));
+
+  // Trust the status field when present; fall back to the HTTP code.
+  const isReady = wire.status ? wire.status === "ready" : ready.ok;
+  return {
+    liveness: "process-up",
+    readiness: isReady ? "ready" : "not-ready",
+    checks,
+    version,
+    checkedAt,
+    stale: false,
+  };
 }
 
 // --- Pipeline execution (UX-05) -------------------------------------------
