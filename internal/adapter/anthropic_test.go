@@ -48,7 +48,7 @@ func testAnthropicAgent() *types.AgentDefinition {
 						Response: types.ScenarioResponse{Content: "How may I assist?"},
 					},
 				},
-				Streaming: &types.StreamingConfig{Enabled: true, ChunkSize: 2, ChunkDelayMs: 0},
+				Streaming: &types.StreamingConfig{Enabled: true, ChunkSize: 2, ChunkDelayMs: types.Ptr(0)},
 			},
 		},
 	}

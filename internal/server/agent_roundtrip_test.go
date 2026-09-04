@@ -174,20 +174,15 @@ func TestRoundTrip_EveryShippedExample(t *testing.T) {
 // standing inventory of round-trip data loss and shrinks to nothing as the
 // causes are fixed.
 //
-// Remove an entry the moment its cause is fixed: the entry then makes the test
-// fail (see TestRoundTrip_KnownDefectsStillReproduce), which is the point.
-var knownRoundTripDefects = map[string]string{
-	// config.ApplyDefaults treats ChunkDelayMs == 0 as "unset" and overwrites it
-	// with 50, so an author cannot express "stream with no delay" — even though
-	// the JSON schema documents `minimum: 0` and every streaming path already
-	// honours an explicit 0 (`if ChunkDelayMs >= 0`). examples/gemini-agent.yaml
-	// asks for 0 and the server runs it at 50.
-	//
-	// Fixing it means distinguishing unset from zero (a *int in types), which
-	// changes streaming timing behaviour and touches ~16 files — a change of its
-	// own, not part of round-trip verification.
-	"spec.behavior.streaming.chunk_delay_ms": "ApplyDefaults clobbers an explicit 0 with 50",
-}
+// Remove an entry the moment its cause is fixed. TestRoundTrip_NoKnownDefects
+// keeps the list honest in the other direction: adding one has to be a
+// deliberate act, not a quiet way to silence a failing corpus.
+//
+// Currently EMPTY. The one entry it held —
+// spec.behavior.streaming.chunk_delay_ms, where ApplyDefaults overwrote an
+// explicit 0 with 50 — was fixed by making types.StreamingConfig.ChunkDelayMs
+// a *int, so unset and zero are distinguishable.
+var knownRoundTripDefects = map[string]string{}
 
 func assertNoLeafLost(t *testing.T, before, after map[string]string) {
 	t.Helper()
@@ -212,22 +207,63 @@ func assertNoLeafLost(t *testing.T, before, after map[string]string) {
 	}
 }
 
-// TestRoundTrip_KnownDefectsStillReproduce pins each carve-out to the exact
-// behaviour that justifies it. If someone fixes the defect without removing the
-// entry above, this fails and points at the stale carve-out — so the allowlist
-// cannot quietly outlive its reason.
-func TestRoundTrip_KnownDefectsStillReproduce(t *testing.T) {
-	require.Len(t, knownRoundTripDefects, 1,
-		"update this test when the known-defect list changes")
+// TestRoundTrip_NoKnownDefects asserts the carve-out list is empty. Adding an
+// entry must be a deliberate decision with a stated reason, not a quiet way to
+// silence a corpus that started failing.
+func TestRoundTrip_NoKnownDefects(t *testing.T) {
+	require.Empty(t, knownRoundTripDefects,
+		"a round-trip defect has been carved out; it must be recorded and tracked, "+
+			"not left to accumulate silently")
+}
 
-	def := &types.AgentDefinition{}
-	def.Spec.Behavior.Streaming = &types.StreamingConfig{ChunkDelayMs: 0}
-	config.ApplyDefaults(def)
+// TestApplyDefaults_ExplicitZeroChunkDelayIsPreserved is the regression test for
+// the defect the corpus originally exposed: an author who writes
+// `chunk_delay_ms: 0` means "stream with no artificial delay", and used to get
+// 50 instead. The field is a *int so unset and zero are distinguishable.
+func TestApplyDefaults_ExplicitZeroChunkDelayIsPreserved(t *testing.T) {
+	t.Run("explicit zero survives", func(t *testing.T) {
+		def := &types.AgentDefinition{}
+		def.Spec.Behavior.Streaming = &types.StreamingConfig{ChunkDelayMs: types.Ptr(0)}
+		config.ApplyDefaults(def)
 
-	require.Equal(t, 50, def.Spec.Behavior.Streaming.ChunkDelayMs,
-		"an explicit chunk_delay_ms: 0 is still being overwritten. If this now "+
-			"reports 0, the defect is FIXED — delete the matching entry from "+
-			"knownRoundTripDefects and this test's expectation.")
+		require.NotNil(t, def.Spec.Behavior.Streaming.ChunkDelayMs)
+		require.Equal(t, 0, *def.Spec.Behavior.Streaming.ChunkDelayMs,
+			"an explicit 0 must mean no delay, not 'unset'")
+	})
+
+	t.Run("unset is still defaulted", func(t *testing.T) {
+		def := &types.AgentDefinition{}
+		def.Spec.Behavior.Streaming = &types.StreamingConfig{}
+		config.ApplyDefaults(def)
+
+		require.NotNil(t, def.Spec.Behavior.Streaming.ChunkDelayMs)
+		require.Equal(t, 50, *def.Spec.Behavior.Streaming.ChunkDelayMs,
+			"omitting the field must still get the documented default")
+	})
+
+	t.Run("a non-zero value is untouched", func(t *testing.T) {
+		def := &types.AgentDefinition{}
+		def.Spec.Behavior.Streaming = &types.StreamingConfig{ChunkDelayMs: types.Ptr(120)}
+		config.ApplyDefaults(def)
+
+		require.Equal(t, 120, *def.Spec.Behavior.Streaming.ChunkDelayMs)
+	})
+
+	// The whole point: the shipped example that asked for 0 now gets 0.
+	t.Run("the gemini example keeps its explicit zero", func(t *testing.T) {
+		for _, res := range exampleAgents(t) {
+			s := res.Definition.Spec.Behavior.Streaming
+			if s == nil || res.Definition.Metadata.Name != "gemini-assistant" {
+				continue
+			}
+			config.ApplyDefaults(res.Definition)
+			require.NotNil(t, res.Definition.Spec.Behavior.Streaming.ChunkDelayMs)
+			require.Equal(t, 0, *res.Definition.Spec.Behavior.Streaming.ChunkDelayMs,
+				"the example asks for chunk_delay_ms: 0 and must get it")
+			return
+		}
+		t.Skip("gemini example with streaming config not found in the corpus")
+	})
 }
 
 // Repeated no-op saves must converge. If applying defaults were not idempotent,

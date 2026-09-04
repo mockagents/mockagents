@@ -102,7 +102,7 @@ func TestConformance_OpenAI_ToolCallsFormat(t *testing.T) {
 
 func TestConformance_OpenAI_StreamingFormat(t *testing.T) {
 	agent := testFullAgent("stream-agent", "gpt-4o")
-	agent.Spec.Behavior.Streaming = &types.StreamingConfig{Enabled: true, ChunkSize: 2, ChunkDelayMs: 0}
+	agent.Spec.Behavior.Streaming = &types.StreamingConfig{Enabled: true, ChunkSize: 2, ChunkDelayMs: types.Ptr(0)}
 
 	_, addr := setupTestServer(t, agent)
 

@@ -68,8 +68,8 @@ func StreamGemini(
 		if streamCfg.ChunkSize > 0 {
 			chunkSize = streamCfg.ChunkSize
 		}
-		if streamCfg.ChunkDelayMs >= 0 {
-			delayMs = streamCfg.ChunkDelayMs
+		if streamCfg.ChunkDelayMs != nil {
+			delayMs = *streamCfg.ChunkDelayMs
 		}
 	}
 

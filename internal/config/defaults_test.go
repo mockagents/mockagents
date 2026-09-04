@@ -31,7 +31,7 @@ func TestApplyDefaults_StreamingChunkDefaults(t *testing.T) {
 	}
 	ApplyDefaults(def)
 	assert.Equal(t, 4, def.Spec.Behavior.Streaming.ChunkSize)
-	assert.Equal(t, 50, def.Spec.Behavior.Streaming.ChunkDelayMs)
+	assert.Equal(t, 50, *def.Spec.Behavior.Streaming.ChunkDelayMs)
 }
 
 func TestApplyDefaults_PreservesExplicitStreaming(t *testing.T) {
@@ -41,14 +41,14 @@ func TestApplyDefaults_PreservesExplicitStreaming(t *testing.T) {
 				Streaming: &types.StreamingConfig{
 					Enabled:      true,
 					ChunkSize:    10,
-					ChunkDelayMs: 100,
+					ChunkDelayMs: types.Ptr(100),
 				},
 			},
 		},
 	}
 	ApplyDefaults(def)
 	assert.Equal(t, 10, def.Spec.Behavior.Streaming.ChunkSize)
-	assert.Equal(t, 100, def.Spec.Behavior.Streaming.ChunkDelayMs)
+	assert.Equal(t, 100, *def.Spec.Behavior.Streaming.ChunkDelayMs)
 }
 
 func TestApplyDefaults_NilStreamingNoOp(t *testing.T) {

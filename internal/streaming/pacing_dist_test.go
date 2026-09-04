@@ -76,7 +76,7 @@ func TestPacer_DistributionOverridesFixed(t *testing.T) {
 	}
 
 	// No distribution -> fixed behavior preserved.
-	p2 := newPacer(&types.StreamingConfig{ChunkDelayMs: 40})
+	p2 := newPacer(&types.StreamingConfig{ChunkDelayMs: types.Ptr(40)})
 	if d := p2.delayFor(2); d != 40*time.Millisecond {
 		t.Errorf("fixed chunk delay = %s, want 40ms", d)
 	}
