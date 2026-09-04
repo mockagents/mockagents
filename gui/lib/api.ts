@@ -693,6 +693,128 @@ export async function validateYAML(yaml: string): Promise<ValidateResult> {
   return (await res.json()) as ValidateResult;
 }
 
+// --- Pipeline execution (UX-05) -------------------------------------------
+
+/** One node's result. `response` is nullable: a node that never ran, or ran and
+ * failed, is reported with a null response rather than being omitted. */
+export interface PipelineNodeResult {
+  node_id: string;
+  agent_name: string;
+  response: {
+    agent_name?: string;
+    model?: string;
+    content?: string;
+    scenario_name?: string;
+    finish_reason?: string;
+    refusal?: string;
+    tool_calls?: unknown[];
+  } | null;
+  /** NANOSECONDS. Go marshals time.Duration as an integer count of ns; reading
+   * it as milliseconds would under-report by 1e6. Use `nsToMs`. */
+  latency: number;
+}
+
+export interface PipelineRunResult {
+  pipeline_name: string;
+  topology: string;
+  nodes: PipelineNodeResult[] | null;
+  /** Nanoseconds — see PipelineNodeResult.latency. */
+  latency: number;
+}
+
+/** Outcome of an explicit pipeline run.
+ *
+ * "partial" is a first-class outcome, not an error: a 422 means the pipeline
+ * was valid but a node could not execute, and the body still carries whatever
+ * nodes completed. Throwing that away would discard the most useful evidence a
+ * failed run produces. */
+export type PipelineRunOutcome =
+  | { status: "ok"; result: PipelineRunResult }
+  | { status: "partial"; error: string; result: PipelineRunResult | null }
+  | { status: "denied"; message: string }
+  | { status: "invalid"; message: string }
+  | { status: "unavailable"; message: string }
+  /** The response never arrived. The run may or may not have happened. */
+  | { status: "unknown"; message: string };
+
+// Duration formatting lives in lib/duration.ts: it must be importable from
+// client components, and this module is server-only (next/headers).
+
+/** Execute a registered pipeline against the ACTIVE runtime.
+ *
+ * This is not a preview and not an isolated run: it invokes the same engine the
+ * provider adapters use, against the definitions currently loaded, and it
+ * advances per-node session state. `sessionId` should be fresh for each run so
+ * turns are not accidentally reused — but a fresh session does NOT pin the
+ * definitions or isolate fixtures (epic §8.1). Release B adds the isolated
+ * boundary.
+ *
+ * A transport failure is reported as "unknown", never as failure: the run is
+ * stateful, so the caller must not silently retry it. */
+export async function runPipeline(
+  name: string,
+  input: string,
+  sessionId: string,
+): Promise<PipelineRunOutcome> {
+  const key = await getAuthKey();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (key) headers.Authorization = `Bearer ${key}`;
+
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl()}/api/v1/pipelines/${encodeURIComponent(name)}/run`, {
+      method: "POST",
+      cache: "no-store",
+      headers,
+      // The server decodes with DisallowUnknownFields — send exactly these.
+      body: JSON.stringify({ input, session_id: sessionId }),
+    });
+  } catch {
+    return {
+      status: "unknown",
+      message:
+        "The server could not be reached, so it is unknown whether this run executed. " +
+        "Check the interaction logs before running it again — a pipeline run is not idempotent.",
+    };
+  }
+
+  if (res.status === 200) {
+    return { status: "ok", result: (await res.json()) as PipelineRunResult };
+  }
+  if (res.status === 422) {
+    // Valid request, unrunnable pipeline. The body preserves completed nodes.
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      result?: PipelineRunResult;
+    };
+    return {
+      status: "partial",
+      error: body.error ?? "A node could not execute.",
+      result: body.result ?? null,
+    };
+  }
+  if (res.status === 401 || res.status === 403) {
+    return {
+      status: "denied",
+      message:
+        res.status === 401
+          ? "Your session is no longer valid. Sign in again to run pipelines."
+          : "You do not have permission to run pipelines on this server.",
+    };
+  }
+  if (res.status === 503) {
+    return {
+      status: "unavailable",
+      message: "This server has pipeline execution disabled, so there is nothing to run.",
+    };
+  }
+  if (res.status === 404) {
+    return { status: "invalid", message: `No pipeline named "${name}" is registered.` };
+  }
+  const text = await res.text().catch(() => "");
+  return { status: "invalid", message: `Server returned ${res.status}: ${text.slice(0, 200)}` };
+}
+
 // --- Agent revisions (UX-03) ----------------------------------------------
 
 /** An agent document plus the revision needed to write it back safely. */

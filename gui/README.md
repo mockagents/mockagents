@@ -12,7 +12,7 @@ every page is server-rendered on demand against the current running server.
 
 ## Client islands
 
-Seven components carry the interactive surface; everything else is a server
+Eight components carry the interactive surface; everything else is a server
 component:
 
 | Component | Route | Responsibility |
@@ -24,6 +24,7 @@ component:
 | `YamlEditor` | `/editor` | Validate + save |
 | `PipelineEditor` | `/pipelines/[name]/edit` | React Flow DAG editing |
 | `AgentEditor` + `GuidedForm` | `/agents/[name]/edit` | Form/YAML tabs, diff preview, conditional apply |
+| `RunPanel` | `/pipelines/[name]` | Explicit active-runtime pipeline execution |
 
 ## Read surfaces
 
@@ -36,7 +37,8 @@ component:
   agents directory, with topology badge and agent/edge counts.
 - **Pipeline detail** (`/pipelines/[name]`) — static SVG DAG viewer with
   longest-path layered layout, for sequential, parallel and graph topologies.
-  Each node links to the underlying agent.
+  Each node links to the underlying agent. Also carries the **Run** panel
+  (below), which is a write surface rather than a read one.
 - **Interaction logs** (`/logs`) — request/response history, filterable by agent,
   `since` (RFC3339) and limit (25–250). Each row links to a detail page
   (`/logs/[id]`) with full bodies, method/path, latency, scenario match and —
@@ -75,6 +77,26 @@ component:
   as `mockagents validate`) and renders parse/schema errors inline with line
   numbers. Save persists through the agent write API and takes effect
   immediately; it needs the editor role in multi-tenant mode.
+- **Pipeline run** (`/pipelines/[name]`, Run panel) — enter an input and
+  execute the pipeline through `POST /api/v1/pipelines/{name}/run`.
+
+  This runs against the **active runtime**: the same engine that serves live
+  traffic, using the definitions currently loaded, and it advances per-node
+  session state. The panel says so before the button, not after. Each run gets
+  a fresh session id so turns are not reused — which does *not* pin definitions
+  or isolate fixtures; the isolated boundary is Release B.
+
+  Node results are rendered from the real `PipelineResult`: `node_id`,
+  `agent_name`, scenario, output and latency. Latencies arrive as Go
+  **nanoseconds** and are converted (`lib/duration.ts`); a duration below the
+  clock's resolution reads `<1µs`, never `0µs`. A null node response is shown
+  as "no response", not as an empty answer. A 422 is a *partial* run: the nodes
+  that completed are kept and shown, because they really ran. For a parallel or
+  graph topology the panel states that the node order is definition order and
+  not a completion timeline. A lost response is reported as an unknown outcome
+  and is never retried automatically, because a run is stateful; duplicate
+  submission is disabled while one is in flight.
+
 - **Pipeline editor** (`/pipelines/[name]/edit`) — React Flow (`@xyflow/react`)
   drag-to-rewire editing, saved with `PUT /api/v1/pipelines/{name}` under
   `If-Match` optimistic concurrency. A stale edit returns 412 and is surfaced as

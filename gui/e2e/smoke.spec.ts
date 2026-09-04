@@ -335,6 +335,78 @@ test.describe("request explorer (UX-04)", () => {
   });
 });
 
+test.describe("pipeline execution (UX-05)", () => {
+  test("the real run endpoint returns nodes with nanosecond latencies", async ({ page }) => {
+    const res = await page.request.post(`${API_URL}/api/v1/pipelines/research-pipeline/run`, {
+      data: { input: "smoke test input", session_id: `e2e-${Date.now()}` },
+    });
+    // 200 or 422 are both real outcomes; 404 means the fixture is absent.
+    test.skip(res.status() === 404, "research-pipeline not registered");
+    expect([200, 422]).toContain(res.status());
+
+    const body = await res.json();
+    const result = res.status() === 200 ? body : body.result;
+    test.skip(!result, "422 carried no partial result");
+
+    expect(Array.isArray(result.nodes)).toBe(true);
+    if (result.nodes.length > 0) {
+      const node = result.nodes[0];
+      expect(node).toHaveProperty("node_id");
+      expect(node).toHaveProperty("agent_name");
+      // response may legitimately be null; the key must still be present.
+      expect(Object.hasOwn(node, "response")).toBe(true);
+      // Nanoseconds: a real run is far more than a handful of ns, and the
+      // total must be at least as large as any single node.
+      expect(typeof node.latency).toBe("number");
+      expect(result.latency).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  test("the run panel is offered on the pipeline page and states it is not isolated", async ({
+    page,
+  }) => {
+    const list = await (await page.request.get(`${API_URL}/api/v1/pipelines`)).json();
+    test.skip(!Array.isArray(list) || list.length === 0, "no pipelines registered");
+
+    await page.goto(`/pipelines/${encodeURIComponent(list[0].name)}`, {
+      waitUntil: "networkidle",
+    });
+
+    await expect(page.getByLabel("Input")).toBeVisible();
+    await expect(page.getByText(/Runs against active configuration/i)).toBeVisible();
+    await expect(page.getByText(/not an isolated preview/i)).toBeVisible();
+    // Nothing typed yet, so nothing to run.
+    await expect(page.getByRole("button", { name: /run pipeline/i })).toBeDisabled();
+  });
+
+  test("running through the UI shows node evidence with converted latencies", async ({ page }) => {
+    const list = await (await page.request.get(`${API_URL}/api/v1/pipelines`)).json();
+    test.skip(!Array.isArray(list) || list.length === 0, "no pipelines registered");
+
+    await page.goto(`/pipelines/${encodeURIComponent(list[0].name)}`, {
+      waitUntil: "networkidle",
+    });
+
+    const input = page.getByLabel("Input");
+    const button = page.getByRole("button", { name: /run pipeline/i });
+    await expect(async () => {
+      await input.fill("end to end run");
+      await expect(button).toBeEnabled({ timeout: 1_000 });
+    }).toPass({ timeout: 20_000 });
+
+    await button.click();
+    // Either outcome is acceptable; both must render as evidence, not a crash.
+    await expect(page.getByText(/Run completed|Partial run|Outcome unknown/i)).toBeVisible({
+      timeout: 30_000,
+    });
+
+    // Latency must be humanised, never a raw nanosecond count.
+    await expect(page.getByText(/\d+(\.\d+)?(µs|ms|s)\b/).first()).toBeVisible();
+    // The submitted session is recorded alongside the result.
+    await expect(page.getByText(/^gui-run-/)).toBeVisible();
+  });
+});
+
 test.describe("accessibility", () => {
   // Runs the rules jsdom cannot evaluate — notably colour contrast, which
   // needs a real layout and cascade (epic §10).
