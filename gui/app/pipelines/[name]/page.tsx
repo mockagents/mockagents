@@ -1,9 +1,17 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { getPipeline, PipelineDefinition } from "@/lib/api";
+import {
+  can,
+  getIdentity,
+  getPipeline,
+  runPipeline,
+  PipelineDefinition,
+  type PipelineRunOutcome,
+} from "@/lib/api";
 import { Icon } from "@/lib/icons";
 import { DAGViewer } from "./DAGViewer";
+import { RunPanel } from "./RunPanel";
 
 type PageProps = {
   params: Promise<{ name: string }>;
@@ -13,6 +21,23 @@ export default async function PipelineDetailPage({ params }: PageProps) {
   const { name } = await params;
   const pipeline = await getPipeline(name);
   if (!pipeline) notFound();
+
+  // UX-05: the run endpoint's floor is viewer, so almost any authenticated
+  // caller may execute. If identity cannot be read we leave the control enabled
+  // and let the server decide, rather than locking someone out over a failed
+  // probe.
+  let canRun = true;
+  try {
+    const identity = await getIdentity();
+    if (identity) canRun = can(identity, "pipelines.run.write");
+  } catch {
+    canRun = true;
+  }
+
+  async function runAction(input: string, sessionId: string): Promise<PipelineRunOutcome> {
+    "use server";
+    return runPipeline(name, input, sessionId);
+  }
 
   const agents = pipeline.spec.agents ?? [];
   const edges = normalizeEdges(pipeline);
@@ -64,6 +89,13 @@ export default async function PipelineDetailPage({ params }: PageProps) {
       </div>
 
       <DAGViewer topology={pipeline.spec.topology} agents={agents} edges={edges} />
+
+      <RunPanel
+        pipelineName={name}
+        topology={pipeline.spec.topology}
+        canRun={canRun}
+        runAction={runAction}
+      />
 
       <h2 className="section-title">Agents</h2>
       <div className="table-wrap">
