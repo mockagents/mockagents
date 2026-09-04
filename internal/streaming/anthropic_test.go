@@ -45,7 +45,7 @@ func TestStreamAnthropic_BasicContentStream(t *testing.T) {
 		Model:     "claude-3-opus",
 		Content:   "Hello world",
 	}
-	cfg := &types.StreamingConfig{ChunkSize: 1, ChunkDelayMs: 0}
+	cfg := &types.StreamingConfig{ChunkSize: 1, ChunkDelayMs: types.Ptr(0)}
 
 	err := StreamAnthropic(context.Background(), rec, resp, cfg)
 	require.NoError(t, err)
@@ -89,7 +89,7 @@ func TestStreamAnthropic_BasicContentStream(t *testing.T) {
 func TestStreamAnthropic_EventSequence(t *testing.T) {
 	rec := httptest.NewRecorder()
 	resp := &engine.Response{Model: "claude-3", Content: "Hi there"}
-	cfg := &types.StreamingConfig{ChunkSize: 4, ChunkDelayMs: 0}
+	cfg := &types.StreamingConfig{ChunkSize: 4, ChunkDelayMs: types.Ptr(0)}
 
 	err := StreamAnthropic(context.Background(), rec, resp, cfg)
 	require.NoError(t, err)
@@ -121,7 +121,7 @@ func TestStreamAnthropic_ToolUseBlocks(t *testing.T) {
 			{ID: "toolu_abc123", ToolName: "get_weather"},
 		},
 	}
-	cfg := &types.StreamingConfig{ChunkSize: 4, ChunkDelayMs: 0}
+	cfg := &types.StreamingConfig{ChunkSize: 4, ChunkDelayMs: types.Ptr(0)}
 
 	err := StreamAnthropic(context.Background(), rec, resp, cfg)
 	require.NoError(t, err)
@@ -172,7 +172,7 @@ func TestStreamAnthropic_ToolUseBlocks(t *testing.T) {
 func TestStreamAnthropic_StopReasonEndTurn(t *testing.T) {
 	rec := httptest.NewRecorder()
 	resp := &engine.Response{Model: "claude-3", Content: "Just text, no tools."}
-	cfg := &types.StreamingConfig{ChunkSize: 4, ChunkDelayMs: 0}
+	cfg := &types.StreamingConfig{ChunkSize: 4, ChunkDelayMs: types.Ptr(0)}
 
 	err := StreamAnthropic(context.Background(), rec, resp, cfg)
 	require.NoError(t, err)
@@ -193,7 +193,7 @@ func TestStreamAnthropic_ContextCancellation(t *testing.T) {
 		Model:   "claude-3",
 		Content: "A long response that should be cancelled before completion with many words",
 	}
-	cfg := &types.StreamingConfig{ChunkSize: 1, ChunkDelayMs: 10}
+	cfg := &types.StreamingConfig{ChunkSize: 1, ChunkDelayMs: types.Ptr(10)}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

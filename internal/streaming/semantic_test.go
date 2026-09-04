@@ -16,7 +16,7 @@ import (
 // FB-03: the semantic error modes (finish_reason / refusal / raw_arguments)
 // must behave identically on the streaming path as non-streaming.
 
-var noDelayCfg = &types.StreamingConfig{ChunkSize: 4, ChunkDelayMs: 0}
+var noDelayCfg = &types.StreamingConfig{ChunkSize: 4, ChunkDelayMs: types.Ptr(0)}
 
 func TestStreamOpenAI_SemanticModes(t *testing.T) {
 	// finish_reason override on the finish chunk.

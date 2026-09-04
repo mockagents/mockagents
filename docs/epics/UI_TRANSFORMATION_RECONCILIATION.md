@@ -211,7 +211,7 @@ the hand-authored file is missing afterwards**. 23 of 23 examples pass, which
 also establishes that the Go types fully model every field the project ships —
 nothing is being silently discarded at load.
 
-### Defect found: `chunk_delay_ms: 0` is overwritten with 50
+### Defect found: `chunk_delay_ms: 0` is overwritten with 50 — **FIXED 2026-09-04**
 
 `examples/gemini-agent.yaml` asks for `spec.behavior.streaming.chunk_delay_ms:
 0` — stream with no artificial delay — and the server runs it at 50 ms. The
@@ -235,13 +235,22 @@ would be omitted from marshalled output anyway.
 `ChunkSize` uses the same zero-as-unset idiom, but a chunk size of 0 is
 meaningless, so it is not affected. This is a one-off, not a pattern.
 
-**Not fixed here.** The correct fix distinguishes unset from zero (`*int` in
-`types.StreamingConfig`), which changes streaming timing behaviour and touches
-~16 files including the timing tests — its own change, not round-trip
-verification. It is carved out in `knownRoundTripDefects` in
-`internal/server/agent_roundtrip_test.go`, logged loudly on every run, and
-pinned by `TestRoundTrip_KnownDefectsStillReproduce` so the carve-out cannot
-outlive its cause.
+**Fixed 2026-09-04.** `types.StreamingConfig.ChunkDelayMs` is now a `*int`, so
+unset (nil) and an explicit zero are distinguishable. `ApplyDefaults` fills only
+a nil; each streaming path falls back to `DefaultChunkDelayMs` for a config that
+never went through defaulting, which is what the old `>= 0` guard was reaching
+for. `types.Ptr` was added for constructing these values, replacing the local
+`intPtr` helpers that had grown in two test packages.
+
+Evidence: `TestPacer_ChunkDelayFromConfig` pins the deterministic mapping from
+config to pacer delay, and two real-stream tests show the behaviour — an
+explicit zero completes in ~0 ms, an unset field still paces at ~200 ms for the
+same content. `TestApplyDefaults_ExplicitZeroChunkDelayIsPreserved` includes a
+subtest asserting the shipped gemini example now keeps its zero.
+
+`knownRoundTripDefects` is now empty, and `TestRoundTrip_NoKnownDefects` keeps it
+that way: adding an entry has to be a deliberate act rather than a quiet way to
+silence a failing corpus.
 
 ### A second fix, in the harness
 

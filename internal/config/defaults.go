@@ -20,8 +20,13 @@ func ApplyDefaults(def *types.AgentDefinition) {
 		if s.ChunkSize == 0 {
 			s.ChunkSize = defaultChunkSize
 		}
-		if s.ChunkDelayMs == 0 {
-			s.ChunkDelayMs = defaultChunkDelayMs
+		// Only fill an UNSET delay. An author who wrote `chunk_delay_ms: 0`
+		// means "no artificial delay" and must get it — that is why the field
+		// is a pointer. Treating zero as unset here is what made
+		// examples/gemini-agent.yaml run at 50ms while claiming 0.
+		if s.ChunkDelayMs == nil {
+			d := defaultChunkDelayMs
+			s.ChunkDelayMs = &d
 		}
 	}
 

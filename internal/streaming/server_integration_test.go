@@ -79,7 +79,7 @@ func streamingAgent(protocol string) *types.AgentDefinition {
 				Streaming: &types.StreamingConfig{
 					Enabled:      true,
 					ChunkSize:    2,
-					ChunkDelayMs: 0,
+					ChunkDelayMs: types.Ptr(0),
 				},
 			},
 			Tools: []types.ToolDefinition{

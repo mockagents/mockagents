@@ -75,8 +75,8 @@ func newPacerSeeded(cfg *types.StreamingConfig, distSeed uint64) *streamPacer {
 		distRng: rand.New(rand.NewPCG(distSeed, distSeed^0x9e3779b97f4a7c15)),
 	}
 	if cfg != nil {
-		if cfg.ChunkDelayMs >= 0 {
-			delayMs = cfg.ChunkDelayMs
+		if cfg.ChunkDelayMs != nil {
+			delayMs = *cfg.ChunkDelayMs
 		}
 		p.ttft = time.Duration(cfg.TTFTMs) * time.Millisecond
 		if cfg.TokensPerSec > 0 {

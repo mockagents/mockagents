@@ -21,7 +21,7 @@ func visionScenarios() types.BehaviorConfig {
 				Response: types.ScenarioResponse{Content: "Hi there!"}},
 			{Name: "default", Response: types.ScenarioResponse{Content: "No image."}},
 		},
-		Streaming: &types.StreamingConfig{Enabled: true, ChunkSize: 2, ChunkDelayMs: 0},
+		Streaming: &types.StreamingConfig{Enabled: true, ChunkSize: 2, ChunkDelayMs: types.Ptr(0)},
 	}
 }
 

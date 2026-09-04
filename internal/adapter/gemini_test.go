@@ -49,7 +49,7 @@ func testGeminiAgent() *types.AgentDefinition {
 						Response: types.ScenarioResponse{Content: "How can I help?"},
 					},
 				},
-				Streaming: &types.StreamingConfig{Enabled: true, ChunkSize: 2, ChunkDelayMs: 0},
+				Streaming: &types.StreamingConfig{Enabled: true, ChunkSize: 2, ChunkDelayMs: types.Ptr(0)},
 			},
 		},
 	}

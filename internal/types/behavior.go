@@ -139,9 +139,22 @@ func (tc ToolCallSpec) ArgumentsObject() map[string]any {
 // StreamingConfig controls SSE streaming behavior, including stream-timing
 // physics and mid-stream fault injection (RR-07).
 type StreamingConfig struct {
-	Enabled      bool `yaml:"enabled" json:"enabled"`
-	ChunkSize    int  `yaml:"chunk_size,omitempty" json:"chunk_size,omitempty"`
-	ChunkDelayMs int  `yaml:"chunk_delay_ms,omitempty" json:"chunk_delay_ms,omitempty"`
+	Enabled   bool `yaml:"enabled" json:"enabled"`
+	ChunkSize int  `yaml:"chunk_size,omitempty" json:"chunk_size,omitempty"`
+	// ChunkDelayMs is the delay between content chunks, in milliseconds.
+	//
+	// A POINTER because zero is a meaningful value here: `chunk_delay_ms: 0`
+	// means "stream with no artificial delay", which the JSON schema documents
+	// (`minimum: 0`) and which examples/gemini-agent.yaml asks for. As a plain
+	// int an explicit 0 was indistinguishable from unset, so ApplyDefaults
+	// overwrote it with 50 and the agent silently ran ~50ms slower per chunk
+	// than it said it would.
+	//
+	// nil means unset: ApplyDefaults fills it, and each streaming path falls
+	// back to DefaultChunkDelayMs for a config that never went through
+	// ApplyDefaults. ChunkSize keeps a plain int on purpose — a chunk size of
+	// zero is meaningless, so zero-as-unset is correct there.
+	ChunkDelayMs *int `yaml:"chunk_delay_ms,omitempty" json:"chunk_delay_ms,omitempty"`
 
 	// --- Stream-timing physics ---
 

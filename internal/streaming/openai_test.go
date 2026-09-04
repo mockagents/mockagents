@@ -33,7 +33,7 @@ func TestStreamOpenAI_BasicContentStream(t *testing.T) {
 		Model:     "gpt-4o",
 		Content:   "Hello world",
 	}
-	cfg := &types.StreamingConfig{ChunkSize: 1, ChunkDelayMs: 0}
+	cfg := &types.StreamingConfig{ChunkSize: 1, ChunkDelayMs: types.Ptr(0)}
 
 	err := StreamOpenAI(context.Background(), rec, resp, cfg)
 	require.NoError(t, err)
@@ -64,7 +64,7 @@ func TestStreamOpenAI_ContentReassembly(t *testing.T) {
 	rec := httptest.NewRecorder()
 	content := "The quick brown fox jumps over the lazy dog"
 	resp := &engine.Response{Model: "gpt-4o", Content: content}
-	cfg := &types.StreamingConfig{ChunkSize: 2, ChunkDelayMs: 0}
+	cfg := &types.StreamingConfig{ChunkSize: 2, ChunkDelayMs: types.Ptr(0)}
 
 	err := StreamOpenAI(context.Background(), rec, resp, cfg)
 	require.NoError(t, err)
@@ -100,7 +100,7 @@ func TestStreamOpenAI_ToolCalls(t *testing.T) {
 			{ID: "call_abc123", ToolName: "get_weather"},
 		},
 	}
-	cfg := &types.StreamingConfig{ChunkSize: 4, ChunkDelayMs: 0}
+	cfg := &types.StreamingConfig{ChunkSize: 4, ChunkDelayMs: types.Ptr(0)}
 
 	err := StreamOpenAI(context.Background(), rec, resp, cfg)
 	require.NoError(t, err)
@@ -150,7 +150,7 @@ func TestStreamOpenAI_ContextCancellation(t *testing.T) {
 		Model:   "gpt-4o",
 		Content: "A very long response that should be interrupted before completion with many words here",
 	}
-	cfg := &types.StreamingConfig{ChunkSize: 1, ChunkDelayMs: 10}
+	cfg := &types.StreamingConfig{ChunkSize: 1, ChunkDelayMs: types.Ptr(10)}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately.
@@ -174,7 +174,7 @@ func TestStreamOpenAI_EmptyContent(t *testing.T) {
 	rec := httptest.NewRecorder()
 	resp := &engine.Response{Model: "gpt-4o", Content: ""}
 
-	err := StreamOpenAI(context.Background(), rec, resp, &types.StreamingConfig{ChunkDelayMs: 0})
+	err := StreamOpenAI(context.Background(), rec, resp, &types.StreamingConfig{ChunkDelayMs: types.Ptr(0)})
 	require.NoError(t, err)
 
 	lines := parseSSEDataLines(rec.Body.String())
@@ -186,7 +186,7 @@ func TestStreamOpenAI_EmptyContent(t *testing.T) {
 func TestStreamOpenAI_ConsistentID(t *testing.T) {
 	rec := httptest.NewRecorder()
 	resp := &engine.Response{Model: "gpt-4o", Content: "word1 word2 word3 word4"}
-	cfg := &types.StreamingConfig{ChunkSize: 1, ChunkDelayMs: 0}
+	cfg := &types.StreamingConfig{ChunkSize: 1, ChunkDelayMs: types.Ptr(0)}
 
 	err := StreamOpenAI(context.Background(), rec, resp, cfg)
 	require.NoError(t, err)
