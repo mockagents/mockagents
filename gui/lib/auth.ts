@@ -15,22 +15,36 @@ import {
   SESSION_COOKIE,
   APIError,
   burnMyAPIKey,
-  probeTenants,
+  getIdentity,
   rotateMyAPIKey,
+  type Identity,
+  type PrincipalRole,
 } from "./api";
 
 export interface AuthStatus {
   /** The first 8 characters of the stored key, for display only. Never
    * surface the full secret back to the browser. */
   prefix: string;
-  /** Best-effort role inferred from what the token can reach. We can't
-   * cleanly ask the server "what role am I?" without adding a new
-   * endpoint, so /login records the role that tenants/list succeeded
-   * for and stashes it alongside the key. */
-  role: "admin" | "unknown";
+  /** The role the SERVER reports for this credential, read fresh on every
+   * call. null means we could not confirm it — either the server was
+   * unreachable or it is running in local mode. Never a guess: a stale or
+   * assumed role is how a downgraded key keeps rendering admin controls. */
+  role: PrincipalRole | null;
+  /** Tenant the credential belongs to, when the server reports one. */
+  tenantId: string | null;
+  /** Capabilities the server says this credential has. Empty when unknown. */
+  capabilities: string[];
+  /** True when the credential exists but the server could not be reached.
+   * The UI must show this as "unknown", not as signed-out and not as
+   * confirmed — an offline server is not an authorization failure. */
+  unreachable: boolean;
 }
 
-const ROLE_COOKIE = "mockagents_role";
+/** Legacy cookie that cached a fabricated role before UX-01. Nothing writes it
+ * any more, but logout still clears it so a browser carrying one from an older
+ * build does not keep a stale value around. Remove once no deployed build
+ * writes it. */
+const LEGACY_ROLE_COOKIE = "mockagents_role";
 
 // 30-day session — GUI is a dev/ops tool and operators usually want a
 // long-lived login.
@@ -54,37 +68,75 @@ function sessionCookieOptions() {
   };
 }
 
-/** Read the current session's display metadata. Returns null when the
- * operator is not signed in. Safe to call from any server component. */
+/** Read the current session's identity from the SERVER. Returns null when
+ * there is no credential at all, or when the server rejected the one we
+ * hold — both mean "show the sign-in affordance".
+ *
+ * A server that cannot be reached is NOT a rejection: the credential is
+ * reported back with unreachable=true so the shell can say "unknown" rather
+ * than silently signing the operator out whenever the mock restarts.
+ *
+ * Safe to call from any server component. */
 export async function getAuthStatus(): Promise<AuthStatus | null> {
   const store = await cookies();
-  const key = store.get(AUTH_COOKIE)?.value ?? "";
+  const key = store.get(AUTH_COOKIE)?.value ?? store.get(SESSION_COOKIE)?.value ?? "";
   if (!key) return null;
-  const role = (store.get(ROLE_COOKIE)?.value as AuthStatus["role"]) ?? "unknown";
-  return { prefix: key.slice(0, 8), role };
+
+  const prefix = key.slice(0, 8);
+  let identity: Identity | null;
+  try {
+    identity = await getIdentity();
+  } catch (err) {
+    // 401 means this credential is no longer valid — it was revoked, burned,
+    // or the session expired. Surface it as signed out so the operator is
+    // prompted, instead of rendering controls that will all fail.
+    if (err instanceof APIError && err.status === 401) return null;
+    // Any other HTTP error is a server problem, not an identity verdict.
+    return { prefix, role: null, tenantId: null, capabilities: [], unreachable: true };
+  }
+  if (identity === null) {
+    return { prefix, role: null, tenantId: null, capabilities: [], unreachable: true };
+  }
+
+  return {
+    prefix,
+    role: identity.role,
+    tenantId: identity.tenant_id ?? null,
+    capabilities: identity.capabilities,
+    unreachable: false,
+  };
 }
 
-/** Validate a pasted API key by probing /api/v1/tenants (admin-only).
- * On success the cookie is persisted and the caller redirects to /.
- * On 401/403 the error message is returned so the login form can
- * display it inline without throwing. */
+/** Validate a pasted API key against GET /api/v1/identity and persist it.
+ *
+ * Any authenticated role is accepted. The previous implementation probed
+ * GET /api/v1/tenants, which is platform-gated, so viewer, editor and admin
+ * keys could not sign in at all — the console was unusable for every role but
+ * one. Authorization for individual actions still happens server-side on each
+ * request; signing in does not grant anything. */
 export async function login(formData: FormData): Promise<{ ok: boolean; error?: string }> {
   const raw = (formData.get("key") ?? "").toString().trim();
   if (!raw) {
     return { ok: false, error: "API key is required." };
   }
   try {
-    // A 200 response from /api/v1/tenants proves the key is valid AND
-    // has the admin role — the tenants endpoint is admin-gated at the
-    // middleware level. That's the only role the GUI admin pages need.
-    const tenants = await probeTenants(raw);
-    if (tenants === null) {
+    const identity = await getIdentity(raw);
+    if (identity === null) {
       return { ok: false, error: "Server unreachable. Is MockAgents running?" };
+    }
+    if (!identity.authenticated) {
+      // The server is in local mode: it has no accounts, so there is nothing
+      // for this key to authenticate against. Say so plainly rather than
+      // reporting the key as bad.
+      return {
+        ok: false,
+        error: "This server runs in local mode and does not use API keys.",
+      };
     }
   } catch (err) {
     if (err instanceof APIError) {
-      if (err.status === 401 || err.status === 403) {
-        return { ok: false, error: "API key rejected (needs admin role)." };
+      if (err.status === 401) {
+        return { ok: false, error: "API key rejected. Check the value and try again." };
       }
       return { ok: false, error: `Server returned ${err.status}.` };
     }
@@ -93,7 +145,6 @@ export async function login(formData: FormData): Promise<{ ok: boolean; error?: 
 
   const store = await cookies();
   store.set(AUTH_COOKIE, raw, sessionCookieOptions());
-  store.set(ROLE_COOKIE, "admin", sessionCookieOptions());
   return { ok: true };
 }
 
@@ -148,7 +199,7 @@ export async function burnSession(): Promise<{ ok: true } | { ok: false; error: 
   // cookies we're about to clear are the last references to it.
   const store = await cookies();
   store.delete(AUTH_COOKIE);
-  store.delete(ROLE_COOKIE);
+  store.delete(LEGACY_ROLE_COOKIE);
   return { ok: true };
 }
 
@@ -158,6 +209,6 @@ export async function burnSession(): Promise<{ ok: true } | { ok: false; error: 
 export async function logout(): Promise<void> {
   const store = await cookies();
   store.delete(AUTH_COOKIE);
-  store.delete(ROLE_COOKIE);
+  store.delete(LEGACY_ROLE_COOKIE);
   store.delete(SESSION_COOKIE);
 }

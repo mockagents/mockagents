@@ -18,7 +18,13 @@
   --sr-bg-elevated:   hsl(0 0% 100%);
 
   --sr-fg:            hsl(222.2 47.4% 11.2%);
-  --sr-fg-muted:      hsl(215.4 16.3% 46.9%);
+  /* 45% (not the design system's stock 46.9%) so muted text clears WCAG 2.2 AA
+     on --sr-bg-muted, its worst-case background: .tag, .badge-muted, table
+     counts and inline <code> all pair the two. At 46.9% that pairing measures
+     4.34:1 against a 4.5:1 requirement; 45% measures 4.64:1. The dark theme's
+     muted foreground already clears it at 5.70:1 and is unchanged.
+     Regression-tested by the axe smoke suite (gui/e2e/smoke.spec.ts). */
+  --sr-fg-muted:      hsl(215.4 16.3% 45%);
   --sr-fg-on-primary: hsl(210 40% 98%);
 
   --sr-primary:       hsl(222.2 47.4% 11.2%);
@@ -30,7 +36,11 @@
   --sr-ring:          hsl(222.2 84% 4.9%);
 
   --sr-success-bg:    hsl(160 84% 39% / .15);
-  --sr-success-fg:    hsl(160 84% 28%);
+  /* 22% (not 28%) so success text clears WCAG 2.2 AA on its own tinted
+     background. At 28% a .badge-ok measures 4.11:1 on a plain row and 3.80:1
+     on a selected one, against a 4.5:1 requirement for text this size; 22%
+     measures 5.95:1 and 5.50:1. Regression-tested by the axe smoke suite. */
+  --sr-success-fg:    hsl(160 84% 22%);
   --sr-warning-bg:    hsl(38 92% 50% / .15);
   --sr-warning-fg:    hsl(32 81% 35%);
   --sr-danger-bg:     hsl(0 84.2% 60.2% / .15);
@@ -73,6 +83,11 @@
   --sr-input:         hsl(217.2 32.6% 22%);
   --sr-ring:          hsl(212.7 26.8% 83.9%);
   --sr-success-bg:    hsl(160 84% 39% / .18);
+  /* The dark theme previously inherited the LIGHT success foreground, so a
+     dark green sat on a dark tint at ~3.1:1 — a failure the smoke suite never
+     caught because it only exercised the light theme. Light green on dark
+     measures ~10:1. (Dark-theme coverage added alongside this.) */
+  --sr-success-fg:    hsl(160 84% 65%);
   --sr-warning-bg:    hsl(38 92% 50% / .18);
   --sr-danger-bg:     hsl(0 84.2% 60.2% / .2);
   --sr-info-bg:       hsl(217 91% 60% / .16);
@@ -314,6 +329,19 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .empty { text-align: center; padding: 48px 24px; color: var(--sr-fg-muted); border: 1px dashed var(--sr-border); border-radius: var(--sr-radius-lg); font-size: 13.5px; }
 .tag { display: inline-flex; align-items: center; font-size: 11.5px; color: var(--sr-fg-muted); font-family: var(--sr-font-mono); padding: 1px 7px; border-radius: var(--sr-radius-full); background: var(--sr-bg-muted); }
 .muted { color: var(--sr-fg-muted); }
+/* Visible to assistive technology only. Used where meaning is otherwise
+   carried by colour or a symbol alone — e.g. added/removed rows in the agent
+   editor's diff (WCAG 1.4.1: never colour as the sole indicator). */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 .section-title { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--sr-fg-muted); margin: 24px 0 10px; }
 
 /* range slider */

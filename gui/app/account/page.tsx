@@ -126,7 +126,23 @@ export default async function AccountPage({ searchParams }: PageProps) {
               <span className="txt-sm" style={{ fontWeight: 500 }}>
                 Role
               </span>
-              <span className="badge badge-secondary">{auth.role}</span>
+              {/* UX-01: the role comes from the server. When it could not be
+                  confirmed, say so — a blank badge reads as "no role", and an
+                  assumed one is worse. */}
+              {auth.role ? (
+                <span className="badge badge-secondary">{auth.role}</span>
+              ) : (
+                <span
+                  className="badge badge-outline"
+                  title={
+                    auth.unreachable
+                      ? "The server could not be reached, so its role for this key is unknown."
+                      : "This server reports no role for the current session."
+                  }
+                >
+                  unknown
+                </span>
+              )}
             </div>
           </div>
         </div>

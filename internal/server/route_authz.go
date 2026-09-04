@@ -27,6 +27,11 @@ const roleOpen tenancy.Role = ""
 var managementRouteFloors = map[string]tenancy.Role{
 	// Agent catalog (read) + hot reload (write).
 	"GET /api/v1/health":                roleOpen,
+	// UX-01 identity: every authenticated role must be able to read its
+	// own principal and capabilities, so this is open by design. It is
+	// tenant-scoped by construction — it reports only the caller’s own
+	// principal, never another tenant’s.
+	"GET /api/v1/identity":              roleOpen,
 	"GET /api/v1/ready":                 roleOpen, // probe target; see skipAuth
 	"GET /api/v1/agents":                roleOpen,
 	"GET /api/v1/agents/{name}":         roleOpen,
@@ -107,6 +112,18 @@ func (s *Server) mountManaged(mux *http.ServeMux, pattern string, h http.Handler
 	if !ok {
 		panic("server: no role floor declared for management route " + pattern)
 	}
+	// Record what this server actually serves. Several routes are conditional
+	// on configuration — /api/v1/audit needs an audit store, /api/v1/costs a
+	// log store — so the policy table is a superset of any given process's
+	// surface. UX-01's capability response is computed from THIS set so it can
+	// never advertise an action that would 404 (a dead-end action, which the
+	// epic's acceptance gate forbids). Written only here, during startup and
+	// before Serve, then read-only for the process's life.
+	if s.mountedRoutes == nil {
+		s.mountedRoutes = make(map[string]tenancy.Role, len(managementRouteFloors))
+	}
+	s.mountedRoutes[pattern] = floor
+
 	if s.tenancyH != nil && floor != roleOpen {
 		h = tenancy.RequireRole(floor, h)
 	}

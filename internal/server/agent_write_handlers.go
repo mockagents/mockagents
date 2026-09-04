@@ -67,9 +67,9 @@ func (h *Handlers) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	h.recordAgentEvent(r, audit.EventAgentCreated, name, file)
 	h.Logger.Info("agent created", "agent", name, "persisted", persisted)
 
-	writeJSON(w, http.StatusCreated, agentWriteResponse{
+	writeJSON(w, http.StatusCreated, h.finishAgentWrite(w, agentWriteResponse{
 		Status: "created", Agent: name, Persisted: persisted, File: file,
-	})
+	}, tenantID))
 }
 
 // PutAgent serves PUT /api/v1/agents/{name}: create-or-replace. The path name
@@ -92,6 +92,23 @@ func (h *Handlers) PutAgent(w http.ResponseWriter, r *http.Request) {
 	h.agentWriteMu.Lock()
 	defer h.agentWriteMu.Unlock()
 
+	// UX-03: evaluate If-Match / If-None-Match INSIDE the write lock, so the
+	// check and the write cannot be interleaved by another writer. A request
+	// that sends neither header takes the legacy unconditional path unchanged.
+	switch outcome, reason, err := h.checkAgentPrecondition(r, name, tenantID); {
+	case err != nil:
+		writeServerError(w, err)
+		return
+	case outcome == preconditionFailed:
+		// Hand back the CURRENT revision so a client can rebase without a
+		// second round-trip, and so a conflict UI can show what it is now.
+		if rev, ok, revErr := h.agentRevisionFor(name, tenantID); ok && revErr == nil {
+			setRevisionHeaders(w, rev)
+		}
+		writeError(w, http.StatusPreconditionFailed, reason)
+		return
+	}
+
 	// created-vs-updated reflects the caller's OWN bucket — a global agent of the
 	// same name must not make a tenant's create look like an update (FB04-03).
 	existed := h.Engine.Registry.GetOwnedForTenant(name, tenantID) != nil
@@ -111,9 +128,9 @@ func (h *Handlers) PutAgent(w http.ResponseWriter, r *http.Request) {
 	h.recordAgentEvent(r, event, name, file)
 	h.Logger.Info("agent "+status, "agent", name, "persisted", persisted)
 
-	writeJSON(w, code, agentWriteResponse{
+	writeJSON(w, code, h.finishAgentWrite(w, agentWriteResponse{
 		Status: status, Agent: name, Persisted: persisted, File: file,
-	})
+	}, tenantID))
 }
 
 // DeleteAgent serves DELETE /api/v1/agents/{name}: removes the agent from the
@@ -168,11 +185,31 @@ func (h *Handlers) DeleteAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 // agentWriteResponse is the JSON envelope returned by the agent write routes.
+//
+// Persisted is load-bearing, not decoration: it is how a caller tells a save
+// that reached disk from one that exists only in the running process (no
+// AgentsDir configured). A restart keeps the first and loses the second, so a
+// UI must never render both as plain "saved" (epic §10).
 type agentWriteResponse struct {
 	Status    string `json:"status"`
 	Agent     string `json:"agent"`
 	Persisted bool   `json:"persisted"`
 	File      string `json:"file,omitempty"`
+	// Revision is the ETag of the agent AFTER this write, so a client can
+	// continue editing conditionally without re-fetching. Empty if it could
+	// not be computed — an unknown revision, never a stale one.
+	Revision string `json:"revision,omitempty"`
+}
+
+// finishAgentWrite computes the post-write revision, publishes it as the ETag,
+// and returns the response envelope with it filled in. The caller holds
+// agentWriteMu, so the revision it reads is the one it just wrote.
+func (h *Handlers) finishAgentWrite(w http.ResponseWriter, resp agentWriteResponse, tenantID string) agentWriteResponse {
+	if rev, ok, err := h.agentRevisionFor(resp.Agent, tenantID); ok && err == nil {
+		setRevisionHeaders(w, rev)
+		resp.Revision = rev.ETag()
+	}
+	return resp
 }
 
 // decodeAgent reads the request body (bounded), parses it as a YAML or JSON
@@ -194,6 +231,14 @@ func (h *Handlers) decodeAgent(w http.ResponseWriter, r *http.Request, wantName 
 			return nil, nil, false
 		}
 		writeError(w, http.StatusBadRequest, "reading body: "+err.Error())
+		return nil, nil, false
+	}
+
+	// UX-03: a caller that opted into conditional writes also opts into strict
+	// field checking, so an unsupported field is refused rather than silently
+	// dropped on the way to disk. Unconditional callers keep the lenient
+	// behaviour they have always had.
+	if !checkStrictFields(w, r, body) {
 		return nil, nil, false
 	}
 

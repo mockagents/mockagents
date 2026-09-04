@@ -252,6 +252,67 @@ jobs:
           MOCKAGENTS_BIN: ${{ github.workspace }}/mockagents
         run: npm test
 
+  # UX-08: the GUI delivery gate. Epic §10 is explicit that a green TypeScript
+  # compile is not evidence of UX correctness, so this job runs four distinct
+  # layers: types, production build, component interaction tests (jsdom) and
+  # browser smoke tests driving the real Go server. Accessibility is asserted
+  # in both test layers — jsdom covers names/roles/structure, and Chromium
+  # covers the rules that need a real layout and cascade (colour contrast,
+  # target size).
+  gui:
+    name: GUI (typecheck, build, component + browser tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      # The browser suite runs against the real binary serving examples/ —
+      # nothing in e2e/ is mocked, so an API contract change fails here.
+      - name: Build server binary
+        run: go build -o mockagents ./cmd/mockagents
+
+      - name: Install GUI dependencies
+        working-directory: gui
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: gui
+        run: npm run typecheck
+
+      - name: Production build
+        working-directory: gui
+        run: npm run build
+
+      - name: Component + accessibility tests
+        working-directory: gui
+        run: npm test
+
+      - name: Install Playwright browser
+        working-directory: gui
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser smoke tests (real server)
+        working-directory: gui
+        run: npm run test:e2e
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: gui/playwright-report/
+          retention-days: 7
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

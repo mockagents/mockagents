@@ -110,6 +110,42 @@ paths:
               schema:
                 $ref: "#/components/schemas/ReadinessResponse"
 
+  /api/v1/identity:
+    get:
+      operationId: getIdentity
+      summary: Who am I, and what may I do?
+      description: >
+        Reports the calling principal, the server's mode, and the capabilities
+        the caller may exercise. Open to every authenticated role: a viewer
+        must be able to discover its own identity, and a client that cannot
+        ends up probing a privileged endpoint to infer its role. An anonymous
+        caller still receives 401 in multi-tenant mode.
+
+
+        In single-tenant (local) mode the server has no accounts at all, so it
+        answers `mode: local` with `authenticated: false` and a null `role` —
+        deliberately NOT a synthetic viewer identity, so a client can tell an
+        unauthenticated local server from a signed-in one.
+
+
+        `capabilities` are derived from the role-floor table intersected with
+        the routes this process actually mounts (`/api/v1/audit` and
+        `/api/v1/costs` exist only when their stores are configured), so an
+        advertised capability never names a route that would 404. They are
+        advisory, for deciding what a UI renders; every request is still
+        authorized server-side. The response contains no secret — `key_id` is
+        an identifier, never key material.
+      tags: [Health]
+      responses:
+        "200":
+          description: The caller's identity and capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdentityResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   /metrics:
     get:
       operationId: getMetrics
@@ -197,7 +233,11 @@ paths:
     get:
       operationId: getAgent
       summary: Get full agent definition
-      description: Returns the complete parsed agent configuration for the given agent name.
+      description: >
+        Returns the COMPLETE parsed agent configuration — every server-supported
+        field, not the reduced summary shape used by the list route — so an
+        editor can round-trip it safely. The response carries an `ETag` plus the
+        two revision headers described below.
       tags: [Agents]
       parameters:
         - name: name
@@ -209,6 +249,24 @@ paths:
       responses:
         "200":
           description: Full agent definition.
+          headers:
+            ETag:
+              description: >
+                Opaque revision of this agent. Echo it back as `If-Match` on a
+                later PUT to make the write conditional. It covers BOTH the
+                running definition and its backing file, so it changes if
+                either moves.
+              schema: { type: string }
+            X-Mockagents-Revision-Effective:
+              description: Hash of the definition the engine is currently serving.
+              schema: { type: string }
+            X-Mockagents-Revision-Source:
+              description: >
+                Hash of the backing YAML file's bytes. Absent when the agent has
+                no file (runtime-only) or the file could not be read. When this
+                differs from the effective revision, the file has been edited
+                out of band and the running definition is older than disk.
+              schema: { type: string }
           content:
             application/json:
               schema:
@@ -227,6 +285,26 @@ paths:
         agent was created or 200 when an existing one was replaced. Requires the
         `editor` role in multi-tenant mode. Emits `agent.created` or
         `agent.updated`.
+
+
+        **Conditional writes are additive.** A request that sends neither
+        `If-Match` nor `If-None-Match` behaves exactly as it always has:
+        unconditional create-or-replace. Existing clients are unaffected.
+
+
+        **Strict fields ride along with the opt-in.** A request carrying either
+        precondition also gets unknown fields REJECTED (422) instead of silently
+        dropped. Without this, an editor doing GET → modify → PUT would delete
+        any field its types do not model, while the response still said
+        `"persisted": true`. An unconditional PUT keeps the older lenient
+        behaviour, where unknown fields are discarded.
+
+
+        **Known limit:** because the route stays additive, a client that sends
+        no precondition still overwrites unconditionally. Conditional writes
+        order only the callers that use them — they cannot stop a legacy writer.
+        A conditional writer will at least be told (412) rather than silently
+        losing its work.
       tags: [Agents]
       parameters:
         - name: name
@@ -234,6 +312,24 @@ paths:
           required: true
           description: Agent name (must equal the body's metadata.name).
           schema: { type: string }
+        - name: If-Match
+          in: header
+          required: false
+          description: >
+            Apply only if the agent's current revision matches. Send the `ETag`
+            from a prior GET to replace a known revision, or `*` to require that
+            the agent merely exists. A mismatch returns 412 and changes nothing.
+            Fails if the agent was deleted, replaced by another writer, or its
+            YAML was edited on disk since it was read.
+          schema: { type: string }
+        - name: If-None-Match
+          in: header
+          required: false
+          description: >
+            Only `*` is accepted: create-only. Returns 412 rather than
+            overwriting an agent that already exists. Any other value is
+            rejected rather than guessed at.
+          schema: { type: string, enum: ["*"] }
       requestBody:
         required: true
         content:
@@ -244,18 +340,84 @@ paths:
       responses:
         "200":
           description: Existing agent replaced.
+          headers:
+            ETag:
+              description: >
+                Opaque revision of this agent. Echo it back as `If-Match` on a
+                later PUT to make the write conditional. It covers BOTH the
+                running definition and its backing file, so it changes if
+                either moves.
+              schema: { type: string }
+            X-Mockagents-Revision-Effective:
+              description: Hash of the definition the engine is currently serving.
+              schema: { type: string }
+            X-Mockagents-Revision-Source:
+              description: >
+                Hash of the backing YAML file's bytes. Absent when the agent has
+                no file (runtime-only) or the file could not be read. When this
+                differs from the effective revision, the file has been edited
+                out of band and the running definition is older than disk.
+              schema: { type: string }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AgentWriteResult" }
         "201":
           description: New agent created.
+          headers:
+            ETag:
+              description: >
+                Opaque revision of this agent. Echo it back as `If-Match` on a
+                later PUT to make the write conditional. It covers BOTH the
+                running definition and its backing file, so it changes if
+                either moves.
+              schema: { type: string }
+            X-Mockagents-Revision-Effective:
+              description: Hash of the definition the engine is currently serving.
+              schema: { type: string }
+            X-Mockagents-Revision-Source:
+              description: >
+                Hash of the backing YAML file's bytes. Absent when the agent has
+                no file (runtime-only) or the file could not be read. When this
+                differs from the effective revision, the file has been edited
+                out of band and the running definition is older than disk.
+              schema: { type: string }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AgentWriteResult" }
+        "412":
+          description: >
+            A precondition failed and NOTHING was changed. The body explains
+            which revision moved — another writer, a deletion, or an out-of-band
+            edit to the YAML on disk — and the response carries the agent's
+            current `ETag` so a client can rebase without a second round-trip.
+          headers:
+            ETag:
+              description: >
+                Opaque revision of this agent. Echo it back as `If-Match` on a
+                later PUT to make the write conditional. It covers BOTH the
+                running definition and its backing file, so it changes if
+                either moves.
+              schema: { type: string }
+            X-Mockagents-Revision-Effective:
+              description: Hash of the definition the engine is currently serving.
+              schema: { type: string }
+            X-Mockagents-Revision-Source:
+              description: >
+                Hash of the backing YAML file's bytes. Absent when the agent has
+                no file (runtime-only) or the file could not be read. When this
+                differs from the effective revision, the file has been edited
+                out of band and the running definition is older than disk.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "400":
           $ref: "#/components/responses/BadRequest"
         "422":
-          description: Validation failed; the body lists the errors.
+          description: >
+            Validation failed and NOTHING was changed; the body lists the
+            errors. When a precondition was sent this also covers unsupported
+            fields, each reported with its line so an editor can highlight it.
         "500":
           $ref: "#/components/responses/InternalServerError"
     delete:
@@ -1032,6 +1194,50 @@ components:
           type: integer
           example: 4
 
+    IdentityResponse:
+      type: object
+      required: [mode, authenticated, role, capabilities, server]
+      properties:
+        mode:
+          type: string
+          enum: [local, multi_tenant]
+          description: >
+            `local` is single-tenant mode with no authentication. It is not a
+            role, and must not be rendered as a signed-in session.
+        authenticated:
+          type: boolean
+        tenant_id:
+          type: string
+          description: Omitted in local mode.
+          example: t_01HZY4
+        key_id:
+          type: string
+          description: Identifier of the API key or session. Never key material.
+          example: k_01HZY9
+        role:
+          type: string
+          nullable: true
+          enum: [viewer, editor, admin, platform]
+          description: >
+            Null in local mode. `platform` can be held but never assigned
+            through the management API.
+        capabilities:
+          type: array
+          description: >
+            Sorted, dot-separated action names derived from the route table,
+            e.g. `agents.write`. `pipelines.run.write` (viewer) is distinct
+            from `pipelines.write` (editor).
+          items:
+            type: string
+          example: [agents.read, agents.write, logs.read, pipelines.run.write]
+        server:
+          type: object
+          required: [version]
+          properties:
+            version:
+              type: string
+              example: 0.4.0
+
     ReadinessResponse:
       type: object
       required: [status, checks]
@@ -1077,6 +1283,13 @@ components:
           type: string
           description: Base filename written/removed (omitted when not persisted).
           example: my-agent.yaml
+        revision:
+          type: string
+          description: >
+            The agent's opaque revision AFTER this write, so a client can keep
+            editing conditionally without re-fetching. Omitted if it could not
+            be computed — an unknown revision is reported as absent, never as a
+            stale value.
     AgentSummary:
       type: object
       required: [name, description, protocol, tags, tools_count, scenarios_count, status]

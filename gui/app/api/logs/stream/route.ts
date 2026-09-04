@@ -47,6 +47,15 @@ export async function GET(req: NextRequest) {
   if (!upstreamResp.ok || !upstreamResp.body) {
     const detail = await upstreamResp.text().catch(() => "");
     console.error(`logs/stream proxy: upstream ${upstreamResp.status}: ${detail.slice(0, 500)}`);
+
+    // UX-04: an expired or revoked credential must not look like a network
+    // fault. Collapsing it into 502 made the client reconnect forever against
+    // a server that will never accept it, with no way to tell the operator to
+    // sign in again. The status is passed through; the body stays generic so
+    // no upstream detail leaks to the browser (GUI-07).
+    if (upstreamResp.status === 401 || upstreamResp.status === 403) {
+      return new Response("not authorized", { status: upstreamResp.status });
+    }
     return new Response("upstream request failed", { status: 502 });
   }
 
