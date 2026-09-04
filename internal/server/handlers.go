@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/mockagents/mockagents/internal/audit"
 	"github.com/mockagents/mockagents/internal/config"
 	"github.com/mockagents/mockagents/internal/engine"
@@ -123,6 +125,34 @@ func (h *Handlers) GetAgent(w http.ResponseWriter, r *http.Request) {
 			"error":            fmt.Sprintf("agent %q not found", name),
 			"available_agents": h.Engine.Registry.ListNamesForTenant(tenantID),
 		})
+		return
+	}
+	// UX-03: publish the revision an editor echoes back as If-Match. The body
+	// is the COMPLETE definition (not the reduced summary type), so what a
+	// client reads here is what it can safely round-trip.
+	if rev, err := revisionFor(agent, h.Engine.Registry.Source(name, tenantID)); err == nil {
+		setRevisionHeaders(w, rev)
+	}
+
+	// An editor wants the document in the format the product is authored in.
+	// Content negotiation is additive: JSON stays the default, so no existing
+	// client changes behaviour.
+	//
+	// The YAML served is the CANONICAL form of the definition the engine is
+	// serving — not the bytes of the source file. That is deliberate: it is
+	// exactly what a conditional PUT will store, so what an editor shows is
+	// what it will write. The cost is that comments and formatting from a
+	// hand-authored file are not represented here, and a save replaces them;
+	// a UI must say so rather than implying round-trip fidelity.
+	if wantsYAML(r) {
+		out, err := yaml.Marshal(agent)
+		if err != nil {
+			writeServerError(w, fmt.Errorf("marshaling agent: %w", err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(out)
 		return
 	}
 	writeJSON(w, http.StatusOK, agent)

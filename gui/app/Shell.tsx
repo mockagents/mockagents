@@ -47,7 +47,10 @@ export interface ShellProps {
   apiUrl: string;
   online: boolean;
   version?: string;
-  auth: { prefix: string; role: string } | null;
+  // UX-01: role is server-reported and may be null — either the server was
+  // unreachable, or it runs in local mode with no roles at all. Render the
+  // uncertainty; never substitute a guess.
+  auth: { prefix: string; role: string | null; unreachable: boolean } | null;
   logoutAction: () => Promise<void>;
 }
 
@@ -168,7 +171,11 @@ export function Shell({ children, apiUrl, online, version, auth, logoutAction }:
                 <Link
                   href="/account"
                   className="spill"
-                  title={`signed in · role ${auth.role} — click for self-rotation`}
+                  title={
+                    auth.unreachable
+                      ? "signed in · role unknown (server unreachable) — click for self-rotation"
+                      : `signed in · role ${auth.role ?? "unknown"} — click for self-rotation`
+                  }
                 >
                   <Icon name="key-round" size={13} />
                   <span className="mono">{auth.prefix}…</span>

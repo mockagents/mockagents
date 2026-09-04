@@ -1,18 +1,27 @@
 .PHONY: build test test-verbose test-coverage test-python test-examples test-typescript test-all \
        lint drift liquidcheck fmt clean validate docker docker-up docker-down \
-       gui-dev gui-build \
+       gui-dev gui-build gui-typecheck gui-test gui-test-e2e gui-verify \
        helm-lint helm-template helm-package \
        bench bench-report \
        release changelog-finalize run setup hooks help
 
 BINARY    := mockagents
+# On-disk name of the compiled binary. Windows needs the .exe suffix:
+# cmd.exe cannot execute an extensionless PE file, so anything that shells
+# out to it (the GUI browser suite, for one) fails without it. BINARY stays
+# the logical name used for the Docker image tag.
+ifeq ($(OS),Windows_NT)
+BIN_OUT   := $(BINARY).exe
+else
+BIN_OUT   := $(BINARY)
+endif
 GO        := go
 VERSION   ?= dev
 LDFLAGS   := -s -w -X main.version=$(VERSION)
 
 ## Build
 build:                          ## Compile Go binary
-	$(GO) build -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/mockagents/
+	$(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_OUT) ./cmd/mockagents/
 
 ## Testing
 test:                           ## Run Go tests
@@ -63,7 +72,7 @@ fmt:                            ## Format Go code
 
 ## Validation
 validate: build                 ## Validate example agent definitions
-	./$(BINARY) validate examples/
+	./$(BIN_OUT) validate examples/
 
 ## GUI
 gui-dev:                        ## Run the web console in dev mode on :3001
@@ -71,6 +80,17 @@ gui-dev:                        ## Run the web console in dev mode on :3001
 
 gui-build:                      ## Build the web console for production
 	cd gui && npm run build
+
+gui-typecheck:                  ## Typecheck the web console (tsc --noEmit)
+	cd gui && npm run typecheck
+
+gui-test:                       ## Component + accessibility tests (vitest/jsdom)
+	cd gui && npm test
+
+gui-test-e2e:                   ## Browser smoke tests against a real server (playwright)
+	cd gui && npm run test:e2e
+
+gui-verify: build gui-typecheck gui-build gui-test gui-test-e2e ## Full UX-08 GUI delivery gate
 
 ## Helm
 helm-lint:                      ## Lint the MockAgents Helm chart
@@ -110,7 +130,7 @@ changelog-finalize:             ## Promote CHANGELOG [Unreleased] -> [VERSION] (
 
 ## Development
 run: build                      ## Build and run with example agents
-	./$(BINARY) start --agents-dir examples --log-level debug
+	./$(BIN_OUT) start --agents-dir examples --log-level debug
 
 setup: hooks                    ## Install development tools + git hooks
 	$(GO) install golang.org/x/tools/cmd/goimports@latest

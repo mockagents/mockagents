@@ -46,6 +46,23 @@ export interface InteractionLog {
   scenario_name?: string;
   response_status?: number;
   streaming?: boolean;
+  // UX-04: fields the storage layer has always recorded but the console never
+  // surfaced. Without them an operator cannot group a conversation, tell an
+  // injected fault from a real one, or know that a captured body is clipped.
+  /** Groups the requests of one conversation. */
+  session_id?: string;
+  /** Engine-side error for this interaction, when there was one. */
+  error?: string;
+  /** True when the stored body was clipped at the capture cap — what is shown
+   * is NOT the complete payload. */
+  truncated?: boolean;
+  tool_calls_count?: number;
+  /** Which chaos action fired, e.g. "error", "latency". Absent = none. */
+  chaos_action?: string;
+  /** Where the effective chaos setting came from (request, scenario, agent, …). */
+  chaos_source?: string;
+  chaos_seed?: number;
+  chaos_rate?: number;
   // Cost annotation fields populated by /api/v1/logs when a pricing
   // table is configured (see internal/server/log_handlers.go LogWithCost).
   prompt_tokens?: number;
@@ -182,18 +199,69 @@ export interface ListLogsOptions {
   agent?: string;
   since?: string;
   until?: string;
+  /** Narrow to one conversation (UX-04). Supported by the server's filter. */
+  session_id?: string;
+  /** Offset paging. NOT a cursor — see LogWindow.stable. */
+  offset?: number;
+}
+
+function logQuery(options: ListLogsOptions): string {
+  const params = new URLSearchParams();
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.offset) params.set("offset", String(options.offset));
+  if (options.agent) params.set("agent", options.agent);
+  if (options.since) params.set("since", options.since);
+  if (options.until) params.set("until", options.until);
+  if (options.session_id) params.set("session_id", options.session_id);
+  return params.toString();
 }
 
 /** Fetch recent interaction logs. */
 export async function listLogs(options: ListLogsOptions = {}): Promise<InteractionLog[]> {
-  const params = new URLSearchParams();
-  if (options.limit !== undefined) params.set("limit", String(options.limit));
-  if (options.agent) params.set("agent", options.agent);
-  if (options.since) params.set("since", options.since);
-  if (options.until) params.set("until", options.until);
-  const qs = params.toString();
+  const qs = logQuery(options);
   const path = qs ? `/api/v1/logs?${qs}` : "/api/v1/logs";
   return fetchJSON<InteractionLog[]>(path);
+}
+
+/** A page of logs, plus what is honestly known about the window it came from.
+ *
+ * The server returns a plain array with no total and no cursor, so this is what
+ * can be said truthfully — and nothing more. In particular there is no "N of M":
+ * the row count of the whole store is not available, and inventing one would be
+ * the "missing information rendered as a number" the epic forbids. */
+export interface LogWindow {
+  rows: InteractionLog[];
+  /** The limit that was asked for. */
+  limit: number;
+  offset: number;
+  /** True when the page came back full, so older rows probably exist. A full
+   * page does NOT prove complete retention — the store prunes independently. */
+  mayHaveMore: boolean;
+  /** False when paging cannot be trusted to be stable.
+   *
+   * The API pages by OFFSET, not by a cursor. New rows are inserted at the
+   * head, so any insert between two page fetches shifts every later row down —
+   * a row can be seen twice or missed entirely. That is a property of the
+   * contract, not a bug in the client, and the UI must say so rather than
+   * implying a stable sequence. A stable cursor is proposed but does not
+   * exist (epic UX-04). */
+  stable: boolean;
+}
+
+/** Fetch one page of logs together with its window metadata. */
+export async function listLogWindow(options: ListLogsOptions = {}): Promise<LogWindow> {
+  const limit = options.limit ?? 100;
+  const offset = options.offset ?? 0;
+  const rows = await listLogs({ ...options, limit, offset });
+  return {
+    rows,
+    limit,
+    offset,
+    mayHaveMore: rows.length >= limit,
+    // Only the first page of a quiet store can be treated as a stable view;
+    // any paged read is subject to insert shift.
+    stable: offset === 0,
+  };
 }
 
 /** Fetch a single interaction log by id. Returns null on 404 so the
@@ -262,9 +330,63 @@ export function getBaseUrl(): string {
   return baseUrl();
 }
 
-// --- Tenancy (multi-tenant mode only) -------------------------------
+// --- Identity (UX-01) -----------------------------------------------
 
+/** Roles a key may be ASSIGNED through the management API. Deliberately
+ * excludes "platform": the backend refuses to assign it over the API
+ * (Role.IsAssignableViaAPI) so a tenant admin cannot self-escalate, and the
+ * key-role dropdown must not offer it. */
 export type Role = "viewer" | "editor" | "admin";
+
+/** Roles a principal may HAVE. A platform operator exists and must be
+ * displayable even though no API call can mint that role. Keeping this
+ * separate from Role is what stops the admin UI from offering it. */
+export type PrincipalRole = Role | "platform";
+
+/** How the server is running. "local" is single-tenant mode with no
+ * authentication at all — deliberately NOT reported as a signed-in viewer,
+ * because a UI that conflates them would show an access-controlled state for
+ * a server that has none. */
+export type IdentityMode = "local" | "multi_tenant";
+
+/** GET /api/v1/identity. The server is authoritative for all of it; the
+ * capability list is advisory, for deciding what to render. */
+export interface Identity {
+  mode: IdentityMode;
+  authenticated: boolean;
+  tenant_id?: string;
+  key_id?: string;
+  /** null in local mode — never coerce this to a role. */
+  role: PrincipalRole | null;
+  /** Sorted capability names, e.g. "agents.write". Reflects what this server
+   * actually mounts, so an action named here will not 404. */
+  capabilities: string[];
+  server: { version: string };
+}
+
+/** Fetch the caller's identity. Pass authKey to validate a specific token
+ * (used by /login before the cookie is set).
+ *
+ * Throws APIError for an HTTP failure — 401 means the credential was
+ * rejected, which callers must distinguish from the null returned when the
+ * server could not be reached at all. Treating "offline" as "unauthorized"
+ * would sign the operator out every time the mock server restarts. */
+export async function getIdentity(authKey?: string): Promise<Identity | null> {
+  try {
+    return await fetchJSON<Identity>("/api/v1/identity", authKey ? { authKey } : {});
+  } catch (err) {
+    if (err instanceof APIError) throw err;
+    return null;
+  }
+}
+
+/** Whether an identity grants a capability. Rendering only — every request is
+ * still authorized by the server. */
+export function can(identity: Identity | null, capability: string): boolean {
+  return identity?.capabilities.includes(capability) ?? false;
+}
+
+// --- Tenancy (multi-tenant mode only) -------------------------------
 
 export interface Tenant {
   id: string;
@@ -287,18 +409,11 @@ export interface NewAPIKeyResult {
   plaintext: string;
 }
 
-/** Probe whether the configured API key is accepted. Used by /login to
- * validate a pasted token before we persist it in the cookie. Returns
- * null when the endpoint is unreachable entirely so callers can
- * distinguish network errors from auth rejections. */
-export async function probeTenants(authKey: string): Promise<Tenant[] | null> {
-  try {
-    return await fetchJSON<Tenant[]>("/api/v1/tenants", { authKey });
-  } catch (err) {
-    if (err instanceof APIError) throw err;
-    return null;
-  }
-}
+// probeTenants was removed in UX-01. It validated a login by calling
+// GET /api/v1/tenants, whose role floor is *platform* — so viewer, editor and
+// admin keys were all rejected at the door, and the failure was reported as
+// "needs admin role". Use getIdentity() instead: it is reachable by every
+// authenticated role and reports the real one.
 
 /** List every tenant. Returns null on 401/403 so the page can render a
  * "needs admin token" notice instead of crashing. */
@@ -576,6 +691,145 @@ export async function validateYAML(yaml: string): Promise<ValidateResult> {
     throw new APIError(res.status, `/api/v1/config/validate: ${res.status} ${body.slice(0, 200)}`);
   }
   return (await res.json()) as ValidateResult;
+}
+
+// --- Agent revisions (UX-03) ----------------------------------------------
+
+/** An agent document plus the revision needed to write it back safely. */
+export interface AgentSource {
+  name: string;
+  /** Canonical YAML of the definition the engine is serving. NOT the bytes of
+   * the source file: comments and formatting from a hand-authored file are not
+   * represented, and a save replaces them. */
+  yaml: string;
+  /** Opaque revision to echo back as If-Match. */
+  revision: string;
+  /** Hash of the running definition. */
+  effective: string;
+  /** Hash of the backing file, when there is a readable one. */
+  source: string | null;
+  /** True when the file on disk means something different from what is
+   * running — someone edited the YAML without reloading. */
+  drifted: boolean;
+}
+
+/** Load an agent as canonical YAML together with its revision, in one request.
+ * Returns null when the agent does not exist. */
+export async function getAgentSource(name: string): Promise<AgentSource | null> {
+  const key = await getAuthKey();
+  const headers: Record<string, string> = { Accept: "application/yaml" };
+  if (key) headers.Authorization = `Bearer ${key}`;
+
+  const res = await fetch(`${baseUrl()}/api/v1/agents/${encodeURIComponent(name)}`, {
+    cache: "no-store",
+    headers,
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const body = await res.text();
+    throw new APIError(res.status, `GET agent ${name}: ${res.status} ${body.slice(0, 200)}`);
+  }
+
+  const effective = res.headers.get("X-Mockagents-Revision-Effective") ?? "";
+  const source = res.headers.get("X-Mockagents-Revision-Source");
+  return {
+    name,
+    yaml: await res.text(),
+    revision: stripQuotes(res.headers.get("ETag") ?? ""),
+    effective,
+    source,
+    // Drift is a SERVER judgement we cannot make here: the two hashes are
+    // computed over different things, so comparing them client-side would
+    // report drift for every hand-authored file. The server reports the
+    // difference in the 412 message; this stays false until the API exposes
+    // an explicit flag.
+    drifted: false,
+  };
+}
+
+/** Outcome of a conditional agent save. Each case needs a different response
+ * from the UI, so they are distinct rather than a boolean plus a message. */
+export type ConditionalSaveResult =
+  | { status: "ok"; created: boolean; persisted: boolean; file?: string; revision: string }
+  | { status: "invalid"; errors: ValidationError[] }
+  | { status: "conflict"; message: string; currentRevision: string }
+  | { status: "denied"; message: string }
+  | { status: "error"; message: string };
+
+/** Save an agent conditionally.
+ *
+ * `ifMatch` is the revision the editor loaded — the write is refused if the
+ * agent moved since. Pass `"*"` as `ifNoneMatch` instead to create without ever
+ * overwriting. Sending either precondition also opts into strict field
+ * checking, so an unsupported field is reported rather than silently dropped.
+ */
+export async function saveAgentConditional(
+  name: string,
+  yaml: string,
+  precondition: { ifMatch: string } | { ifNoneMatch: "*" },
+): Promise<ConditionalSaveResult> {
+  const key = await getAuthKey();
+  const headers: Record<string, string> = { "Content-Type": "application/x-yaml" };
+  if (key) headers.Authorization = `Bearer ${key}`;
+  if ("ifMatch" in precondition) headers["If-Match"] = `"${stripQuotes(precondition.ifMatch)}"`;
+  else headers["If-None-Match"] = "*";
+
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl()}/api/v1/agents/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      cache: "no-store",
+      headers,
+      body: yaml,
+    });
+  } catch (err) {
+    // Transport failure: the outcome is UNKNOWN, not failed. The write may or
+    // may not have been applied, so the caller must not silently retry.
+    return {
+      status: "error",
+      message:
+        "The server could not be reached, so the outcome of this save is unknown. " +
+        "Reload to see the current state before trying again — do not assume it failed.",
+    };
+  }
+
+  if (res.status === 200 || res.status === 201) {
+    const body = (await res.json()) as {
+      persisted?: boolean;
+      file?: string;
+      revision?: string;
+    };
+    return {
+      status: "ok",
+      created: res.status === 201,
+      persisted: body.persisted === true,
+      file: body.file,
+      revision: body.revision ?? stripQuotes(res.headers.get("ETag") ?? ""),
+    };
+  }
+  if (res.status === 422) {
+    const body = (await res.json()) as ValidateResult;
+    return { status: "invalid", errors: body.errors ?? [] };
+  }
+  if (res.status === 412) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    return {
+      status: "conflict",
+      message: body.error ?? "The agent changed since it was loaded.",
+      currentRevision: stripQuotes(res.headers.get("ETag") ?? ""),
+    };
+  }
+  if (res.status === 401 || res.status === 403) {
+    return {
+      status: "denied",
+      message:
+        res.status === 401
+          ? "Your session is no longer valid. Sign in again — your draft is kept."
+          : "You do not have permission to change agents (this needs the editor role).",
+    };
+  }
+  const text = await res.text();
+  return { status: "error", message: `Server returned ${res.status}: ${text.slice(0, 200)}` };
 }
 
 // --- Agent write API (FB-06: persist edits from the console via the FB-04 API) ---

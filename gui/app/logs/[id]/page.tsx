@@ -78,6 +78,25 @@ export default async function LogDetailPage({
               <dt>Scenario</dt>
               <dd>{log.scenario_name || <span className="muted">—</span>}</dd>
             </div>
+            {/* UX-04: the deep-linked view must not know less than the explorer
+                it was opened from. The session doubles as a link back to the
+                rest of the conversation. */}
+            <div>
+              <dt>Session</dt>
+              <dd>
+                {log.session_id ? (
+                  <Link
+                    className="mono"
+                    href={`/logs?session_id=${encodeURIComponent(log.session_id)}`}
+                    title="Show every request in this session"
+                  >
+                    {log.session_id}
+                  </Link>
+                ) : (
+                  <span className="muted">—</span>
+                )}
+              </dd>
+            </div>
             {log.cost_usd !== undefined && (
               <div>
                 <dt>Estimated cost</dt>
@@ -93,6 +112,39 @@ export default async function LogDetailPage({
               </div>
             )}
           </dl>
+
+          {log.error && (
+            <div className="banner banner-error" role="note">
+              <strong>Engine error.</strong> <span className="mono">{log.error}</span>
+            </div>
+          )}
+
+          {log.chaos_action && (
+            <div className="banner banner-warn" role="note">
+              <strong>Fault injected: {log.chaos_action}.</strong> This response was shaped
+              by chaos configuration, not by the scenario alone — source{" "}
+              <span className="mono">{log.chaos_source ?? "unknown"}</span>
+              {log.chaos_seed !== undefined && (
+                <>
+                  , seed <span className="mono">{log.chaos_seed}</span>
+                </>
+              )}
+              {log.chaos_rate !== undefined && (
+                <>
+                  , rate <span className="mono">{log.chaos_rate}</span>
+                </>
+              )}
+              .
+            </div>
+          )}
+
+          {log.truncated && (
+            <div className="banner banner-warn" role="note">
+              <strong>Captured body is clipped.</strong> It exceeded the capture cap, so the
+              bodies below are not the complete payloads. Do not treat them as an exact
+              record of what was sent or returned.
+            </div>
+          )}
 
           <h2 className="section-title">Response body</h2>
           <pre className="json-block">{prettyOrRaw(log.response_body)}</pre>

@@ -7,3 +7,9 @@ out/
 
 # typescript incremental build cache
 *.tsbuildinfo
+
+# playwright (UX-08 browser smoke suite)
+test-results/
+playwright-report/
+blob-report/
+.playwright/

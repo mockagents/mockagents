@@ -128,6 +128,7 @@ func TestManagementRouteFloors_FlaggedRoutes(t *testing.T) {
 func TestManagementRouteFloors_Snapshot(t *testing.T) {
 	want := map[string]tenancy.Role{
 		"GET /api/v1/health":                    roleOpen,
+		"GET /api/v1/identity":                  roleOpen,
 		"GET /api/v1/ready":                     roleOpen,
 		"GET /api/v1/agents":                    roleOpen,
 		"GET /api/v1/agents/{name}":             roleOpen,

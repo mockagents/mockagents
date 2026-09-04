@@ -42,6 +42,7 @@ self-escalate. Roles gate the control-plane routes:
 | ----------------------------------------- | -------- |
 | `GET  /api/v1/health`                     | open     |
 | `GET  /api/v1/ready`                      | open     |
+| `GET  /api/v1/identity`                   | open     |
 | `GET  /api/v1/agents`, `/api/v1/logs`     | viewer   |
 | `GET  /metrics`                           | viewer   |
 | `GET  /api/v1/pipelines[/{name}]`         | viewer   |
@@ -69,6 +70,31 @@ self-escalate. Roles gate the control-plane routes:
 `/v1/engines/*`) deliberately remain unauthenticated** — clients send their own
 provider API keys which MockAgents ignores, and forcing a second layer of
 credentials would break every existing SDK.
+
+`GET /api/v1/identity` reports the calling principal and what it may do:
+
+```json
+{
+  "mode": "multi_tenant",
+  "authenticated": true,
+  "tenant_id": "t_01HZY4",
+  "key_id": "k_01HZY9",
+  "role": "editor",
+  "capabilities": ["agents.read", "agents.write", "pipelines.run.write"],
+  "server": { "version": "0.4.0" }
+}
+```
+
+It carries **no secret** — `key_id` is an identifier, never key material.
+It is open to every authenticated role on purpose: a viewer must be able to
+discover its own identity, and a client that cannot do so ends up probing a
+privileged endpoint to guess its role. An anonymous caller still gets 401.
+
+Capabilities are derived from the role-floor table above **intersected with
+the routes this process actually mounts** — `/api/v1/audit` and
+`/api/v1/costs` only exist when their stores are configured — so an
+advertised capability never names a route that would 404. They are advisory,
+for deciding what a UI renders; every request is still authorized server-side.
 
 `GET /api/v1/health` and `GET /api/v1/ready` are unauthenticated for the same
 class of reason: a kubelet or load balancer carries no API key, and gating the

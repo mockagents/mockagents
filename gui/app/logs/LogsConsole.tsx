@@ -1,58 +1,137 @@
 "use client";
 
+// UX-04: the request / session explorer.
+//
+// Rules this screen is built around:
+//
+//   - Filtering is SERVER-backed and lives in the URL, so a filtered view is
+//     shareable and is not limited to whatever happened to be fetched. Only
+//     metadata goes in the URL — never a body, never a credential.
+//   - The live feed deduplicates. A reconnect re-delivers rows; showing them
+//     twice would make an operator miscount requests.
+//   - A drop in the feed is reported, and if recovery cannot PROVE it caught
+//     everything, the gap is shown as unresolved rather than papered over.
+//   - The selected row survives live traffic, the row cap, and reconnects.
+//   - Bodies are behind an explicit reveal, and a clipped body says so.
+
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { InteractionLog } from "@/lib/api";
+import type { InteractionLog, LogWindow } from "@/lib/api";
+import {
+  DEFAULT_FILTERS,
+  filtersToQuery,
+  highestId,
+  interpretRecovery,
+  isFiltered,
+  mergeRows,
+  type GapState,
+  type LogFilters,
+} from "@/lib/logfeed";
+import { Icon } from "@/lib/icons";
 
-const MAX_ROWS = 200;
+const MAX_ROWS = 500;
+/** How far back a post-reconnect recovery fetch will reach. Bounded on purpose:
+ * the point is a best effort with an honest verdict, not an unbounded scan. */
+const RECOVERY_LIMIT = 200;
 
-export function LogsConsole({
-  initialLogs,
-  agents,
-}: {
-  initialLogs: InteractionLog[];
+export interface LogsConsoleProps {
+  window: LogWindow;
   agents: string[];
-}) {
-  const [rows, setRows] = useState<InteractionLog[]>(initialLogs);
-  const [live, setLive] = useState(false);
-  const [agent, setAgent] = useState("all");
-  const [sel, setSel] = useState<number | null>(initialLogs[0]?.id ?? null);
-  const [flashId, setFlashId] = useState<number | null>(null);
-  const [connected, setConnected] = useState(false);
-  const [lastEventAt, setLastEventAt] = useState<Date | null>(null);
-  const [dropped, setDropped] = useState(0);
-  const retryRef = useRef(0);
+  filters: LogFilters;
+  /** Fetch rows newer than `afterId`, bounded by `limit`. Server action. */
+  recoverAction: (afterId: number | null, limit: number) => Promise<InteractionLog[]>;
+}
 
-  // Live SSE subscription, ported from AutoRefreshLogs: open an EventSource on
-  // the same-origin proxy, prepend each "log" frame, track "dropped" backpressure
-  // frames, and reconnect with capped backoff on error.
+export function LogsConsole({ window: initial, agents, filters, recoverAction }: LogsConsoleProps) {
+  const router = useRouter();
+
+  const [rows, setRows] = useState<InteractionLog[]>(initial.rows);
+  const [sel, setSel] = useState<number | null>(initial.rows[0]?.id ?? null);
+  const [live, setLive] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [dropped, setDropped] = useState(0);
+  const [gap, setGap] = useState<GapState>({ kind: "none" });
+  const [authExpired, setAuthExpired] = useState(false);
+  const [flashId, setFlashId] = useState<number | null>(null);
+  const [revealBodies, setRevealBodies] = useState(false);
+
+  const retryRef = useRef(0);
+  // The newest id seen before a disconnect, so recovery knows where to resume.
+  const lastSeenRef = useRef<number | null>(highestId(initial.rows));
+  const selRef = useRef<number | null>(sel);
+  selRef.current = sel;
+
+  // A new server-rendered page (filters changed) replaces the feed wholesale.
+  useEffect(() => {
+    setRows(initial.rows);
+    setSel(initial.rows[0]?.id ?? null);
+    lastSeenRef.current = highestId(initial.rows);
+    setGap({ kind: "none" });
+  }, [initial]);
+
+  const addRows = useCallback((incoming: InteractionLog[]) => {
+    setRows((prev) => {
+      const merged = mergeRows(prev, incoming, { max: MAX_ROWS, pinnedId: selRef.current });
+      lastSeenRef.current = highestId(merged);
+      return merged;
+    });
+  }, []);
+
+  /** After a reconnect, try to fetch what was missed. The verdict may be
+   * "unknown", and that is reported as such. */
+  const recover = useCallback(async () => {
+    const resumeFrom = lastSeenRef.current;
+    setGap({ kind: "recovering" });
+    try {
+      const fetched = await recoverAction(resumeFrom, RECOVERY_LIMIT);
+      const outcome = interpretRecovery(fetched, RECOVERY_LIMIT, resumeFrom);
+      if (outcome.rows.length > 0) addRows(outcome.rows);
+      setGap(outcome.gap);
+    } catch {
+      setGap({
+        kind: "unresolved",
+        reason:
+          "The feed reconnected, but the requests missed during the outage could not be " +
+          "retrieved. This view may be incomplete.",
+      });
+    }
+  }, [addRows, recoverAction]);
+
   useEffect(() => {
     if (!live) return;
     let es: EventSource | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let disposed = false;
+    // Only a reconnect needs recovery; the first connect has the server-rendered
+    // page as its baseline.
+    let hadConnected = false;
 
     function connect() {
       if (disposed) return;
       es = new EventSource("/api/logs/stream");
+
       es.addEventListener("open", () => {
         if (disposed) return;
         setConnected(true);
+        setAuthExpired(false);
         retryRef.current = 0;
+        if (hadConnected) void recover();
+        hadConnected = true;
       });
+
       es.addEventListener("log", (evt: MessageEvent<string>) => {
         if (disposed) return;
-        let row: InteractionLog;
         try {
-          row = JSON.parse(evt.data) as InteractionLog;
+          const row = JSON.parse(evt.data) as InteractionLog;
+          setFlashId(row.id);
+          addRows([row]);
         } catch {
-          return;
+          /* a malformed frame is dropped rather than corrupting the list */
         }
-        setFlashId(row.id);
-        setRows((prev) => [row, ...prev].slice(0, MAX_ROWS));
-        setLastEventAt(new Date());
       });
+
       es.addEventListener("dropped", (evt: MessageEvent<string>) => {
         if (disposed) return;
         try {
@@ -62,15 +141,36 @@ export function LogsConsole({
           /* ignore */
         }
       });
+
       es.addEventListener("error", () => {
         if (disposed) return;
         setConnected(false);
         es?.close();
         es = null;
-        const delay = Math.min(30_000, 1000 * 2 ** retryRef.current);
-        retryRef.current += 1;
-        retryTimer = setTimeout(connect, delay);
+
+        // EventSource hides the status code, so probe the proxy to find out
+        // whether this is a network problem or a rejected credential. Retrying
+        // forever against a 401 would never recover and would never say why.
+        void fetch("/api/logs/stream", { method: "HEAD" })
+          .then((res) => {
+            if (disposed) return;
+            if (res.status === 401 || res.status === 403) {
+              setAuthExpired(true);
+              setLive(false);
+              return;
+            }
+            scheduleRetry();
+          })
+          .catch(() => {
+            if (!disposed) scheduleRetry();
+          });
       });
+    }
+
+    function scheduleRetry() {
+      const delay = Math.min(30_000, 1000 * 2 ** retryRef.current);
+      retryRef.current += 1;
+      retryTimer = setTimeout(connect, delay);
     }
 
     connect();
@@ -80,13 +180,17 @@ export function LogsConsole({
       if (retryTimer) clearTimeout(retryTimer);
       if (es) es.close();
     };
-  }, [live]);
+  }, [live, addRows, recover]);
 
-  const filtered = useMemo(
-    () => (agent === "all" ? rows : rows.filter((r) => r.agent_name === agent)),
-    [rows, agent],
-  );
-  const selRow = filtered.find((r) => r.id === sel) ?? filtered[0];
+  const selRow = useMemo(() => rows.find((r) => r.id === sel) ?? null, [rows, sel]);
+
+  function applyFilters(next: Partial<LogFilters>) {
+    // Any filter change resets paging: keeping an offset from a different
+    // result set would point at unrelated rows.
+    const merged: LogFilters = { ...filters, ...next, offset: next.offset ?? 0 };
+    const qs = filtersToQuery(merged);
+    router.push(qs ? `/logs?${qs}` : "/logs");
+  }
 
   return (
     <div>
@@ -94,16 +198,20 @@ export function LogsConsole({
         <div className="grow">
           <h1 className="page-title">Interaction logs</h1>
           <p className="page-lede">
-            Every request the engine has served, newest first. Live mode subscribes to{" "}
+            Every request the engine has served, newest first. Filters run on the server
+            and live in the URL, so a filtered view can be shared. Live mode subscribes to{" "}
             <code>GET /api/v1/logs/stream</code> over SSE.
           </p>
         </div>
         <div className="row gap-3">
           <div className="row gap-2" style={{ padding: "0 4px" }}>
-            <span className="txt-sm muted">Live</span>
+            <span className="txt-sm muted" id="live-feed-label">
+              Live
+            </span>
             <button
               type="button"
               role="switch"
+              aria-labelledby="live-feed-label"
               aria-checked={live}
               className={"switch" + (live ? " on" : "")}
               onClick={() => setLive((v) => !v)}
@@ -113,196 +221,503 @@ export function LogsConsole({
             {live && (
               <span className={"badge " + (connected ? "badge-info" : "badge-secondary")}>
                 <span className={"badge-dot" + (connected ? " pulse" : "")} />
-                {connected ? "sse" : "…"}
+                {connected ? "sse" : "reconnecting"}
               </span>
             )}
           </div>
         </div>
       </div>
 
-      <div className="row gap-3 mb-4" style={{ flexWrap: "wrap" }}>
-        <select
-          className="select"
-          style={{ width: 220 }}
-          value={agent}
-          onChange={(e) => setAgent(e.target.value)}
-        >
-          <option value="all">All agents</option>
+      <FilterBar agents={agents} filters={filters} onApply={applyFilters} />
+
+      <WindowNotices
+        window={initial}
+        filters={filters}
+        rowCount={rows.length}
+        live={live}
+        gap={gap}
+        dropped={dropped}
+        authExpired={authExpired}
+      />
+
+      {rows.length === 0 ? (
+        <div className="empty">
+          {isFiltered(filters)
+            ? "No interactions match this filter. Widen it, or clear it to see recent traffic."
+            : live
+              ? "Waiting for traffic. Send a request to the MockAgents server."
+              : "No interactions recorded yet."}
+        </div>
+      ) : (
+        <div className="grid" style={{ gridTemplateColumns: "1fr 420px", alignItems: "start", gap: 16 }}>
+          <LogTable
+            rows={rows}
+            selectedId={selRow?.id ?? null}
+            flashId={flashId}
+            onSelect={setSel}
+            onSession={(id) => applyFilters({ session_id: id })}
+          />
+          <LogDetail
+            row={selRow}
+            revealBodies={revealBodies}
+            onToggleBodies={() => setRevealBodies((v) => !v)}
+            onSession={(id) => applyFilters({ session_id: id })}
+          />
+        </div>
+      )}
+
+      <Pager window={initial} filters={filters} onApply={applyFilters} />
+    </div>
+  );
+}
+
+function FilterBar({
+  agents,
+  filters,
+  onApply,
+}: {
+  agents: string[];
+  filters: LogFilters;
+  onApply: (next: Partial<LogFilters>) => void;
+}) {
+  return (
+    <form
+      className="row gap-3 mb-4"
+      style={{ flexWrap: "wrap", alignItems: "flex-end" }}
+      onSubmit={(e) => {
+        e.preventDefault();
+        const data = new FormData(e.currentTarget);
+        onApply({
+          agent: String(data.get("agent") ?? ""),
+          session_id: String(data.get("session_id") ?? "").trim(),
+          since: String(data.get("since") ?? "").trim(),
+          until: String(data.get("until") ?? "").trim(),
+        });
+      }}
+    >
+      <div className="field" style={{ width: 200 }}>
+        <label htmlFor="filter-agent">Agent</label>
+        <select id="filter-agent" name="agent" className="select" defaultValue={filters.agent}>
+          <option value="">All agents</option>
           {agents.map((a) => (
             <option key={a} value={a}>
               {a}
             </option>
           ))}
         </select>
+      </div>
+      <div className="field" style={{ width: 240 }}>
+        <label htmlFor="filter-session">Session</label>
+        <input
+          id="filter-session"
+          name="session_id"
+          className="input mono"
+          placeholder="session id"
+          defaultValue={filters.session_id}
+        />
+      </div>
+      <div className="field" style={{ width: 210 }}>
+        <label htmlFor="filter-since">Since</label>
+        <input
+          id="filter-since"
+          name="since"
+          className="input mono"
+          placeholder="2026-09-03T00:00:00Z"
+          defaultValue={filters.since}
+        />
+      </div>
+      <div className="field" style={{ width: 210 }}>
+        <label htmlFor="filter-until">Until</label>
+        <input
+          id="filter-until"
+          name="until"
+          className="input mono"
+          placeholder="RFC3339"
+          defaultValue={filters.until}
+        />
+      </div>
+      <button type="submit" className="btn btn-default btn-sm">
+        <Icon name="search" size={15} /> Apply
+      </button>
+      {isFiltered(filters) && (
+        <button
+          type="button"
+          className="btn btn-outline btn-sm"
+          onClick={() => onApply({ ...DEFAULT_FILTERS })}
+        >
+          Clear
+        </button>
+      )}
+    </form>
+  );
+}
+
+function WindowNotices({
+  window: win,
+  filters,
+  rowCount,
+  live,
+  gap,
+  dropped,
+  authExpired,
+}: {
+  window: LogWindow;
+  filters: LogFilters;
+  rowCount: number;
+  live: boolean;
+  gap: GapState;
+  dropped: number;
+  authExpired: boolean;
+}) {
+  return (
+    <div className="col gap-2 mb-4">
+      <div className="row gap-3" style={{ flexWrap: "wrap" }}>
         <span className="muted txt-sm">
-          {filtered.length} rows{live ? " · streaming" : ""}
+          {rowCount} rows{live ? " · streaming" : ""}
         </span>
-        {dropped > 0 && (
-          <span className="drop-badge" title="Backend dropped log events because this tab's buffer was full.">
-            ⚠ {dropped} dropped
+        {/* Never "N of M": the API returns no total, and inventing one would
+            present unknown as fact. */}
+        {win.mayHaveMore && (
+          <span className="tag" title="This is a bounded window, not the complete history.">
+            showing the {win.limit} most recent in this window — older requests exist
           </span>
-        )}
-        {live && lastEventAt && (
-          <span className="muted txt-xs">last event {lastEventAt.toLocaleTimeString()}</span>
         )}
       </div>
 
-      {filtered.length === 0 ? (
-        <div className="empty">
-          {live
-            ? "Waiting for traffic. Send a request to the MockAgents server."
-            : "No interactions match the current filter."}
+      {authExpired && (
+        <div className="banner banner-error" role="alert">
+          <strong>Live feed stopped: your session is no longer valid.</strong>{" "}
+          <Link href="/login">Sign in again</Link> to resume streaming. The rows already
+          loaded are still shown.
         </div>
-      ) : (
-        <div className="grid" style={{ gridTemplateColumns: "1fr 380px", alignItems: "start", gap: 16 }}>
-          <div className="card" style={{ overflow: "hidden" }}>
-            <div style={{ maxHeight: 560, overflow: "auto" }}>
-              <table className="tbl">
-                <thead>
-                  <tr>
-                    <th>id</th>
-                    <th>time</th>
-                    <th>agent</th>
-                    <th>status</th>
-                    <th>scenario</th>
-                    <th className="right">latency</th>
-                    <th className="right">cost</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.map((r) => (
-                    <tr
-                      key={r.id}
-                      className={
-                        "click" + (r.id === selRow?.id ? " sel" : "") + (r.id === flashId ? " flash" : "")
-                      }
-                      onClick={() => setSel(r.id)}
-                    >
-                      <td className="mono muted">{r.id}</td>
-                      <td className="mono" style={{ fontSize: 11.5 }}>
-                        {fmtTime(r.timestamp)}
-                      </td>
-                      <td>
-                        <div className="col" style={{ gap: 0 }}>
-                          <span style={{ fontWeight: 500 }}>{r.agent_name || "—"}</span>
-                          <span className="muted mono" style={{ fontSize: 10.5 }}>
-                            {r.request_path ?? ""}
-                          </span>
-                        </div>
-                      </td>
-                      <td>
-                        <StatusBadge code={r.response_status} />
-                      </td>
-                      <td className="mono muted" style={{ fontSize: 11.5 }}>
-                        {r.scenario_name || "—"}
-                      </td>
-                      <td className="num">{r.latency_ms != null ? `${Math.round(r.latency_ms)}ms` : "—"}</td>
-                      <td className="num muted">
-                        {r.cost_usd != null && r.cost_usd > 0 ? `$${r.cost_usd.toFixed(5)}` : "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+      )}
 
-          <Inspector row={selRow} />
+      {!win.stable && (
+        <div className="banner banner-warn" role="note">
+          <strong>Paged view — rows can shift.</strong> This API pages by offset, not by a
+          stable cursor, so a request arriving while you page can push rows onto the next
+          page: something may appear twice or be skipped. Filter by time or session for a
+          view that does not move.
         </div>
+      )}
+
+      {gap.kind === "unresolved" && (
+        <div className="banner banner-error" role="alert">
+          <strong>Feed gap — this view is incomplete.</strong> {gap.reason}
+        </div>
+      )}
+      {gap.kind === "recovering" && (
+        <div className="banner banner-warn" role="status">
+          Reconnected. Fetching requests missed while disconnected…
+        </div>
+      )}
+      {gap.kind === "closed" && (
+        <div className="banner banner-ok" role="status">
+          Reconnected and caught up
+          {gap.recovered > 0 ? ` — recovered ${gap.recovered} request(s).` : "; nothing was missed."}
+        </div>
+      )}
+
+      {dropped > 0 && (
+        <div className="banner banner-warn" role="note">
+          <strong>{dropped} event(s) dropped by the server.</strong> This tab could not keep
+          up, so those requests were never sent to it. They are still in the log — reload to
+          see them.
+        </div>
+      )}
+
+      {isFiltered(filters) && (
+        <p className="hint">
+          Filtered view. This URL is shareable and contains only filter metadata — never
+          request bodies or credentials.
+        </p>
       )}
     </div>
   );
 }
 
-function Inspector({ row }: { row?: InteractionLog }) {
-  if (!row) {
-    return (
-      <div className="card card-pad">
-        <div className="empty">Select a row to inspect.</div>
-      </div>
-    );
-  }
+function LogTable({
+  rows,
+  selectedId,
+  flashId,
+  onSelect,
+  onSession,
+}: {
+  rows: InteractionLog[];
+  selectedId: number | null;
+  flashId: number | null;
+  onSelect: (id: number) => void;
+  onSession: (id: string) => void;
+}) {
   return (
-    <div className="card" style={{ position: "sticky", top: 0 }}>
-      <div className="card-head">
-        <div className="grow">
-          <h3 className="mono">log #{row.id}</h3>
-          <div className="sub">{fmtDateTime(row.timestamp)}</div>
-        </div>
-        <StatusBadge code={row.response_status} />
-      </div>
-      <div className="card-pad col gap-4" style={{ maxHeight: 560, overflow: "auto" }}>
-        <dl className="kv" style={{ gridTemplateColumns: "92px 1fr" }}>
-          <dt>agent</dt>
-          <dd className="mono">{row.agent_name || "—"}</dd>
-          <dt>model</dt>
-          <dd className="mono">{row.model || "—"}</dd>
-          <dt>endpoint</dt>
-          <dd className="mono">
-            {row.request_method ?? "POST"} {row.request_path ?? "—"}
-          </dd>
-          <dt>scenario</dt>
-          <dd className="mono">{row.scenario_name || "—"}</dd>
-          <dt>latency</dt>
-          <dd className="mono">{row.latency_ms != null ? `${row.latency_ms.toFixed(1)} ms` : "—"}</dd>
-          <dt>tokens</dt>
-          <dd className="mono">
-            {row.prompt_tokens ?? 0} → {row.completion_tokens ?? 0}
-          </dd>
-          <dt>cost</dt>
-          <dd className="mono">{row.cost_usd != null ? `$${row.cost_usd.toFixed(6)}` : "—"}</dd>
-          <dt>streamed</dt>
-          <dd>
-            {row.streaming ? (
-              <span className="badge badge-info">sse</span>
-            ) : (
-              <span className="badge badge-secondary">no</span>
-            )}
-          </dd>
-        </dl>
-        {row.request_body ? (
-          <div>
-            <div className="eyebrow mb-2">request</div>
-            <pre className="code">{pretty(row.request_body)}</pre>
-          </div>
-        ) : null}
-        <div>
-          <div className="eyebrow mb-2">response</div>
-          {row.response_body ? (
-            <pre className="code">{pretty(row.response_body)}</pre>
-          ) : (
-            <div className="muted txt-sm">(no body — streamed or not captured)</div>
-          )}
-        </div>
-        <Link href={`/logs/${row.id}`} className="btn btn-ghost btn-sm" style={{ alignSelf: "flex-start" }}>
-          Open full record ↗
-        </Link>
+    <div className="card" style={{ overflow: "hidden" }}>
+      <div style={{ maxHeight: 560, overflow: "auto" }}>
+        <table className="tbl">
+          <caption className="sr-only">Interactions, newest first</caption>
+          <thead>
+            <tr>
+              <th>id</th>
+              <th>time</th>
+              <th>agent</th>
+              <th>session</th>
+              <th>status</th>
+              <th>signals</th>
+              <th className="right">latency</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr
+                key={r.id}
+                className={
+                  (r.id === selectedId ? "sel " : "") + (r.id === flashId ? "flash" : "")
+                }
+              >
+                <td className="mono muted">
+                  {/* A button, not a click handler on the row: a selectable row
+                      must be reachable and operable from the keyboard. */}
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm mono"
+                    aria-pressed={r.id === selectedId}
+                    onClick={() => onSelect(r.id)}
+                  >
+                    {r.id}
+                  </button>
+                </td>
+                <td className="mono" style={{ fontSize: 11.5 }}>
+                  {fmtTime(r.timestamp)}
+                </td>
+                <td>
+                  <div className="col" style={{ gap: 0 }}>
+                    <span style={{ fontWeight: 500 }}>{r.agent_name || "—"}</span>
+                    <span className="muted mono" style={{ fontSize: 10.5 }}>
+                      {r.request_path ?? ""}
+                    </span>
+                  </div>
+                </td>
+                <td>
+                  {r.session_id ? (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm mono"
+                      title={`Show only ${r.session_id}`}
+                      onClick={() => onSession(r.session_id!)}
+                    >
+                      {shortId(r.session_id)}
+                    </button>
+                  ) : (
+                    <span className="muted">—</span>
+                  )}
+                </td>
+                <td>
+                  <StatusBadge row={r} />
+                </td>
+                <td>
+                  <Signals row={r} />
+                </td>
+                <td className="right mono">{r.latency_ms}ms</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
 }
 
-function StatusBadge({ code }: { code?: number }) {
-  if (code == null) return <span className="badge badge-secondary">—</span>;
-  const v =
-    code >= 500 ? "destructive" : code >= 400 ? "warning" : code >= 300 ? "info" : "success";
-  return <span className={`badge badge-${v} mono`}>{code}</span>;
+function StatusBadge({ row }: { row: InteractionLog }) {
+  const status = row.response_status ?? 0;
+  const ok = status >= 200 && status < 400;
+  return (
+    <span className={"badge " + (ok ? "badge-ok" : "badge-destructive")}>
+      {/* Text, not colour alone. */}
+      {status || "—"}
+    </span>
+  );
 }
 
-function pretty(body: string): string {
-  try {
-    return JSON.stringify(JSON.parse(body), null, 2);
-  } catch {
-    return body;
+/** Non-colour signals an operator needs at a glance: was a fault injected, did
+ * it error, is the captured body clipped. */
+function Signals({ row }: { row: InteractionLog }) {
+  const signals: string[] = [];
+  if (row.chaos_action) signals.push(`chaos:${row.chaos_action}`);
+  if (row.error) signals.push("error");
+  if (row.truncated) signals.push("truncated");
+  if (row.streaming) signals.push("stream");
+  if (row.tool_calls_count) signals.push(`tools:${row.tool_calls_count}`);
+  if (signals.length === 0) return <span className="muted">—</span>;
+  return (
+    <div className="row gap-2" style={{ flexWrap: "wrap" }}>
+      {signals.map((s) => (
+        <span className="tag" key={s}>
+          {s}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function LogDetail({
+  row,
+  revealBodies,
+  onToggleBodies,
+  onSession,
+}: {
+  row: InteractionLog | null;
+  revealBodies: boolean;
+  onToggleBodies: () => void;
+  onSession: (id: string) => void;
+}) {
+  if (!row) {
+    return (
+      <div className="card card-pad">
+        <p className="txt-sm muted">Select a request to inspect it.</p>
+      </div>
+    );
   }
+  return (
+    <div className="card card-pad col gap-3">
+      <div className="row gap-2">
+        <div className="grow">
+          <div className="eyebrow">request {row.id}</div>
+        </div>
+        <Link href={`/logs/${row.id}`} className="btn btn-outline btn-sm">
+          Open
+        </Link>
+      </div>
+
+      <dl className="kv">
+        <dt>agent</dt>
+        <dd className="mono">{row.agent_name || "—"}</dd>
+        <dt>session</dt>
+        <dd className="mono">
+          {row.session_id ? (
+            <button type="button" className="btn btn-ghost btn-sm mono" onClick={() => onSession(row.session_id!)}>
+              {row.session_id}
+            </button>
+          ) : (
+            "—"
+          )}
+        </dd>
+        <dt>scenario</dt>
+        <dd className="mono">{row.scenario_name || "—"}</dd>
+        <dt>protocol</dt>
+        <dd className="mono">{row.protocol || "—"}</dd>
+        <dt>latency</dt>
+        <dd className="mono">{row.latency_ms}ms</dd>
+      </dl>
+
+      {row.error && (
+        <div className="banner banner-error" role="note">
+          <strong>Engine error.</strong> <span className="mono">{row.error}</span>
+        </div>
+      )}
+
+      {row.chaos_action && (
+        <div className="banner banner-warn" role="note">
+          <strong>Fault injected: {row.chaos_action}.</strong> This response was shaped by
+          chaos configuration, not by the scenario alone.
+          <dl className="kv" style={{ marginTop: 6 }}>
+            <dt>source</dt>
+            <dd className="mono">{row.chaos_source ?? "unknown"}</dd>
+            {row.chaos_seed !== undefined && (
+              <>
+                <dt>seed</dt>
+                <dd className="mono">{row.chaos_seed}</dd>
+              </>
+            )}
+            {row.chaos_rate !== undefined && (
+              <>
+                <dt>rate</dt>
+                <dd className="mono">{row.chaos_rate}</dd>
+              </>
+            )}
+          </dl>
+        </div>
+      )}
+
+      {row.truncated && (
+        <div className="banner banner-warn" role="note">
+          <strong>Captured body is clipped.</strong> It exceeded the capture cap, so what is
+          stored is not the complete payload. Do not treat it as an exact record.
+        </div>
+      )}
+
+      <div>
+        <button type="button" className="btn btn-outline btn-sm" onClick={onToggleBodies}>
+          {revealBodies ? "Hide bodies" : "Show request/response bodies"}
+        </button>
+        <p className="hint" style={{ marginTop: 6 }}>
+          Bodies are hidden by default — they can contain whatever a client sent.
+        </p>
+      </div>
+
+      {revealBodies && (
+        <>
+          <Body label="request" text={row.request_body} />
+          <Body label="response" text={row.response_body} />
+        </>
+      )}
+    </div>
+  );
 }
 
-function fmtTime(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleTimeString();
+function Body({ label, text }: { label: string; text?: string }) {
+  return (
+    <div>
+      <div className="eyebrow mb-3">{label}</div>
+      {/* Rendered as text, never as markup: log content is untrusted. */}
+      <pre className="mono" style={{ fontSize: 11.5, overflowX: "auto", maxHeight: 220 }}>
+        {text && text.length > 0 ? text : "(empty)"}
+      </pre>
+    </div>
+  );
 }
 
-function fmtDateTime(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+function Pager({
+  window: win,
+  filters,
+  onApply,
+}: {
+  window: LogWindow;
+  filters: LogFilters;
+  onApply: (next: Partial<LogFilters>) => void;
+}) {
+  const canPrev = filters.offset > 0;
+  if (!canPrev && !win.mayHaveMore) return null;
+  return (
+    <div className="row gap-2 mt-4" style={{ alignItems: "center" }}>
+      <button
+        type="button"
+        className="btn btn-outline btn-sm"
+        disabled={!canPrev}
+        onClick={() => onApply({ offset: Math.max(0, filters.offset - filters.limit) })}
+      >
+        Newer
+      </button>
+      <button
+        type="button"
+        className="btn btn-outline btn-sm"
+        disabled={!win.mayHaveMore}
+        onClick={() => onApply({ offset: filters.offset + filters.limit })}
+      >
+        Older
+      </button>
+      <span className="muted txt-sm">
+        offset {filters.offset}
+        {win.mayHaveMore ? "" : " · end of this window"}
+      </span>
+    </div>
+  );
+}
+
+function shortId(id: string): string {
+  return id.length > 10 ? id.slice(0, 10) + "…" : id;
+}
+
+function fmtTime(ts: string): string {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return d.toLocaleTimeString();
 }

@@ -120,6 +120,12 @@ type Server struct {
 	handlers       *Handlers
 	tenancyH       *TenancyHandlers
 	auditH         *AuditHandlers
+	// mountedRoutes records every management route this process actually
+	// serves, with its role floor, as mountManaged registers it. UX-01's
+	// capability response is derived from this rather than from the static
+	// policy table, because conditional routes (audit, costs) are absent when
+	// their store is not configured. Populated at startup only.
+	mountedRoutes map[string]tenancy.Role
 	recorder       *audit.Recorder
 	logWorker      *LogWorker
 	logBroadcaster *LogBroadcaster
@@ -285,6 +291,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// the same check and a pod whose interaction log had died, or whose last
 	// agent had been deleted through the write API, stayed in rotation.
 	s.mountManaged(mux, "GET /api/v1/ready", http.HandlerFunc(s.readinessHandlers().Ready))
+	// UX-01: who am I, and what may I do? Open to any authenticated role
+	// (a viewer must be able to discover its own identity), but NOT in
+	// skipAuth — an anonymous caller gets 401 from the middleware.
+	s.mountManaged(mux, "GET /api/v1/identity", http.HandlerFunc(s.Identity))
 	s.mountManaged(mux, "GET /api/v1/agents", http.HandlerFunc(s.handlers.ListAgents))
 	s.mountManaged(mux, "GET /api/v1/agents/{name}", http.HandlerFunc(s.handlers.GetAgent))
 	s.mountManaged(mux, "POST /api/v1/agents/{name}/reload", http.HandlerFunc(s.handlers.ReloadAgent))

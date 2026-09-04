@@ -76,11 +76,20 @@ export default async function AgentDetailPage({ params }: PageProps) {
             </p>
           )}
         </div>
-        <form action={reloadAction}>
-          <button type="submit" className="btn btn-outline btn-sm" title="Re-read this agent's YAML from disk">
-            <Icon name="refresh-cw" size={15} /> Reload
-          </button>
-        </form>
+        <div className="row gap-2">
+          <Link
+            href={`/agents/${encodeURIComponent(name)}/edit`}
+            className="btn btn-outline btn-sm"
+            title="Edit this agent's definition with a change preview"
+          >
+            <Icon name="file-code" size={15} /> Edit
+          </Link>
+          <form action={reloadAction}>
+            <button type="submit" className="btn btn-outline btn-sm" title="Re-read this agent's YAML from disk">
+              <Icon name="refresh-cw" size={15} /> Reload
+            </button>
+          </form>
+        </div>
       </div>
 
       <div className="grid grid-4 mb-6">
