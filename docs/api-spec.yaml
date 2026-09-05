@@ -2170,17 +2170,41 @@ components:
         kind:
           type: string
           enum: [tenant.created, tenant.deleted, api_key.created, api_key.deleted, api_key.role_changed, api_key.rotated, agent.reloaded, agent.created, agent.updated, agent.deleted, pipeline.saved, auth.denied]
-        actor: { type: string, example: bootstrap-admin }
+        id: { type: integer, format: int64 }
+        actor: { $ref: "#/components/schemas/AuditActor" }
+        target: { type: string }
+        details:
+          type: string
+          description: Free-form detail for the event kind, when there is any.
+        timestamp: { type: string, format: date-time }
+
+    AuditActor:
+      type: object
+      description: >
+        Who performed the action. Nested rather than flattened onto the event:
+        an actor has an identity of its own, and a caller reading `tenant_id`
+        off the event would be reading the ACTOR's tenant rather than the
+        target's.
+      required: [name]
+      properties:
+        name: { type: string, example: bootstrap-admin }
         tenant_id: { type: string }
         key_id: { type: string }
         role: { type: string }
         remote_ip: { type: string }
-        target: { type: string }
-        timestamp: { type: string, format: date-time }
 
     CostReport:
       type: object
       properties:
+        window:
+          type: object
+          description: >
+            The period this report covers. Both bounds are absent when the
+            request set none, in which case it covers everything the log holds
+            — not a default window.
+          properties:
+            since: { type: string, format: date-time }
+            until: { type: string, format: date-time }
         total_requests: { type: integer }
         total_prompt_tokens: { type: integer }
         total_completion_tokens: { type: integer }
@@ -2191,8 +2215,12 @@ components:
     CostGroup:
       type: object
       properties:
-        key: { type: string }
+        key:
+          type: string
+          description: The model or agent this row aggregates.
         requests: { type: integer }
+        prompt_tokens: { type: integer }
+        completion_tokens: { type: integer }
         cost_usd: { type: number, format: double }
 
     QuotaConfig:

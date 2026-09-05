@@ -61,7 +61,7 @@ test-all: test test-python test-examples test-typescript ## Run all tests (Go + 
 lint:                           ## Run Go vet
 	$(GO) vet ./...
 
-drift:                          ## Check api-spec $refs + license agreement (REF-06)
+drift:                          ## Check api-spec $refs + schema fields vs Go types + licenses
 	$(GO) run ./tools/driftcheck
 
 liquidcheck:                    ## Check docs/ for unterminated Liquid openers
