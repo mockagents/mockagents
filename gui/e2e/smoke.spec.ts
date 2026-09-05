@@ -427,6 +427,42 @@ test.describe("shell and onboarding (UX-02)", () => {
     if (health.version) await expect(strip).toContainText(health.version);
   });
 
+  // X-1. "Persistent context" is a claim about every screen, so it is asserted
+  // on every screen — including the two where acting on stale context is
+  // expensive: the editor (Apply rewrites the live definition) and the pipeline
+  // page (Run executes against it). Both used to show no server context at all.
+  for (const path of [
+    "/",
+    "/overview",
+    "/logs",
+    "/costs",
+    "/reports",
+    "/editor",
+    "/pipelines",
+    "/pipelines/research-pipeline",
+    "/agents/echo-agent/edit",
+  ]) {
+    test(`${path} carries the instrument strip`, async ({ page }) => {
+      await page.goto(path, { waitUntil: "networkidle" });
+      const strip = page.getByRole("status", { name: "server context" });
+      // Exactly one: the layout owns it, so a page rendering its own would
+      // double it, and two "last refresh" stamps disagree by construction.
+      await expect(strip).toHaveCount(1);
+      await expect(strip).toContainText("PROCESS-UP");
+      await expect(strip).toContainText("ACTIVE CONFIG");
+    });
+  }
+
+  test("the shell states connectivity once, not twice with different answers", async ({ page }) => {
+    // The topbar pill collapsed liveness and readiness into one word and could
+    // read "online" beside a NOT-READY strip. It is gone; this keeps it gone.
+    await page.goto("/overview", { waitUntil: "networkidle" });
+    const topbar = page.locator(".topbar");
+    await expect(topbar).toBeVisible();
+    await expect(topbar).not.toContainText(/\bonline\b/i);
+    await expect(topbar).not.toContainText(/\boffline\b/i);
+  });
+
   test("readiness is verified against the real endpoint", async ({ page }) => {
     const res = await page.request.get(`${API_URL}/api/v1/ready`);
     expect([200, 503]).toContain(res.status());

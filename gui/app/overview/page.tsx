@@ -18,7 +18,6 @@ import {
   type ServerStatus,
 } from "@/lib/serverState";
 
-import { InstrumentStrip, OfflineBar } from "../InstrumentStrip";
 import { CopyField } from "./CopyField";
 
 export const dynamic = "force-dynamic";
@@ -80,15 +79,6 @@ export default async function OverviewPage() {
 
   return (
     <div>
-      <InstrumentStrip
-        status={status}
-        apiUrl={apiUrl}
-        role={identity?.role ?? null}
-        tenantId={identity?.tenant_id ?? null}
-        mode={identity?.mode ?? null}
-      />
-      <OfflineBar status={status} />
-
       <div style={{ padding: "20px 0 0" }}>
         <div className="head-row page-head">
           <div className="grow">

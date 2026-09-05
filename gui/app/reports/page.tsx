@@ -11,7 +11,6 @@ import {
 } from "@/lib/api";
 import { buildReport, type BuildReportInput } from "@/lib/report";
 
-import { InstrumentStrip, OfflineBar } from "../InstrumentStrip";
 import { ReportExport } from "./ReportExport";
 
 export const dynamic = "force-dynamic";
@@ -102,15 +101,6 @@ export default async function ReportsPage({
 
   return (
     <div>
-      <InstrumentStrip
-        status={status}
-        apiUrl={apiUrl}
-        role={identity?.role ?? null}
-        tenantId={identity?.tenant_id ?? null}
-        mode={identity?.mode ?? null}
-      />
-      <OfflineBar status={status} />
-
       <div style={{ padding: "20px 0 0" }}>
         <div className="head-row page-head">
           <div className="grow">
