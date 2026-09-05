@@ -175,6 +175,11 @@ export function interpretRecovery(
 export interface LogFilters {
   agent: string;
   session_id: string;
+  /** Narrow to every session id starting with this value (§9.3). A pipeline run
+   * scopes its nodes as "<session>::<pipeline>::<node>", so the id a run
+   * reports matches nothing under equality — this is how a run's evidence is
+   * reachable from the run itself. Metadata, so it is URL-safe. */
+  session_prefix: string;
   since: string;
   until: string;
   limit: number;
@@ -184,6 +189,7 @@ export interface LogFilters {
 export const DEFAULT_FILTERS: LogFilters = {
   agent: "",
   session_id: "",
+  session_prefix: "",
   since: "",
   until: "",
   limit: 100,
@@ -193,6 +199,7 @@ export const DEFAULT_FILTERS: LogFilters = {
 const ALLOWED_KEYS: ReadonlyArray<keyof LogFilters> = [
   "agent",
   "session_id",
+  "session_prefix",
   "since",
   "until",
   "limit",
@@ -212,6 +219,7 @@ export function parseFilters(params: URLSearchParams | Record<string, string | u
   return {
     agent: get("agent").trim(),
     session_id: get("session_id").trim(),
+    session_prefix: get("session_prefix").trim(),
     since: get("since").trim(),
     until: get("until").trim(),
     limit: clampInt(get("limit") || null, DEFAULT_FILTERS.limit, 1, 1000),
@@ -241,5 +249,12 @@ export function filtersToQuery(filters: LogFilters): string {
 /** True when any filter narrows the view — used to explain an empty result as
  * "your filter matched nothing" rather than "there is no traffic". */
 export function isFiltered(filters: LogFilters): boolean {
-  return Boolean(filters.agent || filters.session_id || filters.since || filters.until || filters.offset);
+  return Boolean(
+    filters.agent ||
+      filters.session_id ||
+      filters.session_prefix ||
+      filters.since ||
+      filters.until ||
+      filters.offset,
+  );
 }

@@ -219,6 +219,10 @@ export interface ListLogsOptions {
   until?: string;
   /** Narrow to one conversation (UX-04). Supported by the server's filter. */
   session_id?: string;
+  /** Narrow to every session id starting with this value. A pipeline run scopes
+   * its nodes as "<session>::<pipeline>::<node>", so this is what makes a run's
+   * requests findable from the run. */
+  session_prefix?: string;
   /** Offset paging. NOT a cursor — see LogWindow.stable. */
   offset?: number;
 }
@@ -231,6 +235,7 @@ function logQuery(options: ListLogsOptions): string {
   if (options.since) params.set("since", options.since);
   if (options.until) params.set("until", options.until);
   if (options.session_id) params.set("session_id", options.session_id);
+  if (options.session_prefix) params.set("session_prefix", options.session_prefix);
   return params.toString();
 }
 

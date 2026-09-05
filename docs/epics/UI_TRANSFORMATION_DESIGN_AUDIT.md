@@ -70,7 +70,7 @@ not simply a to-do list.
 | U5-1 | Absent nodes are not rendered as "not executed · unknown" | UX-05 | **A** — fixed |
 | U5-2 | `blocked-missing-dependency` is not a state | UX-05 | B — fixed |
 | U5-3 | No node inspector — a failed node's evidence cannot be read | UX-05 | B — fixed |
-| U5-4 | No run→logs link | UX-05 | **X** |
+| U5-4 | No run→logs link | UX-05 | **X** — still blocked, cause corrected |
 | U5-5 | Session id not shown before the run | UX-05 | C |
 | U5-6 | Pre-run banner does not name the definitions that will execute | UX-05 | C |
 
@@ -658,6 +658,34 @@ Unblocking is cheap and worth doing: a `session_prefix` filter (`session_id LIKE
 working link and would make run-to-evidence navigation real for the first time.
 Recommended as its own small backend slice.
 
+**Correction, 2026-09-05 — the analysis above was wrong about the cause, and the
+remedy does not work.** The filter shipped and the link still cannot: a pipeline
+run **is never recorded in the interaction log at all**. `InteractionCapture` is
+HTTP middleware, and `PipelineExecutor` calls `Engine.ProcessRequestContext`
+in process, so no node of a run passes through the layer that writes log rows.
+
+Measured, not inferred: a 200 run adds **zero** rows to a 279-row log, while a
+direct HTTP call adds one. A browser test now pins that, so a run cannot start
+appearing in the log without the screen's copy being revisited.
+
+So the link was **not** shipped — it would have landed on an empty window, which
+is precisely what this section warned against. The run panel now states the real
+reason: the node results are not a summary of log entries, they are the only
+record of the run.
+
+`session_prefix` was kept regardless. It is correct and useful for real SDK
+traffic, which does go over HTTP and is logged, and it is the right filter for
+any client that scopes sessions per request. It is simply not sufficient for
+this.
+
+**New finding, not in the original audit: pipeline runs are invisible to the
+interaction log.** That is arguably a product gap rather than a UI one — a run
+executes the same engine that serves live traffic, and the console's own
+"runs against active configuration" framing invites the expectation that it
+leaves the same trace. Making the executor record interactions is a backend
+slice of its own and a product decision, so it is flagged here rather than
+assumed.
+
 ### 9.4 — Dark semantic tokens are still unsigned-off · all
 
 Handoff §4 proposes brightened `--sr-success-fg` / `-warning-fg` / `-danger-fg` /
@@ -695,9 +723,11 @@ Grouped so each is one reviewable slice with its own tests.
    Export draft, editor offline state.
 7. ~~**U5-3, X-2**~~ **Done 2026-09-05** — node inspector, `unsupported` variant.
    (U1-2's catalog half shipped with X-3.)
-8. Backend slices, if approved: `session_prefix` log filter (§9.3), `?fields=meta` log
-   projection (§9.1). (`code` on `pipelineRunError` shipped with U5-2; `AgentSummary`
-   revision/persistence shipped as U3-6 on 2026-09-05.)
+8. Backend slices: `?fields=meta` log projection (§9.1) remains. (`session_prefix`
+   shipped 2026-09-05 — see the correction in §9.3; `code` on `pipelineRunError`
+   shipped with U5-2; `AgentSummary` revision/persistence shipped as U3-6.)
+   **New, from that slice:** pipeline runs never reach the interaction log — a
+   product decision, not a UI fix.
 9. **C-class** — U3-7, U4-5, U5-5, U5-6, X-4.
 
 ## 11. What this audit did not cover

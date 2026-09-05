@@ -463,6 +463,34 @@ describe("RunPanel", () => {
     });
   });
 
+  // U5-4 stays BLOCKED, and for a deeper reason than the audit first found.
+  //
+  // The audit blamed the log filter's exact-match semantics. The filter was
+  // fixed (session_prefix, §9.3) and a run still has nothing to link to: a
+  // pipeline run executes the engine IN PROCESS, while the interaction log is
+  // written by HTTP middleware, so no node of a run is ever recorded. Measured,
+  // not inferred — a 200 run adds zero rows while a direct HTTP call adds one.
+  //
+  // A "check the logs" button would therefore land on an empty window, which is
+  // the exact failure the audit warned against. These pin the honest version.
+  describe("finding this run in the logs", () => {
+    it("offers no log link, because there would be nothing behind it", async () => {
+      const user = userEvent.setup();
+      setup();
+      await run(user);
+      await screen.findByRole("table");
+      expect(screen.queryByRole("link", { name: /logs/i })).toBeNull();
+    });
+
+    it("says why, rather than leaving it to be discovered", async () => {
+      const user = userEvent.setup();
+      setup();
+      await run(user);
+      expect(await screen.findByText(/executes the engine in process/i)).toBeInTheDocument();
+      expect(screen.getByText(/under\s+any filter/i)).toBeInTheDocument();
+    });
+  });
+
   describe("honesty", () => {
     // The server reports definition order, not completion times.
     it("warns that a parallel node list is not a timeline", async () => {
@@ -491,11 +519,14 @@ describe("RunPanel", () => {
       expect(screen.queryByText(/not a timeline/i)).not.toBeInTheDocument();
     });
 
-    it("does not claim the results are linked to interaction logs", async () => {
+    // There IS a link to this run's requests now, but it is a session-prefix
+    // match at RUN granularity. The server still reports no log id per node, so
+    // the panel must not imply a node-to-request correspondence it cannot make.
+    it("does not present the node results as a summary of log entries", async () => {
       const user = userEvent.setup();
       setup();
       await run(user);
-      expect(await screen.findByText(/not linked to interaction-log/i)).toBeInTheDocument();
+      expect(await screen.findByText(/it is all there is/i)).toBeInTheDocument();
     });
 
     // The single most important one: a lost response is not a failure.

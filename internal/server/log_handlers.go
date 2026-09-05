@@ -79,8 +79,13 @@ func (h *LogHandlers) ListLogs(w http.ResponseWriter, r *http.Request) {
 	filter := storage.InteractionFilter{
 		AgentName: r.URL.Query().Get("agent"),
 		SessionID: r.URL.Query().Get("session_id"),
-		Since:     since,
-		Until:     until,
+		// session_prefix exists because a pipeline run scopes each node's
+		// session as "<session>::<pipeline>::<node>". The id the caller
+		// submitted therefore matches nothing under equality, and "show me what
+		// this run did" had no answer.
+		SessionPrefix: r.URL.Query().Get("session_prefix"),
+		Since:         since,
+		Until:         until,
 	}
 	if tenantID := callerTenantID(r); tenantID != "" {
 		filter.TenantID = tenantID

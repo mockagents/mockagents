@@ -232,6 +232,67 @@ test.describe("a capability this server does not have (X-2)", () => {
 
 });
 
+// §9.3: the session_prefix filter, and the finding that came out of testing it.
+//
+// The audit expected this filter to unblock a "check the logs for this run"
+// link. It does not — for a reason the audit had wrong. A pipeline run executes
+// the engine IN PROCESS while the interaction log is written by HTTP
+// middleware, so no node of a run is recorded at all. The filter is still
+// correct and useful for real SDK traffic, which does go over HTTP; the link
+// would have landed on an empty window and was not shipped.
+test.describe("session prefix filtering (UX-04)", () => {
+  test("matches every request whose session starts with the prefix", async ({ request }) => {
+    const session = `e2e-prefix-${Date.now()}`;
+    // Real HTTP traffic, which IS logged — three requests under one prefix.
+    for (const node of ["router", "lookup", "summarize"]) {
+      const res = await request.post(`${API_URL}/v1/messages`, {
+        // Content-Type explicitly: supplying `headers` replaces the ones
+        // Playwright would infer from `data`, and the adapter rejects a body
+        // it is not told is JSON.
+        // Content-Type explicitly: supplying `headers` replaces the ones
+        // Playwright would infer from `data`. The api key is ignored by this
+        // server but the Anthropic adapter still requires one to be present,
+        // exactly as the real API does.
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": "mock-any-string",
+          "anthropic-version": "2023-06-01",
+          "X-Session-Id": `${session}::pipe::${node}`,
+        },
+        data: { model: "mock-agent", max_tokens: 16, messages: [{ role: "user", content: node }] },
+      });
+      expect(res.ok()).toBe(true);
+    }
+
+    const prefixed = await request.get(`${API_URL}/api/v1/logs?session_prefix=${session}::`);
+    const rows = (await prefixed.json()) as Array<{ session_id: string }>;
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.session_id.startsWith(`${session}::`)).toBe(true);
+
+    // Exact equality finds none of them, which is why the prefix exists.
+    const exact = await request.get(`${API_URL}/api/v1/logs?session_id=${session}`);
+    expect(await exact.json()).toEqual([]);
+  });
+
+  // The finding, pinned so it cannot regress into a false claim on the screen.
+  test("a pipeline run is not recorded in the interaction log", async ({ request }) => {
+    const probe = await request.get(`${API_URL}/api/v1/pipelines/research-pipeline`);
+    test.skip(probe.status() !== 200, "research-pipeline not registered");
+
+    const before = ((await (await request.get(`${API_URL}/api/v1/logs?limit=1000`)).json()) as unknown[])
+      .length;
+    const session = `e2e-unlogged-${Date.now()}`;
+    const run = await request.post(`${API_URL}/api/v1/pipelines/research-pipeline/run`, {
+      data: { input: "not logged", session_id: session },
+    });
+    expect(run.status()).toBe(200);
+
+    const after = ((await (await request.get(`${API_URL}/api/v1/logs?limit=1000`)).json()) as unknown[])
+      .length;
+    expect(after, "a run must not silently start appearing in the log").toBe(before);
+  });
+});
+
 test.describe("navigation", () => {
   // Deep links must stay viable (epic §5). These are the routes the epic's
   // Release A journey depends on.
