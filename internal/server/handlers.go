@@ -181,9 +181,9 @@ func (h *Handlers) GetAgent(w http.ResponseWriter, r *http.Request) {
 	tenantID := callerTenantID(r)
 	agent := h.Engine.Registry.GetForTenant(name, tenantID)
 	if agent == nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{
-			"error":            fmt.Sprintf("agent %q not found", name),
-			"available_agents": h.Engine.Registry.ListNamesForTenant(tenantID),
+		writeJSON(w, http.StatusNotFound, ErrorResponse{
+			Error:           fmt.Sprintf("agent %q not found", name),
+			AvailableAgents: h.Engine.Registry.ListNamesForTenant(tenantID),
 		})
 		return
 	}
@@ -227,9 +227,7 @@ func (h *Handlers) ReloadAgent(w http.ResponseWriter, r *http.Request) {
 
 	existing := h.Engine.Registry.GetForTenant(name, tenantID)
 	if existing == nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{
-			"error": fmt.Sprintf("agent %q not found", name),
-		})
+		writeError(w, http.StatusNotFound, fmt.Sprintf("agent %q not found", name))
 		return
 	}
 
@@ -259,9 +257,9 @@ func (h *Handlers) ReloadAgent(w http.ResponseWriter, r *http.Request) {
 				"file", result.FilePath,
 				"errors", errList.Error(),
 			)
-			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"error":   "validation failed",
-				"details": errList.Error(),
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{
+				Error:   "validation failed",
+				Details: errList.Error(),
 			})
 			return
 		}
@@ -283,9 +281,7 @@ func (h *Handlers) ReloadAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !found {
-		writeJSON(w, http.StatusNotFound, map[string]any{
-			"error": fmt.Sprintf("no definition file found for agent %q in %s", name, h.AgentsDir),
-		})
+		writeError(w, http.StatusNotFound, fmt.Sprintf("no definition file found for agent %q in %s", name, h.AgentsDir))
 	}
 }
 
@@ -328,17 +324,35 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_, _ = w.Write(re.buf.Bytes())
 }
 
-// apiError is the canonical management-API error envelope ({"error": message}).
+// ErrorResponse is the canonical management-API error envelope.
+//
 // A fixed struct encodes without the map allocation the literal incurred on
-// every 4xx/5xx, which adds up under chaos error storms (PERF-16).
-type apiError struct {
+// every 4xx/5xx, which adds up under chaos error storms (PERF-16) — and, since
+// it is exported, tools/driftcheck can hold the OpenAPI `Error` schema to it.
+// It was that check that showed most call sites were still building the map by
+// hand, getting neither guarantee.
+//
+// The optional fields are the two shapes the management API actually adds to an
+// error, kept here rather than as separate envelopes so there is ONE error
+// shape to document and one to parse.
+//
+// NOT the shape the provider endpoints return under a quota rejection: those
+// deliberately mimic the upstream `{"error": {"type", "message"}}` object so an
+// SDK surfaces them correctly. See providerError.
+type ErrorResponse struct {
 	Error string `json:"error"`
+	// AvailableAgents lists what the caller COULD have asked for, on a 404 for
+	// an unknown agent. A tenant-scoped list: it never names another tenant's.
+	AvailableAgents []string `json:"available_agents,omitempty"`
+	// Details carries validator output when a write or reload failed schema
+	// validation.
+	Details string `json:"details,omitempty"`
 }
 
 // writeError writes the canonical management-API error envelope:
 // a flat {"error": message} body with the given status.
 func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, apiError{Error: message})
+	writeJSON(w, status, ErrorResponse{Error: message})
 }
 
 // writeServerError logs an internal error server-side and returns a generic

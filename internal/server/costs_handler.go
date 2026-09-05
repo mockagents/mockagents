@@ -58,9 +58,7 @@ type CostsResponse struct {
 // carries no truncation flag (F-CO-003).
 func (h *CostsHandlers) ListCosts(w http.ResponseWriter, r *http.Request) {
 	if h.Store == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "logging is not enabled",
-		})
+		writeError(w, http.StatusServiceUnavailable, "logging is not enabled")
 		return
 	}
 

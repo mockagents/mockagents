@@ -71,9 +71,7 @@ func (s *Server) Identity(w http.ResponseWriter, r *http.Request) {
 		// AuthMiddleware gates this route (it is not in skipAuth), so a nil
 		// principal means something upstream changed. Fail closed rather than
 		// reporting an anonymous identity on a multi-tenant server.
-		writeJSON(w, http.StatusUnauthorized, map[string]string{
-			"error": "missing or invalid credential",
-		})
+		writeError(w, http.StatusUnauthorized, "missing or invalid credential")
 		return
 	}
 

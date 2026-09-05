@@ -1518,23 +1518,49 @@ components:
     # -- Error Schema ---------------------------------------------------------
     Error:
       type: object
+      description: >
+        The management API's error envelope. Every 4xx and 5xx from a
+        /api/v1/... route has this shape.
+
+        NOT what the provider endpoints return when a quota rejects a request:
+        those mimic the upstream `{"error": {"type", "message"}}` object so an
+        SDK surfaces them correctly. See ProviderQuotaError.
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: agent "weather-agent" not found
+        available_agents:
+          type: array
+          items: { type: string }
+          description: >
+            Present on a 404 for an unknown agent — what the caller could have
+            asked for instead. Tenant-scoped: it never names another tenant's
+            agents.
+        details:
+          type: string
+          description: >
+            Present when a write or reload failed schema validation; carries the
+            validator's output.
+
+    ProviderQuotaError:
+      type: object
+      description: >
+        Returned by the PROVIDER endpoints (/v1/chat/completions, /v1/messages)
+        on 429 (rate) and 402 (monthly spend). Shaped like the upstream error
+        object rather than the management envelope, because the client parsing
+        it is an OpenAI or Anthropic SDK.
       required: [error]
       properties:
         error:
           type: object
-          required: [code, message]
+          required: [type, message]
           properties:
-            code:
+            type:
               type: string
-              example: not_found
-            message:
-              type: string
-              example: The requested resource was not found.
-            details:
-              type: object
-              additionalProperties: true
+              enum: [rate_limit_exceeded, spend_quota_exceeded]
+            message: { type: string }
 
-    # -- OpenAI Schemas -------------------------------------------------------
     OpenAIChatCompletionRequest:
       type: object
       description: >

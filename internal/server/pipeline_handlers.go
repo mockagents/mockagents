@@ -104,17 +104,17 @@ type PipelineHandlers struct {
 // RunPipeline handles POST /api/v1/pipelines/{name}/run.
 func (h *PipelineHandlers) RunPipeline(w http.ResponseWriter, r *http.Request) {
 	if h.Registry == nil || h.Executor == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "pipeline execution not configured"})
+		writeError(w, http.StatusServiceUnavailable, "pipeline execution not configured")
 		return
 	}
 	name := r.PathValue("name")
 	if name == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing pipeline name"})
+		writeError(w, http.StatusBadRequest, "missing pipeline name")
 		return
 	}
 	def := h.Registry.GetPipeline(name)
 	if def == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "pipeline not found"})
+		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
 
@@ -126,18 +126,18 @@ func (h *PipelineHandlers) RunPipeline(w http.ResponseWriter, r *http.Request) {
 	if err := dec.Decode(&req); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "request body too large"})
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			return
 		}
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
 	if err := ensureJSONEOF(dec); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if strings.TrimSpace(req.Input) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "input is required"})
+		writeError(w, http.StatusBadRequest, "input is required")
 		return
 	}
 	if req.SessionID == "" {
@@ -206,16 +206,16 @@ func (h *PipelineHandlers) ListPipelines(w http.ResponseWriter, r *http.Request)
 func (h *PipelineHandlers) GetPipeline(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if name == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing pipeline name"})
+		writeError(w, http.StatusBadRequest, "missing pipeline name")
 		return
 	}
 	if h.Registry == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "pipeline registry not configured"})
+		writeError(w, http.StatusNotFound, "pipeline registry not configured")
 		return
 	}
 	def := h.Registry.GetPipeline(name)
 	if def == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "pipeline not found"})
+		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
 	if ver, err := h.pipelineVersion(name); err == nil && ver != "" {
@@ -229,17 +229,17 @@ func (h *PipelineHandlers) GetPipeline(w http.ResponseWriter, r *http.Request) {
 // so the change is live immediately (REF-07).
 func (h *PipelineHandlers) UpdatePipeline(w http.ResponseWriter, r *http.Request) {
 	if h.Registry == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "pipeline registry not configured"})
+		writeError(w, http.StatusNotFound, "pipeline registry not configured")
 		return
 	}
 	name := r.PathValue("name")
 	if name == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing pipeline name"})
+		writeError(w, http.StatusBadRequest, "missing pipeline name")
 		return
 	}
 	// PUT updates an existing pipeline; creation is a separate (future) flow.
 	if h.Registry.GetPipeline(name) == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "pipeline not found"})
+		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
 
@@ -249,16 +249,16 @@ func (h *PipelineHandlers) UpdatePipeline(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "request body too large"})
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			return
 		}
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "reading body: " + err.Error()})
+		writeError(w, http.StatusBadRequest, "reading body: "+err.Error())
 		return
 	}
 
 	var def types.PipelineDefinition
 	if err := json.Unmarshal(body, &def); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
 
@@ -266,13 +266,11 @@ func (h *PipelineHandlers) UpdatePipeline(w http.ResponseWriter, r *http.Request
 	// a single safe path segment (the structural kebab-case rule is re-checked
 	// by ValidateBytes below; this guards the filesystem path directly).
 	if def.Metadata.Name != name {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": fmt.Sprintf("metadata.name %q does not match path %q", def.Metadata.Name, name),
-		})
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("metadata.name %q does not match path %q", def.Metadata.Name, name))
 		return
 	}
 	if !safePipelineName(name) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid pipeline name"})
+		writeError(w, http.StatusBadRequest, "invalid pipeline name")
 		return
 	}
 
@@ -306,15 +304,11 @@ func (h *PipelineHandlers) UpdatePipeline(w http.ResponseWriter, r *http.Request
 	}
 	ifMatch := strings.Trim(r.Header.Get("If-Match"), `"`)
 	if ifMatch == "" {
-		writeJSON(w, http.StatusPreconditionRequired, map[string]string{
-			"error": "If-Match header required (echo the ETag from GET)",
-		})
+		writeError(w, http.StatusPreconditionRequired, "If-Match header required (echo the ETag from GET)")
 		return
 	}
 	if ifMatch != current {
-		writeJSON(w, http.StatusPreconditionFailed, map[string]string{
-			"error": "pipeline changed since it was loaded; reload and re-apply",
-		})
+		writeError(w, http.StatusPreconditionFailed, "pipeline changed since it was loaded; reload and re-apply")
 		return
 	}
 

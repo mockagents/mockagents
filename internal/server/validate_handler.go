@@ -43,7 +43,7 @@ type ValidateResponse struct {
 func (h *ValidateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	defer r.Body.Close()
@@ -52,10 +52,10 @@ func (h *ValidateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "request body too large"})
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			return
 		}
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "reading body: " + err.Error()})
+		writeError(w, http.StatusBadRequest, "reading body: "+err.Error())
 		return
 	}
 
@@ -75,9 +75,7 @@ func (h *ValidateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := json.Unmarshal(body, &wrapper); err == nil && wrapper.YAML != nil {
 			if *wrapper.YAML == "" {
-				writeJSON(w, http.StatusBadRequest, map[string]string{
-					"error": `JSON wrapper "yaml" field is present but empty`,
-				})
+				writeError(w, http.StatusBadRequest, `JSON wrapper "yaml" field is present but empty`)
 				return
 			}
 			payload = []byte(*wrapper.YAML)

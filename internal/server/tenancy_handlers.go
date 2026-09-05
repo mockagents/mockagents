@@ -24,7 +24,7 @@ type TenancyHandlers struct {
 func principalOrUnauthorized(w http.ResponseWriter, r *http.Request) *tenancy.Principal {
 	p := tenancy.PrincipalFrom(r.Context())
 	if p == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+		writeError(w, http.StatusUnauthorized, "authentication required")
 		return nil
 	}
 	return p
@@ -42,7 +42,7 @@ func (h *TenancyHandlers) ensureOwnTenant(w http.ResponseWriter, r *http.Request
 	}
 	pathTenant := r.PathValue("id")
 	if pathTenant != p.TenantID {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "tenant not found"})
+		writeError(w, http.StatusNotFound, "tenant not found")
 		return "", false
 	}
 	return pathTenant, true
@@ -61,10 +61,10 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "request body too large"})
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			return false
 		}
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return false
 	}
 	return true
@@ -117,7 +117,7 @@ func (h *TenancyHandlers) DeleteTenant(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := h.Store.DeleteTenant(r.Context(), id); err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "tenant not found"})
+			writeError(w, http.StatusNotFound, "tenant not found")
 			return
 		}
 		writeServerError(w, err)
@@ -162,13 +162,13 @@ func (h *TenancyHandlers) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !req.Role.IsAssignableViaAPI() {
 		// Rejects unknown roles AND the platform role: platform is
 		// bootstrap-only so a tenant admin cannot self-escalate (X-TN-001).
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid role (must be viewer, editor, or admin)"})
+		writeError(w, http.StatusBadRequest, "invalid role (must be viewer, editor, or admin)")
 		return
 	}
 	result, err := h.Store.CreateAPIKey(r.Context(), tenantID, req.Name, req.Role)
 	if err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "tenant not found"})
+			writeError(w, http.StatusNotFound, "tenant not found")
 			return
 		}
 		writeServerError(w, err)
@@ -205,13 +205,13 @@ func (h *TenancyHandlers) UpdateAPIKeyRole(w http.ResponseWriter, r *http.Reques
 	if !req.Role.IsAssignableViaAPI() {
 		// Rejects unknown roles AND the platform role: platform is
 		// bootstrap-only so a tenant admin cannot self-escalate (X-TN-001).
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid role (must be viewer, editor, or admin)"})
+		writeError(w, http.StatusBadRequest, "invalid role (must be viewer, editor, or admin)")
 		return
 	}
 	prev, next, err := h.Store.UpdateAPIKeyRole(r.Context(), p.TenantID, id, req.Role)
 	if err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "api key not found"})
+			writeError(w, http.StatusNotFound, "api key not found")
 			return
 		}
 		writeServerError(w, err)
@@ -241,7 +241,7 @@ func (h *TenancyHandlers) RotateAPIKey(w http.ResponseWriter, r *http.Request) {
 	result, oldPrefix, err := h.Store.RotateAPIKey(r.Context(), p.TenantID, id)
 	if err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "api key not found"})
+			writeError(w, http.StatusNotFound, "api key not found")
 			return
 		}
 		writeServerError(w, err)
@@ -297,7 +297,7 @@ func (h *TenancyHandlers) BulkRotateTenantKeys(w http.ResponseWriter, r *http.Re
 	results, oldPrefixes, err := h.Store.BulkRotateTenantKeys(r.Context(), tenantID, excludeIDs...)
 	if err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "tenant not found"})
+			writeError(w, http.StatusNotFound, "tenant not found")
 			return
 		}
 		writeServerError(w, err)
@@ -348,9 +348,7 @@ func (h *TenancyHandlers) BulkRotateTenantKeys(w http.ResponseWriter, r *http.Re
 func (h *TenancyHandlers) RotateMyAPIKey(w http.ResponseWriter, r *http.Request) {
 	principal := tenancy.PrincipalFrom(r.Context())
 	if principal == nil || principal.KeyID == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{
-			"error": "self-rotation requires an authenticated request",
-		})
+		writeError(w, http.StatusUnauthorized, "self-rotation requires an authenticated request")
 		return
 	}
 	result, oldPrefix, err := h.Store.RotateAPIKey(r.Context(), principal.TenantID, principal.KeyID)
@@ -359,7 +357,7 @@ func (h *TenancyHandlers) RotateMyAPIKey(w http.ResponseWriter, r *http.Request)
 			// The principal was authenticated but the underlying
 			// key is gone — race with DeleteAPIKey. Return 404 to
 			// mirror the admin path.
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "api key not found"})
+			writeError(w, http.StatusNotFound, "api key not found")
 			return
 		}
 		writeServerError(w, err)
@@ -399,15 +397,13 @@ func (h *TenancyHandlers) RotateMyAPIKey(w http.ResponseWriter, r *http.Request)
 func (h *TenancyHandlers) BurnMyAPIKey(w http.ResponseWriter, r *http.Request) {
 	principal := tenancy.PrincipalFrom(r.Context())
 	if principal == nil || principal.KeyID == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{
-			"error": "burn requires an authenticated request",
-		})
+		writeError(w, http.StatusUnauthorized, "burn requires an authenticated request")
 		return
 	}
 	result, oldPrefix, err := h.Store.RotateAPIKey(r.Context(), principal.TenantID, principal.KeyID)
 	if err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "api key not found"})
+			writeError(w, http.StatusNotFound, "api key not found")
 			return
 		}
 		writeServerError(w, err)
@@ -446,7 +442,7 @@ func (h *TenancyHandlers) DeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := h.Store.DeleteAPIKey(r.Context(), p.TenantID, id); err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "api key not found"})
+			writeError(w, http.StatusNotFound, "api key not found")
 			return
 		}
 		writeServerError(w, err)

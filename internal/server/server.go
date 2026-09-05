@@ -512,7 +512,7 @@ func (s *Server) readinessHandlers() *ReadinessHandlers {
 func (s *Server) handleProcessRequest(w http.ResponseWriter, r *http.Request) {
 	var req engine.InboundRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -526,7 +526,7 @@ func (s *Server) handleProcessRequest(w http.ResponseWriter, r *http.Request) {
 		} else if errors.Is(err, engine.ErrEmptyMessage) {
 			status = http.StatusBadRequest
 		}
-		writeJSON(w, status, map[string]string{"error": err.Error()})
+		writeError(w, status, err.Error())
 		return
 	}
 

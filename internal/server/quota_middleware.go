@@ -64,19 +64,19 @@ func QuotaEnforce(enf *quota.Enforcer) func(http.Handler) http.Handler {
 					secs = 1
 				}
 				w.Header().Set("Retry-After", strconv.Itoa(secs))
-				writeJSON(w, http.StatusTooManyRequests, map[string]any{
-					"error": map[string]string{
-						"type":    "rate_limit_exceeded",
-						"message": "tenant request-rate quota exceeded",
+				writeJSON(w, http.StatusTooManyRequests, ProviderQuotaError{
+					Error: providerError{
+						Type:    "rate_limit_exceeded",
+						Message: "tenant request-rate quota exceeded",
 					},
 				})
 				return
 			}
 			if !enf.CheckSpend(tenantID) {
-				writeJSON(w, http.StatusPaymentRequired, map[string]any{
-					"error": map[string]string{
-						"type":    "spend_quota_exceeded",
-						"message": "tenant monthly spend quota exceeded",
+				writeJSON(w, http.StatusPaymentRequired, ProviderQuotaError{
+					Error: providerError{
+						Type:    "spend_quota_exceeded",
+						Message: "tenant monthly spend quota exceeded",
 					},
 				})
 				return
@@ -84,4 +84,22 @@ func QuotaEnforce(enf *quota.Enforcer) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// ProviderQuotaError is the error shape the PROVIDER endpoints return when a
+// quota rejects a request. Exported so the OpenAPI schema of the same name can
+// be checked against it.
+//
+// Deliberately not ErrorResponse. These come back on /v1/chat/completions and
+// /v1/messages, where an SDK is parsing the response — so they mimic the
+// upstream `{"error": {"type", "message"}}` object, which is what those SDKs
+// know how to surface. Flattening them to match the management API's envelope
+// would make the rejection unreadable to the very clients it is aimed at.
+type ProviderQuotaError struct {
+	Error providerError `json:"error"`
+}
+
+type providerError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
 }

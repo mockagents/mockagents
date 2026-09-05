@@ -58,34 +58,34 @@ func (h *SSOHandlers) Callback(w http.ResponseWriter, r *http.Request) {
 	stateCookie, sErr := r.Cookie(oidcStateCookie)
 	verifierCookie, vErr := r.Cookie(oidcVerifierCookie)
 	if sErr != nil || vErr != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing login state; restart the flow"})
+		writeError(w, http.StatusBadRequest, "missing login state; restart the flow")
 		return
 	}
 	// State must match the cookie (CSRF defense).
 	if q := r.URL.Query().Get("state"); q == "" || q != stateCookie.Value {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "state mismatch"})
+		writeError(w, http.StatusBadRequest, "state mismatch")
 		return
 	}
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing authorization code"})
+		writeError(w, http.StatusBadRequest, "missing authorization code")
 		return
 	}
 
 	claims, err := h.Auth.Exchange(r.Context(), code, verifierCookie.Value)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed"})
+		writeError(w, http.StatusUnauthorized, "authentication failed")
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(claims.Email))
 	if email == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "identity provider returned no email"})
+		writeError(w, http.StatusUnauthorized, "identity provider returned no email")
 		return
 	}
 
 	tenantID, ok := h.DomainMap[emailDomain(email)]
 	if !ok {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "email domain is not mapped to a tenant"})
+		writeError(w, http.StatusForbidden, "email domain is not mapped to a tenant")
 		return
 	}
 
