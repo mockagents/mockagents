@@ -122,11 +122,37 @@ func (h *LogHandlers) ListLogs(w http.ResponseWriter, r *http.Request) {
 	// Annotate every row with computed token counts and cost pulled
 	// from the stored response body. When Prices is unset this is a
 	// cheap zero-cost passthrough.
+	//
+	// Note the ordering: cost is derived from the response body, so the
+	// projection below has to come AFTER annotation or a metadata-only listing
+	// would silently report every request as free.
 	annotated := make([]LogWithCost, len(logs))
 	for i, row := range logs {
 		annotated[i] = annotate(row, h.Prices)
 	}
+	if metadataOnly(r) {
+		for i := range annotated {
+			annotated[i].RequestBody = ""
+			annotated[i].ResponseBody = ""
+		}
+	}
 	writeJSON(w, http.StatusOK, annotated)
+}
+
+// metadataOnly reports whether the caller asked for a body-free listing
+// (`?fields=meta`).
+//
+// This is a real privacy boundary rather than a display one: without it every
+// captured body in the window crosses the network before anyone asks to see a
+// single one, and a UI that hides them can only claim they are not SHOWN, not
+// that they were not sent. Bodies are then fetched one row at a time from
+// GET /api/v1/logs/{id}.
+//
+// Any other value of `fields` returns the full row. An unknown projection must
+// not silently drop data a caller is relying on, and rejecting it would break
+// clients written against the older route for no benefit.
+func metadataOnly(r *http.Request) bool {
+	return r.URL.Query().Get("fields") == "meta"
 }
 
 // GetLog handles GET /api/v1/logs/{id}.

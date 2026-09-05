@@ -225,6 +225,11 @@ export interface ListLogsOptions {
   session_prefix?: string;
   /** Offset paging. NOT a cursor — see LogWindow.stable. */
   offset?: number;
+  /** Ask the server to withhold request/response bodies (§9.1). This is a
+   * privacy boundary, not a display one: without it every body in the window
+   * crosses the network before anyone asks to see one, and a UI that hides them
+   * can only claim they are not SHOWN. Reveal then fetches a single row. */
+  metadataOnly?: boolean;
 }
 
 function logQuery(options: ListLogsOptions): string {
@@ -236,6 +241,7 @@ function logQuery(options: ListLogsOptions): string {
   if (options.until) params.set("until", options.until);
   if (options.session_id) params.set("session_id", options.session_id);
   if (options.session_prefix) params.set("session_prefix", options.session_prefix);
+  if (options.metadataOnly) params.set("fields", "meta");
   return params.toString();
 }
 

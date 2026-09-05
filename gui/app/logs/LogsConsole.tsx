@@ -44,9 +44,19 @@ export interface LogsConsoleProps {
   filters: LogFilters;
   /** Fetch rows newer than `afterId`, bounded by `limit`. Server action. */
   recoverAction: (afterId: number | null, limit: number) => Promise<InteractionLog[]>;
+  /** Fetch ONE row's bodies (§9.1). The listing is metadata-only, so a body has
+   * genuinely not left the server until this is called — which is what lets the
+   * screen say bodies are not fetched rather than merely not shown. */
+  revealAction: (id: number) => Promise<{ request?: string; response?: string } | null>;
 }
 
-export function LogsConsole({ window: initial, agents, filters, recoverAction }: LogsConsoleProps) {
+export function LogsConsole({
+  window: initial,
+  agents,
+  filters,
+  recoverAction,
+  revealAction,
+}: LogsConsoleProps) {
   const router = useRouter();
 
   const [rows, setRows] = useState<InteractionLog[]>(initial.rows);
@@ -58,6 +68,12 @@ export function LogsConsole({ window: initial, agents, filters, recoverAction }:
   const [authExpired, setAuthExpired] = useState(false);
   const [flashId, setFlashId] = useState<number | null>(null);
   const [revealBodies, setRevealBodies] = useState(false);
+  /** Bodies fetched so far, by row id. Cleared when the window changes, so a
+   * body can never be shown against a row from a different result set. */
+  const [bodies, setBodies] = useState<Map<number, { request?: string; response?: string }>>(
+    new Map(),
+  );
+  const [revealState, setRevealState] = useState<"idle" | "loading" | "failed">("idle");
 
   const retryRef = useRef(0);
   // The newest row seen before a disconnect, so recovery knows where to resume
@@ -72,6 +88,8 @@ export function LogsConsole({ window: initial, agents, filters, recoverAction }:
     setSel(initial.rows[0]?.id ?? null);
     lastSeenRef.current = newestSeen(initial.rows);
     setGap({ kind: "none" });
+    setBodies(new Map());
+    setRevealBodies(false);
   }, [initial]);
 
   const addRows = useCallback((incoming: InteractionLog[]) => {
@@ -187,6 +205,32 @@ export function LogsConsole({ window: initial, agents, filters, recoverAction }:
 
   const selRow = useMemo(() => rows.find((r) => r.id === sel) ?? null, [rows, sel]);
 
+  /** Reveal is a FETCH, not a style change: the listing withheld the bodies, so
+   * this is the moment they leave the server. A failure says so rather than
+   * rendering an empty pane that reads like an empty body. */
+  async function onToggleBodies() {
+    if (revealBodies) {
+      setRevealBodies(false);
+      return;
+    }
+    const id = selRef.current;
+    if (id == null) return;
+    setRevealBodies(true);
+    if (bodies.has(id)) return;
+    setRevealState("loading");
+    try {
+      const fetched = await revealAction(id);
+      if (fetched) {
+        setBodies((prev) => new Map(prev).set(id, fetched));
+        setRevealState("idle");
+      } else {
+        setRevealState("failed");
+      }
+    } catch {
+      setRevealState("failed");
+    }
+  }
+
   function applyFilters(next: Partial<LogFilters>) {
     // Any filter change resets paging: keeping an offset from a different
     // result set would point at unrelated rows.
@@ -258,7 +302,9 @@ export function LogsConsole({ window: initial, agents, filters, recoverAction }:
           <LogDetail
             row={selRow}
             revealBodies={revealBodies}
-            onToggleBodies={() => setRevealBodies((v) => !v)}
+            bodies={selRow ? bodies.get(selRow.id) : undefined}
+            revealState={revealState}
+            onToggleBodies={onToggleBodies}
             onSession={(id) => applyFilters({ session_id: id })}
           />
         </div>
@@ -649,11 +695,15 @@ function Signals({ row }: { row: InteractionLog }) {
 function LogDetail({
   row,
   revealBodies,
+  bodies,
+  revealState,
   onToggleBodies,
   onSession,
 }: {
   row: InteractionLog | null;
   revealBodies: boolean;
+  bodies?: { request?: string; response?: string };
+  revealState: "idle" | "loading" | "failed";
   onToggleBodies: () => void;
   onSession: (id: string) => void;
 }) {
@@ -737,14 +787,27 @@ function LogDetail({
           {revealBodies ? "Hide bodies" : "Show request/response bodies"}
         </button>
         <p className="hint" style={{ marginTop: 6 }}>
-          Bodies are hidden by default — they can contain whatever a client sent.
+          Bodies are not fetched until revealed — this listing asked the server for
+          metadata only, so nothing captured here has left it yet. They can contain
+          whatever a client sent.
         </p>
       </div>
 
-      {revealBodies && (
+      {revealBodies && revealState === "loading" && (
+        <p className="txt-sm muted" role="status">
+          Fetching this request&apos;s bodies…
+        </p>
+      )}
+      {revealBodies && revealState === "failed" && (
+        <div className="banner banner-error" role="alert">
+          <strong>Could not fetch the bodies.</strong> They were not retrieved, which is
+          not the same as this request having had none.
+        </div>
+      )}
+      {revealBodies && revealState === "idle" && (
         <>
-          <Body label="request" text={row.request_body} />
-          <Body label="response" text={row.response_body} />
+          <Body label="request" text={bodies?.request} />
+          <Body label="response" text={bodies?.response} />
         </>
       )}
     </div>

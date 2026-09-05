@@ -64,7 +64,7 @@ not simply a to-do list.
 | U4-1 | Gaps render as a banner, not as gap rows in the table | UX-04 | **A** — fixed |
 | U4-2 | The gap has no time bounds | UX-04 | **A** — fixed |
 | U4-3 | Empty state omits the window and the next step | UX-04 | B — fixed |
-| U4-4 | "Bodies are not fetched until revealed" is false — they ship with the list | UX-04 | **X** |
+| U4-4 | "Bodies are not fetched until revealed" is false — they ship with the list | UX-04 | **X** — fixed |
 | U4-5 | Capture completeness shown only when truncated | UX-04 | C |
 | U4-6 | Implementation refuses "loaded N of N" | UX-04 | D |
 | U5-1 | Absent nodes are not rendered as "not executed · unknown" | UX-05 | **A** — fixed |
@@ -621,6 +621,21 @@ Options: **(a)** keep the display boundary and the honest copy — no work; **(b
 design's claim true. (b) is small and additive. Until then (a) is the correct behaviour
 and the design text is the thing that is wrong.
 
+**Fixed 2026-09-05** — option (b). `GET /api/v1/logs?fields=meta` withholds both
+bodies, and the console's listing asks for it, so a window of captured payloads
+no longer crosses the network because someone opened the page. Reveal is now a
+per-row read of `GET /api/v1/logs/{id}` — deliberately per row, since revealing
+one body must not pull back every other one with it.
+
+Two details worth recording. The projection happens AFTER cost annotation,
+because cost is derived from the response body; the other order silently reports
+every request as free, and there is a test pinning that. And an unrecognised
+`fields` value returns the full row rather than erroring or dropping data — an
+unknown projection must not quietly withhold something a caller relies on.
+
+A failed reveal now says so rather than rendering an empty pane: "could not
+fetch" and "there was nothing" are different, and one of them is a finding.
+
 ### 9.2 — "The run was not started" is false for a missing dependency · UX-05
 
 The design's Run-blocked card reads: *"Pipeline references an agent that is not loaded:
@@ -723,7 +738,7 @@ Grouped so each is one reviewable slice with its own tests.
    Export draft, editor offline state.
 7. ~~**U5-3, X-2**~~ **Done 2026-09-05** — node inspector, `unsupported` variant.
    (U1-2's catalog half shipped with X-3.)
-8. Backend slices: `?fields=meta` log projection (§9.1) remains. (`session_prefix`
+8. ~~Backend slices~~ **Done 2026-09-05** — `?fields=meta` log projection (§9.1). (`session_prefix`
    shipped 2026-09-05 — see the correction in §9.3; `code` on `pipelineRunError`
    shipped with U5-2; `AgentSummary` revision/persistence shipped as U3-6.)
    **New, from that slice:** pipeline runs never reach the interaction log — a
