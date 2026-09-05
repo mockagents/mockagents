@@ -1,11 +1,13 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -219,6 +221,7 @@ func acquireCaptureWriter(w http.ResponseWriter) *captureWriter {
 	cw.truncated = false
 	cw.streaming = false
 	cw.sniffed = false
+	cw.hijacked = false
 	cw.body = cw.body[:0]
 	return cw
 }
@@ -439,7 +442,7 @@ func InteractionCapture(worker *LogWorker, bodyMode LogBodyMode, spendHook ...fu
 				RequestMethod:  r.Method,
 				RequestPath:    path,
 				RequestBody:    reqBody,
-				ResponseStatus: cw.statusCode,
+				ResponseStatus: cw.statusForLog(),
 				LatencyMs:      time.Since(start).Milliseconds(),
 				Streaming:      streaming,
 				ResponseBody:   storedBody,
@@ -597,6 +600,10 @@ type captureWriter struct {
 	// the one-shot detection so it runs at most once per request.
 	streaming bool
 	sniffed   bool
+	// hijacked is set when the handler took the connection over — a chaos
+	// connection fault, which never writes a status line. Without it the log
+	// would record the 200 statusCode is initialised to.
+	hijacked bool
 }
 
 func (w *captureWriter) WriteHeader(code int) {
@@ -613,6 +620,36 @@ func (w *captureWriter) WriteHeader(code int) {
 // Without it this wrapper would terminate the Unwrap chain and break Hijack.
 func (w *captureWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
+}
+
+// Hijack records that the handler took the connection over, then delegates
+// down the wrapper chain. Delegation goes through ResponseController rather
+// than a direct type assertion because the writers below this one are
+// wrappers too — the same shape as metricsWriter.Hijack, which solves this
+// for the Prometheus counters.
+//
+// Intercepting Hijack is the only way to see a connection fault from
+// middleware: the adapter hijacks and never calls WriteHeader, so the
+// interaction log would otherwise record the 200 the writer starts at.
+func (w *captureWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, buf, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err == nil {
+		w.hijacked = true
+		// Nothing more can reach this response, so stop buffering a body.
+		w.capture = false
+	}
+	return conn, buf, err
+}
+
+// statusForLog reports 0 for a hijacked connection, matching what
+// metricsWriter.statusForMetrics reports to the metrics registry: no HTTP
+// status was ever sent. Recording 200 would have the log say the request
+// succeeded while the client saw a TCP reset.
+func (w *captureWriter) statusForLog() int {
+	if w.hijacked {
+		return 0
+	}
+	return w.statusCode
 }
 
 func (w *captureWriter) Write(p []byte) (int, error) {
