@@ -184,6 +184,53 @@ describe("AgentCatalog", () => {
     });
   });
 
+  // U3-6. "Which of my agents survive a restart?" was answerable only one agent
+  // at a time. These three states lead somewhere different, so they stay
+  // distinct — and a server that does not report them stays silent.
+  describe("durability", () => {
+    it("marks a file-backed agent as persisted", () => {
+      render(
+        <AgentCatalog
+          agents={[{ ...AGENTS[0], persistence: "file", file: "support-bot.yaml", effective_revision: "abc123def456" }]}
+          deleteAction={noopDelete}
+        />,
+      );
+      expect(screen.getByText("persisted")).toBeInTheDocument();
+      expect(screen.getByText("abc123de")).toBeInTheDocument();
+    });
+
+    it("marks a runtime-only agent as lost on restart", () => {
+      render(
+        <AgentCatalog agents={[{ ...AGENTS[0], persistence: "runtime" }]} deleteAction={noopDelete} />,
+      );
+      const badge = screen.getByText("runtime-only");
+      expect(badge).toHaveAttribute("title", expect.stringMatching(/lost when the server restarts/i));
+    });
+
+    // The surprise case: a tracked file deleted out of band. It is still
+    // serving, so it looks fine, and it will not come back.
+    it("distinguishes a vanished backing file from a runtime-only agent", () => {
+      render(
+        <AgentCatalog
+          agents={[{ ...AGENTS[0], persistence: "missing", file: "support-bot.yaml" }]}
+          deleteAction={noopDelete}
+        />,
+      );
+      expect(screen.getByText("file missing")).toBeInTheDocument();
+      expect(screen.queryByText("runtime-only")).toBeNull();
+      expect(screen.queryByText("persisted")).toBeNull();
+    });
+
+    // An older server sends no field. Guessing "runtime" would tell someone
+    // their durable agents are about to disappear.
+    it("says nothing when the server does not report durability", () => {
+      render(<AgentCatalog agents={AGENTS} deleteAction={noopDelete} />);
+      for (const label of ["persisted", "runtime-only", "file missing"]) {
+        expect(screen.queryByText(label)).toBeNull();
+      }
+    });
+  });
+
   describe("accessibility", () => {
     it("has no axe violations in its default state", async () => {
       const { container } = render(<AgentCatalog agents={AGENTS} deleteAction={noopDelete} />);

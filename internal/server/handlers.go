@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -90,16 +91,66 @@ type AgentSummary struct {
 	ScenarioCount int      `json:"scenario_count"`
 	ToolCount     int      `json:"tool_count"`
 	Tags          []string `json:"tags,omitempty"`
+	// EffectiveRevision is the revision of the RUNNING definition — the same
+	// value GET /agents/{name} publishes as X-Mockagents-Revision-Effective.
+	// Listing it lets a caller see at a glance which definitions have moved,
+	// without a request per agent. Empty when it could not be computed, which
+	// is not the same as unchanged.
+	//
+	// Deliberately NOT the ETag. The ETag combines this with a hash of the
+	// backing file, so computing it here would mean reading every agent's file
+	// on every listing — and a caller that mistook one for the other would
+	// send a precondition that always fails. Fetch the agent for its ETag.
+	EffectiveRevision string `json:"effective_revision,omitempty"`
+	// Persistence answers "does this survive a restart", which a count of
+	// agents cannot. One of:
+	//
+	//	file    — backed by a file that is present now
+	//	runtime — no backing file; created at runtime and lost on restart
+	//	missing — a backing file is tracked but is not there any more, so the
+	//	          definition is serving from memory only
+	//
+	// "missing" is deliberately distinct from "runtime": one is a choice, the
+	// other is a surprise waiting for the next restart.
+	Persistence string `json:"persistence"`
+	// File is the base name of the backing file, when there is one. Only the
+	// base name: the absolute path is server-side detail a client has no use
+	// for and should not be handed.
+	File string `json:"file,omitempty"`
+}
+
+// Persistence values for AgentSummary. Stable wire strings.
+const (
+	agentPersistedToFile = "file"
+	agentRuntimeOnly     = "runtime"
+	agentFileMissing     = "missing"
+)
+
+// summarizePersistence classifies an agent's durability from its tracked source
+// path. The stat is deliberate: a tracked path whose file has been deleted out
+// of band still serves from memory, and reporting it as persisted would promise
+// a restart it will not survive. A stat per agent is cheap next to the read that
+// computing a source hash would need — and the source hash is not what these
+// two columns are for.
+func summarizePersistence(source string) (kind, file string) {
+	if source == "" {
+		return agentRuntimeOnly, ""
+	}
+	if _, err := os.Stat(source); err != nil {
+		return agentFileMissing, filepath.Base(source)
+	}
+	return agentPersistedToFile, filepath.Base(source)
 }
 
 // ListAgents returns a JSON array of agent summaries scoped to the
 // caller's tenant. In single-tenant mode the caller has no tenant id
 // and the listing returns global agents only — identical to v0.1.
 func (h *Handlers) ListAgents(w http.ResponseWriter, r *http.Request) {
-	agents := h.Engine.Registry.ListForTenant(callerTenantID(r))
+	tenantID := callerTenantID(r)
+	agents := h.Engine.Registry.ListForTenant(tenantID)
 	summaries := make([]AgentSummary, 0, len(agents))
 	for _, a := range agents {
-		summaries = append(summaries, AgentSummary{
+		summary := AgentSummary{
 			Name:          a.Metadata.Name,
 			Description:   a.Metadata.Description,
 			Model:         a.Spec.Model,
@@ -107,7 +158,16 @@ func (h *Handlers) ListAgents(w http.ResponseWriter, r *http.Request) {
 			ScenarioCount: len(a.Spec.Behavior.Scenarios),
 			ToolCount:     len(a.Spec.Tools),
 			Tags:          a.Metadata.Tags,
-		})
+		}
+		source := h.Engine.Registry.Source(a.Metadata.Name, tenantID)
+		summary.Persistence, summary.File = summarizePersistence(source)
+		// Only the effective revision, so this stays a marshal per agent with
+		// no file read. Drift against the file on disk is a per-agent question
+		// and stays on GET /agents/{name}, which already answers it.
+		if rev, err := revisionFor(a, ""); err == nil {
+			summary.EffectiveRevision = rev.Effective
+		}
+		summaries = append(summaries, summary)
 	}
 	writeJSON(w, http.StatusOK, summaries)
 }

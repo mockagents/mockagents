@@ -59,7 +59,7 @@ not simply a to-do list.
 | U3-3 | Diff step never says Apply changes the live runtime | UX-03 | B — fixed |
 | U3-4 | No Export draft; nothing says drafts are browser-memory only | UX-03 | B — fixed |
 | U3-5 | Editor has no offline state; a write to a dead server reports "unknown" | UX-03 | B — fixed |
-| U3-6 | Inventory has no revision or persistence column | UX-03 | X → B |
+| U3-6 | Inventory has no revision or persistence column | UX-03 | X → B — fixed |
 | U3-7 | Editor header lacks revision / persisted / file chips | UX-03 | C |
 | U4-1 | Gaps render as a banner, not as gap rows in the table | UX-04 | **A** — fixed |
 | U4-2 | The gap has no time bounds | UX-04 | **A** — fixed |
@@ -390,6 +390,20 @@ done.
 Worth doing because it is the inventory-level view of U3-1: without it, "which of my
 agents survive a restart?" can only be answered one agent at a time.
 
+**Fixed 2026-09-05.** `AgentSummary` now carries `effective_revision`,
+`persistence` and `file`. Persistence has three values rather than a boolean,
+because a tracked file that has been deleted out of band is neither persisted
+nor runtime-only — it is still serving and will not come back, which is the
+state worth surfacing. The revision is the EFFECTIVE one, named as such: the
+ETag also covers the backing file, so publishing it here would mean reading
+every agent's file on every listing, and a caller mistaking one for the other
+would send a precondition that always fails. An older server omits the fields
+entirely, and the catalog renders nothing rather than guessing "runtime".
+
+The spec's `AgentSummary` schema was already wrong before this — it documented
+`tools_count` / `scenarios_count` / `status`, none of which exist, and a
+two-value protocol enum. Corrected alongside.
+
 Related, lower value: the design puts Agents and Pipelines in one **Mocks** screen with
 tabs. The console keeps them as separate routes, deliberately — `Shell.tsx` records
 that renaming routes moves every deep link and epic §5 wants redirects, so it is its
@@ -681,9 +695,9 @@ Grouped so each is one reviewable slice with its own tests.
    Export draft, editor offline state.
 7. ~~**U5-3, X-2**~~ **Done 2026-09-05** — node inspector, `unsupported` variant.
    (U1-2's catalog half shipped with X-3.)
-8. Backend slices, if approved: `session_prefix` log filter (§9.3), `AgentSummary`
-   revision/persistence (U3-6), `?fields=meta` log projection (§9.1). (`code` on
-   `pipelineRunError` shipped with U5-2.)
+8. Backend slices, if approved: `session_prefix` log filter (§9.3), `?fields=meta` log
+   projection (§9.1). (`code` on `pipelineRunError` shipped with U5-2; `AgentSummary`
+   revision/persistence shipped as U3-6 on 2026-09-05.)
 9. **C-class** — U3-7, U4-5, U5-5, U5-6, X-4.
 
 ## 11. What this audit did not cover

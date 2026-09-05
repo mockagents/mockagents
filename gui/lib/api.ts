@@ -33,6 +33,20 @@ export interface AgentSummary {
   scenario_count: number;
   tool_count: number;
   tags?: string[];
+  /** Revision of the RUNNING definition — what GET /agents/{name} publishes as
+   * X-Mockagents-Revision-Effective. Absent from an older server.
+   *
+   * NOT the ETag, and not usable as an If-Match value: the ETag also covers the
+   * backing file, so computing it for a listing would mean reading every
+   * agent's file. Fetch the agent when you need a precondition. */
+  effective_revision?: string;
+  /** Whether this definition survives a restart (U3-6):
+   *  `file` backed by a file that is present · `runtime` never had one ·
+   *  `missing` a backing file is tracked but is gone, so it is serving from
+   *  memory only. Absent from an older server, which is UNKNOWN — not runtime. */
+  persistence?: "file" | "runtime" | "missing";
+  /** Base name of the backing file, when there is one. */
+  file?: string;
 }
 
 export interface InteractionLog {

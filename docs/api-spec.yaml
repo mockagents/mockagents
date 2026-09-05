@@ -1292,7 +1292,7 @@ components:
             stale value.
     AgentSummary:
       type: object
-      required: [name, description, protocol, tags, tools_count, scenarios_count, status]
+      required: [name, model, protocol, scenario_count, tool_count, persistence]
       properties:
         name:
           type: string
@@ -1300,24 +1300,60 @@ components:
         description:
           type: string
           example: A mock weather-lookup agent.
+        model:
+          type: string
+          description: The model name this mock reports. It is never called.
+          example: gpt-4o
         protocol:
           type: string
-          enum: [openai, anthropic]
+          enum:
+            - openai-chat-completions
+            - anthropic-messages
+            - google-gemini
+            - ollama-chat
+            - bedrock-converse
         tags:
           type: array
           items:
             type: string
           example: [weather, demo]
-        tools_count:
-          type: integer
-          example: 2
-        scenarios_count:
+        scenario_count:
           type: integer
           example: 3
-        status:
+        tool_count:
+          type: integer
+          example: 2
+        effective_revision:
           type: string
-          enum: [active, inactive, error]
-          example: active
+          description: >
+            Revision of the RUNNING definition — the same value the per-agent
+            route publishes as `X-Mockagents-Revision-Effective`. Listing it
+            avoids a request per agent when comparing what has moved.
+
+            NOT the ETag, and not usable as an `If-Match` value: the ETag also
+            covers the backing file, so computing it for a listing would mean
+            reading every agent's file. Fetch the agent when you need a
+            precondition. Omitted when it could not be computed, which is not
+            the same as unchanged.
+          example: 8a8c8e24465ea33da5ed64ecfaba62e62e7d3151b344d56768e243bcbea56c13
+        persistence:
+          type: string
+          description: >
+            Whether this definition survives a restart. `missing` is
+            deliberately distinct from `runtime`: one is a choice, the other is
+            a backing file that has gone away while the definition keeps
+            serving from memory.
+          enum:
+            - file      # backed by a file that is present now
+            - runtime   # no backing file; created at runtime, lost on restart
+            - missing   # a backing file is tracked but is not there any more
+          example: file
+        file:
+          type: string
+          description: >
+            Base name of the backing file, when there is one. The absolute path
+            is server-side detail and is never returned.
+          example: weather-agent.yaml
 
     AgentDefinition:
       type: object
