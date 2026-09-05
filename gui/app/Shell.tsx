@@ -82,8 +82,12 @@ const WIDE = ["/logs", "/costs", "/admin"];
 export interface ShellProps {
   children: ReactNode;
   apiUrl: string;
-  online: boolean;
-  version?: string;
+  // UX-01/X-1: the instrument strip, rendered by the root layout and passed in
+  // as a slot. It is a server component and this is a client component, so it
+  // cannot be imported here — but it belongs to the shell, not to any page,
+  // because the design carries server context on EVERY screen. A page that
+  // renders its own would double it.
+  instrument?: ReactNode;
   // UX-01: role is server-reported and may be null — either the server was
   // unreachable, or it runs in local mode with no roles at all. Render the
   // uncertainty; never substitute a guess.
@@ -125,8 +129,7 @@ function crumbsFor(pathname: string): string[] {
 export function Shell({
   children,
   apiUrl,
-  online,
-  version,
+  instrument,
   auth,
   capabilities = null,
   logoutAction,
@@ -227,11 +230,11 @@ export function Shell({
             ))}
           </div>
           <div className="topbar-right">
-            <div className={"spill " + (online ? "ok" : "down")} title={online ? `online ${apiUrl}` : `unreachable ${apiUrl}`}>
-              <span className="dot" />
-              {online ? "online" : "offline"}
-              {version ? <span className="mono">v{version}</span> : null}
-            </div>
+            {/* The old online/offline pill lived here. It collapsed liveness and
+                readiness into one word, so it could read "online" while the
+                strip below reads NOT-READY — the exact conflation UX-02 exists
+                to undo. The strip states both separately, with the engine
+                version, so the pill is gone rather than left to contradict it. */}
             <button
               type="button"
               className="btn btn-ghost btn-icon btn-sm"
@@ -267,6 +270,8 @@ export function Shell({
             )}
           </div>
         </header>
+
+        {instrument}
 
         <main className="content">
           <div className={"content-inner view-enter" + (wide ? " wide" : "")} key={pathname}>

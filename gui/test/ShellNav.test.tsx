@@ -16,12 +16,11 @@ vi.mock("next/navigation", () => ({
   usePathname: () => "/overview",
 }));
 
-function renderShell(capabilities: string[] | null) {
+function renderShell(capabilities: string[] | null, instrument?: React.ReactNode) {
   return render(
     <Shell
       apiUrl="http://localhost:8080"
-      online
-      version="0.4.2"
+      instrument={instrument}
       auth={{ prefix: "mak_1c3a", role: "viewer", unreachable: capabilities === null }}
       capabilities={capabilities}
       logoutAction={async () => {}}
@@ -85,5 +84,36 @@ describe("reports", () => {
   it("offers the evidence export from the observability group", () => {
     renderShell(EVERYTHING);
     expect(screen.getByRole("link", { name: /reports/i })).toHaveAttribute("href", "/reports");
+  });
+});
+
+// X-1. The strip is the design's persistent server context, so its home is the
+// shell rather than any one page. These pin the two properties that make it
+// persistent: it renders above the page, and the shell no longer states
+// connectivity on its own.
+describe("instrument slot", () => {
+  it("renders the strip above the page content", () => {
+    const { container } = renderShell(EVERYTHING, <div data-testid="strip">strip</div>);
+    const strip = screen.getByTestId("strip");
+    const content = container.querySelector(".content-inner");
+    expect(strip).toBeInTheDocument();
+    expect(content).not.toBeNull();
+    // DOCUMENT_POSITION_FOLLOWING: content comes after the strip. Reading order
+    // is the point — a status banner announced below the thing it qualifies is
+    // read too late to act on.
+    expect(strip.compareDocumentPosition(content!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("no longer claims connectivity in the topbar", () => {
+    // The removed pill said "online" from a single health probe, which could
+    // sit next to a NOT-READY strip. One source of truth, or none.
+    renderShell(EVERYTHING, <div data-testid="strip">strip</div>);
+    expect(screen.queryByText(/^online$/i)).toBeNull();
+    expect(screen.queryByText(/^offline$/i)).toBeNull();
+  });
+
+  it("renders without a strip, so a page can still mount if the slot is absent", () => {
+    renderShell(EVERYTHING);
+    expect(screen.getByText("content")).toBeInTheDocument();
   });
 });

@@ -7,6 +7,8 @@
 // action and forward it as an Authorization: Bearer header. In single-
 // tenant mode the cookie is absent and calls go through anonymously.
 
+import { cache } from "react";
+
 import { cookies } from "next/headers";
 
 import type { ReadinessCheck, ServerStatus } from "./serverState";
@@ -372,15 +374,22 @@ export interface Identity {
  * Throws APIError for an HTTP failure — 401 means the credential was
  * rejected, which callers must distinguish from the null returned when the
  * server could not be reached at all. Treating "offline" as "unauthorized"
- * would sign the operator out every time the mock server restarts. */
-export async function getIdentity(authKey?: string): Promise<Identity | null> {
+ * would sign the operator out every time the mock server restarts.
+ *
+ * Memoized per request render: the instrument strip needs identity in the root
+ * layout while individual pages still need it to decide whether to offer a
+ * write. React's cache() collapses those into one call per render pass, so
+ * putting the strip on every screen did not multiply the probes. */
+export const getIdentity = cache(async function getIdentity(
+  authKey?: string,
+): Promise<Identity | null> {
   try {
     return await fetchJSON<Identity>("/api/v1/identity", authKey ? { authKey } : {});
   } catch (err) {
     if (err instanceof APIError) throw err;
     return null;
   }
-}
+});
 
 /** Whether an identity grants a capability. Rendering only — every request is
  * still authorized by the server. */
@@ -763,7 +772,10 @@ interface ReadinessWire {
  *
  * Readiness returns 503 with a body when a check fails, so a non-OK status is
  * still a meaningful answer and must be parsed rather than thrown away. */
-export async function getServerStatus(): Promise<ServerStatus> {
+/* Memoized per request render for the same reason as getIdentity, and for one
+ * more: `checkedAt` is stamped inside. Two independent calls would put two
+ * different "last refresh" times on one screen. */
+export const getServerStatus = cache(async function getServerStatus(): Promise<ServerStatus> {
   const checkedAt = new Date().toISOString();
   const key = await getAuthKey();
   const headers: Record<string, string> = { Accept: "application/json" };
@@ -833,7 +845,7 @@ export async function getServerStatus(): Promise<ServerStatus> {
     checkedAt,
     stale: false,
   };
-}
+});
 
 // --- Pipeline execution (UX-05) -------------------------------------------
 
