@@ -118,6 +118,69 @@ spec:
   });
 });
 
+// U5-1 / U5-2, end to end: the Go classifier, the `code` field on the 422, the
+// GUI's blocked state, and the absent-node rows are one chain. This breaks it
+// on purpose by removing the agent the pipeline's FIRST node references, which
+// produces both halves at once — the run is blocked, and the node downstream of
+// the failure never appears in the response at all.
+test.describe("a run blocked by a missing dependency (UX-05)", () => {
+  const PIPELINE = "research-pipeline";
+  const AGENT = "web-researcher"; // the first node's ref
+  let restore: string | null = null;
+
+  test.beforeEach(async ({ request }) => {
+    const res = await request.get(`${API_URL}/api/v1/agents/${AGENT}`, {
+      headers: { Accept: "application/yaml" },
+    });
+    test.skip(res.status() !== 200, `${AGENT} is not loaded on this server`);
+    restore = await res.text();
+    expect((await request.delete(`${API_URL}/api/v1/agents/${AGENT}`)).ok()).toBe(true);
+  });
+
+  test.afterEach(async ({ request }) => {
+    // Put it back whatever happened, or every later test sees a broken fixture.
+    if (!restore) return;
+    await request.put(`${API_URL}/api/v1/agents/${AGENT}`, {
+      headers: { "Content-Type": "application/x-yaml" },
+      data: restore,
+    });
+    restore = null;
+  });
+
+  test("the server classifies it, and the panel says what to fix", async ({ request }) => {
+    // The wire contract first: a caller must not have to parse the message.
+    const res = await request.post(`${API_URL}/api/v1/pipelines/${PIPELINE}/run`, {
+      data: { input: "anything" },
+    });
+    expect(res.status()).toBe(422);
+    const body = (await res.json()) as { code?: string; result?: { nodes?: unknown[] } };
+    expect(body.code).toBe("missing_dependency");
+    // Only the failing node came back; the one after it is simply absent.
+    expect(body.result?.nodes ?? []).toHaveLength(1);
+  });
+
+  test("the panel reports it as blocked, and accounts for the node that never ran", async ({
+    page,
+  }) => {
+    await page.goto(`/pipelines/${PIPELINE}`, { waitUntil: "networkidle" });
+    await expect(async () => {
+      await page.getByLabel("Input").fill("anything");
+      await page.getByRole("button", { name: /run pipeline/i }).click();
+      await expect(page.getByText(/agent that is not loaded/i)).toBeVisible({ timeout: 5_000 });
+    }).toPass({ timeout: 20_000 });
+
+    // Blocked, not "partial" — different cause, different remedy.
+    await expect(page.getByText(/Partial run/i)).toHaveCount(0);
+    await expect(page.getByText(/Load the missing definition/i)).toBeVisible();
+
+    // U5-1: the summarizer never ran and is not in the response, but the
+    // definition declares it — so it is shown as unknown rather than omitted.
+    const table = page.getByRole("table").first();
+    await expect(table).toContainText("summarizer");
+    await expect(table).toContainText("not executed · unknown");
+  });
+});
+
 test.describe("navigation", () => {
   // Deep links must stay viable (epic §5). These are the routes the epic's
   // Release A journey depends on.

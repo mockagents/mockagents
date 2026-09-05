@@ -885,6 +885,15 @@ export interface PipelineRunResult {
 export type PipelineRunOutcome =
   | { status: "ok"; result: PipelineRunResult }
   | { status: "partial"; error: string; result: PipelineRunResult | null }
+  /** A node names an agent that is not loaded (epic §10:
+   * `blocked-missing-dependency`). Distinct from `partial` because the remedy
+   * is different — load the definition, rather than fix a scenario.
+   *
+   * NOTE the run still STARTED. Refs resolve at node-execution time, so any
+   * node before the missing one has already executed and advanced its session
+   * state; `result` carries those. The design prototype's "the run was not
+   * started" is false against this server. */
+  | { status: "blocked"; error: string; result: PipelineRunResult | null }
   | { status: "denied"; message: string }
   | { status: "invalid"; message: string }
   | { status: "unavailable"; message: string }
@@ -939,10 +948,15 @@ export async function runPipeline(
     // Valid request, unrunnable pipeline. The body preserves completed nodes.
     const body = (await res.json().catch(() => ({}))) as {
       error?: string;
+      code?: string;
       result?: PipelineRunResult;
     };
+    // The server classifies the failure so this does not have to match on the
+    // message. An older server sends no code; everything is then "partial",
+    // which is what this client did before the field existed.
+    const status = body.code === "missing_dependency" ? "blocked" : "partial";
     return {
-      status: "partial",
+      status,
       error: body.error ?? "A node could not execute.",
       result: body.result ?? null,
     };
