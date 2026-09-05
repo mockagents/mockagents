@@ -18,7 +18,7 @@ import { getAuthStatus } from "@/lib/auth";
 import { setFlash, takeFlash } from "@/lib/flash";
 import { Icon } from "@/lib/icons";
 
-import { DangerConfirm } from "../../DangerConfirm";
+import { DangerConfirm } from "../../../DangerConfirm";
 
 type PageProps = {
   params: Promise<{ id: string }>;

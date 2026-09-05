@@ -36,6 +36,88 @@ test.describe("agent catalog", () => {
   });
 });
 
+// X-3: deleting a mock is irreversible, so the design's destructive-dialog spec
+// applies to it — impact, consequences, exact-name gate. This drives the whole
+// path against a real server: create a throwaway agent, fail to delete it, then
+// delete it. The suite runs with workers: 1, so the temporary agent cannot
+// collide with another test.
+test.describe("agent deletion", () => {
+  const NAME = "x3-throwaway-agent";
+  const YAML = `apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: ${NAME}
+spec:
+  protocol: anthropic-messages
+  behavior:
+    scenarios:
+      - name: default
+        response:
+          content: "ok"
+`;
+
+  test.beforeEach(async ({ request }) => {
+    const res = await request.put(`${API_URL}/api/v1/agents/${NAME}`, {
+      headers: { "Content-Type": "application/x-yaml" },
+      data: YAML,
+    });
+    expect([200, 201], await res.text()).toContain(res.status());
+  });
+
+  test.afterEach(async ({ request }) => {
+    // Best effort: the happy-path test already removed it.
+    await request.delete(`${API_URL}/api/v1/agents/${NAME}`);
+  });
+
+  /** Open the confirmation for NAME. The trigger is a client island, so a click
+   * that lands before hydration is swallowed with no state change and nothing
+   * recovers it; retrying absorbs that race on a slow runner. A genuinely
+   * broken dialog fails every attempt and the test still goes red. */
+  async function openConfirm(page: import("@playwright/test").Page) {
+    await page.goto("/", { waitUntil: "networkidle" });
+    await expect(async () => {
+      await page.getByRole("button", { name: `Delete ${NAME}` }).click();
+      await expect(page.getByRole("dialog")).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 15_000 });
+    return page.getByRole("dialog");
+  }
+
+  test("a near-miss name leaves the agent serving", async ({ page }) => {
+    const dialog = await openConfirm(page);
+    // The heading names the specific mock, and the consequences are listed
+    // before the operator is given anything to press.
+    await expect(dialog).toContainText(NAME);
+    await expect(dialog).toContainText(/stops serving immediately/i);
+
+    const confirm = page.getByRole("button", { name: "Delete this agent" });
+    await expect(confirm).toBeDisabled();
+
+    // Case differs by one character. Exact means exact.
+    await page.getByLabel(/type the exact agent name/i).fill(NAME.toUpperCase());
+    await expect(confirm).toBeDisabled();
+
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+
+    // The safety property, asserted against the server rather than the screen.
+    const still = await page.request.get(`${API_URL}/api/v1/agents/${NAME}`);
+    expect(still.status()).toBe(200);
+  });
+
+  test("the exact name deletes it, and the server agrees", async ({ page }) => {
+    await openConfirm(page);
+    await page.getByLabel(/type the exact agent name/i).fill(NAME);
+    await page.getByRole("button", { name: "Delete this agent" }).click();
+
+    // The outcome is reported, not merely implied by the card disappearing.
+    await expect(page.getByText(/^Deleted\./)).toBeVisible();
+    await expect(page.getByRole("link", { name: NAME, exact: true })).toHaveCount(0);
+
+    const gone = await page.request.get(`${API_URL}/api/v1/agents/${NAME}`);
+    expect(gone.status()).toBe(404);
+  });
+});
+
 test.describe("navigation", () => {
   // Deep links must stay viable (epic §5). These are the routes the epic's
   // Release A journey depends on.

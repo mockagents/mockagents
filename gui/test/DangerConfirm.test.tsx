@@ -8,7 +8,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { DangerConfirm } from "@/app/admin/DangerConfirm";
+import { DangerConfirm } from "@/app/DangerConfirm";
 
 function setup(props: Partial<React.ComponentProps<typeof DangerConfirm>> = {}) {
   const action = vi.fn(async (_formData: FormData) => {});

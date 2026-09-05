@@ -1,12 +1,20 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState } from "react";
 
 import type { AgentSummary } from "@/lib/api";
 import { Icon } from "@/lib/icons";
 
-export type DeleteAction = (name: string) => Promise<{ ok: boolean; message: string }>;
+import { DangerConfirm } from "./DangerConfirm";
+
+/** Server action, submitted as a form by the confirmation dialog. It reads the
+ * agent name from the form data and redirects with the outcome — see page.tsx.
+ *
+ * Deliberately not a `(name) => Promise<result>` call from a transition. The
+ * dialog owns a form so the destructive control is a submit button gated by an
+ * exact-name field, which is what makes the action deliberate. */
+export type DeleteAction = (formData: FormData) => void | Promise<void>;
 
 /** Short, human protocol label (the wire values are long). */
 export function protoShort(p: string): string {
@@ -22,9 +30,21 @@ export function protoShort(p: string): string {
 export function AgentCatalog({
   agents,
   deleteAction,
+  canWrite = true,
+  singleAgentFallback = false,
 }: {
   agents: AgentSummary[];
   deleteAction: DeleteAction;
+  /** UX-01/U1-2: false only when the SERVER has said this credential lacks
+   * `agents.write`. Unknown stays true — the server authorizes the request
+   * anyway, and disabling a control on a hunch is its own kind of lie. */
+  canWrite?: boolean;
+  /** True when deleting would leave exactly one agent on a server that serves
+   * anonymous callers. The engine then routes a request naming ANY agent to
+   * the single survivor (engine.go resolveAgent), so the deletion turns a
+   * would-be failure into a silent misroute. Worth saying out loud before the
+   * fact, not after. */
+  singleAgentFallback?: boolean;
 }) {
   const [q, setQ] = useState("");
   const [proto, setProto] = useState("all");
@@ -76,7 +96,13 @@ export function AgentCatalog({
       ) : (
         <div className="catalog">
           {filtered.map((a) => (
-            <AgentCard key={a.name} a={a} deleteAction={deleteAction} />
+            <AgentCard
+              key={a.name}
+              a={a}
+              deleteAction={deleteAction}
+              canWrite={canWrite}
+              singleAgentFallback={singleAgentFallback}
+            />
           ))}
         </div>
       )}
@@ -84,19 +110,33 @@ export function AgentCatalog({
   );
 }
 
-function AgentCard({ a, deleteAction }: { a: AgentSummary; deleteAction: DeleteAction }) {
-  const [pending, startTransition] = useTransition();
-  const [err, setErr] = useState<string | null>(null);
-
-  function onDelete() {
-    if (!window.confirm(`Delete agent "${a.name}"? It stops serving immediately.`)) return;
-    setErr(null); // clear any prior failure before retrying
-    startTransition(async () => {
-      // deleteAction revalidates "/" on success, so the deleted card unmounts
-      // automatically — no client router.refresh() needed.
-      const r = await deleteAction(a.name);
-      if (!r.ok) setErr(r.message);
-    });
+function AgentCard({
+  a,
+  deleteAction,
+  canWrite,
+  singleAgentFallback,
+}: {
+  a: AgentSummary;
+  deleteAction: DeleteAction;
+  canWrite: boolean;
+  singleAgentFallback: boolean;
+}) {
+  // Consequences are stated as facts about THIS agent, not as a generic
+  // warning. Each line below is something the server actually does.
+  const consequences = [
+    "It stops serving immediately. A client calling it mid-conversation fails on its next request.",
+    "If it was loaded from a file, that file is deleted from the agents directory too. The catalog cannot tell from here which agents are file-backed, so treat this one as file-backed.",
+    "Any pipeline with a node referencing it fails at that node on the next run.",
+    "Interaction logs are kept and keep naming an agent that no longer exists.",
+    "There is no undo and no soft-delete. Recreating it means re-authoring the definition or restoring the file from version control.",
+  ];
+  if (singleAgentFallback) {
+    // Not a generic caution: with one agent left and no tenant scoping, the
+    // engine treats the survivor as the default for ANY request, so requests
+    // aimed at the deleted agent are answered rather than refused.
+    consequences.push(
+      "This would leave one agent on a server that accepts unauthenticated calls. Requests naming this agent will then be answered by the remaining agent instead of failing — a silent misroute, not an error.",
+    );
   }
 
   return (
@@ -116,22 +156,40 @@ function AgentCard({ a, deleteAction }: { a: AgentSummary; deleteAction: DeleteA
             {a.model || "—"} · {protoShort(a.protocol)}
           </div>
         </div>
-        <button
-          type="button"
-          className="btn btn-outline btn-sm ac-del"
-          title={`Delete ${a.name}`}
-          aria-label={`Delete ${a.name}`}
-          disabled={pending}
-          onClick={onDelete}
-        >
-          <Icon name="trash" size={14} />
-        </button>
+        {canWrite ? (
+          <DangerConfirm
+            action={deleteAction}
+            fields={{ name: a.name }}
+            triggerLabel={<Icon name="trash" size={14} />}
+            triggerTitle={`Delete ${a.name}`}
+            triggerClassName="btn btn-outline btn-sm ac-del"
+            title={`Delete agent ${a.name}?`}
+            impact={
+              <>
+                This removes <code className="mono">{a.name}</code> from the running
+                server.
+              </>
+            }
+            consequences={consequences}
+            confirmPhrase={a.name}
+            confirmPhraseLabel="Type the exact agent name to confirm"
+            confirmLabel="Delete this agent"
+          />
+        ) : (
+          // Disabled with the floor named — not hidden, and not left live to
+          // 403. Hiding it would leave an operator unable to tell "this console
+          // cannot delete agents" from "my key cannot".
+          <button
+            type="button"
+            className="btn btn-outline btn-sm ac-del"
+            disabled
+            aria-label={`Delete ${a.name}`}
+            title={`Deleting agents needs the editor role. Your credential does not have it.`}
+          >
+            <Icon name="trash" size={14} />
+          </button>
+        )}
       </div>
-      {err && (
-        <p className="ac-desc" style={{ color: "var(--sr-danger-fg)" }}>
-          {err}
-        </p>
-      )}
       {a.description && <p className="ac-desc">{a.description}</p>}
       <div className="ac-stats">
         <div className="ac-stat">

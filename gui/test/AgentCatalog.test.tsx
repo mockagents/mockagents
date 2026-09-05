@@ -33,7 +33,7 @@ const AGENTS: AgentSummary[] = [
   },
 ];
 
-const okDelete: DeleteAction = async () => ({ ok: true, message: "deleted" });
+const noopDelete: DeleteAction = () => {};
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -53,7 +53,7 @@ describe("protoShort", () => {
 
 describe("AgentCatalog", () => {
   it("renders every agent with the counts the API actually returned", () => {
-    render(<AgentCatalog agents={AGENTS} deleteAction={okDelete} />);
+    render(<AgentCatalog agents={AGENTS} deleteAction={noopDelete} />);
 
     expect(screen.getByRole("link", { name: "support-bot" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "claude-router" })).toBeInTheDocument();
@@ -62,7 +62,7 @@ describe("AgentCatalog", () => {
 
   it("filters by free-text search across name, model and tags", async () => {
     const user = userEvent.setup();
-    render(<AgentCatalog agents={AGENTS} deleteAction={okDelete} />);
+    render(<AgentCatalog agents={AGENTS} deleteAction={noopDelete} />);
 
     await user.type(screen.getByPlaceholderText(/search agents/i), "routing");
 
@@ -73,7 +73,7 @@ describe("AgentCatalog", () => {
 
   it("filters by protocol and reflects the choice in aria-pressed", async () => {
     const user = userEvent.setup();
-    render(<AgentCatalog agents={AGENTS} deleteAction={okDelete} />);
+    render(<AgentCatalog agents={AGENTS} deleteAction={noopDelete} />);
 
     const anthropic = screen.getByRole("button", { name: "anthropic" });
     await user.click(anthropic);
@@ -88,7 +88,7 @@ describe("AgentCatalog", () => {
 
   it("shows an explicit empty state rather than a blank grid", async () => {
     const user = userEvent.setup();
-    render(<AgentCatalog agents={AGENTS} deleteAction={okDelete} />);
+    render(<AgentCatalog agents={AGENTS} deleteAction={noopDelete} />);
 
     await user.type(screen.getByPlaceholderText(/search agents/i), "no-such-agent");
 
@@ -97,76 +97,111 @@ describe("AgentCatalog", () => {
     expect(screen.getByText("No agents match this filter.")).toBeInTheDocument();
   });
 
+  // The dialog's own mechanics — focus trap, Esc, exact-phrase arming — are
+  // covered in DangerConfirm.test.tsx. What matters here is the WIRING: that
+  // the catalog uses it at all, gates on the agent's own name, and tells the
+  // truth about what deleting this particular agent does.
   describe("delete", () => {
-    it("does not call the server when the confirmation is dismissed", async () => {
+    async function openDialog() {
       const user = userEvent.setup();
-      const deleteAction = vi.fn(okDelete);
-      vi.stubGlobal("confirm", vi.fn(() => false));
-
+      const deleteAction = vi.fn<DeleteAction>(() => {});
       render(<AgentCatalog agents={AGENTS} deleteAction={deleteAction} />);
       await user.click(screen.getByRole("button", { name: "Delete support-bot" }));
+      return { user, deleteAction };
+    }
 
+    it("asks before it acts, instead of deleting on a single click", async () => {
+      // The regression this replaces: a native window.confirm whose default
+      // button is focused, so a stray Enter deleted a mock outright.
+      const { deleteAction } = await openDialog();
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
       expect(deleteAction).not.toHaveBeenCalled();
     });
 
-    it("calls the server action with the agent name once confirmed", async () => {
-      const user = userEvent.setup();
-      const deleteAction = vi.fn(okDelete);
-      vi.stubGlobal("confirm", vi.fn(() => true));
+    it("gates the destructive button on the agent's exact name", async () => {
+      const { user, deleteAction } = await openDialog();
+      const confirm = screen.getByRole("button", { name: "Delete this agent" });
+      expect(confirm).toBeDisabled();
 
-      render(<AgentCatalog agents={AGENTS} deleteAction={deleteAction} />);
-      await user.click(screen.getByRole("button", { name: "Delete support-bot" }));
-
-      await waitFor(() => expect(deleteAction).toHaveBeenCalledWith("support-bot"));
+      // A near miss is still a miss — typing the name is what proves the
+      // operator read which mock they are about to destroy.
+      await user.type(screen.getByLabelText(/type the exact agent name/i), "Support-Bot");
+      expect(confirm).toBeDisabled();
+      expect(deleteAction).not.toHaveBeenCalled();
     });
 
-    // Failure path: a denied or failed mutation must surface the server's
-    // reason in the UI, not vanish. This is the shape UX-01 relies on to show
-    // a viewer why an edit was refused.
-    it("surfaces a failed delete inline and keeps the card mounted", async () => {
-      const user = userEvent.setup();
-      vi.stubGlobal("confirm", vi.fn(() => true));
-      const deleteAction: DeleteAction = async () => ({
-        ok: false,
-        message: "403: editor role required",
-      });
+    it("submits the agent name once the phrase matches", async () => {
+      const { user, deleteAction } = await openDialog();
+      await user.type(screen.getByLabelText(/type the exact agent name/i), "support-bot");
+      await user.click(screen.getByRole("button", { name: "Delete this agent" }));
 
-      render(<AgentCatalog agents={AGENTS} deleteAction={deleteAction} />);
-      await user.click(screen.getByRole("button", { name: "Delete support-bot" }));
-
-      expect(await screen.findByText("403: editor role required")).toBeInTheDocument();
-      expect(screen.getByRole("link", { name: "support-bot" })).toBeInTheDocument();
+      await waitFor(() => expect(deleteAction).toHaveBeenCalledTimes(1));
+      const formData = deleteAction.mock.calls[0][0] as FormData;
+      expect(formData.get("name")).toBe("support-bot");
     });
 
-    it("clears a previous error when the action is retried", async () => {
-      const user = userEvent.setup();
-      vi.stubGlobal("confirm", vi.fn(() => true));
-      let attempt = 0;
-      const deleteAction: DeleteAction = async () => {
-        attempt += 1;
-        return attempt === 1 ? { ok: false, message: "transient failure" } : { ok: true, message: "" };
-      };
+    it("states consequences the server actually produces", async () => {
+      await openDialog();
+      const dialog = screen.getByRole("dialog");
+      // Each of these is a real effect of DELETE /api/v1/agents/{name}: the
+      // registry entry goes, the backing file goes with it, pipeline nodes
+      // referencing it fail, and the logs keep the now-dangling name.
+      expect(dialog).toHaveTextContent(/stops serving immediately/i);
+      expect(dialog).toHaveTextContent(/that file is deleted from the agents directory/i);
+      expect(dialog).toHaveTextContent(/pipeline with a node referencing it fails/i);
+      expect(dialog).toHaveTextContent(/logs are kept/i);
+    });
 
-      render(<AgentCatalog agents={AGENTS} deleteAction={deleteAction} />);
+    it("warns about the single-agent misroute only when it applies", async () => {
+      const user = userEvent.setup();
+      const { unmount } = render(
+        <AgentCatalog agents={AGENTS} deleteAction={noopDelete} singleAgentFallback={false} />,
+      );
+      await user.click(screen.getByRole("button", { name: "Delete support-bot" }));
+      expect(screen.getByRole("dialog")).not.toHaveTextContent(/silent misroute/i);
+      unmount();
+
+      // Two agents on an anonymous server: deleting one leaves a survivor that
+      // the engine then answers EVERY request with, including requests naming
+      // the agent that was deleted. That is worth saying before the fact.
+      render(<AgentCatalog agents={AGENTS} deleteAction={noopDelete} singleAgentFallback />);
+      await user.click(screen.getByRole("button", { name: "Delete support-bot" }));
+      expect(screen.getByRole("dialog")).toHaveTextContent(/silent misroute/i);
+    });
+
+    it("disables the control and names the floor when the server says no", async () => {
+      const user = userEvent.setup();
+      render(<AgentCatalog agents={AGENTS} deleteAction={noopDelete} canWrite={false} />);
+
       const button = screen.getByRole("button", { name: "Delete support-bot" });
+      // Visible and disabled, not hidden: "this console cannot delete agents"
+      // and "my key cannot" are different facts.
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute("title", expect.stringMatching(/needs the editor role/i));
 
       await user.click(button);
-      expect(await screen.findByText("transient failure")).toBeInTheDocument();
-
-      await user.click(button);
-      await waitFor(() => expect(screen.queryByText("transient failure")).not.toBeInTheDocument());
+      expect(screen.queryByRole("dialog")).toBeNull();
     });
   });
 
   describe("accessibility", () => {
     it("has no axe violations in its default state", async () => {
-      const { container } = render(<AgentCatalog agents={AGENTS} deleteAction={okDelete} />);
+      const { container } = render(<AgentCatalog agents={AGENTS} deleteAction={noopDelete} />);
+      await expect(container).toHaveNoAxeViolations();
+    });
+
+    it("has no axe violations with the confirmation open", async () => {
+      // The dialog is where a keyboard user is trapped on purpose, so it is
+      // the one state where a naming or role slip is most costly.
+      const user = userEvent.setup();
+      const { container } = render(<AgentCatalog agents={AGENTS} deleteAction={noopDelete} />);
+      await user.click(screen.getByRole("button", { name: "Delete support-bot" }));
       await expect(container).toHaveNoAxeViolations();
     });
 
     it("has no axe violations in its empty state", async () => {
       const user = userEvent.setup();
-      const { container } = render(<AgentCatalog agents={AGENTS} deleteAction={okDelete} />);
+      const { container } = render(<AgentCatalog agents={AGENTS} deleteAction={noopDelete} />);
       await user.type(screen.getByPlaceholderText(/search agents/i), "zzz");
 
       await expect(container).toHaveNoAxeViolations();
@@ -174,7 +209,7 @@ describe("AgentCatalog", () => {
 
     it("is fully operable from the keyboard", async () => {
       const user = userEvent.setup();
-      render(<AgentCatalog agents={AGENTS} deleteAction={okDelete} />);
+      render(<AgentCatalog agents={AGENTS} deleteAction={noopDelete} />);
 
       // Epic §10 requires keyboard-only completion of core workflows; the
       // filter controls must therefore be reachable and activatable by Tab
