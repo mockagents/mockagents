@@ -93,6 +93,9 @@ export default async function PipelineDetailPage({ params }: PageProps) {
       <RunPanel
         pipelineName={name}
         topology={pipeline.spec.topology}
+        // The declared node list, so a run that reports fewer nodes than the
+        // definition has can show the difference instead of hiding it.
+        nodes={agents}
         canRun={canRun}
         runAction={runAction}
       />

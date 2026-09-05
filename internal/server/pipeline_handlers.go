@@ -39,8 +39,42 @@ type PipelineRunRequest struct {
 // particularly useful for parallel pipelines and trajectory assertions: the
 // caller can see what ran instead of receiving an opaque error only.
 type pipelineRunError struct {
-	Error  string                 `json:"error"`
+	Error string `json:"error"`
+	// Code classifies the failure so a caller can react without parsing Error.
+	// A pipeline that references an agent nobody loaded needs a different
+	// response from a scenario that failed to match — the first is fixed by
+	// loading a definition, the second by editing one — and telling them apart
+	// by substring is the kind of coupling that breaks on a reworded message.
+	Code   string                 `json:"code,omitempty"`
 	Result *engine.PipelineResult `json:"result,omitempty"`
+}
+
+// Run failure codes. Stable wire values: a client may switch on them.
+const (
+	// runErrMissingDependency: a node names an agent that is not loaded for
+	// this caller. Note that the run DID start — refs resolve at node-execution
+	// time, so nodes before the missing one have already run and advanced their
+	// session state.
+	runErrMissingDependency = "missing_dependency"
+	// runErrInvalidPipeline: the definition itself cannot be executed (unknown
+	// topology, a cycle). No node ran.
+	runErrInvalidPipeline = "invalid_pipeline"
+	// runErrNodeFailed: a node executed and failed. The default.
+	runErrNodeFailed = "node_failed"
+)
+
+// pipelineRunErrorCode classifies a run failure. errors.Is sees through
+// errors.Join, so a parallel run whose failures include a missing agent is
+// still reported as a missing dependency.
+func pipelineRunErrorCode(err error) string {
+	switch {
+	case errors.Is(err, engine.ErrAgentNotFound):
+		return runErrMissingDependency
+	case errors.Is(err, engine.ErrUnknownTopology), errors.Is(err, engine.ErrPipelineCycle):
+		return runErrInvalidPipeline
+	default:
+		return runErrNodeFailed
+	}
 }
 
 // PipelineHandlers serves the /api/v1/pipelines endpoints. Reads (list +
@@ -118,7 +152,11 @@ func (h *PipelineHandlers) RunPipeline(w http.ResponseWriter, r *http.Request) {
 		// The definition exists, but one or more nodes could not execute. 422
 		// distinguishes a valid HTTP request from a runnable pipeline and keeps
 		// any completed node trajectory available to the caller.
-		writeJSON(w, http.StatusUnprocessableEntity, pipelineRunError{Error: err.Error(), Result: result})
+		writeJSON(w, http.StatusUnprocessableEntity, pipelineRunError{
+			Error:  err.Error(),
+			Code:   pipelineRunErrorCode(err),
+			Result: result,
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

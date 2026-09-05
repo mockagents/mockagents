@@ -20,13 +20,18 @@
 
 import { useState } from "react";
 
-import type { PipelineNodeResult, PipelineRunOutcome } from "@/lib/api";
+import type { PipelineAgent, PipelineNodeResult, PipelineRunOutcome } from "@/lib/api";
 import { formatDuration } from "@/lib/duration";
 import { Icon } from "@/lib/icons";
 
 export interface RunPanelProps {
   pipelineName: string;
   topology: string;
+  /** The nodes the DEFINITION declares, in definition order. A node missing
+   * from a run's results did not execute, and the difference between the two
+   * lists is the only way to see that — the server reports what ran, never what
+   * did not. Absent is unknown, not zero (epic §10). */
+  nodes: PipelineAgent[];
   /** False when the caller may not run pipelines; the control is disabled with
    * a reason rather than failing on click. */
   canRun: boolean;
@@ -46,6 +51,7 @@ function defaultSessionId(): string {
 export function RunPanel({
   pipelineName,
   topology,
+  nodes,
   canRun,
   runAction,
   newSessionId = defaultSessionId,
@@ -144,6 +150,7 @@ export function RunPanel({
           submitted={submitted}
           topology={topology}
           pipelineName={pipelineName}
+          declared={nodes}
         />
       )}
     </div>
@@ -155,11 +162,13 @@ function RunEvidence({
   submitted,
   topology,
   pipelineName,
+  declared,
 }: {
   outcome: PipelineRunOutcome;
   submitted: { input: string; sessionId: string };
   topology: string;
   pipelineName: string;
+  declared: PipelineAgent[];
 }) {
   // An unknown outcome is the one case where nothing may be claimed about what
   // happened on the server.
@@ -188,9 +197,37 @@ function RunEvidence({
   const result = outcome.status === "ok" ? outcome.result : outcome.result;
   const nodes = result?.nodes ?? [];
 
+  // Nodes the definition declares that the run did not report. The server tells
+  // us what ran; it never tells us what did not, so this difference is the only
+  // evidence they exist. Rendering only the returned rows would show a partial
+  // run as if the pipeline were shorter than it is.
+  const ran = new Set(nodes.map((n) => n.node_id));
+  const absent = declared.filter((d) => !ran.has(d.id));
+
+  // Which nodes actually failed, taken from the data rather than parsed out of
+  // the error message.
+  const failed = nodes.filter((n) => n.response === null);
+
   return (
     <div className="col gap-3">
-      {outcome.status === "partial" ? (
+      {outcome.status === "blocked" ? (
+        <div className="banner banner-error" role="alert">
+          {/* NOT "the run was not started" — that is what the design prototype
+              says, and it is false here. Refs resolve at node-execution time,
+              so everything before the missing one has already run. */}
+          <strong>
+            Blocked — {failed.length === 1 ? "a node references" : "nodes reference"} an agent
+            that is not loaded.
+          </strong>{" "}
+          <span className="mono">{outcome.error}</span>
+          <p className="txt-sm" style={{ marginTop: 6 }}>
+            {nodes.length > failed.length
+              ? "The run did start. Nodes before this one executed and their session state has advanced — re-running is not a no-op."
+              : "Nothing executed before it."}{" "}
+            Load the missing definition and reload the server, then run again.
+          </p>
+        </div>
+      ) : outcome.status === "partial" ? (
         <div className="banner banner-error" role="alert">
           <strong>Partial run — a node could not execute.</strong>{" "}
           <span className="mono">{outcome.error}</span>
@@ -218,7 +255,7 @@ function RunEvidence({
         <dd className="mono">{result?.topology || topology}</dd>
       </dl>
 
-      {nodes.length > 0 && (
+      {(nodes.length > 0 || absent.length > 0) && (
         <>
           {isParallel(result?.topology ?? topology) && (
             <div className="banner banner-warn" role="note">
@@ -228,7 +265,7 @@ function RunEvidence({
               finished, so this must not be read as a sequence of events.
             </div>
           )}
-          <NodeResults nodes={nodes} />
+          <NodeResults nodes={nodes} absent={absent} />
         </>
       )}
 
@@ -245,11 +282,20 @@ function isParallel(topology: string): boolean {
   return topology === "parallel" || topology === "graph";
 }
 
-function NodeResults({ nodes }: { nodes: PipelineNodeResult[] }) {
+function NodeResults({
+  nodes,
+  absent,
+}: {
+  nodes: PipelineNodeResult[];
+  absent: PipelineAgent[];
+}) {
   return (
     <div style={{ overflowX: "auto" }}>
       <table className="tbl">
-        <caption className="sr-only">Node results returned by the run</caption>
+        <caption className="sr-only">
+          Node results returned by the run, followed by declared nodes the run did not
+          report
+        </caption>
         <thead>
           <tr>
             <th>node</th>
@@ -278,8 +324,32 @@ function NodeResults({ nodes }: { nodes: PipelineNodeResult[] }) {
               <td className="right mono">{formatDuration(n.latency)}</td>
             </tr>
           ))}
+
+          {/* Declared nodes the run never reported. They are not zero and they
+              are not failures — the server does not say why a node did not run,
+              so neither does this. Omitting them would make a truncated run
+              look like a complete short one. */}
+          {absent.map((d) => (
+            <tr key={`absent-${d.id}`} className="absent-row">
+              <td className="mono">{d.id}</td>
+              <td className="mono">{d.ref}</td>
+              <td className="muted">—</td>
+              <td>
+                <span className="badge badge-outline">not executed · unknown</span>
+              </td>
+              <td className="right muted">—</td>
+            </tr>
+          ))}
         </tbody>
       </table>
+      {absent.length > 0 && (
+        <p className="hint" style={{ marginTop: 8 }}>
+          {absent.length} declared node{absent.length === 1 ? "" : "s"} produced no result.
+          The server reports what ran, never what did not, so whether{" "}
+          {absent.length === 1 ? "it was" : "they were"} skipped by an edge condition or
+          never reached is unknown from here.
+        </p>
+      )}
     </div>
   );
 }

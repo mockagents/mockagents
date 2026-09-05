@@ -302,6 +302,13 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
   border-top: 1px dashed var(--sr-warning-fg);
   border-bottom: 1px dashed var(--sr-warning-fg);
 }
+
+/* UX-05: a declared node the run never reported. Set back visually so it does
+   not read as a result, but never hidden — absent is unknown, not zero. The
+   dashed left edge marks where the reported rows stop; the row still carries
+   the words "not executed · unknown", so nothing here depends on colour. */
+.tbl tbody tr.absent-row td { background: var(--sr-bg-muted); color: var(--sr-fg-muted); }
+.tbl tbody tr.absent-row td:first-child { border-left: 2px dashed var(--sr-border); }
 .tbl td.mono, .tbl td .mono { font-family: var(--sr-font-mono); font-size: 12px; }
 .tbl td.num { text-align: right; font-family: var(--sr-font-mono); font-size: 12px; }
 .tbl tr.sel { background: var(--sr-bg-muted); }

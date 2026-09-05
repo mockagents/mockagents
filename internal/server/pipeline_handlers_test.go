@@ -3,6 +3,8 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -212,6 +214,44 @@ func TestPipelineHandlers_RunPipelinePreservesPartialResult(t *testing.T) {
 	}
 	if got.Error == "" {
 		t.Fatal("expected execution error")
+	}
+	// A pipeline naming an agent nobody loaded is fixed by loading a
+	// definition; a scenario that failed to match is fixed by editing one. The
+	// code lets a caller tell them apart without matching on the message.
+	if got.Code != runErrMissingDependency {
+		t.Errorf("code = %q, want %q (error was %q)", got.Code, runErrMissingDependency, got.Error)
+	}
+	// The run is NOT atomic, and the response says so: the node before the
+	// missing ref executed and its session state advanced.
+	if got.Result.Nodes[0].Response == nil {
+		t.Error("the node before the missing ref should have executed")
+	}
+}
+
+func TestPipelineRunErrorCode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"missing agent", fmt.Errorf("node %q: %w: %q", "b", engine.ErrAgentNotFound, "gone"), runErrMissingDependency},
+		{"unknown topology", fmt.Errorf("%w: %q", engine.ErrUnknownTopology, "spiral"), runErrInvalidPipeline},
+		{"cycle", fmt.Errorf("%w: nodes [a b]", engine.ErrPipelineCycle), runErrInvalidPipeline},
+		{"anything else", errors.New("scenario match failed"), runErrNodeFailed},
+		// runParallel combines every node's error with errors.Join. A missing
+		// agent must stay visible through that, or a parallel pipeline would
+		// report the wrong remedy.
+		{
+			"joined, one missing agent",
+			errors.Join(errors.New("scenario match failed"), fmt.Errorf("%w: %q", engine.ErrAgentNotFound, "gone")),
+			runErrMissingDependency,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pipelineRunErrorCode(tc.err); got != tc.want {
+				t.Errorf("code = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

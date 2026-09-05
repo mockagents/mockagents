@@ -8,7 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { RunPanel, type RunPanelProps } from "@/app/pipelines/[name]/RunPanel";
-import type { PipelineNodeResult, PipelineRunOutcome } from "@/lib/api";
+import type { PipelineAgent, PipelineNodeResult, PipelineRunOutcome } from "@/lib/api";
 import { formatDuration, nsToMs } from "@/lib/duration";
 
 const MS = 1_000_000; // one millisecond in nanoseconds
@@ -22,6 +22,13 @@ function node(id: string, extra: Partial<PipelineNodeResult> = {}): PipelineNode
     ...extra,
   };
 }
+
+/** The nodes a definition declares. The panel diffs this against what a run
+ * reports, so every fixture needs one. */
+const DECLARED: PipelineAgent[] = [
+  { id: "a", ref: "a-agent" },
+  { id: "b", ref: "b-agent" },
+];
 
 const OK: PipelineRunOutcome = {
   status: "ok",
@@ -37,6 +44,7 @@ function setup(overrides: Partial<RunPanelProps> = {}) {
   const props: RunPanelProps = {
     pipelineName: "research",
     topology: "sequential",
+    nodes: DECLARED,
     canRun: true,
     runAction: vi.fn(async () => OK),
     newSessionId: () => "sess-fixed",
@@ -182,9 +190,38 @@ describe("RunPanel", () => {
       expect(await screen.findByText("no response")).toBeInTheDocument();
     });
 
-    it("tolerates a result with no nodes at all", async () => {
+    // A result that carries no node array at all. This used to render nothing
+    // below the banner; it now accounts for the declared nodes as unreported.
+    // Silence implies there is nothing to see, when in fact the server claimed
+    // success while naming no nodes — which is the least accountable answer it
+    // can give, and the one most worth surfacing.
+    it("accounts for declared nodes when the result carries none", async () => {
       const user = userEvent.setup();
       setup({
+        runAction: vi.fn(async () => ({
+          status: "ok" as const,
+          result: {
+            pipeline_name: "research",
+            topology: "sequential",
+            nodes: null,
+            latency: 1 * MS,
+          },
+        })),
+      });
+      await run(user);
+      expect(await screen.findByText(/Run completed/i)).toBeInTheDocument();
+
+      const table = within(screen.getByRole("table"));
+      expect(table.getAllByText("not executed · unknown")).toHaveLength(2);
+      expect(screen.getByText(/2 declared nodes produced no result/i)).toBeInTheDocument();
+    });
+
+    it("renders nothing below the banner when the definition declares no nodes", async () => {
+      // Nothing declared and nothing returned: there is genuinely nothing to
+      // account for, and an empty table would be noise.
+      const user = userEvent.setup();
+      setup({
+        nodes: [],
         runAction: vi.fn(async () => ({
           status: "ok" as const,
           result: {
@@ -236,6 +273,110 @@ describe("RunPanel", () => {
       });
       await run(user);
       expect(await screen.findByText(/nothing is known about what ran/i)).toBeInTheDocument();
+    });
+
+    // U5-1: the design's central rule, on the screen it was written for. A
+    // sequential run stops at the failing node, so every node after it is
+    // simply missing from the response. Rendering only what came back shows a
+    // truncated run as if the pipeline were shorter than it is.
+    it("renders a declared node the run never reported as unknown", async () => {
+      const user = userEvent.setup();
+      setup({ runAction: vi.fn(async () => partial) });
+      await run(user);
+
+      const table = within(await screen.findByRole("table"));
+      expect(table.getByText("not executed · unknown")).toBeInTheDocument();
+      // Named, so it can be found in the definition — not just counted.
+      expect(table.getByText("b")).toBeInTheDocument();
+      expect(table.getByText("b-agent")).toBeInTheDocument();
+    });
+
+    it("does not guess why a node did not run", async () => {
+      const user = userEvent.setup();
+      setup({ runAction: vi.fn(async () => partial) });
+      await run(user);
+
+      // A graph edge condition and a run that stopped early are both "absent"
+      // in the response, and the server does not distinguish them.
+      expect(await screen.findByText(/reports what ran, never what did not/i)).toBeInTheDocument();
+    });
+
+    it("adds no unknown rows when every declared node reported", async () => {
+      const user = userEvent.setup();
+      setup(); // OK covers both declared nodes
+      await run(user);
+
+      await screen.findByRole("table");
+      expect(screen.queryByText("not executed · unknown")).toBeNull();
+      expect(screen.queryByText(/produced no result/i)).toBeNull();
+    });
+  });
+
+  // U5-2 / epic §10 `blocked-missing-dependency`. A pipeline naming an agent
+  // nobody loaded is fixed by loading a definition; a scenario that failed to
+  // match is fixed by editing one. Collapsing them into one "partial" state
+  // sends the operator to the wrong file.
+  describe("blocked by a missing dependency", () => {
+    const blocked: PipelineRunOutcome = {
+      status: "blocked",
+      error: 'pipeline "research" node "b": agent not found: "b-agent"',
+      result: {
+        pipeline_name: "research",
+        topology: "sequential",
+        nodes: [node("a"), node("b", { response: null })],
+        latency: 20 * MS,
+      },
+    };
+
+    it("names the cause and the remedy, not just the failure", async () => {
+      const user = userEvent.setup();
+      setup({ runAction: vi.fn(async () => blocked) });
+      await run(user);
+
+      expect(await screen.findByText(/agent that is not loaded/i)).toBeInTheDocument();
+      expect(screen.getByText(/Load the missing definition/i)).toBeInTheDocument();
+    });
+
+    // The design prototype says "The run was not started." That is false here:
+    // refs resolve at node-execution time, so a sequential pipeline has already
+    // executed everything before the missing node and advanced its session
+    // state. Telling an operator nothing happened would invite a blind re-run.
+    it("does not claim the run never started when earlier nodes ran", async () => {
+      const user = userEvent.setup();
+      setup({ runAction: vi.fn(async () => blocked) });
+      await run(user);
+
+      expect(await screen.findByText(/The run did start/i)).toBeInTheDocument();
+      expect(screen.getByText(/session state has advanced/i)).toBeInTheDocument();
+      expect(screen.queryByText(/was not started/i)).toBeNull();
+    });
+
+    it("says so plainly when nothing ran before the missing node", async () => {
+      const user = userEvent.setup();
+      setup({
+        runAction: vi.fn(async () => ({
+          status: "blocked" as const,
+          error: 'pipeline "research" node "a": agent not found: "a-agent"',
+          result: {
+            pipeline_name: "research",
+            topology: "sequential",
+            nodes: [node("a", { response: null })],
+            latency: 1 * MS,
+          },
+        })),
+      });
+      await run(user);
+
+      expect(await screen.findByText(/Nothing executed before it/i)).toBeInTheDocument();
+    });
+
+    it("is not reported as a partial run", async () => {
+      const user = userEvent.setup();
+      setup({ runAction: vi.fn(async () => blocked) });
+      await run(user);
+
+      await screen.findByText(/agent that is not loaded/i);
+      expect(screen.queryByText(/Partial run/i)).toBeNull();
     });
   });
 
@@ -329,7 +470,13 @@ describe("RunPanel", () => {
   describe("accessibility", () => {
     it("has no axe violations before a run", async () => {
       const { container } = render(
-        <RunPanel pipelineName="research" topology="sequential" canRun runAction={vi.fn(async () => OK)} />,
+        <RunPanel
+          pipelineName="research"
+          topology="sequential"
+          nodes={DECLARED}
+          canRun
+          runAction={vi.fn(async () => OK)}
+        />,
       );
       await expect(container).toHaveNoAxeViolations();
     });
@@ -340,6 +487,7 @@ describe("RunPanel", () => {
         <RunPanel
           pipelineName="research"
           topology="parallel"
+          nodes={DECLARED}
           canRun
           newSessionId={() => "sess-a11y"}
           runAction={vi.fn(async () => ({
