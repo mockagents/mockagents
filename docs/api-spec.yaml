@@ -1504,16 +1504,19 @@ components:
 
     ReloadResponse:
       type: object
-      required: [reloaded_count, errors]
+      description: >
+        The result of reloading ONE agent. This route has never performed a bulk
+        reload; the previous `{reloaded_count, errors}` shape described an
+        operation that does not exist.
+      required: [status, agent]
       properties:
-        reloaded_count:
-          type: integer
-          example: 4
-        errors:
-          type: array
-          items:
-            type: string
-          example: []
+        status:
+          type: string
+          enum: [reloaded]
+        agent:
+          type: string
+          description: The agent that was re-read from disk.
+          example: weather-agent
 
     # -- Error Schema ---------------------------------------------------------
     Error:

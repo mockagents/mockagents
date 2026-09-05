@@ -69,6 +69,8 @@ var checkedSchemas = []checkedSchema{
 	{name: "AgentWriteResult", sample: server.AgentWriteResponse{}},
 	{name: "ValidateResult", sample: server.ValidateResponse{}},
 	{name: "Error", sample: server.ErrorResponse{}},
+	{name: "HealthResponse", sample: server.HealthResponse{}},
+	{name: "ReloadResponse", sample: server.ReloadResponse{}},
 	{name: "ProviderQuotaError", sample: server.ProviderQuotaError{}},
 	{name: "CostReport", sample: server.CostsResponse{}},
 	{name: "CostGroup", sample: server.CostGroup{}},
@@ -141,8 +143,6 @@ var checkedSchemas = []checkedSchema{
 // the check, so "we forgot" and "there is nothing to compare" stay distinct.
 var documentationOnly = map[string]string{
 	"AnthropicRequestContentBlock": "request-side blocks are accepted as free-form; AnthropicMessage.Content is `any`",
-	"HealthResponse":               "assembled inline in the handler from a map literal",
-	"ReloadResponse":               "assembled inline in the handler",
 	"AnthropicStreamEvent":         "a union over six event types, each an unexported struct in internal/streaming — no single Go type to compare against",
 }
 

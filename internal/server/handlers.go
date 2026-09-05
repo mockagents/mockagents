@@ -73,13 +73,39 @@ func (h *Handlers) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	if h.Engine != nil && h.Engine.Registry != nil {
 		agents = h.Engine.Registry.Count()
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":         "ok",
-		"version":        h.Version,
-		"uptime":         uptime.String(),
-		"uptime_seconds": int64(uptime.Seconds()),
-		"agents_loaded":  agents,
+	writeJSON(w, http.StatusOK, HealthResponse{
+		Status:        "ok",
+		Version:       h.Version,
+		Uptime:        uptime.String(),
+		UptimeSeconds: int64(uptime.Seconds()),
+		AgentsLoaded:  agents,
 	})
+}
+
+// HealthResponse is the body GET /api/v1/health returns.
+//
+// Always "ok": this is the LIVENESS probe, so reaching the handler at all is
+// the answer. Whether the process can serve a mock is ReadinessResponse's
+// question.
+type HealthResponse struct {
+	Status  string `json:"status"`
+	Version string `json:"version"`
+	// Uptime is the human-readable form (time.Duration.String); UptimeSeconds
+	// is the machine-readable one. Both are kept because the GUI reads the
+	// first and the published contract promised the second.
+	Uptime        string `json:"uptime"`
+	UptimeSeconds int64  `json:"uptime_seconds"`
+	AgentsLoaded  int    `json:"agents_loaded"`
+}
+
+// ReloadResponse is the body POST /api/v1/agents/{name}/reload returns.
+//
+// One agent, named — not a bulk count. The spec described a bulk reload
+// ({reloaded_count, errors}) that this route has never performed; the checker
+// found that once the shape had a type to compare against.
+type ReloadResponse struct {
+	Status string `json:"status"`
+	Agent  string `json:"agent"`
 }
 
 // AgentSummary is the JSON response for listing agents.
@@ -273,10 +299,7 @@ func (h *Handlers) ReloadAgent(w http.ResponseWriter, r *http.Request) {
 			audit.MarshalDetails(map[string]any{
 				"file": filepath.Base(result.FilePath),
 			}))
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status": "reloaded",
-			"agent":  name,
-		})
+		writeJSON(w, http.StatusOK, ReloadResponse{Status: "reloaded", Agent: name})
 		return
 	}
 

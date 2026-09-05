@@ -18,6 +18,8 @@ homelabsetup/.homelab-credentials
 # Go build output
 /mockagents
 /mockagents.exe
+/mockagents.exe~
+/mockagents~
 /benchreport
 /benchreport.exe
 
