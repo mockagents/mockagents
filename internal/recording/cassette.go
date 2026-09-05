@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"sort"
@@ -85,6 +86,11 @@ func New(path string) *Cassette {
 // Load reads a JSON-lines cassette file from disk. A missing file is not
 // an error: it produces an empty cassette pinned to that path so subsequent
 // Appends will create it.
+//
+// A recorder killed mid-write leaves a torn FINAL line. That line is skipped
+// with a warning and every interaction recorded before it is returned intact —
+// one interrupted session must not cost the whole cassette. An unparseable
+// line anywhere before the end is real corruption and still fails hard.
 func Load(path string) (*Cassette, error) {
 	c := New(path)
 	f, err := os.Open(path)
@@ -98,20 +104,36 @@ func Load(path string) (*Cassette, error) {
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), MaxCassetteLine)
+	// A parse failure is held back until we know whether another interaction
+	// follows it, because only the trailing line can be a torn write.
+	var (
+		tornErr  error
+		tornLine int
+		lineNo   int
+	)
 	for scanner.Scan() {
+		lineNo++
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
 			continue
 		}
+		if tornErr != nil {
+			return nil, fmt.Errorf("parsing cassette %s line %d: %w", path, tornLine, tornErr)
+		}
 		var it Interaction
 		if err := json.Unmarshal(line, &it); err != nil {
-			return nil, fmt.Errorf("parsing cassette line: %w", err)
+			tornErr, tornLine = err, lineNo
+			continue
 		}
 		c.interactions = append(c.interactions, &it)
 		c.byHash[it.Hash] = append(c.byHash[it.Hash], c.interactions[len(c.interactions)-1])
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("reading cassette: %w", err)
+	}
+	if tornErr != nil {
+		slog.Warn("cassette ends in an unparseable line, most likely a recording interrupted mid-write; skipping it and keeping the interactions before it",
+			"path", path, "line", tornLine, "kept", len(c.interactions), "error", tornErr)
 	}
 	return c, nil
 }
