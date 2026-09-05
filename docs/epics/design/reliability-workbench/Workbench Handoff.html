@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>Workbench — Claude Code handoff (Release A)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="workbench.css">
+<style>
+body{background:var(--sr-bg)}
+.wrap{max-width:920px;margin:0 auto;padding:48px 32px 96px}
+h1{font-size:24px;font-weight:650;letter-spacing:-.02em;margin:0 0 4px}
+.lede{color:var(--sr-fg-muted);font-size:13.5px;max-width:680px}
+h2{font-size:15px;font-weight:650;margin:38px 0 8px;padding-top:18px;border-top:1px solid var(--sr-border)}
+table{width:100%;border-collapse:collapse;font-size:12.5px;margin:10px 0}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--sr-border);vertical-align:top}
+th{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--sr-fg-muted);font-weight:600}
+td.mono{font-family:var(--sr-font-mono);font-size:11px;white-space:nowrap}
+code{font-family:var(--sr-font-mono);font-size:11px;background:var(--sr-bg-muted);padding:1px 5px;border-radius:4px}
+ul{margin:6px 0 12px;padding-left:20px}
+li{margin-bottom:5px;font-size:13px}
+.note{background:var(--sr-bg-muted);border-radius:8px;padding:11px 14px;font-size:12.5px;color:var(--sr-fg-muted);margin:12px 0}
+.note b{color:var(--sr-fg)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Claude Code handoff — Release A</h1>
+<p class="lede">Approved direction: hybrid (Worksheet body + instrument strip), dark default, light supported. Prototype behavior is illustrative, not production implementation. Neither this document nor the prototype authorizes new backend capabilities; design sign-off does not approve new roles, persistence technology, or integrations.</p>
+
+<h2>1 · Deliverable files</h2>
+<table>
+<thead><tr><th>file</th><th>contents</th></tr></thead>
+<tbody>
+<tr><td class="mono">Reliability Workbench.html</td><td>Clickable prototype — Journey 1 end-to-end plus every mandatory failure state, driven by the "Prototype states" panel (role / connection / install / theme). The panel is a prototype affordance, not product UI.</td></tr>
+<tr><td class="mono">workbench.css</td><td>Working stylesheet: tokens, all components, responsive reflow, focus, reduced motion. Directly portable values.</td></tr>
+<tr><td class="mono">wb_data.jsx</td><td>Synthetic fixtures with real wire semantics (ns latency, nullable nodes, 422 partial result, chaos fields, truncation flags).</td></tr>
+<tr><td class="mono">Workbench Components.html</td><td>Component inventory, token spec, contrast annotations, state matrix, keyboard/focus order.</td></tr>
+<tr><td class="mono">Workbench Proposal.html</td><td>IA, object model, journey map, direction rationale (approved: hybrid).</td></tr>
+</tbody>
+</table>
+
+<h2>2 · Screen → story map</h2>
+<table>
+<thead><tr><th>screen</th><th>story</th><th>release</th><th>min role</th><th>data source</th><th>unknown / unavailable behavior</th></tr></thead>
+<tbody>
+<tr><td>Shell + instrument strip</td><td class="mono">UX-01, UX-02</td><td>A</td><td>any / local</td><td class="mono">GET /healthz /readyz · proposed /identity /capabilities</td><td>offline: frozen strip + stale stamp; readiness UNKNOWN when unreachable; local mode named explicitly</td></tr>
+<tr><td>Overview</td><td class="mono">UX-02</td><td>A</td><td>any</td><td class="mono">real: agents list, logs · starter doc</td><td>empty install ≠ error; not-ready names cause; no Run button without a pipeline</td></tr>
+<tr><td>Mocks inventory</td><td class="mono">UX-03</td><td>A</td><td>read any / write editor</td><td class="mono">real: GET /api/v1/agents, /pipelines</td><td>capability-gated kinds disabled with reason; offline = stale snapshot label</td></tr>
+<tr><td>Agent editor</td><td class="mono">UX-03</td><td>A</td><td>editor</td><td class="mono">PROPOSED: revisioned GET/PUT + If-Match</td><td>viewer sees explained read-only; unknown fields disable Apply; conflict preserves both drafts</td></tr>
+<tr><td>Test Lab run</td><td class="mono">UX-05</td><td>A</td><td>viewer</td><td class="mono">real: POST /api/v1/pipelines/{name}/run</td><td>422 partial shows nodes + absent-as-unknown; disconnect = unknown outcome, no auto-retry; missing fixture blocks run</td></tr>
+<tr><td>Investigate</td><td class="mono">UX-04</td><td>A</td><td>any</td><td class="mono">real: logs + SSE · stable cursor PROPOSED</td><td>gap rows for unresolved ranges; empty vs unreachable vs unauthorized distinct; truncated capture flagged</td></tr>
+<tr><td>Reports</td><td class="mono">UX-06</td><td>A</td><td>any</td><td class="mono">browser export of loaded data only</td><td>completeness + omissions always listed; unknown never zero; cost = estimate w/ pricing version + sampled label</td></tr>
+<tr><td>Administration</td><td class="mono">UX-07</td><td>A</td><td>keys editor+ / audit admin / tenants platform</td><td class="mono">real: tenants, keys, audit APIs</td><td>role floors stated in place of empty panels; unknown audit kinds render read-only</td></tr>
+<tr><td>Match Explain, isolated lab, regression export</td><td class="mono">UX-09/10</td><td><b>B — not designed here</b></td><td>—</td><td class="mono">PROPOSED /previews</td><td>kept out of Release A nav entirely; will be watermarked prototypes in a separate file set</td></tr>
+</tbody>
+</table>
+
+<h2>3 · State names (exact, per epic §10)</h2>
+<p style="font-size:13px">Authoring: <code>draft → validating → invalid | ready → diff → applying → persisted | runtime-only | conflict</code>. Runs: <code>idle → running → complete | partial | failed | unknown-outcome | blocked-missing-dependency</code> (cancelled/timed-out are UX-11, Release B). Connection: <code>process-up, ready, not-ready, unreachable, stale</code>. Logs: <code>live, disconnected, gap-unresolved, empty-window, truncated-capture</code>. No "saved" indication before server confirmation.</p>
+
+<h2>4 · Proposed token additions (need sign-off)</h2>
+<ul>
+<li>Dark-mode semantic foregrounds: <code>--sr-success-fg/warning-fg/danger-fg/info-fg</code> brightened under <code>[data-theme="dark"]</code> (values in workbench.css §1) — light-canonical values fail 4.5:1 on dark surfaces. Same hues, luminance only.</li>
+<li>Dark-mode semantic backgrounds: opacity bumped .12→.16–.18 for visibility on dark.</li>
+</ul>
+
+<h2>5 · Responsive behavior</h2>
+<ul>
+<li>≥960px: sidebar + two-column worksheet grids.</li>
+<li>&lt;960px: sidebar becomes a horizontal scrollable tab row; all grids stack to one column; instrument strip horizontally scrolls, no cells dropped; receipt grid 2-up.</li>
+<li>Authoring stays enabled at narrow widths and browser zoom — stacked forms replace side-by-side, never a read-only fallback. Mobile priority is triage (Overview, Investigate) per brief.</li>
+</ul>
+
+<h2>6 · Accessibility requirements (WCAG 2.2 AA)</h2>
+<ul>
+<li>Contrast: annotations in Components doc; verify dark semantic tokens after any change.</li>
+<li>Status = dot + text everywhere; unknown is textual ("not executed · unknown").</li>
+<li><code>:focus-visible</code> 2px ring on all interactive elements; dialogs trap focus, Esc cancels; conflict card <code>role="alertdialog"</code>; banners <code>role="alert"</code>/<code>status</code> so async errors are announced.</li>
+<li>Keyboard-complete: every drag (React Flow) keeps the node list/table alternative; ⌘K is an accelerator, never the only path.</li>
+<li><code>prefers-reduced-motion</code> collapses the only animation (pulse dots).</li>
+<li>Destructive dialogs: exact-name entry gates the action; destructive button never auto-focused.</li>
+</ul>
+
+<h2>7 · Acceptance walkthrough (prototype test)</h2>
+<ol style="font-size:13px">
+<li>First-time developer: identify connected server (instrument strip) → open starter agent → edit → validate → diff → apply → read persisted receipt → run pipeline → find failed node (rag-lookup, null response) → export evidence. No facilitator needed.</li>
+<li>Switch role to viewer: editor shows explained lock, not breakage; Test Lab still runs; audit/tenants state their floors.</li>
+<li>Set connection to unreachable: frozen snapshot labels, disabled writes, preserved draft, no auto-retry.</li>
+<li>Set install to empty: onboarding explains pipeline creation is out of scope; no dead Run button.</li>
+<li>Trigger conflict (checkbox in diff card): both drafts preserved; reload vs reviewed overwrite.</li>
+<li>Admin: tenant deletion states impact and requires exact name; minted key shown exactly once.</li>
+</ol>
+
+<h2>8 · Unresolved decisions (do not implement by inference)</h2>
+<ul>
+<li><b>Agent conditional-write route:</b> additive If-Match route vs versioned transition; legacy unconditional writers disclosed in conflict copy either way. Blocks UX-03 backend work.</li>
+<li><b>Durable drafts:</b> Release A designs assume browser-memory drafts + explicit export; a durable draft store needs retention/encryption policy sign-off.</li>
+<li><b>Log recovery cursor:</b> gap-unresolved state ships either way; a stable cursor (NEW) upgrades gaps to backfillable.</li>
+<li><b>Cost on Overview:</b> omitted by design; product may re-add with full estimate labelling.</li>
+<li><b>Dark semantic tokens:</b> §4 above needs design-system owner sign-off.</li>
+</ul>
+
+<div class="note"><b>Implementation order (per epic §15):</b> UX-08 harness → UX-01 identity → UX-02/04/05 → UX-03 → UX-06 → UX-07. Real wire fixtures for 200/422/401/403/404/503 are in <code>wb_data.jsx</code> shape; convert ns→ms exactly as <code>WB.ns2ms</code>. Do not claim a backend feature exists because a prototype screen renders it.</div>
+</div>
+</body>
+</html>

@@ -11,6 +11,16 @@ const WINDOWS: { id: string; label: string; days: number }[] = [
   { id: "30d", label: "30d", days: 30 },
 ];
 
+// The scan cap sent to /api/v1/costs. The endpoint aggregates over at most this
+// many of the most recent matching rows and returns NO truncation flag, so the
+// only way to say whether the figure is a partial sum is to remember what was
+// asked for and compare (UX-06).
+const SCAN_LIMIT = 1000;
+
+// The key the server uses for requests whose model could not be identified.
+// Their cost is unknown, and this page must not let that read as $0.
+const UNKNOWN_MODEL = "(unknown)";
+
 export default async function CostsPage({
   searchParams,
 }: {
@@ -23,10 +33,16 @@ export default async function CostsPage({
   let costs: Awaited<ReturnType<typeof getCosts>> = null;
   let error: string | null = null;
   try {
-    costs = await getCosts({ since, limit: 1000 });
+    costs = await getCosts({ since, limit: SCAN_LIMIT });
   } catch (err) {
     error = err instanceof APIError ? err.message : "unknown error";
   }
+
+  // A scan that came back at exactly its cap is the signal — and the only
+  // signal — that older matching rows were not counted.
+  const scanCapMayHaveBeenReached = costs !== null && costs.total_requests >= SCAN_LIMIT;
+  const unpricedRequests =
+    costs?.by_model.find((g) => g.key === UNKNOWN_MODEL)?.requests ?? 0;
 
   const maxModel = costs ? Math.max(0, ...costs.by_model.map((m) => m.cost_usd)) : 0;
   const maxAgent = costs ? Math.max(0, ...costs.by_agent.map((m) => m.cost_usd)) : 0;
@@ -37,8 +53,10 @@ export default async function CostsPage({
         <div className="grow">
           <h1 className="page-title">Cost &amp; usage</h1>
           <p className="page-lede">
-            Estimated spend from <code>/api/v1/costs</code>, priced from the configured table.
-            MockAgents never bills — this mirrors what the real upstream would have cost.
+            An <strong>estimate</strong> of what the captured requests would have cost
+            against a real provider, priced by the configured table. It is not spend, and
+            it is not verified savings — MockAgents cannot know whether these requests
+            would have been sent at all.
           </p>
         </div>
         <div className="row gap-2">
@@ -64,17 +82,47 @@ export default async function CostsPage({
 
       {costs && (
         <>
+          {scanCapMayHaveBeenReached && (
+            <div className="banner banner-warn" role="note">
+              <div>
+                <strong>These figures may be a partial sum. </strong>
+                The scan returned {costs.total_requests.toLocaleString()} rows against its{" "}
+                {SCAN_LIMIT.toLocaleString()}-row cap, so older interactions in the last{" "}
+                {win.label} were probably not counted. Narrow the window for a figure that
+                covers it.
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-4 mb-6">
-            <Stat icon="activity" label="Requests" value={costs.total_requests.toLocaleString()} sub={`last ${win.label}`} />
+            <Stat
+              icon="activity"
+              label="Requests scanned"
+              value={costs.total_requests.toLocaleString()}
+              sub={`last ${win.label} · cap ${SCAN_LIMIT.toLocaleString()}`}
+            />
             <Stat icon="hash" label="Prompt tokens" value={costs.total_prompt_tokens.toLocaleString()} />
             <Stat icon="hash" label="Completion tokens" value={costs.total_completion_tokens.toLocaleString()} />
             <Stat
               icon="dollar-sign"
-              label="Est. spend avoided"
+              label="Est. upstream cost"
               value={fmtUSD(costs.total_cost_usd)}
-              sub="tokens never sent upstream"
+              sub="estimate, not verified spend"
             />
           </div>
+
+          <p className="muted txt-xs mb-4">
+            Pricing table version: <strong>unknown</strong> — the costs API does not report
+            which table produced these numbers.
+            {unpricedRequests > 0 && (
+              <>
+                {" "}
+                {unpricedRequests.toLocaleString()} request
+                {unpricedRequests === 1 ? "" : "s"} could not be attributed to a known
+                model; their cost is unknown, not $0.
+              </>
+            )}
+          </p>
 
           <div className="grid grid-2" style={{ alignItems: "start" }}>
             <CostTable title="By model" rows={costs.by_model} max={maxModel} kcol="model" />
@@ -127,7 +175,14 @@ function CostTable({
                   </div>
                 </td>
                 <td className="num" style={{ fontWeight: 600 }}>
-                  {fmtUSD(r.cost_usd)}
+                  {/* An unidentifiable model prices to 0 because nothing could
+                      be looked up, not because it was free. Saying "$0.0000"
+                      there would be the cheapest lie on the page. */}
+                  {r.key === UNKNOWN_MODEL ? (
+                    <span className="muted">unknown</span>
+                  ) : (
+                    fmtUSD(r.cost_usd)
+                  )}
                 </td>
               </tr>
             ))}

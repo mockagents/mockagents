@@ -39,7 +39,7 @@ test.describe("agent catalog", () => {
 test.describe("navigation", () => {
   // Deep links must stay viable (epic §5). These are the routes the epic's
   // Release A journey depends on.
-  for (const path of ["/", "/logs", "/costs", "/pipelines", "/editor"]) {
+  for (const path of ["/", "/overview", "/logs", "/costs", "/reports", "/pipelines", "/editor"]) {
     test(`${path} responds without a server error`, async ({ page }) => {
       const response = await page.goto(path);
       expect(response?.status(), `${path} should not 5xx`).toBeLessThan(500);
@@ -407,6 +407,100 @@ test.describe("pipeline execution (UX-05)", () => {
   });
 });
 
+test.describe("shell and onboarding (UX-02)", () => {
+  test("the instrument strip reports real server context", async ({ page }) => {
+    await page.goto("/overview", { waitUntil: "networkidle" });
+
+    const strip = page.getByRole("status", { name: "server context" });
+    await expect(strip).toBeVisible();
+
+    // Liveness and readiness are separate cells with separate verdicts.
+    await expect(strip).toContainText("PROCESS-UP");
+    await expect(strip).toContainText("READY");
+    // Release A always runs against the live runtime, and says so everywhere.
+    await expect(strip).toContainText("ACTIVE CONFIG");
+    // No global configuration revision exists, so the cell says that.
+    await expect(strip).toContainText("per-resource");
+
+    // The engine version must be the one the server reports, not a fixture.
+    const health = await (await page.request.get(`${API_URL}/api/v1/health`)).json();
+    if (health.version) await expect(strip).toContainText(health.version);
+  });
+
+  test("readiness is verified against the real endpoint", async ({ page }) => {
+    const res = await page.request.get(`${API_URL}/api/v1/ready`);
+    expect([200, 503]).toContain(res.status());
+    const body = await res.json();
+    expect(["ready", "not_ready"]).toContain(body.status);
+
+    await page.goto("/overview", { waitUntil: "networkidle" });
+    await expect(page.getByText(body.status === "ready" ? "Ready" : "Not ready").first()).toBeVisible();
+  });
+
+  test("onboarding offers copyable SDK settings", async ({ page }) => {
+    await page.goto("/overview", { waitUntil: "networkidle" });
+    await expect(page.getByLabel("base URL")).toHaveValue(/\/v1$/);
+    await expect(page.getByLabel("api key")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Copy" }).first()).toBeVisible();
+  });
+
+  test("an empty pipeline inventory explains instead of dead-ending", async ({ page }) => {
+    const list = await (await page.request.get(`${API_URL}/api/v1/pipelines`)).json();
+    await page.goto("/overview", { waitUntil: "networkidle" });
+
+    if (Array.isArray(list) && list.length === 0) {
+      await expect(page.getByText(/not part of Release A/i)).toBeVisible();
+      // Never a dead Run button.
+      await expect(page.getByRole("button", { name: /^Run/ })).toHaveCount(0);
+    } else {
+      await expect(page.getByRole("link", { name: /Open pipelines/i })).toBeVisible();
+    }
+  });
+
+  test("the checklist reflects real state, never an inferred empty", async ({ page }) => {
+    const agents = await (await page.request.get(`${API_URL}/api/v1/agents`)).json();
+    await page.goto("/overview", { waitUntil: "networkidle" });
+
+    await expect(page.getByText("First-run checklist")).toBeVisible();
+    if (Array.isArray(agents) && agents.length > 0) {
+      await expect(page.getByText(`Agent definitions loaded (${agents.length})`)).toBeVisible();
+    }
+  });
+});
+
+test.describe("reports (UX-06)", () => {
+  test("presents the export as a bounded snapshot, with bodies off by default", async ({ page }) => {
+    await page.goto("/reports");
+
+    // The page must never let an export read as a complete or attested record.
+    // The disclaimer appears twice on purpose — once as the page's own lede and
+    // once inside the omissions list that ships in the file — so this asserts on
+    // the lede specifically rather than matching both and failing strict mode.
+    await expect(page.locator("p.page-lede")).toContainText(/bounded local snapshot/i);
+    await expect(page.locator("p.page-lede")).toContainText(/not a server-attested report/i);
+    // And the same caveat must be carried in the export's own omissions list.
+    await expect(page.locator(".omissions")).toContainText(/not a server-attested report/i);
+
+    // Raw bodies are opt-in AND reviewed: the checkbox alone must not arm them.
+    const includeBodies = page.getByLabel(/include raw request and response bodies/i);
+    await expect(includeBodies).not.toBeChecked();
+    await expect(page.getByText(/Metadata only\. Bodies are excluded\./i)).toBeVisible();
+
+    await includeBodies.check();
+    await expect(page.getByRole("region", { name: /included data review/i })).toBeVisible();
+    await expect(page.getByText(/not armed yet/i)).toBeVisible();
+
+    await page.getByLabel(/I have reviewed the included data/i).check();
+    await expect(page.getByText(/Bodies WILL be embedded, unredacted\./i)).toBeVisible();
+  });
+
+  test("never labels the estimate as verified savings", async ({ page }) => {
+    await page.goto("/costs");
+    await expect(page.getByText(/spend avoided/i)).toHaveCount(0);
+    await expect(page.getByText(/not verified spend/i).first()).toBeVisible();
+  });
+});
+
 test.describe("accessibility", () => {
   // Runs the rules jsdom cannot evaluate — notably colour contrast, which
   // needs a real layout and cascade (epic §10).
@@ -415,11 +509,22 @@ test.describe("accessibility", () => {
   // only some tokens, so a foreground can be perfectly legible in one theme and
   // fail in the other. Testing light alone hid exactly that (the success
   // foreground was inherited from the light theme and measured ~3.1:1 on dark).
-  for (const colorScheme of ["light", "dark"] as const) {
-    for (const path of ["/", "/logs", "/costs", "/agents/echo-agent/edit"]) {
-      test(`${path} has no WCAG A/AA violations (${colorScheme})`, async ({ page }) => {
-        await page.emulateMedia({ colorScheme });
+  for (const theme of ["light", "dark"] as const) {
+    for (const path of ["/", "/overview", "/logs", "/costs", "/reports", "/agents/echo-agent/edit"]) {
+      test(`${path} has no WCAG A/AA violations (${theme})`, async ({ page, baseURL }) => {
+        // The app's theme is a cookie-driven data-theme attribute; it never
+        // consults prefers-color-scheme. emulateMedia() therefore does NOT
+        // switch it, and a sweep written that way silently tests light twice.
+        await page.context().addCookies([
+          {
+            name: "mockagents-theme",
+            value: theme,
+            url: baseURL ?? "http://127.0.0.1:3099",
+          },
+        ]);
         await page.goto(path);
+        // Prove the theme actually applied, so this can never go vacuous again.
+        await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
         const results = await new AxeBuilder({ page })
           .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
           .analyze();

@@ -6,7 +6,19 @@ import { Fragment, useEffect, useState, type ReactNode } from "react";
 
 import { Icon, type IconName } from "@/lib/icons";
 
-type NavItem = { href: string; label: string; icon: IconName; match: string };
+type NavItem = {
+  href: string;
+  label: string;
+  icon: IconName;
+  match: string;
+  /** UX-07: the server capability this destination needs. When the server has
+   * told us the caller's capabilities and this one is absent, the item renders
+   * disabled with the reason — not hidden, and not left live to 403. A missing
+   * entry means "no floor above being signed in". */
+  requires?: string;
+  /** Plain-language floor, shown when `requires` is not held. */
+  floor?: string;
+};
 type NavGroup = { group: string; items: NavItem[] };
 
 // Only the surfaces that exist in the real GUI (scope: restyle existing),
@@ -15,6 +27,12 @@ const NAV: NavGroup[] = [
   {
     group: "Workspace",
     items: [
+      // UX-02. The approved IA names this section Overview / Mocks / Test Lab /
+      // Investigate / Reports / Administration. Only Overview is added here:
+      // renaming the existing routes moves every deep link, which epic §5 says
+      // needs redirects, and that is its own change rather than a side effect
+      // of this one.
+      { href: "/overview", label: "Overview", icon: "layout-dashboard", match: "/overview" },
       { href: "/", label: "Agents", icon: "bot", match: "/" },
       { href: "/pipelines", label: "Pipelines", icon: "workflow", match: "/pipelines" },
     ],
@@ -24,7 +42,15 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/logs", label: "Logs", icon: "scroll-text", match: "/logs" },
       { href: "/costs", label: "Costs", icon: "bar-chart", match: "/costs" },
-      { href: "/audit", label: "Audit", icon: "shield-search", match: "/audit" },
+      { href: "/reports", label: "Reports", icon: "save", match: "/reports" },
+      {
+        href: "/audit",
+        label: "Audit",
+        icon: "shield-search",
+        match: "/audit",
+        requires: "audit.read",
+        floor: "the admin role",
+      },
     ],
   },
   {
@@ -34,7 +60,18 @@ const NAV: NavGroup[] = [
   {
     group: "Admin",
     items: [
-      { href: "/admin/tenants", label: "Tenants & keys", icon: "users", match: "/admin" },
+      {
+        href: "/admin/tenants",
+        label: "Tenants & keys",
+        icon: "users",
+        match: "/admin",
+        // The tenant COLLECTION is platform-gated (route_authz.go), not
+        // admin-gated. A tenant admin manages its own keys but cannot list
+        // tenants, and the nav has to say that rather than offer a link that
+        // 403s.
+        requires: "tenants.read",
+        floor: "the platform role",
+      },
       { href: "/account", label: "Account", icon: "settings", match: "/account" },
     ],
   },
@@ -51,6 +88,11 @@ export interface ShellProps {
   // unreachable, or it runs in local mode with no roles at all. Render the
   // uncertainty; never substitute a guess.
   auth: { prefix: string; role: string | null; unreachable: boolean } | null;
+  /** UX-07: capabilities the SERVER reports for this credential, used to make
+   * navigation truthful. `null` means we do not know (unreachable, or no
+   * credential at all) — and not knowing is never grounds for disabling a
+   * destination, because a guess in either direction is a lie. */
+  capabilities?: string[] | null;
   logoutAction: () => Promise<void>;
 }
 
@@ -80,7 +122,15 @@ function crumbsFor(pathname: string): string[] {
   return [label, ...seg.slice(1)];
 }
 
-export function Shell({ children, apiUrl, online, version, auth, logoutAction }: ShellProps) {
+export function Shell({
+  children,
+  apiUrl,
+  online,
+  version,
+  auth,
+  capabilities = null,
+  logoutAction,
+}: ShellProps) {
   const pathname = usePathname() || "/";
   const [theme, setTheme] = useState<"light" | "dark">("light");
 
@@ -119,16 +169,41 @@ export function Shell({ children, apiUrl, online, version, auth, logoutAction }:
           {NAV.map((g) => (
             <div className="nav-group" key={g.group}>
               <div className="nav-label">{g.group}</div>
-              {g.items.map((it) => (
-                <Link
-                  key={it.href}
-                  href={it.href}
-                  className={"nav-item" + (isActive(pathname, it.match) ? " active" : "")}
-                >
-                  <Icon name={it.icon} size={16} />
-                  <span>{it.label}</span>
-                </Link>
-              ))}
+              {g.items.map((it) => {
+                // Only claim a destination is unavailable when the server has
+                // actually said so. Unknown capabilities leave the link live:
+                // the server authorizes every request anyway, so an honest
+                // 403 beats a nav that hides a section on a hunch.
+                const denied =
+                  it.requires !== undefined &&
+                  capabilities !== null &&
+                  capabilities !== undefined &&
+                  !capabilities.includes(it.requires);
+                if (denied) {
+                  return (
+                    <span
+                      key={it.href}
+                      className="nav-item nav-item-denied"
+                      aria-disabled="true"
+                      title={`${it.label} requires ${it.floor ?? "a higher role"}. Your credential does not have it.`}
+                    >
+                      <Icon name={it.icon} size={16} />
+                      <span>{it.label}</span>
+                      <span className="nav-lock">{it.floor ?? "restricted"}</span>
+                    </span>
+                  );
+                }
+                return (
+                  <Link
+                    key={it.href}
+                    href={it.href}
+                    className={"nav-item" + (isActive(pathname, it.match) ? " active" : "")}
+                  >
+                    <Icon name={it.icon} size={16} />
+                    <span>{it.label}</span>
+                  </Link>
+                );
+              })}
             </div>
           ))}
         </div>

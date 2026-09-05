@@ -11,11 +11,14 @@ import {
   listAPIKeys,
   Role,
   rotateAPIKey,
+  setTenantQuota,
   updateAPIKeyRole,
 } from "@/lib/api";
 import { getAuthStatus } from "@/lib/auth";
 import { setFlash, takeFlash } from "@/lib/flash";
 import { Icon } from "@/lib/icons";
+
+import { DangerConfirm } from "../../DangerConfirm";
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -200,6 +203,42 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
     }
   }
 
+  // UX-07: quota override. Platform-gated on the server
+  // (PUT /api/v1/tenants/{id}/quota), so the form only appears for a credential
+  // the server says holds that capability — offering it to a tenant admin would
+  // be a control that exists only to 403.
+  async function setQuotaAction(formData: FormData) {
+    "use server";
+    const num = (name: string) => Number((formData.get(name) ?? "0").toString().trim() || "0");
+    const limits = {
+      rate_per_sec: num("rate_per_sec"),
+      rate_burst: num("rate_burst"),
+      monthly_spend_usd: num("monthly_spend_usd"),
+    };
+    if (Object.values(limits).some((v) => !Number.isFinite(v) || v < 0)) {
+      redirect(
+        `/admin/tenants/${encodeURIComponent(id)}?error=${encodeURIComponent(
+          "quota values must be non-negative numbers",
+        )}`,
+      );
+    }
+    try {
+      await setTenantQuota(id, limits);
+      revalidatePath(`/admin/tenants/${id}`);
+      redirect(`/admin/tenants/${encodeURIComponent(id)}`);
+    } catch (err) {
+      if (err instanceof APIError) {
+        redirect(`/admin/tenants/${encodeURIComponent(id)}?error=${encodeURIComponent(err.message)}`);
+      }
+      throw err;
+    }
+  }
+
+  // Only the SERVER's answer decides whether this control is offered. An
+  // unreachable server leaves capabilities empty, and the form then stays
+  // hidden rather than being rendered on an assumption.
+  const canSetQuota = auth.capabilities.includes("tenants.quota.write");
+
   return (
     <div className="view-enter">
       <div className="breadcrumb">
@@ -208,10 +247,17 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
       <div className="page-head">
         <h1 className="page-title">API keys</h1>
         <p className="page-lede">
-          Keys for tenant <code>{id}</code>. Roles:{" "}
-          <code className="mono">viewer &lt; editor &lt; admin</code> — viewer
-          is read-only, editor adds list-keys, admin has full control.
-          Plaintext is shown exactly once.
+          Keys for tenant <code>{id}</code>. Roles rank{" "}
+          <code className="mono">viewer &lt; editor &lt; admin</code>.{" "}
+          {/* UX-07: viewer is NOT a universally read-only server role (epic
+              §8.1). It reads agents and logs, RUNS pipelines against the active
+              runtime, and rotates its own key. Calling it read-only here made
+              the console describe a permission the server does not enforce. */}
+          A viewer reads definitions and logs, runs pipelines and rotates its own
+          key; an editor also writes agents and lists keys; an admin manages this
+          tenant&apos;s keys. Managing tenants themselves is the platform role,
+          which the management API refuses to assign. Plaintext is shown exactly
+          once.
         </p>
       </div>
 
@@ -274,16 +320,34 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
             <div className="sub mono">{id}</div>
           </div>
           {keys.length > 0 && (
-            <form action={bulkRotateAction} className="inline">
-              <button
-                type="submit"
-                className="btn btn-outline btn-sm"
-                title="Regenerate every key in this tenant atomically. Emergency response to a suspected compromise."
-              >
-                <Icon name="rotate-cw" size={14} />
-                Rotate all
-              </button>
-            </form>
+            <DangerConfirm
+              action={bulkRotateAction}
+              triggerLabel={
+                <>
+                  <Icon name="rotate-cw" size={14} />
+                  Rotate all
+                </>
+              }
+              triggerTitle="Regenerate every key in this tenant"
+              triggerClassName="btn btn-outline btn-sm"
+              title={`Rotate all ${keys.length} key${keys.length === 1 ? "" : "s"} in ${id}?`}
+              impact={
+                <>
+                  Every key in this tenant gets a new secret at once. The old secrets stop
+                  working the moment this completes, and the new ones are displayed{" "}
+                  <strong>exactly once</strong> on the page you land on.
+                </>
+              }
+              consequences={[
+                "Every deployed client, CI job and script using one of these keys breaks until it is updated with the new secret.",
+                "The new plaintexts are shown once and never again — leaving that page without copying them means minting replacements.",
+                "Your own key is excluded so this cannot lock you out of the console.",
+                "Rotation cannot be undone or rolled back to the previous secrets.",
+              ]}
+              confirmPhrase={id}
+              confirmPhraseLabel="Type the tenant id to confirm"
+              confirmLabel="Rotate every key"
+            />
           )}
           <form action={createKeyAction} className="row gap-2">
             <input
@@ -365,28 +429,50 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
                       className="row gap-2"
                       style={{ justifyContent: "flex-end" }}
                     >
-                      <form action={rotateKeyAction} className="inline">
-                        <input type="hidden" name="id" value={k.id} />
-                        <input type="hidden" name="name" value={k.name} />
-                        <button
-                          type="submit"
-                          className="btn btn-ghost btn-icon btn-xs"
-                          title="Regenerate the secret in place"
-                        >
-                          <Icon name="rotate-cw" size={13} />
-                        </button>
-                      </form>
-                      <form action={deleteKeyAction} className="inline">
-                        <input type="hidden" name="id" value={k.id} />
-                        <button
-                          type="submit"
-                          className="btn btn-ghost btn-icon btn-xs"
-                          title="Delete key"
-                          style={{ color: "var(--sr-danger-fg)" }}
-                        >
-                          <Icon name="trash" size={13} />
-                        </button>
-                      </form>
+                      <DangerConfirm
+                        action={rotateKeyAction}
+                        fields={{ id: k.id, name: k.name }}
+                        triggerLabel={<Icon name="rotate-cw" size={13} />}
+                        triggerTitle={`Rotate ${k.name}`}
+                        triggerClassName="btn btn-ghost btn-icon btn-xs"
+                        title={`Rotate the secret for ${k.name}?`}
+                        impact={
+                          <>
+                            The key keeps its id, name and <code>{k.role}</code> role, but
+                            its secret is replaced. The new one is shown{" "}
+                            <strong>exactly once</strong>.
+                          </>
+                        }
+                        consequences={[
+                          "The current secret stops working immediately — anything using it fails on the next request.",
+                          "The replacement is displayed once and is unrecoverable afterwards.",
+                          "Rotation cannot be undone; the previous secret is gone.",
+                        ]}
+                        confirmLabel="Rotate key"
+                      />
+                      <DangerConfirm
+                        action={deleteKeyAction}
+                        fields={{ id: k.id }}
+                        triggerLabel={<Icon name="trash" size={13} />}
+                        triggerTitle={`Delete ${k.name}`}
+                        triggerClassName="btn btn-ghost btn-icon btn-xs danger-trigger"
+                        title={`Delete key ${k.name}?`}
+                        impact={
+                          <>
+                            Permanently removes key <code>{k.id}</code> (prefix{" "}
+                            <code>{k.prefix}</code>, role <code>{k.role}</code>) from this
+                            tenant.
+                          </>
+                        }
+                        consequences={[
+                          "Any client holding this secret is denied from the next request onward.",
+                          "Deletion is not rotation: there is no replacement secret, and nothing to hand a consumer.",
+                          "The key cannot be restored — a new one must be minted, with a new id.",
+                        ]}
+                        confirmPhrase={k.name}
+                        confirmPhraseLabel="Type the exact key name to confirm"
+                        confirmLabel="Delete key"
+                      />
                     </div>
                   </td>
                 </tr>
@@ -395,6 +481,83 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
           </table>
         )}
       </div>
+
+      {canSetQuota && (
+        <div className="card mt-4">
+          <div className="card-head">
+            <Icon name="gauge" size={16} />
+            <div className="grow">
+              <h3>Quota override</h3>
+              <div className="sub mono">{id}</div>
+            </div>
+            <span className="sid">UX-07 · PUT /api/v1/tenants/{"{id}"}/quota · platform</span>
+          </div>
+          <div className="card-pad col gap-3">
+            <div className="banner banner-warn" role="note">
+              <div>
+                {/* GET /api/v1/quota answers for the CALLER's tenant only —
+                    there is no per-tenant read. Pre-filling this form with your
+                    own limits, or with zeros, would show one tenant's numbers
+                    under another tenant's name. */}
+                <strong>This server exposes no per-tenant quota read. </strong>
+                The values currently in force for <code>{id}</code> are unknown from here.
+                Submitting replaces the whole override — every field below is applied,
+                including the ones you leave at 0.
+              </div>
+            </div>
+            <form action={setQuotaAction} className="row gap-3 wrap" style={{ alignItems: "flex-end" }}>
+              <div className="field" style={{ width: 150 }}>
+                <label htmlFor="rate_per_sec">requests / second</label>
+                <input
+                  id="rate_per_sec"
+                  name="rate_per_sec"
+                  className="input mono"
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  defaultValue="0"
+                />
+                <span className="hint">0 = unlimited</span>
+              </div>
+              <div className="field" style={{ width: 150 }}>
+                <label htmlFor="rate_burst">burst</label>
+                <input
+                  id="rate_burst"
+                  name="rate_burst"
+                  className="input mono"
+                  type="number"
+                  min="0"
+                  step="1"
+                  defaultValue="0"
+                />
+                <span className="hint">derived from rate when 0</span>
+              </div>
+              <div className="field" style={{ width: 170 }}>
+                <label htmlFor="monthly_spend_usd">monthly spend cap (USD)</label>
+                <input
+                  id="monthly_spend_usd"
+                  name="monthly_spend_usd"
+                  className="input mono"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  defaultValue="0"
+                />
+                <span className="hint">0 = unlimited</span>
+              </div>
+              <button type="submit" className="btn btn-default btn-sm">
+                <Icon name="save" size={15} />
+                Set override
+              </button>
+            </form>
+            <p className="hint" style={{ margin: 0 }}>
+              Spend is measured against the estimated upstream cost of this tenant&apos;s
+              captured requests. Over-rate requests are rejected with 429, over-spend with
+              402.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
