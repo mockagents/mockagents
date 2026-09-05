@@ -44,17 +44,13 @@ func (h *AuditHandlers) ListEvents(w http.ResponseWriter, r *http.Request) {
 		q.ActorTenant = p.TenantID
 	}
 	if q.Kind != "" && !q.Kind.Valid() {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "unknown kind; try one of: tenant.created, tenant.deleted, api_key.created, api_key.deleted, api_key.role_changed, api_key.rotated, agent.reloaded, agent.created, agent.updated, agent.deleted, pipeline.saved, auth.denied",
-		})
+		writeError(w, http.StatusBadRequest, "unknown kind; try one of: tenant.created, tenant.deleted, api_key.created, api_key.deleted, api_key.role_changed, api_key.rotated, agent.reloaded, agent.created, agent.updated, agent.deleted, pipeline.saved, auth.denied")
 		return
 	}
 	if since := r.URL.Query().Get("since"); since != "" {
 		t, err := time.Parse(time.RFC3339, since)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{
-				"error": "since must be RFC3339: " + err.Error(),
-			})
+			writeError(w, http.StatusBadRequest, "since must be RFC3339: "+err.Error())
 			return
 		}
 		q.Since = t

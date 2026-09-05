@@ -62,9 +62,7 @@ func annotate(row storage.InteractionLog, table *pricing.Table) LogWithCost {
 // ListLogs handles GET /api/v1/logs with optional filtering.
 func (h *LogHandlers) ListLogs(w http.ResponseWriter, r *http.Request) {
 	if h.Store == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "logging is not enabled",
-		})
+		writeError(w, http.StatusServiceUnavailable, "logging is not enabled")
 		return
 	}
 
@@ -158,18 +156,14 @@ func metadataOnly(r *http.Request) bool {
 // GetLog handles GET /api/v1/logs/{id}.
 func (h *LogHandlers) GetLog(w http.ResponseWriter, r *http.Request) {
 	if h.Store == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "logging is not enabled",
-		})
+		writeError(w, http.StatusServiceUnavailable, "logging is not enabled")
 		return
 	}
 
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "invalid log ID",
-		})
+		writeError(w, http.StatusBadRequest, "invalid log ID")
 		return
 	}
 
@@ -179,15 +173,11 @@ func (h *LogHandlers) GetLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if log == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{
-			"error": fmt.Sprintf("log %d not found", id),
-		})
+		writeError(w, http.StatusNotFound, fmt.Sprintf("log %d not found", id))
 		return
 	}
 	if tenantID := callerTenantID(r); tenantID != "" && log.TenantID != tenantID {
-		writeJSON(w, http.StatusNotFound, map[string]string{
-			"error": fmt.Sprintf("log %d not found", id),
-		})
+		writeError(w, http.StatusNotFound, fmt.Sprintf("log %d not found", id))
 		return
 	}
 	writeJSON(w, http.StatusOK, log)
@@ -196,9 +186,7 @@ func (h *LogHandlers) GetLog(w http.ResponseWriter, r *http.Request) {
 // DeleteLogs handles DELETE /api/v1/logs.
 func (h *LogHandlers) DeleteLogs(w http.ResponseWriter, r *http.Request) {
 	if h.Store == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "logging is not enabled",
-		})
+		writeError(w, http.StatusServiceUnavailable, "logging is not enabled")
 		return
 	}
 
@@ -783,9 +771,7 @@ func (w *captureWriter) Flush() {
 // could be misread as "no drops anywhere".
 func (h *LogHandlers) StreamMetrics(w http.ResponseWriter, r *http.Request) {
 	if h.Broadcaster == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "live feed disabled",
-		})
+		writeError(w, http.StatusServiceUnavailable, "live feed disabled")
 		return
 	}
 	snap := h.Broadcaster.Snapshot()

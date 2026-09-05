@@ -24,7 +24,7 @@ type QuotaHandlers struct {
 // sees the (unlimited) defaults.
 func (h *QuotaHandlers) GetQuota(w http.ResponseWriter, r *http.Request) {
 	if h.Enforcer == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "quotas not enabled"})
+		writeError(w, http.StatusServiceUnavailable, "quotas not enabled")
 		return
 	}
 	tenantID := callerTenantID(r)
@@ -40,23 +40,23 @@ func (h *QuotaHandlers) GetQuota(w http.ResponseWriter, r *http.Request) {
 // cap, so quota management is a cross-tenant operator action.
 func (h *QuotaHandlers) SetTenantQuota(w http.ResponseWriter, r *http.Request) {
 	if h.Enforcer == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "quotas not enabled"})
+		writeError(w, http.StatusServiceUnavailable, "quotas not enabled")
 		return
 	}
 	id := r.PathValue("id")
 	if id == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing tenant id"})
+		writeError(w, http.StatusBadRequest, "missing tenant id")
 		return
 	}
 	defer r.Body.Close()
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
 	var cfg quota.Config
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
 	if cfg.RatePerSec < 0 || cfg.RateBurst < 0 || cfg.MonthlySpendUSD < 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "quota values must be non-negative"})
+		writeError(w, http.StatusBadRequest, "quota values must be non-negative")
 		return
 	}
 	// Persist first (so a restart keeps the override); only then apply it to the
@@ -64,7 +64,7 @@ func (h *QuotaHandlers) SetTenantQuota(w http.ResponseWriter, r *http.Request) {
 	if h.Store != nil {
 		if err := h.Store.SetTenantQuota(r.Context(), id, cfg); err != nil {
 			if errors.Is(err, tenancy.ErrNotFound) {
-				writeJSON(w, http.StatusNotFound, map[string]string{"error": "tenant not found"})
+				writeError(w, http.StatusNotFound, "tenant not found")
 				return
 			}
 			writeServerError(w, err)
