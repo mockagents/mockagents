@@ -744,6 +744,17 @@ function LogDetail({
         <dd className="mono">{row.protocol || "—"}</dd>
         <dt>latency</dt>
         <dd className="mono">{row.latency_ms}ms</dd>
+        {/* U4-5: stated either way. This is the one field on the pane whose
+            absence would otherwise carry meaning — "no warning" is a weaker
+            thing to read than "complete". */}
+        <dt>capture</dt>
+        <dd>
+          {row.truncated ? (
+            <span className="badge badge-warn">clipped at the capture cap</span>
+          ) : (
+            <span className="badge badge-ok">complete</span>
+          )}
+        </dd>
       </dl>
 
       {row.error && (

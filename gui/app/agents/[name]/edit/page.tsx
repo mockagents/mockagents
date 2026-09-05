@@ -7,6 +7,7 @@ import {
   getIdentity,
   getPipeline,
   getServerStatus,
+  listAgents,
   listPipelines,
   saveAgentConditional,
   validateYAML,
@@ -102,6 +103,20 @@ export default async function EditAgentPage({ params }: PageProps) {
     pipelinesReadable = false;
   }
 
+  // U3-7: how this definition is stored, for the header chips. From the catalog,
+  // which reports it since U3-6. Left undefined when the read fails — the chips
+  // then render nothing, which is better than guessing "runtime" at someone
+  // whose agent is file-backed.
+  let persistence: "file" | "runtime" | "missing" | undefined;
+  let file: string | undefined;
+  try {
+    const summary = (await listAgents()).find((a) => a.name === name);
+    persistence = summary?.persistence;
+    file = summary?.file;
+  } catch {
+    persistence = undefined;
+  }
+
   async function validateAction(yaml: string): Promise<ValidateResult> {
     "use server";
     return validateYAML(yaml);
@@ -129,6 +144,8 @@ export default async function EditAgentPage({ params }: PageProps) {
       revision={source.revision}
       canWrite={canWrite}
       online={online}
+      persistence={persistence}
+      file={file}
       referencingPipelines={referencingPipelines}
       pipelinesReadable={pipelinesReadable}
       validateAction={validateAction}

@@ -116,6 +116,20 @@ describe("LogsConsole", () => {
       expect(screen.getByText("42")).toBeInTheDocument();
     });
 
+    // U4-5: the one field whose absence would otherwise carry meaning. "No
+    // warning" is a weaker thing to read than "complete".
+    it("states capture completeness either way, not only when clipped", async () => {
+      const user = userEvent.setup();
+      setup({ window: makeWindow([row(2, { truncated: false }), row(1, { truncated: true })]) });
+
+      await user.click(screen.getByRole("button", { name: "2" }));
+      expect(screen.getByText("complete")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "1" }));
+      expect(screen.getByText(/clipped at the capture cap/i)).toBeInTheDocument();
+      expect(screen.queryByText("complete")).toBeNull();
+    });
+
     it("says when a captured body is clipped", async () => {
       const user = userEvent.setup();
       setup({ window: makeWindow([row(1, { truncated: true })]) });

@@ -5,6 +5,7 @@ import {
   can,
   getIdentity,
   getPipeline,
+  listAgents,
   runPipeline,
   PipelineDefinition,
   type PipelineRunOutcome,
@@ -40,6 +41,18 @@ export default async function PipelineDetailPage({ params }: PageProps) {
   }
 
   const agents = pipeline.spec.agents ?? [];
+
+  // U5-6: the revision each node would execute at. Read from the catalog, which
+  // now reports it (U3-6). A ref the catalog does not list stays absent from
+  // this map and renders as unknown — a node whose definition cannot be
+  // identified is precisely the one worth seeing before pressing Run.
+  const agentRevisions: Record<string, string | undefined> = {};
+  try {
+    for (const a of await listAgents()) agentRevisions[a.name] = a.effective_revision;
+  } catch {
+    // Leave the map empty: every node then reads "revision unknown", which is
+    // the truth, rather than the page failing over a decoration.
+  }
   const edges = normalizeEdges(pipeline);
   const tags = pipeline.metadata.tags ?? [];
 
@@ -98,6 +111,7 @@ export default async function PipelineDetailPage({ params }: PageProps) {
         nodes={agents}
         canRun={canRun}
         runAction={runAction}
+        agentRevisions={agentRevisions}
       />
 
       <h2 className="section-title">Agents</h2>

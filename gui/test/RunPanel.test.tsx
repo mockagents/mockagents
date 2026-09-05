@@ -145,6 +145,46 @@ describe("RunPanel", () => {
     expect(runAction).toHaveBeenCalledTimes(1);
   });
 
+  // U5-5 / U5-6. Both are about what an operator can know BEFORE committing to
+  // something stateful, which is the only moment the information is useful.
+  describe("before the run", () => {
+    it("shows the session id up front, ready to copy", () => {
+      setup();
+      const field = screen.getByLabelText("Session ID") as HTMLInputElement;
+      expect(field.value).toBe("sess-fixed");
+      expect(field).toHaveAttribute("readonly");
+    });
+
+    it("names the definitions that will execute, with their revisions", () => {
+      setup({ agentRevisions: { "a-agent": "abc123def", "b-agent": "999888777" } });
+      expect(screen.getByText("a-agent")).toBeInTheDocument();
+      expect(screen.getByText(/abc123de/)).toBeInTheDocument();
+      expect(screen.getByText(/99988877/)).toBeInTheDocument();
+    });
+
+    // A node whose definition cannot be identified is precisely the one worth
+    // seeing before pressing Run, so it is named as unknown rather than
+    // dropped from the list.
+    it("marks a definition it could not identify as unknown, not absent", () => {
+      setup({ agentRevisions: { "a-agent": "abc123def" } });
+      expect(screen.getByText("b-agent")).toBeInTheDocument();
+      expect(screen.getByText(/revision unknown/i)).toBeInTheDocument();
+    });
+
+    it("mints a new session for the next run rather than reusing one", async () => {
+      const user = userEvent.setup();
+      let n = 0;
+      setup({ newSessionId: () => `sess-${++n}` });
+      const field = () => screen.getByLabelText("Session ID") as HTMLInputElement;
+      const first = field().value;
+
+      await run(user);
+      // Reusing an id would let two runs share turn state, which is the
+      // accident a per-run session exists to prevent.
+      await waitFor(() => expect(field().value).not.toBe(first));
+    });
+  });
+
   describe("evidence", () => {
     it("records the input and session that were actually submitted", async () => {
       const user = userEvent.setup();
