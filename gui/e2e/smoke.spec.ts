@@ -378,7 +378,9 @@ test.describe("agent editor (UX-03)", () => {
     await apply.click();
 
     // The receipt must say what actually happened.
-    await expect(page.getByText(/Applied\.|Created\./)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/Applied and persisted|Created and persisted/)).toBeVisible({
+      timeout: 15_000,
+    });
 
     // Now the part that matters: ask the SERVER what it holds.
     const after = await page.request.get(url, { headers: { Accept: "application/yaml" } });
@@ -387,6 +389,17 @@ test.describe("agent editor (UX-03)", () => {
     for (const fragment of ["chaos:", "latency:", "min_ms", "max_ms", "status_codes"]) {
       expect(stored, `${fragment} must survive a form-driven save`).toContain(fragment);
     }
+
+    // U3-1: the receipt's revision must be the one the server now serves, not a
+    // number the UI made up. A receipt that names the wrong version is worse
+    // than one that names none, because the next If-Match is built from it.
+    const receiptRevision = await page
+      .getByText("new revision")
+      .locator("xpath=following-sibling::*[1]")
+      .innerText();
+    const serverEtag = (after.headers()["etag"] ?? "").replace(/"/g, "");
+    expect(serverEtag).not.toBe("");
+    expect(serverEtag.startsWith(receiptRevision.replace(/…$/, ""))).toBe(true);
   });
 
   test("the agent detail page links to the editor", async ({ page }) => {

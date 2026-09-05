@@ -66,7 +66,9 @@ export function AgentEditor({
   const [mode, setMode] = useState<Mode>("form");
   const [validation, setValidation] = useState<ValidateResult | null>(null);
   const [result, setResult] = useState<ConditionalSaveResult | null>(null);
-  const [conflict, setConflict] = useState<{ message: string } | null>(null);
+  const [conflict, setConflict] = useState<{ message: string; currentRevision?: string } | null>(
+    null,
+  );
   const [isPending, startTransition] = useTransition();
 
   const dirty = draft !== base;
@@ -121,7 +123,10 @@ export function AgentEditor({
       } else if (r.status === "conflict") {
         // Do NOT touch the draft. The user's work is the only copy of their
         // intent; the server's copy is recoverable at any time.
-        setConflict({ message: r.message });
+        // The server's revision comes back on the 412 and is the whole point
+        // of the card: without it the operator cannot tell what they are being
+        // asked to reconcile against.
+        setConflict({ message: r.message, currentRevision: r.currentRevision });
         setPhase("editing");
       }
     });
@@ -225,6 +230,8 @@ export function AgentEditor({
       {conflict && (
         <ConflictBanner
           message={conflict.message}
+          currentRevision={conflict.currentRevision}
+          baseRevision={baseRevision}
           pending={isPending}
           onReloadBase={onReloadBase}
           onDiscardDraft={onDiscardDraft}
@@ -326,20 +333,33 @@ export function AgentEditor({
   );
 }
 
+/** Shown when a conditional write was refused because the agent moved (U3-2).
+ *
+ * The design specifies `role="alertdialog"`. This stays a non-modal
+ * `role="alert"` banner deliberately: `alertdialog` denotes a modal with
+ * trapped focus, and announcing a modal that does not exist is worse for a
+ * screen-reader user than announcing an alert that does. What the design is
+ * actually right about — and what was missing — is the CONTENT: which revision
+ * the server holds, which one the draft was based on, and the fact that a
+ * conditional write is not a lock. */
 function ConflictBanner({
   message,
+  currentRevision,
+  baseRevision,
   pending,
   onReloadBase,
   onDiscardDraft,
 }: {
   message: string;
+  currentRevision?: string;
+  baseRevision: string;
   pending: boolean;
   onReloadBase: () => void;
   onDiscardDraft: () => void;
 }) {
   return (
     // assertive: the user just pressed Apply and needs to know it did not land.
-    <div className="banner banner-error" role="alert">
+    <div className="banner banner-error" role="alert" aria-label="edit conflict">
       <div className="col gap-3">
         <div className="row gap-2">
           <Icon name="x-circle" size={16} />
@@ -347,10 +367,43 @@ function ConflictBanner({
             <strong>Not applied — the agent changed since you loaded it.</strong> {message}
           </div>
         </div>
+
+        {/* Both versions, side by side and named. "Something changed" is not
+            actionable; "yours is based on a41f, the server is on c1d9" is. */}
+        <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div className="receipt-line">
+            <div className="eyebrow">on the server now</div>
+            <div className="mono txt-sm">{shortRev(currentRevision) ?? "unknown"}</div>
+            {!currentRevision && (
+              <div className="muted txt-xs">
+                The server did not name a revision, so this is unknown — not unchanged.
+              </div>
+            )}
+          </div>
+          <div className="receipt-line">
+            <div className="eyebrow">your draft is based on</div>
+            <div className="mono txt-sm">{shortRev(baseRevision) ?? "unknown"}</div>
+            <div className="muted txt-xs">kept in this browser session</div>
+          </div>
+        </div>
+
         <p className="txt-sm">
-          Your edits are untouched. Load the server&apos;s current version to see how it
-          differs from your draft, then re-apply deliberately.
+          <strong>Both versions are preserved.</strong> Your edits are untouched. Load the
+          server&apos;s current version to see how it differs from your draft, then re-apply
+          deliberately — nothing is merged for you.
         </p>
+
+        {/* Binding disclosure (handoff §8): the conditional route is additive,
+            so it constrains this editor and other conditional writers — not
+            every writer that exists. Claiming otherwise would promise a lock
+            the server does not implement. */}
+        <p className="hint">
+          This check is a precondition, not a lock. A client that writes without{" "}
+          <code className="mono">If-Match</code> — an older SDK, a script, a direct{" "}
+          <code className="mono">PUT</code> — can still overwrite this agent without ever
+          seeing this message.
+        </p>
+
         <div className="row gap-2">
           <button
             type="button"
@@ -374,31 +427,99 @@ function ConflictBanner({
   );
 }
 
-function ResultBanner({ result, name }: { result: ConditionalSaveResult; name: string }) {
-  if (result.status === "ok") {
-    return (
-      <div className="banner banner-ok" role="status">
-        <div className="row gap-2">
-          <Icon name="check-circle" size={16} />
-          <div>
-            <strong>{result.created ? "Created." : "Applied."}</strong> {name} is serving
-            immediately.{" "}
-            {result.persisted ? (
-              <>
-                Written to <code className="mono">{result.file}</code>, so it survives a
-                restart.
-              </>
-            ) : (
-              <>
-                <strong>Runtime only</strong> — this server has no agents directory
-                configured, so the change is lost when it restarts.
-              </>
-            )}
-          </div>
+/** Revisions are long hashes. Twelve characters is enough to compare two by eye
+ * without wrapping; the full value is never something anyone retypes. */
+function shortRev(revision?: string): string | null {
+  if (!revision) return null;
+  return revision.length > 12 ? revision.slice(0, 12) + "…" : revision;
+}
+
+/** The post-apply receipt (U3-1).
+ *
+ * A receipt rather than a toast, because the two facts an operator needs after
+ * a write are not "it worked": they are WHICH version is now running, and
+ * whether it survives a restart. The revision is the handle on both — it is
+ * what the next If-Match is based on, and what an audit entry names.
+ *
+ * This renders only after the server has confirmed. There is no optimistic
+ * state anywhere in this flow, by design. */
+function SaveReceipt({
+  result,
+  name,
+}: {
+  result: Extract<ConditionalSaveResult, { status: "ok" }>;
+  name: string;
+}) {
+  const persisted = result.persisted;
+  return (
+    <div className={"card " + (persisted ? "" : "card-warn")}>
+      <div className="card-head">
+        <Icon name={persisted ? "check-circle" : "alert-triangle"} size={15} />
+        <div className="grow">
+          <h3>Save receipt</h3>
         </div>
+        <span className={"badge " + (persisted ? "badge-ok" : "badge-warn")}>
+          {persisted ? "persisted" : "runtime-only"}
+        </span>
       </div>
-    );
-  }
+      <div className="card-pad col gap-3">
+        <div
+          className={"banner " + (persisted ? "banner-ok" : "banner-warn")}
+          role={persisted ? "status" : "alert"}
+        >
+          {persisted ? (
+            <>
+              <strong>{result.created ? "Created and persisted." : "Applied and persisted."}</strong>{" "}
+              <code className="mono">{name}</code> is serving immediately and was written to
+              disk. Confirmed by the server — this appears only after confirmation, never as
+              an optimistic toast.
+            </>
+          ) : (
+            <>
+              {/* The distinction this exists for: live and durable are not the
+                  same state, and only one of them survives a restart. */}
+              <strong>Active in the runtime, but NOT written to disk.</strong>{" "}
+              <code className="mono">{name}</code> is serving immediately, and the change is
+              lost when this server restarts. Export the draft or configure an agents
+              directory — do not assume durability.
+            </>
+          )}
+        </div>
+
+        <dl className="kv">
+          <dt>new revision</dt>
+          <dd className="mono">{shortRev(result.revision) ?? "not reported"}</dd>
+          <dt>runtime</dt>
+          <dd>
+            <span className="badge badge-ok">active</span>
+          </dd>
+          <dt>file</dt>
+          <dd>
+            {persisted ? (
+              <span className="mono">{result.file ?? "written"}</span>
+            ) : (
+              <span className="badge badge-warn">not written</span>
+            )}
+          </dd>
+          <dt>audit</dt>
+          {/* Not invented: the write API does not return an audit id, and
+              correlating one needs GET /api/v1/audit, which is admin-floored. */}
+          <dd className="muted txt-sm">
+            recorded server-side; this response carries no reference to it
+          </dd>
+        </dl>
+
+        <p className="hint">
+          Later edits from this tab are conditional on{" "}
+          <code className="mono">{shortRev(result.revision) ?? "the new revision"}</code>.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ResultBanner({ result, name }: { result: ConditionalSaveResult; name: string }) {
+  if (result.status === "ok") return <SaveReceipt result={result} name={name} />;
   if (result.status === "invalid") {
     return (
       <div className="col gap-3">

@@ -177,7 +177,18 @@ describe("AgentEditor", () => {
       await waitFor(() => expect(applyButton()).toBeEnabled());
       await user.click(applyButton());
 
-      expect(await screen.findByText(/survives a restart/i)).toBeInTheDocument();
+      // U3-1: a receipt, not a toast. The revision matters most — it is what
+      // the next conditional write is based on and what an audit entry names.
+      expect(await screen.findByText(/Applied and persisted/i)).toBeInTheDocument();
+      expect(screen.getByText("Save receipt")).toBeInTheDocument();
+      expect(screen.getByText(/written to disk/i)).toBeInTheDocument();
+
+      // The revision is named as its own field, not buried in prose: it is the
+      // handle on what is now running and on what the next write is based on.
+      expect(screen.getByText("new revision").nextElementSibling).toHaveTextContent("rev-2");
+      // And the editor really did advance to it — a follow-up edit is
+      // conditional on the new revision, not the stale one.
+      expect(screen.getByText(/Loaded at revision/)).toHaveTextContent("rev-2");
     });
 
     // The distinction the epic insists on: a runtime-only save is real, but a
@@ -200,9 +211,15 @@ describe("AgentEditor", () => {
       await waitFor(() => expect(applyButton()).toBeEnabled());
       await user.click(applyButton());
 
-      expect(await screen.findByText(/Runtime only/i)).toBeInTheDocument();
-      expect(screen.getByText(/lost when it restarts/i)).toBeInTheDocument();
-      expect(screen.queryByText(/survives a restart/i)).not.toBeInTheDocument();
+      // Live and durable are different states, and only one survives a
+      // restart. The receipt must not let the first imply the second.
+      expect(await screen.findByText(/NOT written to disk/i)).toBeInTheDocument();
+      expect(screen.getByText(/lost when this server restarts/i)).toBeInTheDocument();
+      expect(screen.getByText("runtime-only")).toBeInTheDocument();
+      expect(screen.queryByText(/Applied and persisted/i)).not.toBeInTheDocument();
+      // Runtime-only is a qualified success: it is announced, not left to be
+      // noticed, because acting on it as if it were durable loses work.
+      expect(screen.getByText(/NOT written to disk/i).closest("[role=alert]")).not.toBeNull();
     });
 
     it("advances the revision so a follow-up edit stays conditional", async () => {
@@ -213,7 +230,7 @@ describe("AgentEditor", () => {
       await user.click(reviewButton());
       await waitFor(() => expect(applyButton()).toBeEnabled());
       await user.click(applyButton());
-      await screen.findByText(/Applied\./);
+      await screen.findByText(/Applied and persisted/i);
 
       await user.type(editor(), "-second");
       await user.click(reviewButton());
@@ -252,6 +269,66 @@ describe("AgentEditor", () => {
 
       expect(editor()).toHaveValue("my-precious-draft: true");
       expect(screen.getByText(/Not applied/)).toBeInTheDocument();
+    });
+
+    // U3-2. "Something changed" is not actionable. Which revision the server
+    // holds and which one the draft was based on is what lets an operator
+    // decide whether to reload, overwrite, or walk away.
+    it("names both revisions, so the conflict can actually be reasoned about", async () => {
+      const user = userEvent.setup();
+      setup({ saveAction: conflicting });
+
+      await applyIntoConflict(user);
+      const alert = screen.getByRole("alert");
+      expect(within(alert).getByText("on the server now").nextElementSibling).toHaveTextContent(
+        "rev-9",
+      );
+      expect(
+        within(alert).getByText("your draft is based on").nextElementSibling,
+      ).toHaveTextContent("rev-1");
+    });
+
+    it("reports an unnamed server revision as unknown, not as unchanged", async () => {
+      const user = userEvent.setup();
+      setup({
+        saveAction: vi.fn(
+          async (): Promise<ConditionalSaveResult> => ({
+            status: "conflict",
+            message: "agent changed since it was loaded",
+            currentRevision: "",
+          }),
+        ),
+      });
+
+      await applyIntoConflict(user);
+      const alert = screen.getByRole("alert");
+      expect(within(alert).getByText("on the server now").nextElementSibling).toHaveTextContent(
+        "unknown",
+      );
+      expect(alert).toHaveTextContent(/unknown — not unchanged/i);
+    });
+
+    // Binding disclosure (handoff §8). The conditional route is additive, so it
+    // constrains this editor and other conditional writers — not every writer
+    // that exists. Presenting it as a lock would promise safety the server
+    // does not provide.
+    it("discloses that the precondition is not a lock", async () => {
+      const user = userEvent.setup();
+      setup({ saveAction: conflicting });
+
+      await applyIntoConflict(user);
+      const alert = screen.getByRole("alert");
+      expect(alert).toHaveTextContent(/precondition, not a lock/i);
+      expect(alert).toHaveTextContent(/can still overwrite this agent/i);
+    });
+
+    it("says both versions are preserved, because they are", async () => {
+      const user = userEvent.setup();
+      setup({ saveAction: conflicting });
+
+      await applyIntoConflict(user);
+      expect(screen.getByRole("alert")).toHaveTextContent(/Both versions are preserved/i);
+      expect(screen.getByRole("alert")).toHaveTextContent(/nothing is merged for you/i);
     });
 
     it("announces the failure assertively rather than silently", async () => {
