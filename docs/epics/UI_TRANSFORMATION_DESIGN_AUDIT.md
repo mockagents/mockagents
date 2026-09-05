@@ -49,26 +49,26 @@ not simply a to-do list.
 | --- | --- | --- | --- |
 | X-1 | Instrument strip is on 2 of 17 routes, not in the shell | all | **A** — fixed |
 | X-2 | No `unsupported` / capability-gated state anywhere | UX-03 | B |
-| X-3 | Agent deletion uses `window.confirm`, bypassing the destructive-dialog spec | UX-03 | **A** |
+| X-3 | Agent deletion uses `window.confirm`, bypassing the destructive-dialog spec | UX-03 | **A** — fixed |
 | X-4 | Five-variant state matrix is partial; no shared component | all | C |
 | U1-1 | `/identity` merges the proposed `/capabilities` | UX-01 | D |
-| U1-2 | Capability gating stops at the nav — catalog Delete and New agent are ungated | UX-01 | B |
+| U1-2 | Capability gating stops at the nav — catalog Delete and New agent are ungated | UX-01 | B — fixed |
 | U1-3 | Identity probed per screen instead of once per navigation | UX-01 | C — fixed |
-| U3-1 | No save receipt; the new revision the API returns is discarded | UX-03 | **A** |
-| U3-2 | Conflict drops `currentRevision` and the legacy-writer disclosure | UX-03 | **A** |
+| U3-1 | No save receipt; the new revision the API returns is discarded | UX-03 | **A** — fixed |
+| U3-2 | Conflict drops `currentRevision` and the legacy-writer disclosure | UX-03 | **A** — fixed |
 | U3-3 | Diff step never says Apply changes the live runtime | UX-03 | B |
 | U3-4 | No Export draft; nothing says drafts are browser-memory only | UX-03 | B |
 | U3-5 | Editor has no offline state; a write to a dead server reports "unknown" | UX-03 | B |
 | U3-6 | Inventory has no revision or persistence column | UX-03 | X → B |
 | U3-7 | Editor header lacks revision / persisted / file chips | UX-03 | C |
-| U4-1 | Gaps render as a banner, not as gap rows in the table | UX-04 | **A** |
-| U4-2 | The gap has no time bounds | UX-04 | **A** |
-| U4-3 | Empty state omits the window and the next step | UX-04 | B |
+| U4-1 | Gaps render as a banner, not as gap rows in the table | UX-04 | **A** — fixed |
+| U4-2 | The gap has no time bounds | UX-04 | **A** — fixed |
+| U4-3 | Empty state omits the window and the next step | UX-04 | B — fixed |
 | U4-4 | "Bodies are not fetched until revealed" is false — they ship with the list | UX-04 | **X** |
 | U4-5 | Capture completeness shown only when truncated | UX-04 | C |
 | U4-6 | Implementation refuses "loaded N of N" | UX-04 | D |
-| U5-1 | Absent nodes are not rendered as "not executed · unknown" | UX-05 | **A** |
-| U5-2 | `blocked-missing-dependency` is not a state | UX-05 | B |
+| U5-1 | Absent nodes are not rendered as "not executed · unknown" | UX-05 | **A** — fixed |
+| U5-2 | `blocked-missing-dependency` is not a state | UX-05 | B — fixed |
 | U5-3 | No node inspector — a failed node's evidence cannot be read | UX-05 | B |
 | U5-4 | No run→logs link | UX-05 | **X** |
 | U5-5 | Session id not shown before the run | UX-05 | C |
@@ -167,7 +167,7 @@ serving immediately and removes its backing file
 for a runtime-only agent it is unrecoverable.
 
 This is the cheapest class-A fix in the audit:
-[`DangerConfirm`](../../gui/app/admin/DangerConfirm.tsx) already implements the spec
+[`DangerConfirm`](../../gui/app/DangerConfirm.tsx) already implements the spec
 exactly — focus trap, Esc, exact match with no trimming or case folding, safest
 control focused — and is already used on three admin pages. Swap it in.
 
@@ -251,6 +251,13 @@ Revision, runtime state and file are all in hand today. An audit reference is no
 would need a correlated `GET /api/v1/audit`, which is admin-floored) — so state that
 omission rather than inventing the field.
 
+**Fixed 2026-09-05.** The banner is now a Save receipt card with the two variants
+the design specifies, listing new revision / runtime / file, and stating plainly
+that no audit reference is returned rather than leaving the row out. A browser
+test compares the revision the receipt shows against the ETag the server serves
+immediately afterwards, so a receipt naming the wrong version fails the gate —
+that matters more than the wording, because the next `If-Match` is built from it.
+
 ### U3-2 — The conflict card drops the facts and the disclosure · **A**
 
 The design's conflict card states the revision comparison in its first sentence —
@@ -282,6 +289,14 @@ card that traps nothing would announce a modal that is not there, which is worse
 screen-reader user than the honest `alert`. Either promote the card to a real modal
 (design-faithful) or keep the banner and record the deviation — but the content gaps
 above need fixing either way.
+
+**Fixed 2026-09-05.** `currentRevision` is carried through, and both revisions
+are shown side by side and named; a server that does not name one renders as
+*unknown, not unchanged*. The legacy-writer disclosure is in, worded as what it
+actually is — a precondition rather than a lock, which a client writing without
+`If-Match` can still bypass. The `role="alert"` banner was kept over
+`alertdialog` for the reason stated above; that deviation is now deliberate and
+recorded rather than incidental.
 
 ### U3-3 — The diff step never says Apply changes the live runtime · B
 
@@ -608,21 +623,22 @@ Grouped so each is one reviewable slice with its own tests.
 
 1. ~~**X-1** — strip into the shell.~~ **Done 2026-09-04** (took U1-3 with it). Unblocks U3-5, subsumes U1-3, and puts server context
    on every audited screen. Largest single gain.
-2. **X-3** — `DangerConfirm` for agent deletion. Smallest class-A fix; removes an
-   accidental-Enter data-loss path and makes the delete path testable.
-3. **U5-1 + U5-2** — absent nodes as `not executed · unknown`, and the blocked state with
+2. ~~**X-3** — `DangerConfirm` for agent deletion.~~ **Done 2026-09-05** (took U1-2's
+   catalog half with it). Removed an accidental-Enter data-loss path and made the
+   delete path testable.
+3. ~~**U5-1 + U5-2**~~ **Done 2026-09-05** — absent nodes as `not executed · unknown`, and the blocked state with
    §9.2's corrected copy. The design's core rule, on the screen it was written for.
-4. **U4-1 + U4-2 + U4-3** — gap rows with time bounds, and the empty-window copy.
-5. **U3-1 + U3-2** — save receipt with the new revision; conflict card showing both
+4. ~~**U4-1 + U4-2 + U4-3**~~ **Done 2026-09-05** — gap rows with time bounds, and the empty-window copy.
+5. ~~**U3-1 + U3-2**~~ **Done 2026-09-05** — save receipt with the new revision; conflict card showing both
    revisions plus the legacy-writer disclosure. Presentation over machinery that is
    already correct.
 6. **U3-3 + U3-4 + U3-5** — active-runtime warning on the diff, Export draft, editor
    offline state.
-7. **U1-2, U5-3, X-2** — catalog capability gating, node inspector, `unsupported`
-   variant.
+7. **U5-3, X-2** — node inspector, `unsupported` variant. (U1-2's catalog half
+   shipped with X-3.)
 8. Backend slices, if approved: `session_prefix` log filter (§9.3), `AgentSummary`
-   revision/persistence (U3-6), `code` on `pipelineRunError` (U5-2), `?fields=meta` log
-   projection (§9.1).
+   revision/persistence (U3-6), `?fields=meta` log projection (§9.1). (`code` on
+   `pipelineRunError` shipped with U5-2.)
 9. **C-class** — U3-7, U4-5, U5-5, U5-6, X-4.
 
 ## 11. What this audit did not cover

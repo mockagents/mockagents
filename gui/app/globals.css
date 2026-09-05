@@ -289,6 +289,11 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .tbl thead th { position: sticky; top: 0; z-index: 1; }
 .tbl tbody tr.click { cursor: pointer; }
 .tbl tbody tr.click:hover { background: var(--sr-bg-muted); }
+/* UX-03: a save receipt whose outcome was runtime-only. The border marks it as
+   a qualified success at a glance; the badge and the banner inside carry the
+   same fact in words, so the colour is never the only signal. */
+.card.card-warn { border-color: var(--sr-warning-fg); }
+
 .tbl tbody tr:last-child td { border-bottom: none; }
 /* UX-04: an unresolved break in the feed, rendered where it happened rather
    than as a banner above the table. Two rows that are adjacent on screen but
