@@ -473,8 +473,13 @@ test.describe("reports (UX-06)", () => {
     await page.goto("/reports");
 
     // The page must never let an export read as a complete or attested record.
-    await expect(page.getByText(/bounded local snapshot/i)).toBeVisible();
-    await expect(page.getByText(/not a server-attested report/i)).toBeVisible();
+    // The disclaimer appears twice on purpose — once as the page's own lede and
+    // once inside the omissions list that ships in the file — so this asserts on
+    // the lede specifically rather than matching both and failing strict mode.
+    await expect(page.locator("p.page-lede")).toContainText(/bounded local snapshot/i);
+    await expect(page.locator("p.page-lede")).toContainText(/not a server-attested report/i);
+    // And the same caveat must be carried in the export's own omissions list.
+    await expect(page.locator(".omissions")).toContainText(/not a server-attested report/i);
 
     // Raw bodies are opt-in AND reviewed: the checkbox alone must not arm them.
     const includeBodies = page.getByLabel(/include raw request and response bodies/i);

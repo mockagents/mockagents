@@ -53,7 +53,13 @@ export function InstrumentStrip({ status, apiUrl, role, tenantId, mode }: Instru
   const tone = readinessTone(status.readiness);
 
   return (
-    <div className="strip" role="status" aria-label="server context">
+    // The strip scrolls horizontally at narrow widths (the design is explicit
+    // that cells scroll rather than being dropped). A scrollable region with no
+    // focusable content inside it is unreachable by keyboard — there is nothing
+    // to Tab to and therefore no way to scroll it without a pointer. Making the
+    // region itself focusable is the fix: arrow keys then scroll it, and the
+    // status role plus label still describe what was reached.
+    <div className="strip" role="status" aria-label="server context" tabIndex={0}>
       <Cell label="server">
         <span className="mono">{apiUrl}</span>
       </Cell>
