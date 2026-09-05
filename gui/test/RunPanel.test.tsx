@@ -380,6 +380,89 @@ describe("RunPanel", () => {
     });
   });
 
+  // U5-3. The acceptance walkthrough asks an operator to FIND the failed node
+  // and then read its evidence. Before this, the table truncated the content to
+  // 120 characters in a cell and there was nowhere else to look.
+  describe("node inspector", () => {
+    it("shows the selected node's full response, not a truncated cell", async () => {
+      const user = userEvent.setup();
+      const long = "x".repeat(400);
+      setup({
+        runAction: vi.fn(async () => ({
+          status: "ok" as const,
+          result: {
+            pipeline_name: "research",
+            topology: "sequential",
+            nodes: [node("a", { response: { content: long, scenario_name: "default" } })],
+            latency: 5 * MS,
+          },
+        })),
+      });
+      await run(user);
+
+      const inspector = await screen.findByText(/node inspector/i);
+      const card = inspector.closest(".card")!;
+      // The full value, not the 120-character preview the table shows.
+      expect(card.textContent).toContain(long);
+    });
+
+    it("explains a null response instead of showing an empty box", async () => {
+      const user = userEvent.setup();
+      setup({
+        runAction: vi.fn(async () => ({
+          status: "partial" as const,
+          error: "no scenario matched",
+          result: {
+            pipeline_name: "research",
+            topology: "sequential",
+            nodes: [node("a", { response: null })],
+            latency: 5 * MS,
+          },
+        })),
+      });
+      await run(user);
+
+      // Ran and produced nothing is not the same as produced an empty answer.
+      expect(await screen.findByText(/The response is null/i)).toBeInTheDocument();
+      expect(screen.getByText(/not the same as producing an empty answer/i)).toBeInTheDocument();
+    });
+
+    it("selects a node from the keyboard", async () => {
+      const user = userEvent.setup();
+      setup();
+      await run(user);
+      await screen.findByRole("table");
+
+      const second = screen.getByRole("button", { name: "b" });
+      second.focus();
+      await user.keyboard("{Enter}");
+      expect(second).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByText(/node inspector/i).parentElement).toHaveTextContent("b");
+    });
+
+    it("says there is nothing to inspect for a node that never ran", async () => {
+      const user = userEvent.setup();
+      setup({
+        runAction: vi.fn(async () => ({
+          status: "partial" as const,
+          error: "stopped early",
+          result: {
+            pipeline_name: "research",
+            topology: "sequential",
+            nodes: [node("a")],
+            latency: 5 * MS,
+          },
+        })),
+      });
+      await run(user);
+
+      await user.click(await screen.findByRole("button", { name: "b" }));
+      expect(screen.getByText(/nothing to inspect/i)).toBeInTheDocument();
+      // And it still refuses to say WHY, because the server does not say.
+      expect(screen.getByText(/not something the server says/i)).toBeInTheDocument();
+    });
+  });
+
   describe("honesty", () => {
     // The server reports definition order, not completion times.
     it("warns that a parallel node list is not a timeline", async () => {

@@ -410,6 +410,10 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance
 .banner-error { background: var(--sr-danger-bg); color: var(--sr-danger-fg); }
 .banner-warn { background: var(--sr-warning-bg); color: var(--sr-warning-fg); }
 .banner-ok { background: var(--sr-success-bg); color: var(--sr-success-fg); }
+/* X-2: a capability this build does not have. Informational rather than a
+   warning — nothing is wrong, the feature is simply absent, and colouring it
+   as a problem would send someone looking for one. */
+.banner-info { background: var(--sr-info-bg); color: var(--sr-info-fg); }
 .banner .hint { color: inherit; opacity: .85; }
 
 /* filter pills (segmented) */

@@ -181,6 +181,26 @@ test.describe("a run blocked by a missing dependency (UX-05)", () => {
   });
 });
 
+// X-2: the `unsupported` variant of the design's state matrix, on a real
+// instance of it. The pipeline routes mount only when the server starts with a
+// Pipeline document, so on a server without one they 404 — and the console used
+// to render that 404 as "no pipelines loaded", which is a different claim.
+//
+// Only the positive direction is assertable here: /pipelines is a server
+// component, so its fetch happens inside Next rather than in the browser and
+// page.route cannot reach it. The 404 mapping itself is pinned in
+// test/pipelines.test.ts against the real helper.
+test.describe("a capability this server does not have (X-2)", () => {
+  test("the smoke server DOES have pipelines, so it must not say otherwise", async ({ page }) => {
+    const probe = await page.request.get(`${API_URL}/api/v1/pipelines`);
+    test.skip(probe.status() === 404, "this server has no pipeline routes");
+
+    await page.goto("/pipelines", { waitUntil: "networkidle" });
+    await expect(page.getByText(/not enabled on this server/i)).toHaveCount(0);
+  });
+
+});
+
 test.describe("navigation", () => {
   // Deep links must stay viable (epic §5). These are the routes the epic's
   // Release A journey depends on.

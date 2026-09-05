@@ -632,9 +632,37 @@ export interface PipelineDefinition {
   };
 }
 
+/** Outcome of listing pipelines (X-2).
+ *
+ * `unsupported` is NOT the same as empty. The pipeline routes are only mounted
+ * when the server was started with Pipeline documents, so a 404 means the
+ * feature is absent from this server — not that a server which has it is
+ * holding zero pipelines. Collapsing the two, which this helper used to do,
+ * shows "no pipelines registered" on a server that could never register one,
+ * and sends an operator looking for a Create button that does not exist. */
+export type PipelineListing =
+  | { supported: true; pipelines: PipelineSummary[] }
+  | { supported: false };
+
+/** List every registered pipeline, distinguishing "none" from "not enabled on
+ * this server". Throws APIError for any other failure — unreachable and
+ * unauthorized are their own states and must not read as either of these. */
+export async function listPipelineInventory(): Promise<PipelineListing> {
+  try {
+    return { supported: true, pipelines: await fetchJSON<PipelineSummary[]>("/api/v1/pipelines") };
+  } catch (err) {
+    if (err instanceof APIError && err.status === 404) return { supported: false };
+    throw err;
+  }
+}
+
 /** List every registered pipeline. Returns an empty array when the
  * server was started without any Pipeline YAML documents (the
- * endpoint is unmounted in that case, so a 404 maps to `[]`). */
+ * endpoint is unmounted in that case, so a 404 maps to `[]`).
+ *
+ * Prefer listPipelineInventory where the difference between "none" and "not
+ * enabled" is visible to the operator; this stays for callers that only need a
+ * list to iterate. */
 export async function listPipelines(): Promise<PipelineSummary[]> {
   try {
     return await fetchJSON<PipelineSummary[]>("/api/v1/pipelines");

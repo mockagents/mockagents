@@ -282,6 +282,12 @@ function isParallel(topology: string): boolean {
   return topology === "parallel" || topology === "graph";
 }
 
+/** Cap on the JSON rendered in the inspector. Node responses are engine output
+ * rather than arbitrary payloads, so this is generous — but the design is
+ * explicit that body viewers are bounded, and a pathological scenario response
+ * should degrade to a notice rather than freeze the tab. */
+const MAX_INSPECT_CHARS = 64 * 1024;
+
 function NodeResults({
   nodes,
   absent,
@@ -289,8 +295,16 @@ function NodeResults({
   nodes: PipelineNodeResult[];
   absent: PipelineAgent[];
 }) {
+  // U5-3: the table is a summary; the evidence lives in the inspector. Without
+  // it a failed node could be FOUND but not read — the acceptance walkthrough
+  // asks for both.
+  const [selected, setSelected] = useState<string | null>(nodes[0]?.node_id ?? null);
+  const selectedNode = nodes.find((n) => n.node_id === selected) ?? null;
+  const selectedAbsent = absent.find((d) => d.id === selected) ?? null;
+
   return (
-    <div style={{ overflowX: "auto" }}>
+    <div>
+      <div style={{ overflowX: "auto" }}>
       <table className="tbl">
         <caption className="sr-only">
           Node results returned by the run, followed by declared nodes the run did not
@@ -307,8 +321,19 @@ function NodeResults({
         </thead>
         <tbody>
           {nodes.map((n, i) => (
-            <tr key={`${n.node_id}-${i}`}>
-              <td className="mono">{n.node_id || "—"}</td>
+            <tr key={`${n.node_id}-${i}`} className={n.node_id === selected ? "sel" : undefined}>
+              <td className="mono">
+                {/* A button, not a row handler: a selectable row has to be
+                    reachable and operable from the keyboard. */}
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm mono"
+                  aria-pressed={n.node_id === selected}
+                  onClick={() => setSelected(n.node_id)}
+                >
+                  {n.node_id || "—"}
+                </button>
+              </td>
               <td className="mono">{n.agent_name || "—"}</td>
               <td className="mono">{n.response?.scenario_name || <span className="muted">—</span>}</td>
               <td>
@@ -331,7 +356,16 @@ function NodeResults({
               look like a complete short one. */}
           {absent.map((d) => (
             <tr key={`absent-${d.id}`} className="absent-row">
-              <td className="mono">{d.id}</td>
+              <td className="mono">
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm mono"
+                  aria-pressed={d.id === selected}
+                  onClick={() => setSelected(d.id)}
+                >
+                  {d.id}
+                </button>
+              </td>
               <td className="mono">{d.ref}</td>
               <td className="muted">—</td>
               <td>
@@ -349,6 +383,69 @@ function NodeResults({
           {absent.length === 1 ? "it was" : "they were"} skipped by an edge condition or
           never reached is unknown from here.
         </p>
+      )}
+      </div>
+
+      <NodeInspector nodeId={selected} node={selectedNode} absent={selectedAbsent !== null} />
+    </div>
+  );
+}
+
+/** The selected node's evidence, in full (U5-3).
+ *
+ * Three distinct states, because they mean different things: a response the
+ * engine produced, a node that ran and produced none, and a node that never
+ * ran at all. The middle one is the interesting failure and the one the design
+ * walks through. */
+function NodeInspector({
+  nodeId,
+  node,
+  absent,
+}: {
+  nodeId: string | null;
+  node: PipelineNodeResult | null;
+  absent: boolean;
+}) {
+  if (!nodeId) return null;
+
+  const body = node?.response ? JSON.stringify(node.response, null, 2) : "";
+  const clipped = body.length > MAX_INSPECT_CHARS;
+
+  return (
+    <div className="card card-pad col gap-2" style={{ marginTop: 12 }}>
+      <div className="eyebrow">
+        node inspector · <span className="mono">{nodeId}</span>
+      </div>
+
+      {absent ? (
+        <p className="txt-sm">
+          This node is declared by the pipeline but the run reported no result for it, so
+          there is nothing to inspect. Whether it was skipped or never reached is not
+          something the server says.
+        </p>
+      ) : node?.response ? (
+        <>
+          <pre
+            className="mono"
+            style={{ fontSize: 11.5, overflowX: "auto", maxHeight: 260, margin: 0 }}
+          >
+            {clipped ? body.slice(0, MAX_INSPECT_CHARS) : body}
+          </pre>
+          {clipped && (
+            <p className="hint">
+              Response is larger than {MAX_INSPECT_CHARS / 1024} KB and is shown clipped —
+              what you see is not the complete value.
+            </p>
+          )}
+        </>
+      ) : (
+        <div className="banner banner-error" role="note">
+          <strong>The response is null.</strong> This node executed and produced nothing —
+          which is not the same as producing an empty answer. The most common cause is that
+          no scenario matched the input after normalisation; the server does not report
+          which predicate failed, and Match Explain (Release B) is the proposed API for
+          that.
+        </div>
       )}
     </div>
   );

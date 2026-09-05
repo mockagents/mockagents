@@ -6,7 +6,7 @@ import {
   getServerStatus,
   listAgents,
   listLogs,
-  listPipelines,
+  listPipelineInventory,
   type Identity,
 } from "@/lib/api";
 import { Icon } from "@/lib/icons";
@@ -52,10 +52,15 @@ export default async function OverviewPage() {
       err instanceof APIError ? `The server returned ${err.status}.` : "The server could not be reached.";
   }
 
+  // X-2: "this server cannot have pipelines" and "it has none" lead to
+  // different next steps, so they are tracked separately.
   let pipelineCount = 0;
   let pipelinesReadable = true;
+  let pipelinesSupported = true;
   try {
-    pipelineCount = (await listPipelines()).length;
+    const listing = await listPipelineInventory();
+    pipelinesSupported = listing.supported;
+    if (listing.supported) pipelineCount = listing.pipelines.length;
   } catch {
     pipelinesReadable = false;
   }
@@ -122,7 +127,11 @@ export default async function OverviewPage() {
               catalogReadable={catalogReadable}
               catalogError={catalogError}
             />
-            <PipelinesCard readable={pipelinesReadable} count={pipelineCount} />
+            <PipelinesCard
+              readable={pipelinesReadable}
+              supported={pipelinesSupported}
+              count={pipelineCount}
+            />
           </div>
         </div>
       </div>
@@ -302,7 +311,15 @@ function StarterCard({
   );
 }
 
-function PipelinesCard({ readable, count }: { readable: boolean; count: number }) {
+function PipelinesCard({
+  readable,
+  supported,
+  count,
+}: {
+  readable: boolean;
+  supported: boolean;
+  count: number;
+}) {
   return (
     <div className="card">
       <div className="card-head">
@@ -313,6 +330,13 @@ function PipelinesCard({ readable, count }: { readable: boolean; count: number }
         {!readable ? (
           <div className="banner banner-error" role="alert">
             <strong>Pipelines could not be read.</strong> This is unknown, not zero.
+          </div>
+        ) : !supported ? (
+          // Not an empty inventory: the routes are not mounted on this server.
+          <div className="banner banner-info" role="note">
+            <strong>Pipelines are not enabled on this server. </strong>
+            The routes mount only when it starts with a <code>kind: Pipeline</code>{" "}
+            document. This is an absent capability, not an empty list.
           </div>
         ) : count > 0 ? (
           <div className="col gap-3">

@@ -48,7 +48,7 @@ not simply a to-do list.
 | # | Finding | Story | Class |
 | --- | --- | --- | --- |
 | X-1 | Instrument strip is on 2 of 17 routes, not in the shell | all | **A** — fixed |
-| X-2 | No `unsupported` / capability-gated state anywhere | UX-03 | B |
+| X-2 | No `unsupported` / capability-gated state anywhere | UX-03 | B — fixed |
 | X-3 | Agent deletion uses `window.confirm`, bypassing the destructive-dialog spec | UX-03 | **A** — fixed |
 | X-4 | Five-variant state matrix is partial; no shared component | all | C |
 | U1-1 | `/identity` merges the proposed `/capabilities` | UX-01 | D |
@@ -69,7 +69,7 @@ not simply a to-do list.
 | U4-6 | Implementation refuses "loaded N of N" | UX-04 | D |
 | U5-1 | Absent nodes are not rendered as "not executed · unknown" | UX-05 | **A** — fixed |
 | U5-2 | `blocked-missing-dependency` is not a state | UX-05 | B — fixed |
-| U5-3 | No node inspector — a failed node's evidence cannot be read | UX-05 | B |
+| U5-3 | No node inspector — a failed node's evidence cannot be read | UX-05 | B — fixed |
 | U5-4 | No run→logs link | UX-05 | **X** |
 | U5-5 | Session id not shown before the run | UX-05 | C |
 | U5-6 | Pre-run banner does not name the definitions that will execute | UX-05 | C |
@@ -146,6 +146,20 @@ floor*, not *a capability this build does not have*.
 
 Low urgency while there is one resource kind — but the design's claim is a promise
 about how the console behaves when there is a second, and it is currently unfounded.
+
+**Fixed 2026-09-05**, and against a real instance rather than a hypothetical
+future kind. The pipeline routes mount only when the server starts with a
+`kind: Pipeline` document, so on a server without one they 404 — and
+`listPipelines` mapped that 404 to `[]`, rendering an absent capability as an
+empty inventory and sending an operator to look for a Create button that cannot
+exist. `listPipelineInventory` now distinguishes the two, and `/pipelines` and
+Overview say which one they are looking at. Unreachable and unauthorized still
+raise: folding those in would tell someone to change how the server was started
+when the real problem is a credential or a dead process.
+
+Only the positive direction is assertable in the browser — `/pipelines` is a
+server component, so its fetch happens inside Next and `page.route` cannot reach
+it. The 404 mapping is pinned as a unit test against the real helper.
 
 ### X-3 — Agent deletion bypasses the destructive-dialog spec · **A**
 
@@ -531,6 +545,15 @@ see the rest, no tool calls, and nothing beyond the scenario name.
 The handoff's acceptance walkthrough is *"find failed node (rag-lookup, null response)
 → export evidence"*. You can currently find it. You cannot read it.
 
+**Fixed 2026-09-05.** Selecting a node opens an inspector with its full response
+as JSON, bounded at 64 KB with a clipped notice rather than an unbounded render.
+Three states are distinguished, because they mean different things: a response
+the engine produced, a node that ran and produced none, and a node that never
+ran. The middle one — the failure the design walks through — explains that null
+is not an empty answer, and stops short of naming which predicate failed,
+because the server does not report that. Selection is a button rather than a row
+handler, so it works from the keyboard.
+
 ### U5-4 — No run→logs link · **X**
 
 See §9.3. The implementation's current hint is correct and should be kept.
@@ -656,8 +679,8 @@ Grouped so each is one reviewable slice with its own tests.
    already correct.
 6. ~~**U3-3 + U3-4 + U3-5**~~ **Done 2026-09-05** — active-runtime warning on the diff,
    Export draft, editor offline state.
-7. **U5-3, X-2** — node inspector, `unsupported` variant. (U1-2's catalog half
-   shipped with X-3.)
+7. ~~**U5-3, X-2**~~ **Done 2026-09-05** — node inspector, `unsupported` variant.
+   (U1-2's catalog half shipped with X-3.)
 8. Backend slices, if approved: `session_prefix` log filter (§9.3), `AgentSummary`
    revision/persistence (U3-6), `?fields=meta` log projection (§9.1). (`code` on
    `pipelineRunError` shipped with U5-2.)
