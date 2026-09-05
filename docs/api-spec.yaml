@@ -1401,200 +1401,106 @@ components:
     AgentDefinition:
       type: object
       description: >
-        The full agent configuration as parsed from its YAML/JSON definition
-        file on disk. The exact shape depends on the agent author; the
-        properties below represent the common top-level fields.
-      required: [name, protocol]
+        An agent document, in the same envelope the YAML uses — this is what
+        `GET /api/v1/agents/{name}` returns and what the write endpoints accept.
+
+        The properties below are the envelope only. What is valid INSIDE `spec`
+        is defined by schema/mockagents-v1-agent.json, which the server
+        validates against; duplicating it here would create a second definition
+        to keep in sync, and the one that drifted would be this one.
+      required: [apiVersion, kind, metadata, spec]
       properties:
-        name:
+        apiVersion:
           type: string
-        description:
+          example: mockagents/v1
+        kind:
           type: string
-        protocol:
-          type: string
-          enum: [openai, anthropic]
-        model:
-          type: string
-          description: The model name this agent responds to.
-        tags:
-          type: array
-          items:
-            type: string
-        system_prompt:
-          type: string
-        tools:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-          description: Tool definitions exposed by this agent.
-        scenarios:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-          description: Predefined request/response scenarios.
-        config:
+          enum: [Agent]
+        metadata:
           type: object
+          description: Name, description and tags. See the JSON schema for the full shape.
           additionalProperties: true
-          description: Additional agent-specific configuration.
+        spec:
+          type: object
+          description: >
+            Protocol, model, behavior (scenarios), tools, chaos and streaming.
+            See schema/mockagents-v1-agent.json.
+          additionalProperties: true
 
     InteractionLog:
+      description: >
+        One row of `GET /api/v1/logs` — the stored interaction plus the cost
+        annotation the listing derives from the response body. The detail route
+        returns InteractionDetail, without that annotation.
+      allOf:
+        - $ref: "#/components/schemas/InteractionDetail"
+        - type: object
+          properties:
+            prompt_tokens:
+              type: integer
+              description: Derived from the response body when a pricing table is configured.
+            completion_tokens: { type: integer }
+            model: { type: string }
+            cost_usd:
+              type: number
+              description: Estimate from the configured pricing table. Zero when none is set.
+
+    InteractionDetail:
       type: object
+      description: >
+        One stored interaction, as `GET /api/v1/logs/{id}` returns it.
+
+        Note it carries NO derived cost annotation. The listing route adds
+        `prompt_tokens` / `completion_tokens` / `model` / `cost_usd`; the
+        single-log route returns the stored row as-is. The detail view being
+        the smaller of the two is a quirk of the implementation, documented
+        here rather than smoothed over.
       required: [id, timestamp, agent_name, session_id, protocol, latency_ms, source]
       properties:
-        id:
-          type: integer
-          format: int64
-          description: Row id, ascending. Also the ordering key — listings are newest first.
-        timestamp:
-          type: string
-          format: date-time
-        tenant_id:
-          type: string
-        agent_name:
-          type: string
+        id: { type: integer, format: int64 }
+        timestamp: { type: string, format: date-time }
+        tenant_id: { type: string }
+        agent_name: { type: string }
         session_id:
           type: string
           description: >
             Groups the requests of one conversation. A pipeline run scopes each
-            node as `<session>::<pipeline>::<node>`, so use `session_prefix` to
-            match a whole run.
-        protocol:
-          type: string
-          example: anthropic-messages
+            node as `<session>::<pipeline>::<node>`; use `session_prefix` on the
+            listing route to match a whole run.
+        protocol: { type: string, example: anthropic-messages }
         source:
           type: string
           description: >
-            What produced this interaction.
-
-            `http` — served through a provider endpoint; carries a method, path
-            and response status.
-
-            `pipeline` — one node of a pipeline run. The engine was called in
-            process, so `request_method`, `request_path` and `response_status`
-            are empty/zero. They are left that way deliberately: a fabricated
-            200 would make a node indistinguishable from real traffic.
-
-            Rows written before this field existed read back as `http`.
+            What produced this interaction. `http` — served through a provider
+            endpoint. `pipeline` — one node of a pipeline run, called in process,
+            so `request_method`, `request_path` and `response_status` are
+            empty/zero rather than fabricated.
           enum: [http, pipeline]
-        request_method:
-          type: string
-          description: Empty for a non-HTTP interaction.
-        request_path:
-          type: string
-          description: Empty for a non-HTTP interaction.
+        request_method: { type: string, description: Empty for a non-HTTP interaction. }
+        request_path: { type: string, description: Empty for a non-HTTP interaction. }
         request_body:
           type: string
           description: >
             Withheld when the listing is called with `fields=meta`, and subject
-            to the server's `MOCKAGENTS_LOG_BODIES` capture policy.
+            to the server's MOCKAGENTS_LOG_BODIES capture policy.
         response_status:
           type: integer
           description: Zero for a non-HTTP interaction — there was no response to status.
-        response_body:
-          type: string
-        latency_ms:
-          type: integer
-          format: int64
-        tool_calls_count:
-          type: integer
-        streaming:
-          type: boolean
-        error:
-          type: string
-          description: Engine-side error for this interaction, when there was one.
-        scenario_name:
-          type: string
+        response_body: { type: string }
+        latency_ms: { type: integer, format: int64 }
+        tool_calls_count: { type: integer }
+        streaming: { type: boolean }
+        error: { type: string, description: Engine-side error for this interaction, when there was one. }
+        scenario_name: { type: string }
         truncated:
           type: boolean
           description: >
             The stored body was clipped at the capture cap, so what is persisted
             is not the complete payload.
-        chaos_action:
-          type: string
-          description: Which injected fault fired, if any.
-        chaos_source:
-          type: string
-        chaos_seed:
-          type: integer
-          format: int64
-        chaos_rate:
-          type: number
-        prompt_tokens:
-          type: integer
-          description: Derived from the response body when a pricing table is configured.
-        completion_tokens:
-          type: integer
-        model:
-          type: string
-        cost_usd:
-          type: number
-          description: Estimate from the configured pricing table. Zero when none is set.
-
-    InteractionDetail:
-      type: object
-      description: Full interaction record with complete request and response bodies.
-      required:
-        - id
-        - timestamp
-        - agent_name
-        - session_id
-        - protocol
-        - latency_ms
-        - request
-        - response
-      properties:
-        id:
-          type: string
-          format: uuid
-        timestamp:
-          type: string
-          format: date-time
-        agent_name:
-          type: string
-        session_id:
-          type: string
-        protocol:
-          type: string
-          enum: [openai, anthropic]
-        latency_ms:
-          type: integer
-        tool_calls_count:
-          type: integer
-        request:
-          type: object
-          additionalProperties: true
-          description: The complete inbound request body.
-        response:
-          type: object
-          additionalProperties: true
-          description: The complete outbound response body.
-        request_headers:
-          type: object
-          additionalProperties:
-            type: string
-        response_headers:
-          type: object
-          additionalProperties:
-            type: string
-
-    Session:
-      type: object
-      required: [session_id, agent_name, created_at, last_active, message_count]
-      properties:
-        session_id:
-          type: string
-        agent_name:
-          type: string
-        created_at:
-          type: string
-          format: date-time
-        last_active:
-          type: string
-          format: date-time
-        message_count:
-          type: integer
+        chaos_action: { type: string, description: Which injected fault fired, if any. }
+        chaos_source: { type: string }
+        chaos_seed: { type: integer, format: int64 }
+        chaos_rate: { type: number }
 
     ReloadResponse:
       type: object
@@ -1631,8 +1537,29 @@ components:
     # -- OpenAI Schemas -------------------------------------------------------
     OpenAIChatCompletionRequest:
       type: object
+      description: >
+        Sampling parameters the real API honours — `top_p`, `n`, `stop`,
+        `user`, `frequency_penalty`, `presence_penalty` — and a message's
+        `name` are accepted and ignored here: responses come from the agent's
+        scenarios, not from sampling. They are documented because a client may
+        send them and will not get an error, not because they do anything.
       required: [model, messages]
       properties:
+        parallel_tool_calls:
+          type: boolean
+          description: >
+            Honoured under the strict-tools knob, which caps how many
+            simultaneous tool calls a scenario may return.
+        response_format:
+          type: object
+          additionalProperties: true
+          description: Structured-output request; json_schema mode is honoured.
+        stream_options:
+          type: object
+          additionalProperties: true
+          description: >
+            `include_usage` adds a final usage-only chunk to a stream, as the
+            real API does.
         model:
           type: string
           description: >
@@ -1815,8 +1742,6 @@ components:
                 enum: [stop, length, tool_calls, content_filter]
         usage:
           $ref: "#/components/schemas/OpenAIUsage"
-        system_fingerprint:
-          type: string
 
     OpenAIUsage:
       type: object
@@ -1889,6 +1814,12 @@ components:
     # -- Anthropic Schemas ----------------------------------------------------
     AnthropicMessagesRequest:
       type: object
+      description: >
+        Sampling parameters the real API honours — `temperature`, `top_p`,
+        `top_k`, `stop_sequences` — and `metadata` are accepted and ignored
+        here: responses come from the agent's scenarios, not from sampling.
+        They are documented because a client may send them and will not get an
+        error, not because they do anything.
       required: [model, messages, max_tokens]
       properties:
         model:
@@ -1919,6 +1850,14 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AnthropicTool"
+        thinking:
+          type: object
+          description: >
+            Extended-thinking gate. `type: enabled` makes the response carry a
+            synthesized thinking block; `budget_tokens` is advisory.
+          properties:
+            type: { type: string, enum: [enabled] }
+            budget_tokens: { type: integer }
         tool_choice:
           type: object
           description: >
@@ -1976,59 +1915,66 @@ components:
             - type: string
             - type: array
               items:
-                $ref: "#/components/schemas/AnthropicContentBlock"
+                $ref: "#/components/schemas/AnthropicRequestContentBlock"
 
     AnthropicContentBlock:
       type: object
+      description: >
+        A content block the SERVER emits — in a response, or in a
+        content_block_start stream event. Request-side blocks a client may send
+        are a wider set (tool_result, image) and are accepted as free-form; see
+        AnthropicRequestContentBlock.
       required: [type]
       properties:
         type:
           type: string
-          enum: [text, image, tool_use, tool_result]
+          enum: [text, thinking, tool_use]
         text:
           type: string
-          description: Present when type is "text".
-        source:
-          type: object
-          description: Present when type is "image".
-          properties:
-            type:
-              type: string
-              enum: [base64]
-            media_type:
-              type: string
-              enum: [image/jpeg, image/png, image/gif, image/webp]
-            data:
-              type: string
-              format: byte
+          description: Present on a text block.
+        thinking:
+          type: string
+          description: >
+            Present on a thinking block, emitted when the request enabled
+            extended thinking.
+        signature:
+          type: string
+          description: Opaque signature accompanying a thinking block.
         id:
           type: string
-          description: Tool use ID. Present when type is "tool_use".
+          description: Present on a tool_use block.
         name:
           type: string
-          description: Tool name. Present when type is "tool_use".
+          description: Present on a tool_use block.
         input:
           type: object
           additionalProperties: true
-          description: Tool input. Present when type is "tool_use".
-        tool_use_id:
+          description: >
+            A tool_use block's arguments. Always present on such a block, as
+            `{}` for a no-argument call — strict SDK validation rejects a
+            missing key.
+
+    AnthropicRequestContentBlock:
+      type: object
+      description: >
+        A content block a CLIENT may send. Accepted as free-form: the mock reads
+        the parts it matches on (text, and the presence of images) and passes
+        the rest through without modelling it, so this documents the shape
+        rather than constraining it.
+      additionalProperties: true
+      properties:
+        type:
           type: string
-          description: References a tool_use ID. Present when type is "tool_result".
+          enum: [text, image, tool_use, tool_result]
+        text: { type: string }
+        source:
+          type: object
+          additionalProperties: true
+          description: An image block's data. Counted for has_image matching.
+        tool_use_id: { type: string, description: Present on a tool_result block. }
         content:
-          description: Tool result content. Present when type is "tool_result".
-          oneOf:
-            - type: string
-            - type: array
-              items:
-                type: object
-                properties:
-                  type:
-                    type: string
-                  text:
-                    type: string
-        is_error:
-          type: boolean
-          description: Present when type is "tool_result".
+          description: A tool_result block's payload; string or array of blocks.
+        is_error: { type: boolean, description: Marks a tool_result as an error. }
 
     AnthropicTool:
       type: object
@@ -2042,6 +1988,13 @@ components:
           type: object
           additionalProperties: true
           description: JSON Schema describing the tool input.
+        cache_control:
+          type: object
+          additionalProperties: true
+          description: >
+            Prompt-cache breakpoint. Honoured: a first request carrying one
+            bills cache_creation_input_tokens, an identical repeat bills
+            cache_read_input_tokens.
 
     AnthropicMessagesResponse:
       type: object
@@ -2082,6 +2035,17 @@ components:
           type: integer
         output_tokens:
           type: integer
+        cache_creation_input_tokens:
+          type: integer
+          nullable: true
+          description: >
+            Present only when the request carried cache_control markers, and
+            then as a MATCHED PAIR with cache_read_input_tokens — one side may
+            be 0. Matches the real API, where both appear together.
+        cache_read_input_tokens:
+          type: integer
+          nullable: true
+          description: See cache_creation_input_tokens; the two appear together.
 
     AnthropicStreamEvent:
       type: object
@@ -2233,25 +2197,28 @@ components:
 
     Pipeline:
       type: object
-      required: [name]
+      description: >
+        A pipeline document, in the same envelope the YAML uses. As with
+        AgentDefinition, only the envelope is described here: the contents of
+        `spec` are defined by the loader and duplicating them would create a
+        second definition to keep in sync.
+      required: [apiVersion, kind, metadata, spec]
       properties:
-        name: { type: string }
-        topology: { type: string, enum: [sequential, parallel, graph] }
-        nodes:
-          type: array
-          items:
-            type: object
-            properties:
-              id: { type: string }
-              agent: { type: string }
-        edges:
-          type: array
-          items:
-            type: object
-            properties:
-              from: { type: string }
-              to: { type: string }
-              when_contains: { type: string }
+        apiVersion:
+          type: string
+          example: mockagents/v1
+        kind:
+          type: string
+          enum: [Pipeline]
+        metadata:
+          type: object
+          additionalProperties: true
+        spec:
+          type: object
+          description: >
+            `topology` (sequential | parallel | graph), `agents` (node id and
+            agent ref) and, for a graph, `edges` with optional `when_contains`.
+          additionalProperties: true
 
     ValidateResult:
       type: object

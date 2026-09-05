@@ -35,7 +35,7 @@ spec:
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
-	var out validateResponse
+	var out ValidateResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -72,7 +72,7 @@ spec:
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
-	var out validateResponse
+	var out ValidateResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -110,7 +110,7 @@ spec:
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	var out validateResponse
+	var out ValidateResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatal(err)
 	}

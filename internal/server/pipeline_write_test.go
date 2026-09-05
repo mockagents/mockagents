@@ -165,7 +165,7 @@ func TestUpdatePipeline_UnknownAgentRef422(t *testing.T) {
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422", resp.StatusCode)
 	}
-	var vr validateResponse
+	var vr ValidateResponse
 	if err := json.NewDecoder(resp.Body).Decode(&vr); err != nil {
 		t.Fatal(err)
 	}

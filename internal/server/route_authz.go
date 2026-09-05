@@ -26,7 +26,7 @@ const roleOpen tenancy.Role = ""
 // unauthenticated local-dev tool, so every route is open there.
 var managementRouteFloors = map[string]tenancy.Role{
 	// Agent catalog (read) + hot reload (write).
-	"GET /api/v1/health":                roleOpen,
+	"GET /api/v1/health": roleOpen,
 	// UX-01 identity: every authenticated role must be able to read its
 	// own principal and capabilities, so this is open by design. It is
 	// tenant-scoped by construction — it reports only the caller’s own

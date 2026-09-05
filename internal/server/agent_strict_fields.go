@@ -110,7 +110,7 @@ func checkStrictFields(w http.ResponseWriter, r *http.Request, body []byte) bool
 		return true
 	}
 	if _, errs := decodeAgentStrict(body); len(errs) > 0 {
-		writeJSON(w, http.StatusUnprocessableEntity, validateResponse{
+		writeJSON(w, http.StatusUnprocessableEntity, ValidateResponse{
 			OK: false, Kind: string(types.AgentKind), Errors: errs,
 		})
 		return false

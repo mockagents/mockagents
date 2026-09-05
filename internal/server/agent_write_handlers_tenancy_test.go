@@ -249,10 +249,10 @@ func TestCreateAgent_BodyTooLarge(t *testing.T) {
 
 func TestSanitizeFilenamePart(t *testing.T) {
 	cases := map[string]string{
-		"ten-a":        "ten-a",
-		"ten/../../x":  "ten_______x",
-		"a b":          "a_b",
-		"":             "tenant",
+		"ten-a":       "ten-a",
+		"ten/../../x": "ten_______x",
+		"a b":         "a_b",
+		"":            "tenant",
 	}
 	for in, want := range cases {
 		if got := sanitizeFilenamePart(in); got != want {

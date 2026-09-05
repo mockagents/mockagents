@@ -286,7 +286,7 @@ func (h *PipelineHandlers) UpdatePipeline(w http.ResponseWriter, r *http.Request
 	report := config.ValidateBytes(yamlBytes)
 	refErrs := h.validateAgentRefs(&def)
 	if len(report.Errors) > 0 || len(refErrs) > 0 {
-		writeJSON(w, http.StatusUnprocessableEntity, validateResponse{
+		writeJSON(w, http.StatusUnprocessableEntity, ValidateResponse{
 			OK:     false,
 			Kind:   report.Kind,
 			Errors: append(report.Errors, refErrs...),
