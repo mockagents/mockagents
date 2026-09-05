@@ -16,17 +16,19 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { InteractionLog, LogWindow } from "@/lib/api";
 import {
   DEFAULT_FILTERS,
+  describeGapRange,
   filtersToQuery,
-  highestId,
   interpretRecovery,
   isFiltered,
   mergeRows,
+  newestSeen,
   type GapState,
+  type LastSeen,
   type LogFilters,
 } from "@/lib/logfeed";
 import { Icon } from "@/lib/icons";
@@ -58,8 +60,9 @@ export function LogsConsole({ window: initial, agents, filters, recoverAction }:
   const [revealBodies, setRevealBodies] = useState(false);
 
   const retryRef = useRef(0);
-  // The newest id seen before a disconnect, so recovery knows where to resume.
-  const lastSeenRef = useRef<number | null>(highestId(initial.rows));
+  // The newest row seen before a disconnect, so recovery knows where to resume
+  // — and, if it cannot catch up, where the resulting gap begins.
+  const lastSeenRef = useRef<LastSeen | null>(newestSeen(initial.rows));
   const selRef = useRef<number | null>(sel);
   selRef.current = sel;
 
@@ -67,14 +70,14 @@ export function LogsConsole({ window: initial, agents, filters, recoverAction }:
   useEffect(() => {
     setRows(initial.rows);
     setSel(initial.rows[0]?.id ?? null);
-    lastSeenRef.current = highestId(initial.rows);
+    lastSeenRef.current = newestSeen(initial.rows);
     setGap({ kind: "none" });
   }, [initial]);
 
   const addRows = useCallback((incoming: InteractionLog[]) => {
     setRows((prev) => {
       const merged = mergeRows(prev, incoming, { max: MAX_ROWS, pinnedId: selRef.current });
-      lastSeenRef.current = highestId(merged);
+      lastSeenRef.current = newestSeen(merged);
       return merged;
     });
   }, []);
@@ -85,7 +88,7 @@ export function LogsConsole({ window: initial, agents, filters, recoverAction }:
     const resumeFrom = lastSeenRef.current;
     setGap({ kind: "recovering" });
     try {
-      const fetched = await recoverAction(resumeFrom, RECOVERY_LIMIT);
+      const fetched = await recoverAction(resumeFrom?.id ?? null, RECOVERY_LIMIT);
       const outcome = interpretRecovery(fetched, RECOVERY_LIMIT, resumeFrom);
       if (outcome.rows.length > 0) addRows(outcome.rows);
       setGap(outcome.gap);
@@ -241,17 +244,12 @@ export function LogsConsole({ window: initial, agents, filters, recoverAction }:
       />
 
       {rows.length === 0 ? (
-        <div className="empty">
-          {isFiltered(filters)
-            ? "No interactions match this filter. Widen it, or clear it to see recent traffic."
-            : live
-              ? "Waiting for traffic. Send a request to the MockAgents server."
-              : "No interactions recorded yet."}
-        </div>
+        <EmptyWindow filters={filters} live={live} />
       ) : (
         <div className="grid" style={{ gridTemplateColumns: "1fr 420px", alignItems: "start", gap: 16 }}>
           <LogTable
             rows={rows}
+            gap={gap}
             selectedId={selRow?.id ?? null}
             flashId={flashId}
             onSelect={setSel}
@@ -269,6 +267,55 @@ export function LogsConsole({ window: initial, agents, filters, recoverAction }:
       <Pager window={initial} filters={filters} onApply={applyFilters} />
     </div>
   );
+}
+
+/** The reachable-and-empty state (U4-3).
+ *
+ * This branch is only reached when the store ANSWERED. Unreachable and
+ * unauthorized are caught on the server and render their own screens, so this
+ * one can say plainly that the store is fine — and it should, because "no rows"
+ * is otherwise the most ambiguous thing a log view can show.
+ *
+ * It also states the window. This API has no default time window: an unfiltered
+ * read is the newest N of everything recorded. Saying so is what stops "empty"
+ * being read as "empty for the period I care about". */
+function EmptyWindow({ filters, live }: { filters: LogFilters; live: boolean }) {
+  const window = describeWindow(filters);
+  return (
+    <div className="empty">
+      <strong>No records in this window.</strong>
+      <div className="mt-2">
+        Window: <span className="mono">{window}</span>
+      </div>
+      <p className="txt-sm" style={{ marginTop: 8 }}>
+        The log store is reachable and empty — which is not the same as unreachable (a
+        connection error) or unauthorized (403); those render differently.
+      </p>
+      <p className="txt-sm" style={{ marginTop: 8 }}>
+        {isFiltered(filters)
+          ? "Widen the filter, or clear it to see recent traffic."
+          : live
+            ? "Send a request to any mocked endpoint and it will appear here as it arrives."
+            : "Send a request to any mocked endpoint and reload, or turn on Live to watch them arrive."}
+      </p>
+    </div>
+  );
+}
+
+/** Plain-language description of the window a result covers. Never invents a
+ * default period: without a time filter this API returns the newest N of
+ * everything it holds, and that is what gets said. */
+function describeWindow(filters: LogFilters): string {
+  const parts: string[] = [];
+  if (filters.since || filters.until) {
+    parts.push(`${filters.since || "the beginning"} → ${filters.until || "now"}`);
+  } else {
+    parts.push(`the newest ${filters.limit}, no time filter`);
+  }
+  if (filters.agent) parts.push(`agent ${filters.agent}`);
+  if (filters.session_id) parts.push(`session ${filters.session_id}`);
+  if (filters.offset) parts.push(`from offset ${filters.offset}`);
+  return parts.join(" · ");
 }
 
 function FilterBar({
@@ -403,7 +450,11 @@ function WindowNotices({
 
       {gap.kind === "unresolved" && (
         <div className="banner banner-error" role="alert">
-          <strong>Feed gap — this view is incomplete.</strong> {gap.reason}
+          <strong>Feed gap — this view is incomplete.</strong> {gap.reason}{" "}
+          {/* The range is the part an operator can act on: it answers whether
+              the hole overlaps the window they are investigating. */}
+          Missing range: <span className="mono">{describeGapRange(gap)}</span>. It is marked
+          in the table at the point it occurred.
         </div>
       )}
       {gap.kind === "recovering" && (
@@ -438,17 +489,26 @@ function WindowNotices({
 
 function LogTable({
   rows,
+  gap,
   selectedId,
   flashId,
   onSelect,
   onSession,
 }: {
   rows: InteractionLog[];
+  gap: GapState;
   selectedId: number | null;
   flashId: number | null;
   onSelect: (id: number) => void;
   onSession: (id: string) => void;
 }) {
+  // Where the gap belongs in a newest-first list: immediately ABOVE the last
+  // row seen before the drop, which is the boundary it describes. A banner
+  // above the table scrolls out of view, leaving two rows that are adjacent on
+  // screen but hours apart reading as consecutive traffic.
+  const gapAfterId = gap.kind === "unresolved" ? gap.afterId : undefined;
+  const gapIndex =
+    gapAfterId === undefined ? -1 : rows.findIndex((r) => r.id <= gapAfterId);
   return (
     <div className="card" style={{ overflow: "hidden" }}>
       <div style={{ maxHeight: 560, overflow: "auto" }}>
@@ -466,9 +526,23 @@ function LogTable({
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {rows.map((r, i) => (
+              <Fragment key={r.id}>
+                {/* The gap sits between the rows it separates, not above the
+                    table. Without it, two rows that are adjacent on screen but
+                    hours apart read as consecutive traffic. */}
+                {i === gapIndex && gap.kind === "unresolved" && (
+                  <tr className="gap-row">
+                    <td colSpan={7}>
+                      <span aria-hidden="true">⚠ </span>
+                      <strong>Unresolved gap</strong> ·{" "}
+                      <span className="mono">{describeGapRange(gap)}</span> · the feed dropped
+                      and bounded recovery could not prove it caught up. Requests in this
+                      range may exist and are not shown.
+                    </td>
+                  </tr>
+                )}
               <tr
-                key={r.id}
                 className={
                   (r.id === selectedId ? "sel " : "") + (r.id === flashId ? "flash" : "")
                 }
@@ -518,7 +592,21 @@ function LogTable({
                 </td>
                 <td className="right mono">{r.latency_ms}ms</td>
               </tr>
+              </Fragment>
             ))}
+            {/* A gap older than every row on screen still has to be visible, so
+                it lands at the bottom rather than being dropped. */}
+            {gap.kind === "unresolved" && gapIndex === -1 && (
+              <tr className="gap-row">
+                <td colSpan={7}>
+                  <span aria-hidden="true">⚠ </span>
+                  <strong>Unresolved gap</strong> ·{" "}
+                  <span className="mono">{describeGapRange(gap)}</span> · the feed dropped and
+                  bounded recovery could not prove it caught up. Requests in this range may
+                  exist and are not shown.
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

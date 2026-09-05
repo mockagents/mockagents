@@ -58,17 +58,71 @@ export function highestId(rows: InteractionLog[]): number | null {
   return best;
 }
 
+/** The newest row known, as the resume marker. Carries the timestamp as well as
+ * the id so a gap discovered later can be described in wall-clock terms — the
+ * id alone means nothing to the person reading it. */
+export function newestSeen(rows: InteractionLog[]): LastSeen | null {
+  let best: InteractionLog | null = null;
+  for (const row of rows) if (best === null || row.id > best.id) best = row;
+  return best === null ? null : { id: best.id, timestamp: best.timestamp };
+}
+
 export type GapState =
   | { kind: "none" }
   | { kind: "recovering" }
   /** The feed dropped and recovery proved it caught everything. */
   | { kind: "closed"; recovered: number }
-  /** The feed dropped and we CANNOT prove nothing was missed. */
-  | { kind: "unresolved"; reason: string };
+  /** The feed dropped and we CANNOT prove nothing was missed.
+   *
+   * The bounds matter as much as the fact: an operator investigating an
+   * incident needs to know whether the hole overlaps the window they care
+   * about, and "some requests are missing" cannot answer that. Both ends are
+   * known locally — the last row seen before the drop, and the oldest row
+   * recovery managed to reach — so neither is guessed. */
+  | {
+      kind: "unresolved";
+      reason: string;
+      /** Timestamp of the last row seen BEFORE the drop. The gap starts after
+       * this row; undefined when nothing had been seen. */
+      from?: string;
+      /** Timestamp of the oldest row recovery reached. The gap ends before this
+       * row; undefined when recovery returned nothing. */
+      to?: string;
+      /** Id of the row the gap sits immediately above in a newest-first list.
+       * The table uses it to place the gap between the rows it separates,
+       * rather than in a banner that scrolls away from them. */
+      afterId?: number;
+    };
 
 export interface RecoveryOutcome {
   rows: InteractionLog[];
   gap: GapState;
+}
+
+/** The last row seen before a disconnect. The timestamp is carried alongside
+ * the id because the id alone cannot describe a gap to a human. */
+export interface LastSeen {
+  id: number;
+  timestamp: string;
+}
+
+/** Newest and oldest of a newest-first page, tolerating an unsorted input. */
+function oldestOf(rows: InteractionLog[]): InteractionLog | null {
+  let oldest: InteractionLog | null = null;
+  for (const row of rows) if (oldest === null || row.id < oldest.id) oldest = row;
+  return oldest;
+}
+
+/** Human range for a gap, e.g. "13:58:41Z – 14:20:06Z". Ends that are not known
+ * are named as unknown rather than filled in with a plausible time. */
+export function describeGapRange(gap: { from?: string; to?: string }): string {
+  const clock = (iso?: string): string => {
+    if (!iso) return "unknown";
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? "unknown" : d.toISOString().slice(11, 19) + "Z";
+  };
+  if (!gap.from && !gap.to) return "time range unknown";
+  return `${clock(gap.from)} – ${clock(gap.to)}`;
 }
 
 /** Interpret a bounded recovery fetch made after a reconnect.
@@ -85,9 +139,13 @@ export interface RecoveryOutcome {
 export function interpretRecovery(
   fetched: InteractionLog[],
   limit: number,
-  lastSeenId: number | null,
+  lastSeen: LastSeen | null,
 ): RecoveryOutcome {
   if (fetched.length >= limit) {
+    // The hole lies between the last row seen before the drop and the oldest
+    // row recovery could reach. Both ends are known here, so the gap is
+    // reported with them rather than as an unbounded "some are missing".
+    const oldest = oldestOf(fetched);
     return {
       rows: fetched,
       gap: {
@@ -96,10 +154,13 @@ export function interpretRecovery(
           `More than ${limit} requests arrived while the feed was disconnected, which is as far ` +
           `back as recovery can reach. Some are missing from this view. Reload with a time filter ` +
           `to see the full period.`,
+        from: lastSeen?.timestamp,
+        to: oldest?.timestamp,
+        afterId: lastSeen?.id,
       },
     };
   }
-  if (lastSeenId == null) {
+  if (lastSeen == null) {
     // Nothing had been seen before the drop, so there is no gap to speak of.
     return { rows: fetched, gap: { kind: "none" } };
   }

@@ -3,11 +3,13 @@ import { describe, expect, it } from "vitest";
 import type { InteractionLog } from "@/lib/api";
 import {
   DEFAULT_FILTERS,
+  describeGapRange,
   filtersToQuery,
   highestId,
   interpretRecovery,
   isFiltered,
   mergeRows,
+  newestSeen,
   parseFilters,
 } from "@/lib/logfeed";
 
@@ -88,9 +90,24 @@ describe("highestId", () => {
   });
 });
 
+describe("newestSeen", () => {
+  it("carries the timestamp, not just the id", () => {
+    // The id is the resume marker; the timestamp is what makes a gap
+    // describable to the person reading it.
+    const seen = newestSeen([row(3), row(9), row(5)]);
+    expect(seen).toEqual({ id: 9, timestamp: row(9).timestamp });
+  });
+
+  it("is null for an empty feed", () => {
+    expect(newestSeen([])).toBeNull();
+  });
+});
+
 describe("interpretRecovery", () => {
+  const seen = (id: number) => ({ id, timestamp: row(id).timestamp });
+
   it("reports a closed gap when the recovery page was not full", () => {
-    const outcome = interpretRecovery([row(11), row(12)], 200, 10);
+    const outcome = interpretRecovery([row(11), row(12)], 200, seen(10));
     expect(outcome.gap).toEqual({ kind: "closed", recovered: 2 });
   });
 
@@ -103,16 +120,59 @@ describe("interpretRecovery", () => {
   // so "caught up" would be a lie.
   it("reports an UNRESOLVED gap when recovery hit its bound", () => {
     const fetched = Array.from({ length: 200 }, (_, i) => row(1000 + i));
-    const outcome = interpretRecovery(fetched, 200, 10);
+    const outcome = interpretRecovery(fetched, 200, seen(10));
     expect(outcome.gap.kind).toBe("unresolved");
     if (outcome.gap.kind === "unresolved") {
       expect(outcome.gap.reason).toMatch(/missing/i);
     }
   });
 
+  // U4-2. "Some requests are missing" cannot tell an operator whether the hole
+  // overlaps the incident they are investigating. Both ends are known locally,
+  // so both are reported.
+  it("bounds an unresolved gap by what is actually known", () => {
+    const fetched = Array.from({ length: 200 }, (_, i) => row(1000 + i));
+    const outcome = interpretRecovery(fetched, 200, seen(10));
+    expect(outcome.gap).toMatchObject({
+      kind: "unresolved",
+      // Starts after the last row seen before the drop …
+      from: row(10).timestamp,
+      // … and ends before the OLDEST row recovery reached, not the newest.
+      to: row(1000).timestamp,
+      afterId: 10,
+    });
+  });
+
+  it("does not invent bounds it cannot know", () => {
+    // Recovery hit its bound with nothing previously seen: the start of the
+    // gap is genuinely unknown and stays undefined rather than defaulting.
+    const fetched = Array.from({ length: 5 }, (_, i) => row(100 + i));
+    const outcome = interpretRecovery(fetched, 5, null);
+    expect(outcome.gap).toMatchObject({ kind: "unresolved", from: undefined, afterId: undefined });
+  });
+
   it("still returns the rows it did recover when the gap is unresolved", () => {
     const fetched = Array.from({ length: 200 }, (_, i) => row(1000 + i));
-    expect(interpretRecovery(fetched, 200, 10).rows).toHaveLength(200);
+    expect(interpretRecovery(fetched, 200, seen(10)).rows).toHaveLength(200);
+  });
+});
+
+describe("describeGapRange", () => {
+  it("renders both ends as wall-clock times", () => {
+    expect(describeGapRange({ from: "2026-09-05T13:58:41Z", to: "2026-09-05T14:20:06Z" })).toBe(
+      "13:58:41Z – 14:20:06Z",
+    );
+  });
+
+  it("names an unknown end rather than filling one in", () => {
+    expect(describeGapRange({ to: "2026-09-05T14:20:06Z" })).toBe("unknown – 14:20:06Z");
+    expect(describeGapRange({})).toBe("time range unknown");
+  });
+
+  it("does not pass a malformed timestamp through as if it were a time", () => {
+    expect(describeGapRange({ from: "not-a-date", to: "2026-09-05T14:20:06Z" })).toBe(
+      "unknown – 14:20:06Z",
+    );
   });
 });
 
