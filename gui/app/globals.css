@@ -290,6 +290,18 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .tbl tbody tr.click { cursor: pointer; }
 .tbl tbody tr.click:hover { background: var(--sr-bg-muted); }
 .tbl tbody tr:last-child td { border-bottom: none; }
+/* UX-04: an unresolved break in the feed, rendered where it happened rather
+   than as a banner above the table. Two rows that are adjacent on screen but
+   hours apart read as consecutive traffic; this is what says otherwise. The
+   row carries the word "gap" and a range, so nothing depends on colour. */
+.tbl tbody tr.gap-row td {
+  background: var(--sr-warning-bg);
+  color: var(--sr-warning-fg);
+  font-size: 11.5px;
+  line-height: 1.5;
+  border-top: 1px dashed var(--sr-warning-fg);
+  border-bottom: 1px dashed var(--sr-warning-fg);
+}
 .tbl td.mono, .tbl td .mono { font-family: var(--sr-font-mono); font-size: 12px; }
 .tbl td.num { text-align: right; font-family: var(--sr-font-mono); font-size: 12px; }
 .tbl tr.sel { background: var(--sr-bg-muted); }

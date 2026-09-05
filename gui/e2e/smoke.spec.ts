@@ -348,6 +348,21 @@ test.describe("request explorer (UX-04)", () => {
     return res.status();
   }
 
+  // U4-3. An empty result is the most ambiguous thing this screen can show, so
+  // it has to say WHICH empty it is and over what window. Unreachable and
+  // unauthorized are caught server-side and render their own screens; this
+  // asserts the third case reads as itself, against a real store that answered.
+  test("an empty window names itself as reachable-and-empty", async ({ page }) => {
+    await page.goto("/logs?session_id=no-such-session-anywhere", { waitUntil: "networkidle" });
+
+    await expect(page.getByText(/No records in this window/i)).toBeVisible();
+    // The distinction is the whole point: this screen is only reached when the
+    // store ANSWERED, so it says so rather than leaving "no rows" to be read as
+    // a dead server or a refused credential.
+    await expect(page.getByText(/reachable and empty/i)).toBeVisible();
+    await expect(page.getByText(/unauthorized \(403\)/i)).toBeVisible();
+  });
+
   test("the server-side filter is applied, not just the fetched page", async ({ page }) => {
     // A session that cannot exist must come back empty from the SERVER — if
     // filtering were client-side over a fetched page this would still show rows.
@@ -358,9 +373,11 @@ test.describe("request explorer (UX-04)", () => {
     expect(await res.json()).toEqual([]);
 
     await page.goto("/logs?session_id=definitely-no-such-session", { waitUntil: "networkidle" });
-    await expect(page.getByText(/No interactions match this filter/i)).toBeVisible();
-    // And it is explained as a filter result, not as "there is no traffic".
-    await expect(page.getByText(/No interactions recorded yet/i)).toHaveCount(0);
+    await expect(page.getByText(/No records in this window/i)).toBeVisible();
+    // And it is explained as a filter result, not as "there is no traffic":
+    // the window names the filter, and the next step is to widen it.
+    await expect(page.getByText(/session definitely-no-such-session/)).toBeVisible();
+    await expect(page.getByText(/Widen the filter/i)).toBeVisible();
   });
 
   test("filters live in the URL and carry only metadata", async ({ page }) => {
