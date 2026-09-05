@@ -22,6 +22,7 @@ import { useMemo, useState, useTransition } from "react";
 
 import type { ConditionalSaveResult, ValidateResult, ValidationError } from "@/lib/api";
 import { collapseUnchanged, diffLines } from "@/lib/diff";
+import { downloadText, draftFilename } from "@/lib/download";
 import { Icon } from "@/lib/icons";
 
 import { GuidedForm } from "./GuidedForm";
@@ -35,6 +36,18 @@ export interface AgentEditorProps {
   /** True when the caller may actually write. A viewer sees a disabled Apply
    * with a reason — never a broken-looking screen. */
   canWrite: boolean;
+  /** False when the server could not be reached (U3-5). Validating and applying
+   * both need it, so both are disabled with the reason stated up front rather
+   * than failing on click and reporting an "unknown" outcome for a write that
+   * never left the machine. */
+  online?: boolean;
+  /** Pipelines whose nodes reference this agent — the blast radius of an Apply
+   * (U3-3). Applying rewrites the live definition, so their next run uses it. */
+  referencingPipelines?: string[];
+  /** False when the pipeline inventory could not be read. The warning then says
+   * the blast radius is UNKNOWN rather than implying nothing references this
+   * agent, which is the failure this whole screen exists to avoid. */
+  pipelinesReadable?: boolean;
   validateAction: (yaml: string) => Promise<ValidateResult>;
   saveAction: (yaml: string, ifMatch: string) => Promise<ConditionalSaveResult>;
   reloadAction: () => Promise<{ yaml: string; revision: string } | null>;
@@ -48,6 +61,9 @@ export function AgentEditor({
   original,
   revision,
   canWrite,
+  online = true,
+  referencingPipelines = [],
+  pipelinesReadable = true,
   validateAction,
   saveAction,
   reloadAction,
@@ -71,7 +87,16 @@ export function AgentEditor({
   );
   const [isPending, startTransition] = useTransition();
 
+  const [exportFailed, setExportFailed] = useState(false);
+
   const dirty = draft !== base;
+  // Every write path needs the server. Offline is not a permission problem, so
+  // it reads differently from the read-only-for-your-role case.
+  const writable = canWrite && online;
+
+  function onExportDraft() {
+    setExportFailed(!downloadText(draftFilename(name), draft));
+  }
   const lines = useMemo(() => draft.split("\n"), [draft]);
   const diff = useMemo(() => diffLines(base, draft), [base, draft]);
 
@@ -181,11 +206,18 @@ export function AgentEditor({
           </p>
         </div>
         <div className="row gap-2">
+          {/* Always available, online or off, permitted or not: it is the only
+              way a draft leaves this tab (U3-4). */}
+          <button type="button" className="btn btn-outline btn-sm" onClick={onExportDraft}>
+            <Icon name="save" size={15} />
+            Export draft
+          </button>
           <button
             type="button"
             className="btn btn-outline btn-sm"
             onClick={onValidate}
-            disabled={isPending}
+            disabled={isPending || !online}
+            title={online ? undefined : "Validation runs on the server, which is unreachable"}
           >
             <Icon name="check-circle" size={15} />
             {isPending ? "Working…" : "Validate"}
@@ -194,8 +226,14 @@ export function AgentEditor({
             type="button"
             className="btn btn-outline btn-sm"
             onClick={onPreview}
-            disabled={isPending || !dirty}
-            title={dirty ? undefined : "No changes to review yet"}
+            disabled={isPending || !dirty || !online}
+            title={
+              !online
+                ? "Reviewing validates against the server first, which is unreachable"
+                : dirty
+                  ? undefined
+                  : "No changes to review yet"
+            }
           >
             <Icon name="file-code" size={15} />
             Review changes
@@ -204,13 +242,15 @@ export function AgentEditor({
             type="button"
             className="btn btn-default btn-sm"
             onClick={onApply}
-            disabled={isPending || !dirty || phase !== "previewing" || !canWrite}
+            disabled={isPending || !dirty || phase !== "previewing" || !writable}
             title={
-              !canWrite
-                ? "Changing agents needs the editor role. Your draft is still yours to export."
-                : phase !== "previewing"
-                  ? "Review the changes before applying them"
-                  : undefined
+              !online
+                ? "The server is unreachable. Your draft is kept — export it to save it outside this tab."
+                : !canWrite
+                  ? "Changing agents needs the editor role. Your draft is still yours to export."
+                  : phase !== "previewing"
+                    ? "Review the changes before applying them"
+                    : undefined
             }
           >
             <Icon name="save" size={15} />
@@ -219,7 +259,27 @@ export function AgentEditor({
         </div>
       </div>
 
-      {!canWrite && (
+      {/* U3-5. Offline is not a permission problem and not a failure of this
+          document, so it reads differently from the read-only case — and it is
+          said BEFORE a write is attempted, rather than surfacing afterwards as
+          an "unknown outcome" for a request that never left the machine. */}
+      {!online && (
+        <div className="banner banner-error" role="alert">
+          <strong>Server unreachable — your draft is kept, in this browser session only.</strong>{" "}
+          Validate and Apply need the server, so both are disabled. Nothing is lost while this
+          tab stays open; use <strong>Export draft</strong> to save it outside the browser.
+        </div>
+      )}
+
+      {exportFailed && (
+        <div className="banner banner-warn" role="alert">
+          <strong>Could not start the download.</strong> This browser blocked it, or the page
+          is running somewhere downloads are unavailable. Copy the YAML out of the editor
+          instead — the draft itself is untouched.
+        </div>
+      )}
+
+      {!canWrite && online && (
         <div className="banner banner-warn" role="status">
           <strong>Read-only for your role.</strong> You can edit and validate here, but
           applying a change needs the <code>editor</code> role. Nothing is broken — the
@@ -320,12 +380,27 @@ export function AgentEditor({
             {phase === "previewing" ? "changes to apply" : "validation"}
           </div>
           {phase === "previewing" ? (
-            <DiffPanel diff={diff} />
+            <div className="col gap-3">
+              <DiffPanel diff={diff} />
+              <ActiveRuntimeWarning
+                pipelines={referencingPipelines}
+                readable={pipelinesReadable}
+              />
+            </div>
           ) : (
             <ValidationPanel validation={validation} pending={isPending} dirty={dirty} />
           )}
           <p className="hint" style={{ marginTop: 12 }}>
             Loaded at revision <code className="mono">{baseRevision.slice(0, 12) || "unknown"}…</code>
+          </p>
+          {/* Stated wherever a draft can accumulate, not only when something
+              goes wrong. Handoff §8 keeps a durable draft store out of Release
+              A pending retention and encryption sign-off, so the browser is
+              genuinely the only copy. */}
+          <p className="hint">
+            {dirty ? "Unsaved draft — kept" : "Draft state is kept"} in this browser session
+            only. Durable drafts are not part of Release A; use <strong>Export draft</strong>{" "}
+            to keep a copy outside the tab.
           </p>
         </div>
       </div>
@@ -342,6 +417,45 @@ export function AgentEditor({
  * actually right about — and what was missing — is the CONTENT: which revision
  * the server holds, which one the draft was based on, and the fact that a
  * conditional write is not a lock. */
+/** What an Apply actually changes (U3-3).
+ *
+ * The editor writes to the live runtime — there is no isolated preview in
+ * Release A — so the pipelines that reference this agent are the blast radius,
+ * and they are named before the button is pressed rather than discovered after.
+ *
+ * If the pipeline inventory could not be read, that is reported as UNKNOWN. An
+ * empty list and an unreadable list are different facts, and only one of them
+ * means "nothing depends on this". */
+function ActiveRuntimeWarning({ pipelines, readable }: { pipelines: string[]; readable: boolean }) {
+  return (
+    <div className="banner banner-warn" role="note">
+      <strong>Applying changes the active runtime.</strong> There is no isolated preview in
+      Release A: this rewrites the definition the server is serving, and the next request to{" "}
+      this agent uses it.{" "}
+      {!readable ? (
+        <>
+          The pipeline inventory could not be read, so which pipelines depend on this agent is{" "}
+          <strong>unknown</strong> — not none.
+        </>
+      ) : pipelines.length === 0 ? (
+        <>No registered pipeline references this agent.</>
+      ) : (
+        <>
+          {pipelines.length === 1 ? "The pipeline " : "These pipelines "}
+          {pipelines.map((p, i) => (
+            <span key={p}>
+              {i > 0 ? ", " : ""}
+              <code className="mono">{p}</code>
+            </span>
+          ))}{" "}
+          {pipelines.length === 1 ? "references" : "reference"} this agent; the next run will
+          use the new definition.
+        </>
+      )}
+    </div>
+  );
+}
+
 function ConflictBanner({
   message,
   currentRevision,

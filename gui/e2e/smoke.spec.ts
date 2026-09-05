@@ -402,6 +402,47 @@ test.describe("agent editor (UX-03)", () => {
     expect(serverEtag.startsWith(receiptRevision.replace(/…$/, ""))).toBe(true);
   });
 
+  // U3-3 / U3-4, against real data: research-pipeline references web-researcher,
+  // so editing that agent must name the pipeline its change would reach.
+  test("the diff names the pipelines an apply would affect", async ({ page }) => {
+    const res = await page.request.get(`${API_URL}/api/v1/pipelines/research-pipeline`);
+    test.skip(res.status() !== 200, "research-pipeline not registered");
+
+    await page.goto("/agents/web-researcher/edit", { waitUntil: "networkidle" });
+    const description = page.getByLabel(/^Description/);
+    const review = page.getByRole("button", { name: /review changes/i });
+    await expect(async () => {
+      await description.fill(`blast-radius-check-${Date.now()}`);
+      await expect(review).toBeEnabled({ timeout: 1_000 });
+    }).toPass({ timeout: 15_000 });
+    await review.click();
+
+    await expect(page.getByText(/Applying changes the active runtime/i)).toBeVisible();
+    // The dependency is read from the real pipeline definition, not assumed.
+    await expect(page.getByText("research-pipeline")).toBeVisible();
+    // Nothing is applied by this test: it navigates away without confirming.
+    await expect(page.getByText(/no isolated preview/i)).toBeVisible();
+  });
+
+  test("a draft can leave the tab, and says it otherwise cannot", async ({ page }) => {
+    await page.goto("/agents/echo-agent/edit", { waitUntil: "networkidle" });
+
+    // The statement is unconditional — a draft is browser-only whether or not
+    // anything has been typed yet (handoff §8: no durable draft store in A).
+    await expect(page.getByText(/Durable drafts are not part of Release A/i)).toBeVisible();
+
+    const download = page.waitForEvent("download");
+    await expect(async () => {
+      await page.getByRole("button", { name: /export draft/i }).click();
+      await expect(page.getByRole("button", { name: /export draft/i })).toBeEnabled({
+        timeout: 500,
+      });
+    }).toPass({ timeout: 15_000 });
+
+    const file = await download;
+    expect(file.suggestedFilename()).toMatch(/^echo-agent-draft-.*\.yaml$/);
+  });
+
   test("the agent detail page links to the editor", async ({ page }) => {
     const name = await firstAgent(page.request);
     test.skip(!name, "no agents served");
