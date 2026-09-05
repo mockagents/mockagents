@@ -38,6 +38,11 @@ export interface RunPanelProps {
   runAction: (input: string, sessionId: string) => Promise<PipelineRunOutcome>;
   /** Injected in tests; defaults to a real random id. */
   newSessionId?: () => string;
+  /** Effective revision per agent ref, for the pre-run warning (U5-6). A ref
+   * that is absent from this map is one the catalog did not report — rendered
+   * as unknown rather than omitted, since a node whose definition cannot be
+   * identified is exactly the one worth noticing before running. */
+  agentRevisions?: Record<string, string | undefined>;
 }
 
 function defaultSessionId(): string {
@@ -55,6 +60,7 @@ export function RunPanel({
   canRun,
   runAction,
   newSessionId = defaultSessionId,
+  agentRevisions = {},
 }: RunPanelProps) {
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
@@ -62,10 +68,14 @@ export function RunPanel({
   /** What was actually submitted, recorded so the evidence on screen is tied to
    * a known input and session rather than to whatever is in the box now. */
   const [submitted, setSubmitted] = useState<{ input: string; sessionId: string } | null>(null);
+  /** U5-5: minted BEFORE the run, not after. An operator who can see the id
+   * up front can have a log filter ready before committing to something
+   * stateful; one that only appears afterwards is of no use in deciding. */
+  const [pendingSession, setPendingSession] = useState(() => newSessionId());
 
   async function onRun() {
     if (running || !input.trim()) return;
-    const sessionId = newSessionId();
+    const sessionId = pendingSession;
     setRunning(true);
     setOutcome(null);
     setSubmitted({ input, sessionId });
@@ -73,6 +83,9 @@ export function RunPanel({
       setOutcome(await runAction(input, sessionId));
     } finally {
       setRunning(false);
+      // A fresh id for the next run: reusing one would let two runs share turn
+      // state, which is the accident the per-run session exists to prevent.
+      setPendingSession(newSessionId());
     }
   }
 
@@ -94,6 +107,41 @@ export function RunPanel({
         session state. It is not an isolated preview and it is not a dry run. Each run
         gets a fresh session id so turns are not reused — that does not pin the
         definitions or isolate fixtures.
+        {/* U5-6: name them. "The definitions currently loaded" is a warning;
+            listing which ones, at which revision, is a checkable statement. */}
+        {nodes.length > 0 && (
+          <div className="txt-sm" style={{ marginTop: 6 }}>
+            Will execute:{" "}
+            {nodes.map((n, i) => (
+              <span key={n.id}>
+                {i > 0 ? ", " : ""}
+                <code className="mono">{n.ref}</code>
+                {agentRevisions[n.ref] ? (
+                  <span className="mono muted"> {agentRevisions[n.ref]!.slice(0, 8)}</span>
+                ) : (
+                  <span className="muted"> (revision unknown)</span>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="field">
+        <label htmlFor="run-session">Session ID</label>
+        <div className="row gap-2">
+          <input
+            id="run-session"
+            className="input mono"
+            readOnly
+            value={pendingSession}
+            style={{ maxWidth: 280 }}
+            onFocus={(e) => e.currentTarget.select()}
+          />
+          <span className="hint">
+            fresh per run, so turns are not reused — it does not pin the definitions
+          </span>
+        </div>
       </div>
 
       <div className="field">

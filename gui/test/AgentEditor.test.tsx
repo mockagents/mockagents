@@ -93,6 +93,35 @@ describe("AgentEditor", () => {
     expect(screen.getByText("unchanged")).toBeInTheDocument();
   });
 
+  // U3-7: what is loaded, where it lives, and whether the draft has moved —
+  // beside the title rather than in a hint below the fold.
+  describe("header chips", () => {
+    it("names the loaded revision and where the definition lives", () => {
+      setup({ persistence: "file", file: "support-bot.yaml" });
+      // Scoped to the header: the card below also names the file, and the point
+      // of this fix is that the facts are visible WITHOUT scrolling to it.
+      const header = screen.getByRole("heading", { name: /Edit support-bot/ }).parentElement!;
+      expect(within(header).getByText("rev-1")).toBeInTheDocument();
+      expect(within(header).getByText("persisted")).toBeInTheDocument();
+      expect(within(header).getByText("support-bot.yaml")).toBeInTheDocument();
+    });
+
+    it("shows nothing rather than guessing when the server did not say", () => {
+      setup();
+      for (const label of ["persisted", "runtime-only", "file missing"]) {
+        expect(screen.queryByText(label)).toBeNull();
+      }
+    });
+
+    it("marks the draft as unsaved once it differs from the server's copy", async () => {
+      const user = userEvent.setup();
+      setup();
+      expect(screen.queryByText(/draft · unsaved/)).toBeNull();
+      await editDraft(user, "changed: true");
+      expect(screen.getByText(/draft · unsaved/)).toBeInTheDocument();
+    });
+  });
+
   describe("preview before apply", () => {
     it("disables Apply until the change has been reviewed", async () => {
       const user = userEvent.setup();

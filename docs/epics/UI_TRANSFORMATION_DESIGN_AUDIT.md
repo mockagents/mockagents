@@ -50,7 +50,7 @@ not simply a to-do list.
 | X-1 | Instrument strip is on 2 of 17 routes, not in the shell | all | **A** — fixed |
 | X-2 | No `unsupported` / capability-gated state anywhere | UX-03 | B — fixed |
 | X-3 | Agent deletion uses `window.confirm`, bypassing the destructive-dialog spec | UX-03 | **A** — fixed |
-| X-4 | Five-variant state matrix is partial; no shared component | all | C |
+| X-4 | Five-variant state matrix is partial; no shared component | all | C — closed, see §4 |
 | U1-1 | `/identity` merges the proposed `/capabilities` | UX-01 | D |
 | U1-2 | Capability gating stops at the nav — catalog Delete and New agent are ungated | UX-01 | B — fixed |
 | U1-3 | Identity probed per screen instead of once per navigation | UX-01 | C — fixed |
@@ -60,19 +60,19 @@ not simply a to-do list.
 | U3-4 | No Export draft; nothing says drafts are browser-memory only | UX-03 | B — fixed |
 | U3-5 | Editor has no offline state; a write to a dead server reports "unknown" | UX-03 | B — fixed |
 | U3-6 | Inventory has no revision or persistence column | UX-03 | X → B — fixed |
-| U3-7 | Editor header lacks revision / persisted / file chips | UX-03 | C |
+| U3-7 | Editor header lacks revision / persisted / file chips | UX-03 | C — fixed |
 | U4-1 | Gaps render as a banner, not as gap rows in the table | UX-04 | **A** — fixed |
 | U4-2 | The gap has no time bounds | UX-04 | **A** — fixed |
 | U4-3 | Empty state omits the window and the next step | UX-04 | B — fixed |
 | U4-4 | "Bodies are not fetched until revealed" is false — they ship with the list | UX-04 | **X** — fixed |
-| U4-5 | Capture completeness shown only when truncated | UX-04 | C |
+| U4-5 | Capture completeness shown only when truncated | UX-04 | C — fixed |
 | U4-6 | Implementation refuses "loaded N of N" | UX-04 | D |
 | U5-1 | Absent nodes are not rendered as "not executed · unknown" | UX-05 | **A** — fixed |
 | U5-2 | `blocked-missing-dependency` is not a state | UX-05 | B — fixed |
 | U5-3 | No node inspector — a failed node's evidence cannot be read | UX-05 | B — fixed |
 | U5-4 | No run→logs link | UX-05 | **X** — still blocked, cause corrected |
-| U5-5 | Session id not shown before the run | UX-05 | C |
-| U5-6 | Pre-run banner does not name the definitions that will execute | UX-05 | C |
+| U5-5 | Session id not shown before the run | UX-05 | C — fixed |
+| U5-6 | Pre-run banner does not name the definitions that will execute | UX-05 | C — fixed |
 
 Six class-A findings. Four of the five most consequential (X-1, U3-1, U4-1/2, U5-1)
 share one root cause: **the screens report state correctly but do not report the
@@ -196,6 +196,18 @@ overview), unauthorized (401 copy, nav floors), truly-empty (but see U4-3), not-
 (Overview only — which X-1 fixes globally). Absent: `unsupported` (X-2). Each is
 hand-written per screen, so the copy patterns drift. A shared `<StateNotice
 variant=…>` would make the matrix checkable rather than aspirational.
+
+**Deliberately not done, 2026-09-05.** Every variant now exists somewhere —
+`unsupported` was the last, shipped with X-2 — so the matrix is complete in
+behaviour if not in structure. Extracting a shared component was considered and
+rejected: what makes these notices worth having is copy naming the specific
+thing that failed and the specific next step, and a component with a `variant`
+prop pulls the other way, toward five generic sentences distinguished by a
+severity colour. That is the "shared generic empty screen" the Components doc
+rules out, arrived at from the opposite direction.
+
+What would genuinely help is a check that the matrix is *covered* — not a
+component that assumes it. Recorded as the open item rather than done badly.
 
 ---
 
@@ -743,7 +755,8 @@ Grouped so each is one reviewable slice with its own tests.
    shipped with U5-2; `AgentSummary` revision/persistence shipped as U3-6.)
    **New, from that slice:** pipeline runs never reach the interaction log — a
    product decision, not a UI fix.
-9. **C-class** — U3-7, U4-5, U5-5, U5-6, X-4.
+9. ~~**C-class**~~ **Done 2026-09-05** — U3-7, U4-5, U5-5, U5-6. X-4 (a shared
+   state-notice component) is deliberately NOT done — see its section.
 
 ## 11. What this audit did not cover
 

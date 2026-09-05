@@ -44,6 +44,11 @@ export interface AgentEditorProps {
   /** Pipelines whose nodes reference this agent — the blast radius of an Apply
    * (U3-3). Applying rewrites the live definition, so their next run uses it. */
   referencingPipelines?: string[];
+  /** How this definition is stored, for the header chips (U3-7). Undefined when
+   * the server did not say — rendered as nothing, never guessed. */
+  persistence?: "file" | "runtime" | "missing";
+  /** Base name of the backing file, when there is one. */
+  file?: string;
   /** False when the pipeline inventory could not be read. The warning then says
    * the blast radius is UNKNOWN rather than implying nothing references this
    * agent, which is the failure this whole screen exists to avoid. */
@@ -62,6 +67,8 @@ export function AgentEditor({
   revision,
   canWrite,
   online = true,
+  persistence,
+  file,
   referencingPipelines = [],
   pipelinesReadable = true,
   validateAction,
@@ -198,7 +205,23 @@ export function AgentEditor({
 
       <div className="head-row page-head">
         <div className="grow">
-          <h1 className="page-title">Edit {name}</h1>
+          <div className="row gap-2" style={{ flexWrap: "wrap", alignItems: "center" }}>
+            <h1 className="page-title" style={{ margin: 0 }}>
+              Edit {name}
+            </h1>
+            {/* U3-7: what is loaded, where it lives, and whether the draft has
+                moved — beside the title rather than in a hint below the fold. */}
+            <span className="tag mono" title="revision this document was loaded at">
+              {baseRevision.slice(0, 8) || "unknown"}
+            </span>
+            {persistence === "file" && <span className="badge badge-ok">persisted</span>}
+            {persistence === "runtime" && <span className="badge badge-warn">runtime-only</span>}
+            {persistence === "missing" && (
+              <span className="badge badge-destructive">file missing</span>
+            )}
+            {file && <span className="tag mono">{file}</span>}
+            {dirty && <span className="tag">draft · unsaved</span>}
+          </div>
           <p className="page-lede">
             This is the <strong>canonical</strong> form of the definition the server is
             running. Comments and formatting from the original file are not shown here,
