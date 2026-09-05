@@ -18,6 +18,7 @@
 //     completion chronology, and presenting it as a timeline would invent
 //     causality the server never reported.
 
+import Link from "next/link";
 import { useState } from "react";
 
 import type { PipelineAgent, PipelineNodeResult, PipelineRunOutcome } from "@/lib/api";
@@ -228,6 +229,11 @@ function RunEvidence({
           Session <code className="mono">{submitted.sessionId}</code> was submitted. It is
           not retried automatically, because a pipeline run is stateful.
         </p>
+        <div className="row gap-2" style={{ marginTop: 8 }}>
+          {/* The one place this matters most: establishing what actually
+              happened before deciding whether to re-run something stateful. */}
+          <SessionLogsLink sessionId={submitted.sessionId} label="Check the logs for this run" />
+        </div>
       </div>
     );
   }
@@ -317,13 +323,33 @@ function RunEvidence({
         </>
       )}
 
+      <div className="row gap-2" style={{ flexWrap: "wrap" }}>
+        <SessionLogsLink sessionId={submitted.sessionId} label="Open this run in the logs" />
+      </div>
+
       <p className="hint">
-        These are the results the run returned, and the only record of it. A pipeline run
-        executes the engine in process rather than over HTTP, and the interaction log is
-        written by the HTTP layer — so nothing from this run appears in the logs, under
-        any filter. The evidence above is not a summary of log entries; it is all there is.
+        Each node is recorded as an interaction in its own right. Those rows carry no HTTP
+        method, path or status — a run drives the engine directly rather than over the
+        wire — so they are marked as pipeline interactions rather than dressed up as
+        requests.
       </p>
     </div>
+  );
+}
+
+/** Link to this run's requests (U5-4).
+ *
+ * Matches on the session PREFIX, because the engine scopes each node's session
+ * as "<session>::<pipeline>::<node>" — the id the run reports matches nothing
+ * under an exact filter. `session_prefix` is server-side, so this narrows the
+ * whole window rather than whatever a page happened to fetch. */
+function SessionLogsLink({ sessionId, label }: { sessionId: string; label: string }) {
+  const query = new URLSearchParams({ session_prefix: `${sessionId}::` }).toString();
+  return (
+    <Link href={`/logs?${query}`} className="btn btn-outline btn-sm">
+      <Icon name="scroll-text" size={15} />
+      {label}
+    </Link>
   );
 }
 

@@ -661,6 +661,16 @@ function LogTable({
 }
 
 function StatusBadge({ row }: { row: InteractionLog }) {
+  // A pipeline node never had an HTTP response, so it has no status — and a
+  // dash here means "not applicable", not "we lost it". Rendering it red
+  // alongside real 5xx rows would invent a failure.
+  if (row.source === "pipeline") {
+    return (
+      <span className="badge badge-outline" title="no HTTP response — this was a pipeline node">
+        n/a
+      </span>
+    );
+  }
   const status = row.response_status ?? 0;
   const ok = status >= 200 && status < 400;
   return (
@@ -675,6 +685,10 @@ function StatusBadge({ row }: { row: InteractionLog }) {
  * it error, is the captured body clipped. */
 function Signals({ row }: { row: InteractionLog }) {
   const signals: string[] = [];
+  // A pipeline node is a real interaction but not an HTTP one, and its empty
+  // method/path/status would otherwise read as missing data rather than as
+  // "there was never a request here".
+  if (row.source === "pipeline") signals.push("pipeline");
   if (row.chaos_action) signals.push(`chaos:${row.chaos_action}`);
   if (row.error) signals.push("error");
   if (row.truncated) signals.push("truncated");
@@ -742,6 +756,16 @@ function LogDetail({
         <dd className="mono">{row.scenario_name || "—"}</dd>
         <dt>protocol</dt>
         <dd className="mono">{row.protocol || "—"}</dd>
+        <dt>source</dt>
+        <dd>
+          {row.source === "pipeline" ? (
+            <span className="badge badge-info" title="one node of a pipeline run">
+              pipeline run
+            </span>
+          ) : (
+            <span className="mono">HTTP request</span>
+          )}
+        </dd>
         <dt>latency</dt>
         <dd className="mono">{row.latency_ms}ms</dd>
         {/* U4-5: stated either way. This is the one field on the pane whose

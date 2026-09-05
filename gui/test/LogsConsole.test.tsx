@@ -147,6 +147,33 @@ describe("LogsConsole", () => {
     });
   });
 
+  // Pipeline runs are recorded now, so the log holds two kinds of row. They
+  // must not be readable as the same kind: a node has no HTTP method, path or
+  // status, and those fields being empty is a fact rather than missing data.
+  describe("pipeline interactions", () => {
+    it("marks a pipeline row as one, in the row and in the detail", async () => {
+      const user = userEvent.setup();
+      setup({ window: makeWindow([row(1, { source: "pipeline" })]) });
+
+      expect(screen.getByText("pipeline")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "1" }));
+      expect(screen.getByText("pipeline run")).toBeInTheDocument();
+    });
+
+    it("shows no status for a node, rather than inventing or failing one", async () => {
+      setup({ window: makeWindow([row(1, { source: "pipeline", response_status: 0 })]) });
+      // Not a red 0, and not a dash that reads as lost data.
+      expect(screen.getByText("n/a")).toBeInTheDocument();
+      expect(screen.getByTitle(/no HTTP response/i)).toBeInTheDocument();
+    });
+
+    it("still shows a real status for an HTTP row", async () => {
+      setup({ window: makeWindow([row(1, { source: "http", response_status: 200 })]) });
+      expect(screen.getByText("200")).toBeInTheDocument();
+      expect(screen.queryByText("n/a")).toBeNull();
+    });
+  });
+
   describe("bodies", () => {
     // Metadata-first: a body can contain anything a client sent.
     // §9.1. This used to be a display boundary: the listing carried every body

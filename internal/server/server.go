@@ -115,17 +115,17 @@ func DefaultConfig() Config {
 
 // Server wraps http.Server with the MockAgents router and lifecycle management.
 type Server struct {
-	httpServer     *http.Server
-	engine         *engine.Engine
-	handlers       *Handlers
-	tenancyH       *TenancyHandlers
-	auditH         *AuditHandlers
+	httpServer *http.Server
+	engine     *engine.Engine
+	handlers   *Handlers
+	tenancyH   *TenancyHandlers
+	auditH     *AuditHandlers
 	// mountedRoutes records every management route this process actually
 	// serves, with its role floor, as mountManaged registers it. UX-01's
 	// capability response is derived from this rather than from the static
 	// policy table, because conditional routes (audit, costs) are absent when
 	// their store is not configured. Populated at startup only.
-	mountedRoutes map[string]tenancy.Role
+	mountedRoutes  map[string]tenancy.Role
 	recorder       *audit.Recorder
 	logWorker      *LogWorker
 	logBroadcaster *LogBroadcaster
@@ -392,9 +392,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// deployments that never loaded a Pipeline YAML still get a
 	// well-formed response.
 	if s.config.Pipelines != nil {
+		// A run drives the engine in process, so it bypasses InteractionCapture
+		// entirely. Wiring the recorder here is what makes a run leave the same
+		// trace as the traffic it simulates; without it, three agents could
+		// execute and the log would show nothing.
+		executor := engine.NewPipelineExecutor(s.engine)
+		executor.Recorder = newPipelineRecorder(s.logWorker, NormalizeLogBodyMode(string(s.config.LogBodyMode)))
 		pipelineH := &PipelineHandlers{
 			Registry:      s.config.Pipelines,
-			Executor:      engine.NewPipelineExecutor(s.engine),
+			Executor:      executor,
 			AgentRegistry: s.engine.Registry,
 			AgentsDir:     s.config.AgentsDir,
 			Recorder:      s.recorder,

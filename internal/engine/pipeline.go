@@ -14,6 +14,51 @@ import (
 // PipelineExecutor runs multi-agent pipelines against a shared Engine.
 type PipelineExecutor struct {
 	Engine *Engine
+	// Recorder receives one record per node execution, so a run leaves the same
+	// trace as the traffic it simulates.
+	//
+	// A seam rather than a direct dependency: the interaction log lives behind
+	// the HTTP layer, and engine must not import storage or server to reach it.
+	// The server supplies an implementation at wiring time, the same shape the
+	// audit recorder uses to stay clear of tenancy.
+	//
+	// Nil means runs are not recorded, which is what an embedding caller with
+	// no log store gets.
+	Recorder NodeRecorder
+}
+
+// NodeInteraction is one pipeline node execution, as reported to a recorder.
+// Everything here is observed rather than derived: a recorder must not have to
+// re-run anything or parse a message to know what happened.
+type NodeInteraction struct {
+	TenantID     string
+	PipelineName string
+	NodeID       string
+	// AgentName is the node's ref — the agent the pipeline asked for, which is
+	// recorded even when no such agent exists, because "which agent was
+	// missing" is the useful thing about that failure.
+	AgentName string
+	// SessionID is the SCOPED session the engine actually ran under
+	// ("<run>::<pipeline>::<node>"), not the id the caller submitted. That is
+	// what makes a run findable by session prefix.
+	SessionID string
+	Protocol  string
+	Input     string
+	// Response is nil when the node produced none — it failed, or never ran.
+	Response *Response
+	Latency  time.Duration
+	// Err is the node's error, if any. A recorder should treat a nil Response
+	// with a nil Err as an engine invariant break rather than a normal outcome.
+	Err error
+}
+
+// NodeRecorder receives one record per pipeline node execution.
+//
+// Implementations must not block: this is called on the run's own goroutine,
+// and a slow recorder would show up as pipeline latency the engine never
+// actually spent.
+type NodeRecorder interface {
+	RecordNode(ctx context.Context, n NodeInteraction)
 }
 
 // NewPipelineExecutor wires a pipeline executor to an engine.
@@ -291,20 +336,27 @@ func cyclicNodes(agents []types.PipelineAgent, outgoing map[string][]types.Pipel
 }
 
 func (p *PipelineExecutor) invokeNode(ctx context.Context, pipelineName string, node types.PipelineAgent, input, sessionID string) (*NodeResult, error) {
+	// Scoped up front so the failure paths below can be recorded under the same
+	// session as a successful node. A run whose first node could not resolve is
+	// still a run, and it is the one most worth finding in the log.
+	scopedSession := fmt.Sprintf("%s::%s::%s", sessionID, pipelineName, node.ID)
+
 	if node.Ref == "" {
-		return &NodeResult{NodeID: node.ID}, fmt.Errorf("pipeline %q node %q missing agent ref", pipelineName, node.ID)
+		err := fmt.Errorf("pipeline %q node %q missing agent ref", pipelineName, node.ID)
+		p.record(ctx, pipelineName, node, scopedSession, input, nil, 0, err)
+		return &NodeResult{NodeID: node.ID}, err
 	}
 	// Pipeline refs are exact agent names. ProcessRequest normally permits a
 	// single visible agent as an anonymous convenience fallback, but applying
 	// that rule here would make a stale pipeline ref silently execute the wrong
 	// node. Resolve explicitly, with the same tenant visibility as the request.
 	if p.Engine == nil || p.Engine.Registry == nil || p.Engine.Registry.GetForTenant(node.Ref, TenantIDFromContext(ctx)) == nil {
-		return &NodeResult{NodeID: node.ID, AgentName: node.Ref}, fmt.Errorf(
-			"pipeline %q node %q: %w: %q", pipelineName, node.ID, ErrAgentNotFound, node.Ref)
+		err := fmt.Errorf("pipeline %q node %q: %w: %q", pipelineName, node.ID, ErrAgentNotFound, node.Ref)
+		p.record(ctx, pipelineName, node, scopedSession, input, nil, 0, err)
+		return &NodeResult{NodeID: node.ID, AgentName: node.Ref}, err
 	}
-	// Scope the session per pipeline node so conversation state on one agent
-	// does not leak into another when the same engine is reused.
-	scopedSession := fmt.Sprintf("%s::%s::%s", sessionID, pipelineName, node.ID)
+	// The session is scoped per pipeline node (above) so conversation state on
+	// one agent does not leak into another when the same engine is reused.
 	req := &InboundRequest{
 		AgentName: node.Ref,
 		SessionID: scopedSession,
@@ -321,10 +373,46 @@ func (p *PipelineExecutor) invokeNode(ctx context.Context, pipelineName string, 
 	if err == nil && resp == nil {
 		err = fmt.Errorf("pipeline %q node %q: engine returned no response", pipelineName, node.ID)
 	}
+	p.record(ctx, pipelineName, node, scopedSession, input, resp, latency, err)
 	return &NodeResult{
 		NodeID:    node.ID,
 		AgentName: node.Ref,
 		Response:  resp,
 		Latency:   latency,
 	}, err
+}
+
+// record reports one node execution, if a recorder is wired. Failures are
+// reported too: a node that could not run is exactly the interaction someone
+// goes to the log to find.
+func (p *PipelineExecutor) record(
+	ctx context.Context,
+	pipelineName string,
+	node types.PipelineAgent,
+	session, input string,
+	resp *Response,
+	latency time.Duration,
+	err error,
+) {
+	if p.Recorder == nil {
+		return
+	}
+	protocol := ""
+	if p.Engine != nil && p.Engine.Registry != nil {
+		if def := p.Engine.Registry.GetForTenant(node.Ref, TenantIDFromContext(ctx)); def != nil {
+			protocol = def.Spec.Protocol
+		}
+	}
+	p.Recorder.RecordNode(ctx, NodeInteraction{
+		TenantID:     TenantIDFromContext(ctx),
+		PipelineName: pipelineName,
+		NodeID:       node.ID,
+		AgentName:    node.Ref,
+		SessionID:    session,
+		Protocol:     protocol,
+		Input:        input,
+		Response:     resp,
+		Latency:      latency,
+		Err:          err,
+	})
 }
