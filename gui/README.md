@@ -222,6 +222,23 @@ make gui-verify
 | Component | `make gui-test` | Vitest + Testing Library in jsdom, incl. axe for names/roles/structure |
 | Browser | `make gui-test-e2e` | Playwright/Chromium against a **real** `mockagents` binary serving `examples/`, incl. axe rules needing real layout (colour contrast, target size) |
 
+The accessibility sweep runs each page **twice by theme and again at 720px**, and
+both dimensions exist because a rule went unnoticed without them:
+
+- *Theme.* The palette is a cookie-driven `data-theme` attribute and the app never
+  consults `prefers-color-scheme`, so a sweep written with `emulateMedia()` tests
+  light twice and reports it as dark coverage. The sweep sets the cookie and
+  asserts `data-theme` applied, so it cannot go vacuous.
+- *Viewport.* Some rules only fire once layout changes. The instrument strip
+  shipped as a horizontally scrolling region with nothing focusable inside — no
+  way to scroll it without a pointer. `scrollable-region-focusable` was already in
+  the rule set, but at the default 1280px the strip does not overflow, so there
+  was no scrollable region to report. It fires at 720px.
+
+Neither is something `npm test` can find: jsdom has no layout engine, so it cannot
+evaluate contrast, scroll or target size. A green component run is not an
+accessibility verdict.
+
 The browser suite builds nothing itself — run `make build` and `make gui-build`
 first, or use `make gui-verify`, which sequences all of it. It boots the server
 on port 8099 and the console on 3099 so a smoke run cannot collide with, or

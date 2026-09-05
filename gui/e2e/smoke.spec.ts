@@ -536,4 +536,35 @@ test.describe("accessibility", () => {
       });
     }
   }
+
+  // A second pass at a narrow viewport.
+  //
+  // Some accessibility rules can only fire once layout actually changes. The
+  // instrument strip shipped as a horizontally scrolling region with nothing
+  // focusable inside it — unreachable by keyboard, since there was nothing to
+  // Tab to and therefore no way to scroll it without a pointer. axe's
+  // `scrollable-region-focusable` rule covers exactly that and was already in
+  // the tag set above, but it never fired: at the default 1280px viewport the
+  // strip does not overflow (984 = 984), so there is no scrollable region to
+  // report. At 720px it overflows (970 > 424) and the rule fires.
+  //
+  // The gap was viewport coverage, not tooling. One narrow pass closes it.
+  // Contrast is theme-dependent and covered above; what changes here is layout,
+  // focus order and scroll, so a single theme is enough.
+  for (const path of ["/", "/overview", "/logs", "/costs", "/reports", "/agents/echo-agent/edit"]) {
+    test(`${path} has no WCAG A/AA violations (narrow 720px)`, async ({ page }) => {
+      await page.setViewportSize({ width: 720, height: 900 });
+      await page.goto(path);
+
+      const results = await new AxeBuilder({ page })
+        .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+        .analyze();
+
+      const findings = results.violations.flatMap((v) =>
+        v.nodes.map((n) => `${v.id} at ${n.target.join(" ")}\n    ${n.failureSummary ?? v.help}`),
+      );
+      expect(findings).toEqual([]);
+    });
+  }
+
 });
