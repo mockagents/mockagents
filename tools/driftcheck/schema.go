@@ -28,9 +28,14 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mockagents/mockagents/internal/adapter"
 	"github.com/mockagents/mockagents/internal/audit"
+	"github.com/mockagents/mockagents/internal/quota"
 	"github.com/mockagents/mockagents/internal/server"
+	"github.com/mockagents/mockagents/internal/storage"
+	"github.com/mockagents/mockagents/internal/streaming"
 	"github.com/mockagents/mockagents/internal/tenancy"
+	"github.com/mockagents/mockagents/internal/types"
 )
 
 // checkedSchema pairs a schema in the OpenAPI document with the Go value that
@@ -59,45 +64,85 @@ var checkedSchemas = []checkedSchema{
 	{name: "AgentSummary", sample: server.AgentSummary{}},
 	{name: "InteractionLog", sample: server.LogWithCost{}},
 	{name: "IdentityResponse", sample: server.IdentityResponse{}},
+	{name: "ReadinessResponse", sample: server.ReadinessResponse{}},
+	{name: "ReadinessCheck", sample: server.ReadinessCheckResult{}},
+	{name: "AgentWriteResult", sample: server.AgentWriteResponse{}},
+	{name: "ValidateResult", sample: server.ValidateResponse{}},
 	{name: "CostReport", sample: server.CostsResponse{}},
 	{name: "CostGroup", sample: server.CostGroup{}},
 	{name: "AuditEvent", sample: audit.Event{}},
 	{name: "AuditActor", sample: audit.Actor{}},
 	{name: "Tenant", sample: tenancy.Tenant{}},
 	{name: "APIKey", sample: tenancy.APIKey{}},
+	{name: "NewKeyResult", sample: tenancy.NewAPIKeyResult{}},
+	{name: "QuotaConfig", sample: quota.Config{}},
+
+	// GET /logs/{id} returns the stored row directly, without the derived cost
+	// fields the LISTING adds — so this is a different shape from
+	// InteractionLog, and documenting them as one would be wrong in the other
+	// direction.
+	{name: "InteractionDetail", sample: storage.InteractionLog{}},
+
+	// The YAML documents, as they are marshalled back over the wire by
+	// GET /agents/{name} and GET /pipelines/{name}. The authority for what is
+	// VALID remains schema/mockagents-v1-agent.json; this only checks that the
+	// OpenAPI document describes the envelope the API actually returns.
+	{name: "AgentDefinition", sample: types.AgentDefinition{}},
+	{name: "Pipeline", sample: types.PipelineDefinition{}},
+
+	// Provider wire formats. These mirror OpenAI and Anthropic rather than
+	// being ours to define, which makes them MORE worth checking, not less: the
+	// whole product is the claim that a client cannot tell the difference, and
+	// the spec is where someone looks to see what we accept.
+	{
+		name:   "OpenAIChatCompletionRequest",
+		sample: adapter.ChatCompletionRequest{},
+		specOnly: map[string]string{
+			"top_p":             "accepted for wire compatibility and ignored — this mock does not sample",
+			"n":                 "accepted for wire compatibility and ignored — this mock does not sample",
+			"stop":              "accepted for wire compatibility and ignored — this mock does not sample",
+			"user":              "accepted for wire compatibility and ignored — this mock does not sample",
+			"frequency_penalty": "accepted for wire compatibility and ignored — this mock does not sample",
+			"presence_penalty":  "accepted for wire compatibility and ignored — this mock does not sample",
+		},
+	},
+	{
+		name:     "OpenAIChatMessage",
+		sample:   adapter.OpenAIMessage{},
+		specOnly: map[string]string{"name": "accepted for wire compatibility and ignored — this mock does not sample"},
+	},
+	{name: "OpenAITool", sample: adapter.OpenAITool{}},
+	{name: "OpenAIToolCall", sample: adapter.OpenAIToolCall{}},
+	{name: "OpenAIChatCompletionResponse", sample: adapter.ChatCompletionResponse{}},
+	{name: "OpenAIUsage", sample: adapter.OpenAIUsage{}},
+	{name: "OpenAIChatCompletionChunk", sample: streaming.ChatCompletionChunk{}},
+	{
+		name:   "AnthropicMessagesRequest",
+		sample: adapter.AnthropicRequest{},
+		specOnly: map[string]string{
+			"temperature":    "accepted for wire compatibility and ignored — this mock does not sample",
+			"top_p":          "accepted for wire compatibility and ignored — this mock does not sample",
+			"top_k":          "accepted for wire compatibility and ignored — this mock does not sample",
+			"stop_sequences": "accepted for wire compatibility and ignored — this mock does not sample",
+			"metadata":       "accepted for wire compatibility and ignored — this mock does not sample",
+		},
+	},
+	{name: "AnthropicMessage", sample: adapter.AnthropicMessage{}},
+	{name: "AnthropicTool", sample: adapter.AnthropicTool{}},
+	{name: "AnthropicMessagesResponse", sample: adapter.AnthropicResponse{}},
+	{name: "AnthropicContentBlock", sample: adapter.AnthropicContent{}},
+	{name: "AnthropicUsage", sample: adapter.AnthropicUsage{}},
 }
 
 // documentationOnly names schemas with no single Go wire type behind them, and
 // says why. These are not silently skipped: leaving one out of both lists fails
 // the check, so "we forgot" and "there is nothing to compare" stay distinct.
 var documentationOnly = map[string]string{
-	"AgentDefinition":              "describes the agent YAML, whose authority is schema/mockagents-v1-agent.json",
-	"Pipeline":                     "describes the pipeline YAML, not a Go response type",
+	"AnthropicRequestContentBlock": "request-side blocks are accepted as free-form; AnthropicMessage.Content is `any`",
 	"HealthResponse":               "assembled inline in the handler from a map literal",
-	"ReadinessResponse":            "assembled by an unexported type",
-	"ReadinessCheck":               "the wire payload is an unexported type; the exported ReadinessCheck is the probe CONFIG, not the response",
-	"AgentWriteResult":             "assembled by an unexported type",
-	"ValidateResult":               "assembled by an unexported type",
 	"ReloadResponse":               "assembled inline in the handler",
-	"InteractionDetail":            "documentation view of a single log; the row shape is checked as InteractionLog",
-	"Session":                      "engine-internal conversation state, not a response type",
 	"Error":                        "shared error envelope, written inline by writeJSON callers",
-	"NewKeyResult":                 "assembled by an unexported type",
-	"QuotaConfig":                  "assembled by an unexported type",
-	"OpenAIChatCompletionRequest":  "mirrors the provider's wire format, whose authority is the provider",
-	"OpenAIChatMessage":            "mirrors the provider's wire format",
-	"OpenAITool":                   "mirrors the provider's wire format",
-	"OpenAIToolCall":               "mirrors the provider's wire format",
-	"OpenAIChatCompletionResponse": "mirrors the provider's wire format",
-	"OpenAIUsage":                  "mirrors the provider's wire format",
-	"OpenAIChatCompletionChunk":    "mirrors the provider's wire format",
-	"AnthropicMessagesRequest":     "mirrors the provider's wire format",
-	"AnthropicMessage":             "mirrors the provider's wire format",
-	"AnthropicContentBlock":        "mirrors the provider's wire format",
-	"AnthropicTool":                "mirrors the provider's wire format",
-	"AnthropicMessagesResponse":    "mirrors the provider's wire format",
-	"AnthropicUsage":               "mirrors the provider's wire format",
-	"AnthropicStreamEvent":         "mirrors the provider's wire format",
+	"AnthropicStreamEvent":         "a union over six event types, each an unexported struct in internal/streaming — no single Go type to compare against",
 }
 
 // checkSchemaFields compares each registered schema's documented properties
@@ -120,7 +165,7 @@ func checkSchemaFields(spec map[string]any) []string {
 				cs.name))
 			continue
 		}
-		documented, err := schemaProperties(node)
+		documented, err := schemaProperties(node, schemas)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("schema %q: %v", cs.name, err))
 			continue
@@ -203,21 +248,64 @@ func specSchemas(spec map[string]any) (map[string]any, error) {
 	return schemas, nil
 }
 
-// schemaProperties returns the top-level property names a schema declares.
-func schemaProperties(node any) (map[string]bool, error) {
-	obj, ok := node.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("not an object")
+// schemaProperties returns the property names a schema declares, following
+// allOf composition.
+//
+// allOf is how OpenAPI says "these fields plus those" — the natural way to
+// describe two endpoints that return the same row with and without a derived
+// annotation. Without following it, the checker would force every such schema
+// to duplicate its base fields, and a checker that pushes a document toward a
+// worse shape is not worth having.
+func schemaProperties(node any, all map[string]any) (map[string]bool, error) {
+	out := map[string]bool{}
+	if err := collectSchemaProperties(node, all, out, 0); err != nil {
+		return nil, err
 	}
-	props, ok := obj["properties"].(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("has no properties block")
-	}
-	out := make(map[string]bool, len(props))
-	for name := range props {
-		out[name] = true
+	if len(out) == 0 {
+		return nil, fmt.Errorf("declares no properties")
 	}
 	return out, nil
+}
+
+// maxSchemaDepth bounds allOf/$ref following. A spec that nests this deep is
+// either generated or cyclic, and either way the checker should say so rather
+// than recurse forever.
+const maxSchemaDepth = 8
+
+func collectSchemaProperties(node any, all map[string]any, out map[string]bool, depth int) error {
+	if depth > maxSchemaDepth {
+		return fmt.Errorf("allOf/$ref nesting deeper than %d — cyclic?", maxSchemaDepth)
+	}
+	obj, ok := node.(map[string]any)
+	if !ok {
+		return fmt.Errorf("not an object")
+	}
+
+	if ref, ok := obj["$ref"].(string); ok {
+		name, found := strings.CutPrefix(ref, "#/components/schemas/")
+		if !found {
+			return fmt.Errorf("cannot follow non-local $ref %q", ref)
+		}
+		target, ok := all[name]
+		if !ok {
+			return fmt.Errorf("$ref %q does not resolve", ref)
+		}
+		return collectSchemaProperties(target, all, out, depth+1)
+	}
+
+	if props, ok := obj["properties"].(map[string]any); ok {
+		for name := range props {
+			out[name] = true
+		}
+	}
+	if composed, ok := obj["allOf"].([]any); ok {
+		for _, part := range composed {
+			if err := collectSchemaProperties(part, all, out, depth+1); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // jsonFields returns the JSON names a struct type marshals to, flattening

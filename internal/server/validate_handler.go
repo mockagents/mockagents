@@ -29,10 +29,11 @@ func NewValidateHandler() *ValidateHandler {
 	return &ValidateHandler{}
 }
 
-// validateResponse is the JSON shape returned to the client.
+// ValidateResponse is the JSON shape returned to the client.
 // `ok` is a convenience boolean so the GUI doesn't need to inspect
 // the error array length.
-type validateResponse struct {
+// ValidateResponse is the body POST /api/v1/config/validate returns.
+type ValidateResponse struct {
 	OK     bool                      `json:"ok"`
 	Kind   string                    `json:"kind"`
 	Errors []*config.ValidationError `json:"errors"`
@@ -84,7 +85,7 @@ func (h *ValidateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	report := config.ValidateBytes(payload)
-	writeJSON(w, http.StatusOK, validateResponse{
+	writeJSON(w, http.StatusOK, ValidateResponse{
 		OK:     len(report.Errors) == 0,
 		Kind:   report.Kind,
 		Errors: report.Errors,

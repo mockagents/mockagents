@@ -31,15 +31,20 @@ type ReadinessHandlers struct {
 	Checks []ReadinessCheck
 }
 
-type readinessCheckResult struct {
+// ReadinessCheckResult is one check as GET /api/v1/ready reports it.
+//
+// Deliberately distinct from ReadinessCheck, which is the probe CONFIG: one
+// carries a function, the other is what goes on the wire. Conflating them is
+// an easy mistake — the drift checker made it first.
+type ReadinessCheckResult struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	Error  string `json:"error,omitempty"`
 }
 
-type readinessResponse struct {
+type ReadinessResponse struct {
 	Status string                 `json:"status"`
-	Checks []readinessCheckResult `json:"checks"`
+	Checks []ReadinessCheckResult `json:"checks"`
 }
 
 // Ready runs every check and returns 200 only when all pass; otherwise 503
@@ -49,13 +54,13 @@ func (h *ReadinessHandlers) Ready(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), readinessTimeout)
 	defer cancel()
 
-	resp := readinessResponse{
+	resp := ReadinessResponse{
 		Status: "ready",
-		Checks: make([]readinessCheckResult, 0, len(h.Checks)),
+		Checks: make([]ReadinessCheckResult, 0, len(h.Checks)),
 	}
 	status := http.StatusOK
 	for _, c := range h.Checks {
-		res := readinessCheckResult{Name: c.Name, Status: "ok"}
+		res := ReadinessCheckResult{Name: c.Name, Status: "ok"}
 		if err := c.Check(ctx); err != nil {
 			res.Status = "failed"
 			res.Error = err.Error()

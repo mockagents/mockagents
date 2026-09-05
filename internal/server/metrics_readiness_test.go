@@ -231,12 +231,12 @@ func TestChaosInjectionsAreRecorded(t *testing.T) {
 
 // ---- readiness -------------------------------------------------------------
 
-func readiness(t *testing.T, ts *httptest.Server) (int, readinessResponse) {
+func readiness(t *testing.T, ts *httptest.Server) (int, ReadinessResponse) {
 	t.Helper()
 	resp, err := ts.Client().Get(ts.URL + "/api/v1/ready")
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	var body readinessResponse
+	var body ReadinessResponse
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	return resp.StatusCode, body
 }
@@ -294,7 +294,7 @@ func TestReadinessFailsWhenLogStoreUnreachable(t *testing.T) {
 	status, body = readiness(t, ts)
 	assert.Equal(t, http.StatusServiceUnavailable, status)
 	assert.Equal(t, "not_ready", body.Status)
-	var storeCheck readinessCheckResult
+	var storeCheck ReadinessCheckResult
 	for _, c := range body.Checks {
 		if c.Name == "log_store" {
 			storeCheck = c

@@ -67,7 +67,7 @@ func (h *Handlers) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	h.recordAgentEvent(r, audit.EventAgentCreated, name, file)
 	h.Logger.Info("agent created", "agent", name, "persisted", persisted)
 
-	writeJSON(w, http.StatusCreated, h.finishAgentWrite(w, agentWriteResponse{
+	writeJSON(w, http.StatusCreated, h.finishAgentWrite(w, AgentWriteResponse{
 		Status: "created", Agent: name, Persisted: persisted, File: file,
 	}, tenantID))
 }
@@ -128,7 +128,7 @@ func (h *Handlers) PutAgent(w http.ResponseWriter, r *http.Request) {
 	h.recordAgentEvent(r, event, name, file)
 	h.Logger.Info("agent "+status, "agent", name, "persisted", persisted)
 
-	writeJSON(w, code, h.finishAgentWrite(w, agentWriteResponse{
+	writeJSON(w, code, h.finishAgentWrite(w, AgentWriteResponse{
 		Status: status, Agent: name, Persisted: persisted, File: file,
 	}, tenantID))
 }
@@ -181,16 +181,21 @@ func (h *Handlers) DeleteAgent(w http.ResponseWriter, r *http.Request) {
 	h.recordAgentEvent(r, audit.EventAgentDeleted, name, file)
 	h.Logger.Info("agent deleted", "agent", name)
 
-	writeJSON(w, http.StatusOK, agentWriteResponse{Status: "deleted", Agent: name, File: file})
+	writeJSON(w, http.StatusOK, AgentWriteResponse{Status: "deleted", Agent: name, File: file})
 }
 
-// agentWriteResponse is the JSON envelope returned by the agent write routes.
+// AgentWriteResponse is the JSON envelope returned by the agent write routes.
 //
 // Persisted is load-bearing, not decoration: it is how a caller tells a save
 // that reached disk from one that exists only in the running process (no
 // AgentsDir configured). A restart keeps the first and loses the second, so a
 // UI must never render both as plain "saved" (epic §10).
-type agentWriteResponse struct {
+// AgentWriteResponse is the body the agent write endpoints return.
+//
+// Exported because it is the published wire contract of a public route, not
+// an implementation detail — which also lets tools/driftcheck compare it
+// against the OpenAPI schema that claims to describe it.
+type AgentWriteResponse struct {
 	Status    string `json:"status"`
 	Agent     string `json:"agent"`
 	Persisted bool   `json:"persisted"`
@@ -204,7 +209,7 @@ type agentWriteResponse struct {
 // finishAgentWrite computes the post-write revision, publishes it as the ETag,
 // and returns the response envelope with it filled in. The caller holds
 // agentWriteMu, so the revision it reads is the one it just wrote.
-func (h *Handlers) finishAgentWrite(w http.ResponseWriter, resp agentWriteResponse, tenantID string) agentWriteResponse {
+func (h *Handlers) finishAgentWrite(w http.ResponseWriter, resp AgentWriteResponse, tenantID string) AgentWriteResponse {
 	if rev, ok, err := h.agentRevisionFor(resp.Agent, tenantID); ok && err == nil {
 		setRevisionHeaders(w, rev)
 		resp.Revision = rev.ETag()
@@ -284,7 +289,7 @@ func (h *Handlers) decodeAgent(w http.ResponseWriter, r *http.Request, wantName 
 		return nil, nil, false
 	}
 	if len(report.Errors) > 0 {
-		writeJSON(w, http.StatusUnprocessableEntity, validateResponse{
+		writeJSON(w, http.StatusUnprocessableEntity, ValidateResponse{
 			OK: false, Kind: report.Kind, Errors: report.Errors,
 		})
 		return nil, nil, false
