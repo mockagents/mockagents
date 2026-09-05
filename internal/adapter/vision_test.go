@@ -321,6 +321,8 @@ func TestGeminiImageParts(t *testing.T) {
 		{"file pdf", []GeminiPart{{FileData: &GeminiFileData{MimeType: "application/pdf", FileURI: "u"}}}, 0},
 		{"media without a mime type", []GeminiPart{{InlineData: &GeminiInlineData{Data: "x"}}}, 0},
 		{"function call is not media", []GeminiPart{{FunctionCall: &GeminiFunctionCall{Name: "f"}}}, 0},
+		{"case-insensitive and trimmed inline image", []GeminiPart{{InlineData: &GeminiInlineData{MimeType: "  Image/PNG  ", Data: "x"}}}, 1},
+		{"case-insensitive and trimmed file image", []GeminiPart{{FileData: &GeminiFileData{MimeType: "  IMAGE/JPEG  ", FileURI: "u"}}}, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

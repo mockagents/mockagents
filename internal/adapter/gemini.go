@@ -81,10 +81,10 @@ type GeminiFileData struct {
 func geminiImageParts(parts []GeminiPart) int {
 	images := 0
 	for _, p := range parts {
-		if p.InlineData != nil && strings.HasPrefix(p.InlineData.MimeType, "image/") {
+		if p.InlineData != nil && strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.InlineData.MimeType)), "image/") {
 			images++
 		}
-		if p.FileData != nil && strings.HasPrefix(p.FileData.MimeType, "image/") {
+		if p.FileData != nil && strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.FileData.MimeType)), "image/") {
 			images++
 		}
 	}
