@@ -227,6 +227,14 @@ func (s *SQLiteStore) Query(ctx context.Context, filter InteractionFilter) ([]In
 	if filter.SessionID != "" {
 		query += " AND session_id = ?"
 		args = append(args, filter.SessionID)
+	} else if filter.SessionPrefix != "" {
+		// LIKE 'prefix%' with no leading wildcard, so idx_logs_session is still
+		// usable as a range scan. ESCAPE makes _ and % in a caller-supplied
+		// prefix literal — a session id containing one would otherwise widen
+		// the match silently, and "_" appears in ids more often than anyone
+		// expects.
+		query += ` AND session_id LIKE ? ESCAPE '\'`
+		args = append(args, escapeLikePrefix(filter.SessionPrefix)+"%")
 	}
 	if filter.Since != "" {
 		query += " AND timestamp >= ?"
@@ -461,4 +469,15 @@ func SanitizeBody(body string) string {
 		}
 	}
 	return sanitized
+}
+
+// escapeLikePrefix makes a caller-supplied string safe as a LIKE prefix: the
+// wildcards _ and % and the escape character itself become literals. Without
+// it, a session id containing "_" would match any character in that position
+// and quietly return rows from other sessions.
+func escapeLikePrefix(prefix string) string {
+	// Order matters only in that NewReplacer never re-scans its own output, so
+	// the backslash rule cannot double-escape what the other two produce.
+	r := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`)
+	return r.Replace(prefix)
 }

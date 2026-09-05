@@ -270,9 +270,10 @@ function RunEvidence({
       )}
 
       <p className="hint">
-        These are the results the run returned. They are not linked to interaction-log
-        entries — the server does not report a log id for a run — so finding the
-        corresponding requests means searching the logs by time or agent.
+        These are the results the run returned, and the only record of it. A pipeline run
+        executes the engine in process rather than over HTTP, and the interaction log is
+        written by the HTTP layer — so nothing from this run appears in the logs, under
+        any filter. The evidence above is not a summary of log entries; it is all there is.
       </p>
     </div>
   );

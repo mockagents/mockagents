@@ -34,10 +34,18 @@ type InteractionFilter struct {
 	FilterTenantID bool
 	AgentName      string
 	SessionID      string
-	Since          string // ISO 8601 timestamp
-	Until          string // ISO 8601 timestamp
-	Limit          int
-	Offset         int
+	// SessionPrefix matches every session id STARTING WITH this value.
+	//
+	// A pipeline run scopes each node's session as
+	// "<session>::<pipeline>::<node>", so the id an operator submitted never
+	// equals any id in the log. Exact equality therefore cannot answer "show me
+	// what this run did", which is the one question a run's evidence leads to.
+	// Ignored when SessionID is set: an exact id is the more specific request.
+	SessionPrefix string
+	Since         string // ISO 8601 timestamp
+	Until         string // ISO 8601 timestamp
+	Limit         int
+	Offset        int
 }
 
 // DefaultLimit is the default number of log entries returned.

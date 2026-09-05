@@ -28,6 +28,7 @@ export default async function LogsPage({ searchParams }: PageProps) {
         offset: filters.offset,
         agent: filters.agent || undefined,
         session_id: filters.session_id || undefined,
+        session_prefix: filters.session_prefix || undefined,
         since: filters.since || undefined,
         until: filters.until || undefined,
       }),
@@ -44,6 +45,7 @@ export default async function LogsPage({ searchParams }: PageProps) {
         limit,
         agent: filters.agent || undefined,
         session_id: filters.session_id || undefined,
+        session_prefix: filters.session_prefix || undefined,
         since: filters.since || undefined,
         until: filters.until || undefined,
       });

@@ -183,6 +183,7 @@ describe("parseFilters", () => {
     );
     expect(f).toEqual({
       agent: "bot",
+      session_prefix: "",
       session_id: "s-1",
       since: "2026-01-01T00:00:00Z",
       until: "",
