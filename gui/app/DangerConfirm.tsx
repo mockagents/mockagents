@@ -1,6 +1,9 @@
 "use client";
 
-// UX-07: the one place an irreversible administrative action is confirmed.
+// The one place an irreversible action is confirmed — administrative (UX-07)
+// or otherwise. It moved out of app/admin/ when agent deletion started using
+// it (X-3): destroying a mock is as irreversible as destroying a tenant, and
+// the design's destructive-dialog spec is not an admin-only rule.
 //
 // The shape is fixed by the design's destructive-dialog spec:
 //

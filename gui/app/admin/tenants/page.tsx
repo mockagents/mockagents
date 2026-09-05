@@ -13,7 +13,7 @@ import {
 import { getAuthStatus } from "@/lib/auth";
 import { Icon } from "@/lib/icons";
 
-import { DangerConfirm } from "../DangerConfirm";
+import { DangerConfirm } from "../../DangerConfirm";
 
 type PageProps = {
   searchParams: Promise<{ error?: string; created?: string }>;

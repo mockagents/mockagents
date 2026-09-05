@@ -6,7 +6,7 @@ import { burnSession, getAuthStatus, logout, rotateSelf } from "@/lib/auth";
 import { setFlash, takeFlash } from "@/lib/flash";
 import { Icon } from "@/lib/icons";
 
-import { DangerConfirm } from "../admin/DangerConfirm";
+import { DangerConfirm } from "../DangerConfirm";
 
 type PageProps = {
   searchParams: Promise<{
