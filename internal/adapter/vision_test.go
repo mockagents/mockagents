@@ -279,3 +279,151 @@ func TestAnthropic_Vision_NoImage_HeaderAbsent(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Empty(t, rec.Header().Get("X-Mockagents-Image-Count"))
 }
+
+// --- Gemini ---
+
+func visionGeminiAgent() *types.AgentDefinition {
+	return &types.AgentDefinition{
+		Metadata: types.Metadata{Name: "vision-gemini"},
+		Spec: types.AgentSpec{
+			Protocol: "google-gemini", Model: "gemini-vision",
+			Behavior: visionScenarios(),
+		},
+	}
+}
+
+func geminiInlineImage() GeminiPart {
+	return GeminiPart{InlineData: &GeminiInlineData{MimeType: "image/png", Data: "iVBORw0KGgo="}}
+}
+
+func geminiFileImage() GeminiPart {
+	return GeminiPart{FileData: &GeminiFileData{
+		MimeType: "image/jpeg", FileURI: "https://generativelanguage.googleapis.com/v1beta/files/abc"}}
+}
+
+// --- unit: the counter ---
+
+func TestGeminiImageParts(t *testing.T) {
+	cases := []struct {
+		name  string
+		parts []GeminiPart
+		want  int
+	}{
+		{"text only", []GeminiPart{{Text: "hi"}}, 0},
+		{"no parts", nil, 0},
+		{"inline image", []GeminiPart{geminiInlineImage()}, 1},
+		{"file image", []GeminiPart{geminiFileImage()}, 1},
+		{"text plus image", []GeminiPart{{Text: "look"}, geminiInlineImage()}, 1},
+		{"two images", []GeminiPart{geminiInlineImage(), geminiFileImage()}, 2},
+		// has_image means an image: inlineData and fileData also carry audio,
+		// video and PDFs, which the other adapters would not count either.
+		{"inline audio", []GeminiPart{{InlineData: &GeminiInlineData{MimeType: "audio/mp3", Data: "x"}}}, 0},
+		{"file pdf", []GeminiPart{{FileData: &GeminiFileData{MimeType: "application/pdf", FileURI: "u"}}}, 0},
+		{"media without a mime type", []GeminiPart{{InlineData: &GeminiInlineData{Data: "x"}}}, 0},
+		{"function call is not media", []GeminiPart{{FunctionCall: &GeminiFunctionCall{Name: "f"}}}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, geminiImageParts(tc.parts))
+		})
+	}
+}
+
+func TestConvertGeminiContentsCountsImages(t *testing.T) {
+	msgs, total := convertGeminiContents([]GeminiContent{
+		{Role: "user", Parts: []GeminiPart{{Text: "look"}, geminiInlineImage()}},
+		{Role: "model", Parts: []GeminiPart{{Text: "ok"}}},
+		{Role: "user", Parts: []GeminiPart{geminiFileImage(), geminiInlineImage()}},
+	}, nil)
+
+	require.Len(t, msgs, 3)
+	assert.Equal(t, 3, total)
+	assert.Equal(t, 1, msgs[0].ImageCount)
+	assert.Equal(t, 0, msgs[1].ImageCount)
+	assert.Equal(t, 2, msgs[2].ImageCount)
+	// The flattened text stays marker-free, as in the other two adapters.
+	assert.Equal(t, "look", msgs[0].Content)
+	assert.Equal(t, "", msgs[2].Content)
+}
+
+// --- Gemini e2e ---
+
+func TestGemini_Vision_InlineDataAndFileData(t *testing.T) {
+	h := &GeminiHandler{Engine: testEngine(visionGeminiAgent())}
+	for _, part := range []GeminiPart{geminiInlineImage(), geminiFileImage()} {
+		rec := doGeminiRequest(t, h, "gemini-vision", "generateContent", GeminiRequest{
+			Contents: []GeminiContent{{Role: "user", Parts: []GeminiPart{part}}},
+		})
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		assert.Equal(t, "1", rec.Header().Get("X-Mockagents-Image-Count"))
+		var resp GeminiResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		assert.Equal(t, "I see an image.", resp.Candidates[0].Content.Parts[0].Text)
+	}
+}
+
+func TestGemini_Vision_ImageOnly_NoEmptyMessageError(t *testing.T) {
+	h := &GeminiHandler{Engine: testEngine(visionGeminiAgent())}
+	rec := doGeminiRequest(t, h, "gemini-vision", "generateContent", GeminiRequest{
+		Contents: []GeminiContent{{Role: "user", Parts: []GeminiPart{geminiInlineImage()}}},
+	})
+	assert.Equal(t, http.StatusOK, rec.Code, "image-only turn must not be rejected as empty")
+}
+
+func TestGemini_Vision_MultiImageCount(t *testing.T) {
+	h := &GeminiHandler{Engine: testEngine(visionGeminiAgent())}
+	rec := doGeminiRequest(t, h, "gemini-vision", "generateContent", GeminiRequest{
+		Contents: []GeminiContent{{Role: "user", Parts: []GeminiPart{
+			geminiInlineImage(), geminiFileImage()}}},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "2", rec.Header().Get("X-Mockagents-Image-Count"))
+}
+
+func TestGemini_Vision_NoImage_HeaderAbsent(t *testing.T) {
+	h := &GeminiHandler{Engine: testEngine(visionGeminiAgent())}
+	rec := doGeminiRequest(t, h, "gemini-vision", "generateContent", GeminiRequest{
+		Contents: []GeminiContent{{Role: "user", Parts: []GeminiPart{{Text: "hello"}}}},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, rec.Header().Get("X-Mockagents-Image-Count"))
+}
+
+func TestGemini_Vision_TextAndImage_TextStillMatches(t *testing.T) {
+	// "greeting" is declared after "image-present", so a text+image turn that
+	// matches both proves nothing; use the standard agent, which has no
+	// has_image rule, to show the text match is undisturbed.
+	h := &GeminiHandler{Engine: testEngine(testGeminiAgent())}
+	rec := doGeminiRequest(t, h, "gemini-1.5-pro", "generateContent", GeminiRequest{
+		Contents: []GeminiContent{{Role: "user", Parts: []GeminiPart{
+			{Text: "hello"}, geminiInlineImage()}}},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "1", rec.Header().Get("X-Mockagents-Image-Count"))
+	var resp GeminiResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "Hi there!", resp.Candidates[0].Content.Parts[0].Text)
+}
+
+func TestGemini_Vision_StreamingHeaderSet(t *testing.T) {
+	h := &GeminiHandler{Engine: testEngine(visionGeminiAgent())}
+	rec := doGeminiRequest(t, h, "gemini-vision", "streamGenerateContent", GeminiRequest{
+		Contents: []GeminiContent{{Role: "user", Parts: []GeminiPart{geminiInlineImage()}}},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "1", rec.Header().Get("X-Mockagents-Image-Count"))
+}
+
+func TestGemini_Vision_NonImageMediaDoesNotMatchHasImage(t *testing.T) {
+	h := &GeminiHandler{Engine: testEngine(visionGeminiAgent())}
+	rec := doGeminiRequest(t, h, "gemini-vision", "generateContent", GeminiRequest{
+		Contents: []GeminiContent{{Role: "user", Parts: []GeminiPart{
+			{Text: "transcribe this"},
+			{InlineData: &GeminiInlineData{MimeType: "audio/mp3", Data: "AAAA"}}}}},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, rec.Header().Get("X-Mockagents-Image-Count"))
+	var resp GeminiResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "No image.", resp.Candidates[0].Content.Parts[0].Text)
+}
