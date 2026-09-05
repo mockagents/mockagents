@@ -17,6 +17,37 @@ test.describe("agent catalog", () => {
     await expect(page.getByRole("link", { name: agents[0].name, exact: true })).toBeVisible();
   });
 
+  // U3-6: the two columns the design's inventory has, against real data. The
+  // examples are file-backed, so the API must say so and the catalog must show
+  // it — and the revision it shows has to be the one the server serves.
+  test("reports durability and revision, and agrees with the per-agent read", async ({ page }) => {
+    const res = await page.request.get(`${API_URL}/api/v1/agents`);
+    const agents = (await res.json()) as Array<{
+      name: string;
+      effective_revision?: string;
+      persistence?: string;
+      file?: string;
+    }>;
+    const seeded = agents.find((a) => a.name === "echo-agent");
+    test.skip(!seeded, "echo-agent not served");
+
+    // Loaded from the staged examples directory, so it is file-backed.
+    expect(seeded!.persistence).toBe("file");
+    expect(seeded!.file).toMatch(/\.ya?ml$/);
+    // The listing's revision is the EFFECTIVE one, matching the header of the
+    // same name — not the ETag, which also covers the backing file. Asserting
+    // against the ETag would pass only by coincidence, and would enshrine a
+    // value nobody can use as a precondition.
+    const one = await page.request.get(`${API_URL}/api/v1/agents/echo-agent`, {
+      headers: { Accept: "application/yaml" },
+    });
+    expect(one.headers()["x-mockagents-revision-effective"]).toBe(seeded!.effective_revision);
+    expect((one.headers()["etag"] ?? "").replace(/"/g, "")).not.toBe(seeded!.effective_revision);
+
+    await page.goto("/", { waitUntil: "networkidle" });
+    await expect(page.getByText("persisted").first()).toBeVisible();
+  });
+
   test("search narrows the catalog", async ({ page }) => {
     await page.goto("/", { waitUntil: "networkidle" });
     const search = page.getByPlaceholder(/search agents/i);

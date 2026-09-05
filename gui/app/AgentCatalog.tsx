@@ -110,6 +110,51 @@ export function AgentCatalog({
   );
 }
 
+/** Durability and revision at a glance (U3-6).
+ *
+ * "Which of my agents survive a restart?" used to be answerable only one agent
+ * at a time. The three states are kept distinct because they lead somewhere
+ * different: a file-backed agent is fine, a runtime-only one was created that
+ * way, and a tracked file that has gone missing is a surprise waiting for the
+ * next restart.
+ *
+ * An older server sends no `persistence` field. That is UNKNOWN, and renders as
+ * nothing at all rather than as "runtime" — guessing here would tell someone
+ * their durable agents are about to disappear. */
+function PersistenceLine({ a }: { a: AgentSummary }) {
+  if (!a.persistence && !a.effective_revision) return null;
+  return (
+    <div className="row gap-2" style={{ flexWrap: "wrap", marginTop: 2 }}>
+      {a.persistence === "file" && (
+        <span className="badge badge-ok" title={a.file ? `backed by ${a.file}` : undefined}>
+          persisted
+        </span>
+      )}
+      {a.persistence === "runtime" && (
+        <span className="badge badge-warn" title="created at runtime; lost when the server restarts">
+          runtime-only
+        </span>
+      )}
+      {a.persistence === "missing" && (
+        <span
+          className="badge badge-destructive"
+          title={`${a.file ?? "its backing file"} is tracked but not present; this definition is serving from memory`}
+        >
+          file missing
+        </span>
+      )}
+      {a.effective_revision && (
+        <span
+          className="tag mono"
+          title="revision of the running definition (not the ETag — fetch the agent for a precondition)"
+        >
+          {a.effective_revision.slice(0, 8)}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function AgentCard({
   a,
   deleteAction,
@@ -191,6 +236,7 @@ function AgentCard({
         )}
       </div>
       {a.description && <p className="ac-desc">{a.description}</p>}
+      <PersistenceLine a={a} />
       <div className="ac-stats">
         <div className="ac-stat">
           <span className="n">{a.scenario_count}</span>
