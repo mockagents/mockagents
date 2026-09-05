@@ -335,6 +335,11 @@ jobs:
       # root LICENSE, both SDK manifests, and the OpenAPI info block. Fails
       # loudly on drift so a renamed component or a manifest regenerated back
       # to MIT can't slip in. The tool's own unit tests run in the Go job.
+      #
+      # It also compares each documented schema's field set against the Go type
+      # that produces it, in both directions. A $ref check could not see that:
+      # the references resolved perfectly while AgentSummary documented three
+      # fields that had never existed and InteractionLog typed its id as a uuid.
       - name: API/SDK drift check
         run: go run ./tools/driftcheck
 

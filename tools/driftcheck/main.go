@@ -3,7 +3,12 @@
 //  1. Every internal `$ref: '#/...'` in docs/api-spec.yaml resolves to a node
 //     that actually exists, so the OpenAPI document can never reference a
 //     component it has since deleted or renamed.
-//  2. The license string agrees across the root LICENSE, both SDK manifests,
+//  2. Every schema in that document still describes the fields its Go wire type
+//     actually carries, in both directions. A $ref check cannot see this: the
+//     references resolve perfectly while the schema behind them describes a
+//     different API, which is how AgentSummary came to document three fields
+//     that had never existed.
+//  3. The license string agrees across the root LICENSE, both SDK manifests,
 //     and the OpenAPI info block — all Apache-2.0. This guards REF-01 from
 //     silently drifting back to MIT when someone regenerates a manifest.
 //
@@ -31,7 +36,9 @@ func main() {
 	flag.Parse()
 
 	var problems []string
-	problems = append(problems, checkAPIRefs(filepath.Join(*root, "docs", "api-spec.yaml"))...)
+	specPath := filepath.Join(*root, "docs", "api-spec.yaml")
+	problems = append(problems, checkAPIRefs(specPath)...)
+	problems = append(problems, checkSpecSchemas(specPath)...)
 	problems = append(problems, checkLicenses(*root)...)
 
 	if len(problems) > 0 {
@@ -41,7 +48,11 @@ func main() {
 		}
 		os.Exit(1)
 	}
-	fmt.Printf("drift check OK: api-spec $refs resolve; licenses agree on %s\n", wantLicense)
+	// The schema count is printed so the coverage is visible in CI output: a
+	// number that quietly drops means schemas stopped being checked, which the
+	// exit code alone would not say.
+	fmt.Printf("drift check OK: api-spec $refs resolve; %d schemas match their Go types; licenses agree on %s\n",
+		len(checkedSchemas), wantLicense)
 }
 
 // checkAPIRefs verifies every internal JSON-pointer $ref in the OpenAPI doc
@@ -190,4 +201,18 @@ func specLicense(path string) (string, error) {
 		return "", fmt.Errorf("parse %s: %v", path, err)
 	}
 	return doc.Info.License.Name, nil
+}
+
+// checkSpecSchemas loads the OpenAPI document and compares its schemas against
+// the Go types that produce them.
+func checkSpecSchemas(specPath string) []string {
+	data, err := os.ReadFile(specPath)
+	if err != nil {
+		return []string{fmt.Sprintf("read %s: %v", specPath, err)}
+	}
+	var spec map[string]any
+	if err := yaml.Unmarshal(data, &spec); err != nil {
+		return []string{fmt.Sprintf("parse %s: %v", specPath, err)}
+	}
+	return checkSchemaFields(spec)
 }
