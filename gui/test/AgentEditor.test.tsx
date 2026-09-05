@@ -243,6 +243,103 @@ describe("AgentEditor", () => {
     });
   });
 
+  // U3-3. The editor writes to the LIVE runtime — there is no isolated preview
+  // in Release A — so the pipelines that depend on this agent are the blast
+  // radius, and they belong next to the diff rather than after the fact.
+  describe("what an apply will change", () => {
+    async function review(user: ReturnType<typeof userEvent.setup>) {
+      await editDraft(user, "changed: true");
+      await user.click(reviewButton());
+      await waitFor(() => expect(applyButton()).toBeEnabled());
+    }
+
+    it("names the pipelines whose next run would use the change", async () => {
+      const user = userEvent.setup();
+      setup({ referencingPipelines: ["support-triage", "research-pipeline"] });
+      await review(user);
+
+      expect(screen.getByText(/Applying changes the active runtime/i)).toBeInTheDocument();
+      expect(screen.getByText("support-triage")).toBeInTheDocument();
+      expect(screen.getByText("research-pipeline")).toBeInTheDocument();
+      expect(screen.getByText(/no isolated preview/i)).toBeInTheDocument();
+    });
+
+    it("says nothing depends on it only when that was actually established", async () => {
+      const user = userEvent.setup();
+      setup({ referencingPipelines: [] });
+      await review(user);
+      expect(screen.getByText(/No registered pipeline references this agent/i)).toBeInTheDocument();
+    });
+
+    // An empty list and an unreadable list are different facts, and only one of
+    // them means "nothing depends on this".
+    it("reports an unreadable pipeline inventory as unknown, not as none", async () => {
+      const user = userEvent.setup();
+      setup({ referencingPipelines: [], pipelinesReadable: false });
+      await review(user);
+
+      expect(screen.getByText(/unknown/i)).toBeInTheDocument();
+      expect(screen.queryByText(/No registered pipeline references this agent/i)).toBeNull();
+    });
+  });
+
+  // U3-5. Offline is not a permission problem, and it is not a defect in the
+  // document being edited. Before this, both write controls stayed enabled and
+  // an Apply against a stopped server came back as "Outcome unknown" — alarming
+  // language for a request that never left the machine.
+  describe("offline", () => {
+    it("disables the controls that need the server, and says why", () => {
+      setup({ online: false });
+
+      expect(screen.getByRole("button", { name: /validate/i })).toBeDisabled();
+      expect(reviewButton()).toBeDisabled();
+      expect(applyButton()).toBeDisabled();
+      expect(screen.getByRole("alert")).toHaveTextContent(/Server unreachable/i);
+    });
+
+    it("keeps the draft editable and exportable while the server is down", async () => {
+      const user = userEvent.setup();
+      setup({ online: false });
+
+      // Editing still works — the draft is the user's, not the server's.
+      await editDraft(user, "written-while-offline: true");
+      expect(editor()).toHaveValue("written-while-offline: true");
+      expect(screen.getByRole("button", { name: /export draft/i })).toBeEnabled();
+    });
+
+    it("does not also claim a role problem", () => {
+      // Two banners blaming different things for one symptom sends the
+      // operator looking for a permission that is not the issue.
+      setup({ online: false });
+      expect(screen.queryByText(/Read-only for your role/i)).toBeNull();
+    });
+  });
+
+  // U3-4. Handoff §8 keeps a durable draft store out of Release A, so the
+  // browser really is the only copy — which makes export part of the honesty
+  // story rather than a convenience.
+  describe("export draft", () => {
+    it("is offered even to a viewer who cannot apply", () => {
+      setup({ canWrite: false });
+      expect(screen.getByRole("button", { name: /export draft/i })).toBeEnabled();
+      expect(applyButton()).toBeDisabled();
+    });
+
+    it("says the draft lives only in this browser session", () => {
+      setup();
+      expect(screen.getByText(/in this browser session\s*only/i)).toBeInTheDocument();
+      expect(screen.getByText(/Durable drafts are not part of Release A/i)).toBeInTheDocument();
+    });
+
+    it("reports a blocked download instead of appearing to have saved", async () => {
+      // jsdom has no createObjectURL, so this exercises the real failure path.
+      const user = userEvent.setup();
+      setup();
+      await user.click(screen.getByRole("button", { name: /export draft/i }));
+      expect(await screen.findByText(/Could not start the download/i)).toBeInTheDocument();
+    });
+  });
+
   describe("conflict", () => {
     const conflicting = vi.fn(
       async (): Promise<ConditionalSaveResult> => ({

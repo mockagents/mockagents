@@ -56,9 +56,9 @@ not simply a to-do list.
 | U1-3 | Identity probed per screen instead of once per navigation | UX-01 | C — fixed |
 | U3-1 | No save receipt; the new revision the API returns is discarded | UX-03 | **A** — fixed |
 | U3-2 | Conflict drops `currentRevision` and the legacy-writer disclosure | UX-03 | **A** — fixed |
-| U3-3 | Diff step never says Apply changes the live runtime | UX-03 | B |
-| U3-4 | No Export draft; nothing says drafts are browser-memory only | UX-03 | B |
-| U3-5 | Editor has no offline state; a write to a dead server reports "unknown" | UX-03 | B |
+| U3-3 | Diff step never says Apply changes the live runtime | UX-03 | B — fixed |
+| U3-4 | No Export draft; nothing says drafts are browser-memory only | UX-03 | B — fixed |
+| U3-5 | Editor has no offline state; a write to a dead server reports "unknown" | UX-03 | B — fixed |
 | U3-6 | Inventory has no revision or persistence column | UX-03 | X → B |
 | U3-7 | Editor header lacks revision / persisted / file chips | UX-03 | C |
 | U4-1 | Gaps render as a banner, not as gap rows in the table | UX-04 | **A** — fixed |
@@ -311,6 +311,14 @@ editor is the other half of it, and the half with the larger blast radius, becau
 edit affects every future run rather than one. The referencing pipelines are
 computable from `listPipelines()`.
 
+**Fixed 2026-09-05.** The diff step now names the pipelines whose next run would
+use the change. `listPipelines()` returns counts rather than refs, so each
+definition is read — bounded by how many pipelines a server has, since they are
+hand-authored documents rather than user data. A failure to read any one of them
+makes the whole answer *unknown* rather than silently shorter: an empty list and
+an unreadable list are different facts, and only one of them means nothing
+depends on this agent.
+
 ### U3-4 — No Export draft, and nothing says drafts are ephemeral · B
 
 Handoff §8 settles this: *"Release A designs assume browser-memory drafts + explicit
@@ -321,6 +329,13 @@ reads *"durable drafts — not in Release A"*.
 Neither exists. A draft dies with the tab and the operator is never told — which also
 removes the escape hatch the design offers a viewer (*"You can still run pipelines in
 Test Lab and export drafts"*) and the one it offers during an outage.
+
+**Fixed 2026-09-05.** Export draft is present and available to everyone — a
+viewer who cannot apply, and an operator whose server is down. The browser-only
+statement is unconditional rather than appearing once something has been typed.
+A blocked download reports itself instead of silently doing nothing, which
+matters because the alternative is an operator believing a draft was saved when
+nothing left the page.
 
 ### U3-5 — The editor has no offline state · B
 
@@ -333,6 +348,13 @@ a stopped server returns `status: "error"`, rendered as **"Outcome unknown."**
 ([`AgentEditor.tsx:439`](../../gui/app/agents/[name]/edit/AgentEditor.tsx#L439)). For a
 write that never left the machine, "unknown" is defensible but needlessly alarming —
 and the strip from X-1 already knows the server is down.
+
+**Fixed 2026-09-05.** Validate, Review and Apply are disabled while the server is
+unreachable, each with a reason naming the server rather than the document or the
+role. The read-only-for-your-role banner is suppressed at the same time: two
+banners blaming different things for one symptom sends someone hunting for a
+permission that is not the problem. Editing and exporting stay available, because
+the draft is the user's and does not depend on the server.
 
 ### U3-6 — The inventory has no revision or persistence column · X → B
 
@@ -632,8 +654,8 @@ Grouped so each is one reviewable slice with its own tests.
 5. ~~**U3-1 + U3-2**~~ **Done 2026-09-05** — save receipt with the new revision; conflict card showing both
    revisions plus the legacy-writer disclosure. Presentation over machinery that is
    already correct.
-6. **U3-3 + U3-4 + U3-5** — active-runtime warning on the diff, Export draft, editor
-   offline state.
+6. ~~**U3-3 + U3-4 + U3-5**~~ **Done 2026-09-05** — active-runtime warning on the diff,
+   Export draft, editor offline state.
 7. **U5-3, X-2** — node inspector, `unsupported` variant. (U1-2's catalog half
    shipped with X-3.)
 8. Backend slices, if approved: `session_prefix` log filter (§9.3), `AgentSummary`

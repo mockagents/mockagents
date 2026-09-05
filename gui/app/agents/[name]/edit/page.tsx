@@ -5,6 +5,9 @@ import {
   can,
   getAgentSource,
   getIdentity,
+  getPipeline,
+  getServerStatus,
+  listPipelines,
   saveAgentConditional,
   validateYAML,
   type ConditionalSaveResult,
@@ -75,6 +78,30 @@ export default async function EditAgentPage({ params }: PageProps) {
     canWrite = true;
   }
 
+  // U3-5: liveness, so the write controls can be disabled with a reason instead
+  // of failing on click. Memoized per render, so this shares the layout's probe.
+  const status = await getServerStatus();
+  const online = status.liveness === "process-up";
+
+  // U3-3: which pipelines reference this agent — the blast radius of an Apply.
+  // The list endpoint returns counts, not refs, so each definition has to be
+  // read. That is bounded by how many pipelines a server has (they are
+  // hand-authored YAML documents, not user data), and a failure to read any one
+  // of them makes the whole answer UNKNOWN rather than silently shorter.
+  let referencingPipelines: string[] = [];
+  let pipelinesReadable = true;
+  try {
+    const summaries = await listPipelines();
+    const defs = await Promise.all(summaries.map((p) => getPipeline(p.name).catch(() => null)));
+    pipelinesReadable = defs.every((d) => d !== null);
+    referencingPipelines = defs
+      .filter((d) => d !== null)
+      .filter((d) => (d.spec.agents ?? []).some((a) => a.ref === name))
+      .map((d) => d.metadata.name);
+  } catch {
+    pipelinesReadable = false;
+  }
+
   async function validateAction(yaml: string): Promise<ValidateResult> {
     "use server";
     return validateYAML(yaml);
@@ -101,6 +128,9 @@ export default async function EditAgentPage({ params }: PageProps) {
       original={source.yaml}
       revision={source.revision}
       canWrite={canWrite}
+      online={online}
+      referencingPipelines={referencingPipelines}
+      pipelinesReadable={pipelinesReadable}
       validateAction={validateAction}
       saveAction={saveAction}
       reloadAction={reloadAction}
