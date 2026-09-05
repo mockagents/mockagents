@@ -503,31 +503,45 @@ describe("RunPanel", () => {
     });
   });
 
-  // U5-4 stays BLOCKED, and for a deeper reason than the audit first found.
+  // U5-4, finally unblocked — and it took a product change, not a UI one.
   //
-  // The audit blamed the log filter's exact-match semantics. The filter was
-  // fixed (session_prefix, §9.3) and a run still has nothing to link to: a
-  // pipeline run executes the engine IN PROCESS, while the interaction log is
-  // written by HTTP middleware, so no node of a run is ever recorded. Measured,
-  // not inferred — a 200 run adds zero rows while a direct HTTP call adds one.
-  //
-  // A "check the logs" button would therefore land on an empty window, which is
-  // the exact failure the audit warned against. These pin the honest version.
+  // The audit blamed the log filter's exact-match semantics. Fixing that
+  // (session_prefix) was necessary and not sufficient: a run had nothing to
+  // link TO, because the executor calls the engine in process while the log is
+  // written by HTTP middleware. Recording node executions closed that, and the
+  // link is only correct now that both halves exist.
   describe("finding this run in the logs", () => {
-    it("offers no log link, because there would be nothing behind it", async () => {
+    it("links by session PREFIX, not by the exact id", async () => {
       const user = userEvent.setup();
       setup();
       await run(user);
-      await screen.findByRole("table");
-      expect(screen.queryByRole("link", { name: /logs/i })).toBeNull();
+
+      const link = await screen.findByRole("link", { name: /open this run in the logs/i });
+      const query = new URLSearchParams(link.getAttribute("href")!.split("?")[1]);
+      // The engine scopes each node's session, so an exact filter finds nothing.
+      expect(query.get("session_prefix")).toBe("sess-fixed::");
+      expect(query.get("session_id")).toBeNull();
     });
 
-    it("says why, rather than leaving it to be discovered", async () => {
+    it("offers the same link when the outcome is unknown", async () => {
+      // Where it matters most: establishing what actually happened before
+      // deciding whether to re-run something stateful.
+      const user = userEvent.setup();
+      setup({
+        runAction: vi.fn(async () => ({ status: "unknown" as const, message: "connection lost" })),
+      });
+      await run(user);
+
+      expect(
+        await screen.findByRole("link", { name: /check the logs for this run/i }),
+      ).toHaveAttribute("href", expect.stringContaining("session_prefix=sess-fixed"));
+    });
+
+    it("does not present the rows as ordinary HTTP requests", async () => {
       const user = userEvent.setup();
       setup();
       await run(user);
-      expect(await screen.findByText(/executes the engine in process/i)).toBeInTheDocument();
-      expect(screen.getByText(/under\s+any filter/i)).toBeInTheDocument();
+      expect(await screen.findByText(/no HTTP method, path or status/i)).toBeInTheDocument();
     });
   });
 
@@ -562,11 +576,11 @@ describe("RunPanel", () => {
     // There IS a link to this run's requests now, but it is a session-prefix
     // match at RUN granularity. The server still reports no log id per node, so
     // the panel must not imply a node-to-request correspondence it cannot make.
-    it("does not present the node results as a summary of log entries", async () => {
+    it("says what a recorded node row does and does not carry", async () => {
       const user = userEvent.setup();
       setup();
       await run(user);
-      expect(await screen.findByText(/it is all there is/i)).toBeInTheDocument();
+      expect(await screen.findByText(/marked as pipeline interactions/i)).toBeInTheDocument();
     });
 
     // The single most important one: a lost response is not a failure.

@@ -70,7 +70,7 @@ not simply a to-do list.
 | U5-1 | Absent nodes are not rendered as "not executed · unknown" | UX-05 | **A** — fixed |
 | U5-2 | `blocked-missing-dependency` is not a state | UX-05 | B — fixed |
 | U5-3 | No node inspector — a failed node's evidence cannot be read | UX-05 | B — fixed |
-| U5-4 | No run→logs link | UX-05 | **X** — still blocked, cause corrected |
+| U5-4 | No run→logs link | UX-05 | **X** → fixed, via a product change |
 | U5-5 | Session id not shown before the run | UX-05 | C — fixed |
 | U5-6 | Pre-run banner does not name the definitions that will execute | UX-05 | C — fixed |
 
@@ -712,6 +712,28 @@ executes the same engine that serves live traffic, and the console's own
 leaves the same trace. Making the executor record interactions is a backend
 slice of its own and a product decision, so it is flagged here rather than
 assumed.
+
+**Decided and shipped, 2026-09-05: runs are now recorded.** `PipelineExecutor`
+gained a `NodeRecorder` seam — a seam rather than a direct dependency, since
+engine must not import storage or server to reach the log; the server supplies
+the implementation at wiring time, the same shape the audit recorder uses to
+stay clear of tenancy. One row per node, including nodes that failed to resolve,
+because "which agent was missing" is the useful thing about that failure.
+
+The rows are **not** dressed up as HTTP requests. There was no method, path or
+status, so those stay empty and the row carries `source: pipeline`. A fabricated
+200 and a plausible path would make a node indistinguishable from provider
+traffic — a worse failure than the invisibility it replaced. The console marks
+them, and renders a pipeline row's status as `n/a` rather than as a red zero.
+
+Bodies follow the same `MOCKAGENTS_LOG_BODIES` policy as the HTTP path: a run is
+not a loophole around a deployment's capture settings.
+
+**U5-4 is therefore closed.** It needed both halves — `session_prefix` so the
+scoped session ids are matchable, and recording so there is something to match —
+and the audit had only found the first. The link is back on the run panel,
+including on the unknown-outcome card where establishing what actually happened
+matters most.
 
 ### 9.4 — Dark semantic tokens are still unsigned-off · all
 

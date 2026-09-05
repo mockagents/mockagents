@@ -1441,40 +1441,96 @@ components:
 
     InteractionLog:
       type: object
-      required:
-        - id
-        - timestamp
-        - agent_name
-        - session_id
-        - protocol
-        - request_summary
-        - response_summary
-        - latency_ms
-        - tool_calls_count
+      required: [id, timestamp, agent_name, session_id, protocol, latency_ms, source]
       properties:
         id:
-          type: string
-          format: uuid
+          type: integer
+          format: int64
+          description: Row id, ascending. Also the ordering key — listings are newest first.
         timestamp:
           type: string
           format: date-time
+        tenant_id:
+          type: string
         agent_name:
           type: string
         session_id:
           type: string
+          description: >
+            Groups the requests of one conversation. A pipeline run scopes each
+            node as `<session>::<pipeline>::<node>`, so use `session_prefix` to
+            match a whole run.
         protocol:
           type: string
-          enum: [openai, anthropic]
-        request_summary:
+          example: anthropic-messages
+        source:
           type: string
-          description: Truncated or summarised view of the request.
-        response_summary:
+          description: >
+            What produced this interaction.
+
+            `http` — served through a provider endpoint; carries a method, path
+            and response status.
+
+            `pipeline` — one node of a pipeline run. The engine was called in
+            process, so `request_method`, `request_path` and `response_status`
+            are empty/zero. They are left that way deliberately: a fabricated
+            200 would make a node indistinguishable from real traffic.
+
+            Rows written before this field existed read back as `http`.
+          enum: [http, pipeline]
+        request_method:
           type: string
-          description: Truncated or summarised view of the response.
+          description: Empty for a non-HTTP interaction.
+        request_path:
+          type: string
+          description: Empty for a non-HTTP interaction.
+        request_body:
+          type: string
+          description: >
+            Withheld when the listing is called with `fields=meta`, and subject
+            to the server's `MOCKAGENTS_LOG_BODIES` capture policy.
+        response_status:
+          type: integer
+          description: Zero for a non-HTTP interaction — there was no response to status.
+        response_body:
+          type: string
         latency_ms:
           type: integer
+          format: int64
         tool_calls_count:
           type: integer
+        streaming:
+          type: boolean
+        error:
+          type: string
+          description: Engine-side error for this interaction, when there was one.
+        scenario_name:
+          type: string
+        truncated:
+          type: boolean
+          description: >
+            The stored body was clipped at the capture cap, so what is persisted
+            is not the complete payload.
+        chaos_action:
+          type: string
+          description: Which injected fault fired, if any.
+        chaos_source:
+          type: string
+        chaos_seed:
+          type: integer
+          format: int64
+        chaos_rate:
+          type: number
+        prompt_tokens:
+          type: integer
+          description: Derived from the response body when a pricing table is configured.
+        completion_tokens:
+          type: integer
+        model:
+          type: string
+        cost_usd:
+          type: number
+          description: Estimate from the configured pricing table. Zero when none is set.
 
     InteractionDetail:
       type: object

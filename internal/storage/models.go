@@ -26,7 +26,27 @@ type InteractionLog struct {
 	// the capture cap and the stored body is clipped, so a consumer
 	// knows the persisted body is not the complete payload.
 	Truncated bool `json:"truncated,omitempty"`
+	// Source says what produced this interaction. Not every row is an HTTP
+	// request any more: a pipeline run drives the engine in process, and the
+	// results are real interactions that ought to be visible — but a reader
+	// who assumes an HTTP row would draw the wrong conclusions from an empty
+	// method, path and status.
+	//
+	// One of SourceHTTP or SourcePipeline. Rows written before this column
+	// existed read back as SourceHTTP, which is what they were.
+	Source string `json:"source,omitempty"`
 }
+
+// Interaction sources. Stable wire values.
+const (
+	// SourceHTTP: a request served through a provider endpoint. Carries a
+	// method, path and response status.
+	SourceHTTP = "http"
+	// SourcePipeline: one node of a pipeline run. The engine was called in
+	// process, so there is no HTTP method, path or status to record, and those
+	// fields are left empty rather than filled with plausible values.
+	SourcePipeline = "pipeline"
+)
 
 // InteractionFilter specifies query criteria for log retrieval.
 type InteractionFilter struct {

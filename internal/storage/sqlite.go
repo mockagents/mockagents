@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS interaction_logs (
     chaos_action    TEXT    DEFAULT '',
     chaos_source    TEXT    DEFAULT '',
     chaos_seed      INTEGER,
-    chaos_rate      REAL
+    chaos_rate      REAL,
+    source          TEXT    NOT NULL DEFAULT 'http'
 );
 
 CREATE INDEX IF NOT EXISTS idx_logs_agent     ON interaction_logs(agent_name);
@@ -144,6 +145,18 @@ func migrate(db *sql.DB) error {
 			}
 		}
 	}
+	// source landed when pipeline runs started being recorded. Defaulted to
+	// 'http' so pre-existing rows read back as what they were: every row
+	// written before this column existed came through the HTTP layer.
+	hasSource, err := columnExists(db, "interaction_logs", "source")
+	if err != nil {
+		return err
+	}
+	if !hasSource {
+		if _, err := db.Exec(`ALTER TABLE interaction_logs ADD COLUMN source TEXT NOT NULL DEFAULT 'http'`); err != nil {
+			return err
+		}
+	}
 	// Composite (tenant_id, id DESC) index for the tenant-scoped dashboard query
 	// `WHERE tenant_id = ? ORDER BY id DESC LIMIT ?`: it serves both the equality
 	// filter and the id-desc ordering from one index, so SQLite skips a separate
@@ -186,13 +199,14 @@ func (s *SQLiteStore) Log(ctx context.Context, entry *InteractionLog) error {
 		INSERT INTO interaction_logs
 			(timestamp, tenant_id, agent_name, session_id, protocol, request_method, request_path,
 			 request_body, response_status, response_body, latency_ms,
-			 tool_calls_count, streaming, error, scenario_name, truncated, chaos_action, chaos_source, chaos_seed, chaos_rate)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 tool_calls_count, streaming, error, scenario_name, truncated, chaos_action, chaos_source, chaos_seed, chaos_rate, source)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.Timestamp, entry.TenantID, entry.AgentName, entry.SessionID, entry.Protocol,
 		entry.RequestMethod, entry.RequestPath,
 		entry.RequestBody, entry.ResponseStatus, entry.ResponseBody,
 		entry.LatencyMs, entry.ToolCallsCount, boolToInt(entry.Streaming),
 		entry.Error, entry.ScenarioName, boolToInt(entry.Truncated), entry.ChaosAction, entry.ChaosSource, entry.ChaosSeed, entry.ChaosRate,
+		defaultSource(entry.Source),
 	)
 	if err != nil {
 		return err
@@ -211,7 +225,7 @@ func (s *SQLiteStore) Log(ctx context.Context, entry *InteractionLog) error {
 func (s *SQLiteStore) Query(ctx context.Context, filter InteractionFilter) ([]InteractionLog, error) {
 	query := `SELECT id, timestamp, tenant_id, agent_name, session_id, protocol,
 		request_method, request_path, request_body, response_status,
-		response_body, latency_ms, tool_calls_count, streaming, error, scenario_name, truncated, chaos_action, chaos_source, chaos_seed, chaos_rate
+		response_body, latency_ms, tool_calls_count, streaming, error, scenario_name, truncated, chaos_action, chaos_source, chaos_seed, chaos_rate, source
 		FROM interaction_logs WHERE 1=1`
 
 	var args []any
@@ -281,6 +295,7 @@ func (s *SQLiteStore) Query(ctx context.Context, filter InteractionFilter) ([]In
 			&reqBody, &log.ResponseStatus,
 			&respBody, &log.LatencyMs, &log.ToolCallsCount,
 			&streaming, &errStr, &scenarioName, &truncated, &chaosAction, &chaosSource, &chaosSeed, &chaosRate,
+			&log.Source,
 		); err != nil {
 			return nil, fmt.Errorf("scanning row: %w", err)
 		}
@@ -308,7 +323,7 @@ func (s *SQLiteStore) GetByID(ctx context.Context, id int64) (*InteractionLog, e
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, timestamp, tenant_id, agent_name, session_id, protocol,
 			request_method, request_path, request_body, response_status,
-			response_body, latency_ms, tool_calls_count, streaming, error, scenario_name, truncated, chaos_action, chaos_source, chaos_seed, chaos_rate
+			response_body, latency_ms, tool_calls_count, streaming, error, scenario_name, truncated, chaos_action, chaos_source, chaos_seed, chaos_rate, source
 		FROM interaction_logs WHERE id = ?`, id)
 
 	var log InteractionLog
@@ -322,6 +337,7 @@ func (s *SQLiteStore) GetByID(ctx context.Context, id int64) (*InteractionLog, e
 		&reqBody, &log.ResponseStatus,
 		&respBody, &log.LatencyMs, &log.ToolCallsCount,
 		&streaming, &errStr, &scenarioName, &truncated, &chaosAction, &chaosSource, &chaosSeed, &chaosRate,
+		&log.Source,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -480,4 +496,14 @@ func escapeLikePrefix(prefix string) string {
 	// the backslash rule cannot double-escape what the other two produce.
 	r := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`)
 	return r.Replace(prefix)
+}
+
+// defaultSource keeps the wire value honest for callers that predate the field:
+// everything written through the HTTP layer leaves Source empty, and that is
+// what it is. A row is only "pipeline" when something says so explicitly.
+func defaultSource(source string) string {
+	if source == "" {
+		return SourceHTTP
+	}
+	return source
 }

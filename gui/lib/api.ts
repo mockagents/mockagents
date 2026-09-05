@@ -81,6 +81,11 @@ export interface InteractionLog {
   chaos_source?: string;
   chaos_seed?: number;
   chaos_rate?: number;
+  /** What produced this interaction: `http` for a request served through a
+   * provider endpoint, `pipeline` for one node of a pipeline run. A pipeline
+   * row has no method, path or status, so a reader who assumes HTTP would draw
+   * the wrong conclusions from those fields being empty. */
+  source?: "http" | "pipeline";
   // Cost annotation fields populated by /api/v1/logs when a pricing
   // table is configured (see internal/server/log_handlers.go LogWithCost).
   prompt_tokens?: number;

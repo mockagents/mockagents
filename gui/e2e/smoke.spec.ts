@@ -232,14 +232,11 @@ test.describe("a capability this server does not have (X-2)", () => {
 
 });
 
-// §9.3: the session_prefix filter, and the finding that came out of testing it.
-//
-// The audit expected this filter to unblock a "check the logs for this run"
-// link. It does not — for a reason the audit had wrong. A pipeline run executes
-// the engine IN PROCESS while the interaction log is written by HTTP
-// middleware, so no node of a run is recorded at all. The filter is still
-// correct and useful for real SDK traffic, which does go over HTTP; the link
-// would have landed on an empty window and was not shipped.
+// §9.3 + U5-4, end to end. Two changes were needed and the audit only found
+// one: session_prefix (the engine scopes each node's session, so an exact
+// filter matches nothing) AND recording node executions at all (the executor
+// calls the engine in process, so nothing reached the log). With both, the
+// run→logs link the design asked for finally works.
 test.describe("session prefix filtering (UX-04)", () => {
   test("matches every request whose session starts with the prefix", async ({ request }) => {
     const session = `e2e-prefix-${Date.now()}`;
@@ -274,22 +271,100 @@ test.describe("session prefix filtering (UX-04)", () => {
     expect(await exact.json()).toEqual([]);
   });
 
-  // The finding, pinned so it cannot regress into a false claim on the screen.
-  test("a pipeline run is not recorded in the interaction log", async ({ request }) => {
+  // The finding that started this: a run used to leave no trace at all. Now it
+  // leaves one row per node — and those rows must not read as HTTP requests.
+  test("a pipeline run is recorded, one interaction per node", async ({ request }) => {
     const probe = await request.get(`${API_URL}/api/v1/pipelines/research-pipeline`);
     test.skip(probe.status() !== 200, "research-pipeline not registered");
+    const nodeCount = ((await probe.json()) as { spec: { agents: unknown[] } }).spec.agents.length;
 
-    const before = ((await (await request.get(`${API_URL}/api/v1/logs?limit=1000`)).json()) as unknown[])
-      .length;
-    const session = `e2e-unlogged-${Date.now()}`;
+    const session = `e2e-recorded-${Date.now()}`;
     const run = await request.post(`${API_URL}/api/v1/pipelines/research-pipeline/run`, {
-      data: { input: "not logged", session_id: session },
+      data: { input: "leave a trace", session_id: session },
     });
     expect(run.status()).toBe(200);
 
-    const after = ((await (await request.get(`${API_URL}/api/v1/logs?limit=1000`)).json()) as unknown[])
-      .length;
-    expect(after, "a run must not silently start appearing in the log").toBe(before);
+    type Row = {
+      source?: string;
+      session_id: string;
+      agent_name: string;
+      response_status?: number;
+      request_method?: string;
+      request_path?: string;
+    };
+    const fetchRows = async (): Promise<Row[]> =>
+      (await (await request.get(`${API_URL}/api/v1/logs?session_prefix=${session}::`)).json()) as Row[];
+
+    // The log worker writes asynchronously — deliberately, so a run's latency
+    // is the engine's and not SQLite's. Reading the instant the run returns is
+    // therefore a race, and polling is the correct shape for this assertion
+    // rather than a workaround for a flaky one.
+    await expect
+      .poll(async () => (await fetchRows()).length, {
+        message: "one row per node that executed",
+        timeout: 10_000,
+      })
+      .toBe(nodeCount);
+
+    const rows = await fetchRows();
+    for (const row of rows) {
+      expect(row.source).toBe("pipeline");
+      expect(row.session_id.startsWith(`${session}::`)).toBe(true);
+      expect(row.agent_name).toBeTruthy();
+      // The honesty half: no HTTP request happened, and the row says so by
+      // leaving these empty rather than inventing a 200 and a path.
+      expect(row.response_status ?? 0).toBe(0);
+      expect(row.request_method ?? "").toBe("");
+      expect(row.request_path ?? "").toBe("");
+    }
+  });
+
+  test("the run panel's link lands on that run's own rows", async ({ page }) => {
+    const probe = await page.request.get(`${API_URL}/api/v1/pipelines/research-pipeline`);
+    test.skip(probe.status() !== 200, "research-pipeline not registered");
+
+    await page.goto("/pipelines/research-pipeline", { waitUntil: "networkidle" });
+    await expect(async () => {
+      await page.getByLabel("Input").fill("trace me through the UI");
+      await page.getByRole("button", { name: /run pipeline/i }).click();
+      await expect(page.getByRole("link", { name: /open this run in the logs/i })).toBeVisible({
+        timeout: 5_000,
+      });
+    }).toPass({ timeout: 20_000 });
+
+    // Wait for the asynchronous log write before following the link. The
+    // link's job is to find rows that exist, not to wait for them, and the
+    // logs page is server-rendered so it will not pick them up on its own.
+    //
+    // The prefix comes from the link's own href rather than the Session ID
+    // field: that field has already been reset to the NEXT run's id, since
+    // reusing one would let two runs share turn state.
+    const link = page.getByRole("link", { name: /open this run in the logs/i });
+    const href = await link.getAttribute("href");
+    expect(href, "the panel must offer a link at all").toBeTruthy();
+    const prefix = new URL(href!, "http://x").searchParams.get("session_prefix")!;
+    expect(prefix).toMatch(/::$/);
+    await expect
+      .poll(
+        async () =>
+          (
+            (await (
+              await page.request.get(
+                `${API_URL}/api/v1/logs?session_prefix=${encodeURIComponent(prefix)}`,
+              )
+            ).json()) as unknown[]
+          ).length,
+        { timeout: 10_000 },
+      )
+      .toBeGreaterThan(0);
+
+    await link.click();
+    await page.waitForURL(/session_prefix=/);
+    // Real rows — the link used to have been impossible precisely because this
+    // would have been empty.
+    await expect(page.getByText(/No records in this window/i)).toHaveCount(0);
+    await expect(page.getByRole("table").first()).toBeVisible();
+    await expect(page.getByText("pipeline").first()).toBeVisible();
   });
 });
 
