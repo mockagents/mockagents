@@ -41,6 +41,7 @@ function setup(overrides: Partial<LogsConsoleProps> = {}) {
     agents: ["support-bot", "other-bot"],
     filters: DEFAULT_FILTERS,
     recoverAction: vi.fn(async () => []),
+    revealAction: vi.fn(async () => ({ request: "REQ BODY", response: "RESP BODY" })),
     ...overrides,
   };
   render(<LogsConsole {...props} />);
@@ -134,14 +135,55 @@ describe("LogsConsole", () => {
 
   describe("bodies", () => {
     // Metadata-first: a body can contain anything a client sent.
-    it("hides bodies until explicitly revealed", async () => {
+    // §9.1. This used to be a display boundary: the listing carried every body
+    // and the UI declined to render them, so "hidden" was true but "not
+    // fetched" would not have been. The listing is metadata-only now, and
+    // reveal is the fetch.
+    it("does not have the body before it is revealed, and fetches it on demand", async () => {
       const user = userEvent.setup();
-      setup({ window: makeWindow([row(1, { request_body: "SECRET-PAYLOAD" })]) });
+      const revealAction = vi.fn(async () => ({ request: "SECRET-PAYLOAD" }));
+      // Note the row itself carries NO body — that is the server's projection.
+      setup({ window: makeWindow([row(1)]), revealAction });
       await user.click(screen.getByRole("button", { name: "1" }));
 
       expect(screen.queryByText("SECRET-PAYLOAD")).not.toBeInTheDocument();
+      expect(revealAction).not.toHaveBeenCalled();
+
       await user.click(screen.getByRole("button", { name: /show request\/response bodies/i }));
-      expect(screen.getByText("SECRET-PAYLOAD")).toBeInTheDocument();
+      await waitFor(() => expect(revealAction).toHaveBeenCalledWith(1));
+      expect(await screen.findByText("SECRET-PAYLOAD")).toBeInTheDocument();
+    });
+
+    it("says the bodies were not fetched, not merely not shown", async () => {
+      setup({ window: makeWindow([row(1)]) });
+      expect(screen.getByText(/not fetched until revealed/i)).toBeInTheDocument();
+      expect(screen.getByText(/metadata only/i)).toBeInTheDocument();
+    });
+
+    it("fetches a given row's body once, not on every toggle", async () => {
+      const user = userEvent.setup();
+      const revealAction = vi.fn(async () => ({ request: "SECRET-PAYLOAD" }));
+      setup({ window: makeWindow([row(1)]), revealAction });
+      await user.click(screen.getByRole("button", { name: "1" }));
+
+      const toggle = () => screen.getByRole("button", { name: /(show|hide) .*bodies/i });
+      await user.click(toggle());
+      await waitFor(() => expect(revealAction).toHaveBeenCalledTimes(1));
+      await user.click(toggle()); // hide
+      await user.click(toggle()); // show again
+      expect(revealAction).toHaveBeenCalledTimes(1);
+    });
+
+    // A failed fetch must not render as an empty body: "we could not get it"
+    // and "there was nothing" are different, and one of them is a finding.
+    it("distinguishes a failed fetch from an empty body", async () => {
+      const user = userEvent.setup();
+      setup({ window: makeWindow([row(1)]), revealAction: vi.fn(async () => null) });
+      await user.click(screen.getByRole("button", { name: "1" }));
+      await user.click(screen.getByRole("button", { name: /show request\/response bodies/i }));
+
+      expect(await screen.findByText(/Could not fetch the bodies/i)).toBeInTheDocument();
+      expect(screen.getByText(/not the same as this request having had none/i)).toBeInTheDocument();
     });
   });
 
@@ -347,6 +389,7 @@ describe("LogsConsole", () => {
           agents={["support-bot"]}
           filters={DEFAULT_FILTERS}
           recoverAction={vi.fn(async () => [])}
+          revealAction={vi.fn(async () => null)}
         />,
       );
       await expect(container).toHaveNoAxeViolations();

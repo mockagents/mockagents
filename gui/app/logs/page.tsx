@@ -1,4 +1,4 @@
-import { APIError, listAgents, listLogWindow, listLogs, type InteractionLog } from "@/lib/api";
+import { APIError, getLog, listAgents, listLogWindow, listLogs, type InteractionLog } from "@/lib/api";
 import { parseFilters } from "@/lib/logfeed";
 
 import { LogsConsole } from "./LogsConsole";
@@ -24,6 +24,10 @@ export default async function LogsPage({ searchParams }: PageProps) {
   try {
     const [window, allAgents] = await Promise.all([
       listLogWindow({
+        // §9.1: metadata only. Bodies are fetched one row at a time when an
+        // operator reveals one, so a window of captured payloads never crosses
+        // the network on the strength of someone opening this page.
+        metadataOnly: true,
         limit: filters.limit,
         offset: filters.offset,
         agent: filters.agent || undefined,
@@ -42,6 +46,7 @@ export default async function LogsPage({ searchParams }: PageProps) {
       // and lets the client work out what it had not seen. The client treats a
       // FULL page as "cannot prove the gap is closed".
       const rows = await listLogs({
+        metadataOnly: true,
         limit,
         agent: filters.agent || undefined,
         session_id: filters.session_id || undefined,
@@ -53,12 +58,23 @@ export default async function LogsPage({ searchParams }: PageProps) {
       return rows.filter((r) => r.id > afterId);
     }
 
+    // Fetching ONE row's bodies, on explicit reveal. Deliberately a per-row
+    // read rather than a re-fetch of the window: revealing one body must not
+    // pull back every other body with it.
+    async function revealAction(id: number): Promise<{ request?: string; response?: string } | null> {
+      "use server";
+      const row = await getLog(id);
+      if (!row) return null;
+      return { request: row.request_body, response: row.response_body };
+    }
+
     return (
       <LogsConsole
         window={window}
         agents={allAgents.map((a) => a.name)}
         filters={filters}
         recoverAction={recoverAction}
+        revealAction={revealAction}
       />
     );
   } catch (err) {

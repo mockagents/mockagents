@@ -509,9 +509,52 @@ paths:
             minimum: 0
         - name: session_id
           in: query
-          description: Filter logs by session ID.
+          description: Filter logs by session ID (exact match).
           schema:
             type: string
+        - name: session_prefix
+          in: query
+          description: >
+            Filter to every log whose session id STARTS WITH this value.
+            Wildcards (`%`, `_`) in the value are matched literally.
+
+            Exists because callers commonly scope a session per unit of work —
+            `<session>::<step>` and similar — in which case the id they know is
+            never the id in the log, and an exact filter matches nothing.
+            Ignored when `session_id` is also set, that being the more specific
+            request.
+          schema:
+            type: string
+          example: "run-4f21::"
+        - name: since
+          in: query
+          description: Only logs at or after this RFC 3339 timestamp.
+          schema:
+            type: string
+            format: date-time
+        - name: until
+          in: query
+          description: Only logs at or before this RFC 3339 timestamp.
+          schema:
+            type: string
+            format: date-time
+        - name: fields
+          in: query
+          description: >
+            `meta` withholds `request_body` and `response_body` from every row,
+            leaving all other fields — including the derived token counts and
+            cost, which are computed before the bodies are dropped.
+
+            This is a privacy boundary rather than a display one: without it,
+            every captured body in the window crosses the network whenever
+            anyone lists logs, so a client can only claim bodies are not SHOWN.
+            Fetch bodies one row at a time from `GET /api/v1/logs/{id}`.
+
+            Any other value returns the full row: an unrecognised projection is
+            ignored rather than silently dropping data a caller relies on.
+          schema:
+            type: string
+            enum: [meta]
       responses:
         "200":
           description: List of interaction log summaries.

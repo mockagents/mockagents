@@ -640,14 +640,44 @@ test.describe("request explorer (UX-04)", () => {
     await expect(page.getByRole("columnheader", { name: "signals" })).toBeVisible();
   });
 
-  test("bodies stay hidden until revealed", async ({ page }) => {
+  // §9.1: reveal is a fetch boundary now, so the claim is checkable at the wire
+  // rather than only in the DOM.
+  test("the listing the console loads carries no bodies at all", async ({ page }) => {
+    const meta = await page.request.get(`${API_URL}/api/v1/logs?limit=5&fields=meta`);
+    const rows = (await meta.json()) as Array<{ request_body?: string; response_body?: string; agent_name?: string }>;
+    test.skip(rows.length === 0, "no traffic captured yet");
+    for (const row of rows) {
+      expect(row.request_body ?? "").toBe("");
+      expect(row.response_body ?? "").toBe("");
+      // Withholding bodies must not withhold the metadata that makes a row useful.
+      expect(row.agent_name).toBeTruthy();
+    }
+
+    // The default listing is unchanged, so nothing built against it breaks.
+    const full = await page.request.get(`${API_URL}/api/v1/logs?limit=5`);
+    const fullRows = (await full.json()) as Array<{ request_body?: string }>;
+    expect(fullRows.some((r) => (r.request_body ?? "") !== "")).toBe(true);
+  });
+
+  test("a body arrives only when revealed, and says so before then", async ({ page }) => {
     await generateTraffic(page, "bodies");
     await page.goto("/logs", { waitUntil: "networkidle" });
 
     const reveal = page.getByRole("button", { name: /show request\/response bodies/i });
     test.skip((await reveal.count()) === 0, "no row selected / no logs");
     await expect(reveal).toBeVisible();
-    await expect(page.getByText(/Bodies are hidden by default/)).toBeVisible();
+    // The claim is now about fetching, not just about rendering.
+    await expect(page.getByText(/not fetched until revealed/i)).toBeVisible();
+    await expect(page.getByText(/metadata only/i)).toBeVisible();
+
+    // And revealing genuinely produces one, through a per-row read.
+    await expect(async () => {
+      await reveal.click();
+      await expect(page.getByRole("button", { name: /hide bodies/i })).toBeVisible({
+        timeout: 2_000,
+      });
+    }).toPass({ timeout: 15_000 });
+    await expect(page.getByText("request", { exact: true })).toBeVisible();
   });
 
   test("the log detail page links back to the whole session", async ({ page }) => {
