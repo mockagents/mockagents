@@ -125,7 +125,12 @@ type Server struct {
 	// capability response is derived from this rather than from the static
 	// policy table, because conditional routes (audit, costs) are absent when
 	// their store is not configured. Populated at startup only.
-	mountedRoutes  map[string]tenancy.Role
+	mountedRoutes map[string]tenancy.Role
+	// open is the set of routes that stay unauthenticated in multi-tenant
+	// mode. It is derived from what registerRoutes actually mounts (every
+	// adapter route plus builtinOpenRoutes) rather than hand-listed, so a
+	// provider surface can never be left out and fail closed (audit H-03).
+	open           *openRoutes
 	recorder       *audit.Recorder
 	logWorker      *LogWorker
 	logBroadcaster *LogBroadcaster
@@ -165,6 +170,7 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 
 	mux := http.NewServeMux()
 	s := &Server{
+		open:     newOpenRoutes(),
 		engine:   eng,
 		handlers: handlers,
 		recorder: recorder,
@@ -241,7 +247,7 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 	// a valid API key, the middleware attaches the principal so model
 	// listing and LLM resolution can be scoped to that tenant.
 	if cfg.TenancyStore != nil {
-		handler = tenancy.AuthMiddleware(cfg.TenancyStore, skipAuth)(handler)
+		handler = tenancy.AuthMiddleware(cfg.TenancyStore, s.skipAuth)(handler)
 		// Runs BEFORE the auth middleware (wrapped outside it): browser
 		// WebSocket clients carry their key in a subprotocol offer, not a
 		// header — lift it so best-effort principal resolution can scope the
@@ -279,6 +285,9 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 
 // registerRoutes mounts the management API, protocol adapters, and engine endpoints.
 func (s *Server) registerRoutes(mux *http.ServeMux) {
+	for _, p := range builtinOpenRoutes {
+		s.open.add(p)
+	}
 	// Management API under /api/v1/. Every route below goes through
 	// mountManaged, which applies the role floor declared in
 	// managementRouteFloors (the single authorization source of truth) when
@@ -350,6 +359,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		}
 		for _, route := range a.Routes() {
 			mux.HandleFunc(route.Pattern, route.Handler)
+			// Every provider surface is open: clients send their own provider
+			// key, which the mock ignores. Registering the pattern here is
+			// what makes skipAuth true for it in multi-tenant mode.
+			s.open.add(route.Pattern)
 		}
 	}
 
@@ -723,50 +736,13 @@ func principalToActor(r *http.Request) audit.Actor {
 	}
 }
 
-// skipAuth lists paths that remain unauthenticated when multi-tenant
-// mode is enabled. Health probes need to work without credentials so
-// load balancers don't start failing closed; the LLM endpoints are
-// open by design because clients send their own provider API keys
-// that MockAgents deliberately ignores.
-func skipAuth(r *http.Request) bool {
-	// Exact-match the exempt routes (SEC-03): a prefix match would auto-exempt
-	// any future route mounted under these prefixes (e.g. /v1/models-internal).
-	// These are exactly the open LLM/engine routes registered in registerRoutes.
-	switch r.URL.Path {
-	case "/api/v1/health",
-		// Readiness is a probe target like health: a load balancer or kubelet
-		// has no API key, and failing it closed would take the pod out of
-		// rotation for the wrong reason. It reports only pass/fail plus a
-		// dependency name — no agent, tenant, or config data.
-		"/api/v1/ready",
-		"/v1/chat/completions",
-		"/v1/messages",
-		"/v1/messages/count_tokens",
-		"/v1/models",
-		"/v1/engines/process",
-		// Realtime API (NF-01): the WebSocket + its ephemeral-token mint are open
-		// like the other LLM endpoints — clients send a provider/ephemeral key the
-		// mock ignores. The session token is a stub, so gating the socket on it
-		// would only block clients without changing what the mock returns.
-		"/v1/realtime",
-		"/v1/realtime/client_secrets",
-		"/v1/realtime/sessions",
-		// SSO endpoints start/clear a session, so they precede authentication
-		// (REF-08 slice D). They are not under /api/v1 and do their own checks.
-		"/auth/login",
-		"/auth/callback",
-		"/auth/logout",
-		// Azure unified surface delegates to the open OpenAI chat/embeddings
-		// handlers, so it carries the same open status (A-06).
-		"/openai/v1/chat/completions",
-		"/openai/v1/embeddings":
-		return true
-	}
-	// Azure classic deployment surface ({deployment} is variable, so it can't be
-	// an exact case) — same open status as the OpenAI routes it delegates to.
-	if strings.HasPrefix(r.URL.Path, "/openai/deployments/") {
-		return strings.HasSuffix(r.URL.Path, "/chat/completions") ||
-			strings.HasSuffix(r.URL.Path, "/embeddings")
-	}
-	return false
+// skipAuth reports whether a request path remains unauthenticated when
+// multi-tenant mode is enabled. Health probes need to work without
+// credentials so load balancers don't start failing closed; the LLM
+// endpoints are open by design because clients send their own provider API
+// keys that MockAgents deliberately ignores. The set is derived from the
+// routes registerRoutes mounts (see openRoutes), so it cannot drift from the
+// real surface the way the former hand-written list did.
+func (s *Server) skipAuth(r *http.Request) bool {
+	return s.open.skip(r)
 }

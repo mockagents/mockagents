@@ -150,7 +150,7 @@ func TestManagementRouteFloors_Snapshot(t *testing.T) {
 		"GET /api/v1/audit":                     tenancy.RoleAdmin,
 		"GET /api/v1/logs":                      roleOpen,
 		"GET /api/v1/logs/{id}":                 roleOpen,
-		"DELETE /api/v1/logs":                   roleOpen,
+		"DELETE /api/v1/logs":                   tenancy.RoleAdmin,
 		"GET /api/v1/logs/stream":               roleOpen,
 		"GET /api/v1/logs/stream/metrics":       tenancy.RoleAdmin,
 		"GET /api/v1/costs":                     tenancy.RoleViewer,

@@ -61,6 +61,7 @@ self-escalate. Roles gate the control-plane routes:
 | `PATCH /api/v1/keys/{id}`                 | admin    |
 | `POST /api/v1/keys/{id}/rotate`           | admin    |
 | `DELETE /api/v1/keys/{id}`                | admin    |
+| `DELETE /api/v1/logs` (purge tenant log)   | admin    |
 | `GET  /api/v1/audit`                      | admin    |
 | `GET  /api/v1/logs/stream/metrics`        | admin    |
 | `GET  /api/v1/tenants`                    | platform |
