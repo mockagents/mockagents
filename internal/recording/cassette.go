@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -297,7 +298,9 @@ func writeCanonical(w *bytes.Buffer, v any) {
 
 // writeCassette persists interactions to disk as JSON lines.
 func writeCassette(path string, interactions []*Interaction) error {
-	tmp, err := os.CreateTemp("", "cassette-*.jsonl")
+	// Same directory as the target: os.Rename across filesystems fails with
+	// EXDEV, and most container images mount /tmp as tmpfs (audit M-29).
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".cassette-*.jsonl.tmp")
 	if err != nil {
 		return err
 	}

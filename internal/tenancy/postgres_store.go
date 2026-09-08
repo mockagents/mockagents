@@ -178,7 +178,7 @@ func (s *PostgresStore) GetTenant(ctx context.Context, id string) (*Tenant, erro
 
 // ListTenants returns every tenant ordered by creation time ascending.
 func (s *PostgresStore) ListTenants(ctx context.Context) ([]*Tenant, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, created_at FROM tenants ORDER BY created_at ASC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, created_at FROM tenants ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +247,7 @@ func (s *PostgresStore) CreateAPIKey(ctx context.Context, tenantID, name string,
 func (s *PostgresStore) ListAPIKeys(ctx context.Context, tenantID string) ([]*APIKey, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, tenant_id, name, prefix, role, created_at, COALESCE(last_used, '')
-		 FROM api_keys WHERE tenant_id = $1 ORDER BY created_at ASC`, tenantID,
+		 FROM api_keys WHERE tenant_id = $1 ORDER BY created_at ASC, id ASC`, tenantID,
 	)
 	if err != nil {
 		return nil, err
@@ -382,7 +382,7 @@ func (s *PostgresStore) BulkRotateTenantKeys(ctx context.Context, tenantID strin
 		}
 		query += " AND id NOT IN (" + strings.Join(placeholders, ", ") + ")"
 	}
-	query += " ORDER BY created_at ASC"
+	query += " ORDER BY created_at ASC, id ASC"
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

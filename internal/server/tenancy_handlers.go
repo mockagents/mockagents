@@ -244,6 +244,12 @@ func (h *TenancyHandlers) RotateAPIKey(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "api key not found")
 			return
 		}
+		if errors.Is(err, tenancy.ErrConflict) {
+			// Another rotation (or a delete) landed between read and swap;
+			// the caller's secret was not issued. Retry rather than assume.
+			writeError(w, http.StatusConflict, "api key changed concurrently; retry the rotation")
+			return
+		}
 		writeServerError(w, err)
 		return
 	}

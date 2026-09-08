@@ -303,7 +303,7 @@ func (s *SQLiteStore) GetTenantByName(ctx context.Context, name string) (*Tenant
 // ListTenants returns every tenant ordered by creation time ascending.
 func (s *SQLiteStore) ListTenants(ctx context.Context) ([]*Tenant, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, created_at FROM tenants ORDER BY created_at ASC`,
+		`SELECT id, name, created_at FROM tenants ORDER BY created_at ASC, id ASC`,
 	)
 	if err != nil {
 		return nil, err
@@ -390,7 +390,7 @@ func (s *SQLiteStore) CreateAPIKey(ctx context.Context, tenantID, name string, r
 func (s *SQLiteStore) ListAPIKeys(ctx context.Context, tenantID string) ([]*APIKey, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, tenant_id, name, prefix, role, created_at, COALESCE(last_used, '')
-		 FROM api_keys WHERE tenant_id = ? ORDER BY created_at ASC`, tenantID,
+		 FROM api_keys WHERE tenant_id = ? ORDER BY created_at ASC, id ASC`, tenantID,
 	)
 	if err != nil {
 		return nil, err
@@ -424,20 +424,35 @@ func (s *SQLiteStore) UpdateAPIKeyRole(ctx context.Context, tenantID, id string,
 	if !role.IsValid() {
 		return "", "", fmt.Errorf("invalid role %q", role)
 	}
+	// SELECT-then-UPDATE inside one transaction. MaxOpenConns(1) serializes
+	// STATEMENTS, not statement pairs: the connection is released after the
+	// Scan, so a concurrent DeleteAPIKey/RotateAPIKey could run between the
+	// two and `prev` would be stale — or the UPDATE would touch 0 rows and
+	// still report success (audit M-10). The Postgres store already does it
+	// this way. Scope the lookup to tenantID (X-SEC-001): a key in another
+	// tenant must look like it doesn't exist, not get mutated.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", "", err
+	}
+	defer tx.Rollback() //nolint:errcheck // best-effort on error path
+
 	var prev string
-	// The SELECT-then-UPDATE below is a non-atomic read/modify on its own, but
-	// MaxOpenConns(1) serializes all store access, so no other statement can
-	// interleave between them and `prev` is accurate (F-ST-014).
-	// Scope the lookup to tenantID (X-SEC-001): a key in another tenant
-	// must look like it doesn't exist, not get mutated.
-	err := s.db.QueryRowContext(ctx, `SELECT role FROM api_keys WHERE id = ? AND tenant_id = ?`, id, tenantID).Scan(&prev)
+	err = tx.QueryRowContext(ctx, `SELECT role FROM api_keys WHERE id = ? AND tenant_id = ?`, id, tenantID).Scan(&prev)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", "", ErrNotFound
 		}
 		return "", "", err
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE api_keys SET role = ? WHERE id = ? AND tenant_id = ?`, string(role), id, tenantID); err != nil {
+	res, err := tx.ExecContext(ctx, `UPDATE api_keys SET role = ? WHERE id = ? AND tenant_id = ?`, string(role), id, tenantID)
+	if err != nil {
+		return "", "", err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return "", "", ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
 		return "", "", err
 	}
 	// Flush the auth cache so a previously cached Principal for this
@@ -452,16 +467,16 @@ func (s *SQLiteStore) UpdateAPIKeyRole(ctx context.Context, tenantID, id string,
 // caller can emit an audit trail that correlates the rotation with
 // the specific compromised credential.
 //
-// Implementation note: the operation is performed inside a SQLite
-// transaction so a crash or context cancellation cannot leave the
-// row with a broken hash/prefix pair.
+// Implementation note: the row is read and the new secret hashed OUTSIDE
+// the transaction, and the swap is a single UPDATE guarded by the prefix
+// that was read. bcrypt takes ~50-100ms, and with MaxOpenConns(1) a
+// transaction pins the store's only connection for its whole duration —
+// every concurrent Resolve cache-miss, session lookup and log write stalled
+// behind each rotation (audit M-11; the bulk path already reasons the same
+// way, PERF-10). If another writer changed the key in between, the guarded
+// UPDATE touches 0 rows and the caller gets ErrConflict rather than a
+// silently clobbered secret.
 func (s *SQLiteStore) RotateAPIKey(ctx context.Context, callerTenantID, id string) (*NewAPIKeyResult, string, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, "", err
-	}
-	defer tx.Rollback() //nolint:errcheck // best-effort on error path
-
 	// Read existing row so we can preserve the immutable fields and
 	// surface the old prefix back to the caller for audit purposes.
 	// Scoped to callerTenantID (X-SEC-001): rotating a key in another
@@ -474,7 +489,7 @@ func (s *SQLiteStore) RotateAPIKey(ctx context.Context, callerTenantID, id strin
 		createdStr  string
 		lastUsedStr sql.NullString
 	)
-	err = tx.QueryRowContext(ctx,
+	err := s.db.QueryRowContext(ctx,
 		`SELECT tenant_id, name, prefix, role, created_at, last_used
 		 FROM api_keys WHERE id = ? AND tenant_id = ?`, id, callerTenantID,
 	).Scan(&tenantID, &name, &oldPrefix, &role, &createdStr, &lastUsedStr)
@@ -493,15 +508,25 @@ func (s *SQLiteStore) RotateAPIKey(ctx context.Context, callerTenantID, id strin
 	if err != nil {
 		return nil, "", fmt.Errorf("bcrypt hash: %w", err)
 	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	defer tx.Rollback() //nolint:errcheck // best-effort on error path
 	// Reset last_used — a rotated key has no prior usage of its
 	// new plaintext, and preserving the timestamp would confuse
 	// "when did this credential last work?" investigations.
-	_, err = tx.ExecContext(ctx,
-		`UPDATE api_keys SET prefix = ?, hash = ?, last_used = NULL WHERE id = ?`,
-		newPrefix, string(hash), id,
+	res, err := tx.ExecContext(ctx,
+		`UPDATE api_keys SET prefix = ?, hash = ?, last_used = NULL
+		 WHERE id = ? AND tenant_id = ? AND prefix = ?`,
+		newPrefix, string(hash), id, callerTenantID, oldPrefix,
 	)
 	if err != nil {
 		return nil, "", err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return nil, "", ErrConflict
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, "", err
@@ -568,7 +593,7 @@ func (s *SQLiteStore) BulkRotateTenantKeys(ctx context.Context, tenantID string,
 		}
 		query += " AND id NOT IN (" + placeholders + ")"
 	}
-	query += " ORDER BY created_at ASC"
+	query += " ORDER BY created_at ASC, id ASC"
 
 	// Read the key set OUTSIDE any transaction. This is a plain read, and the
 	// per-key bcrypt below must NOT run while the write tx is open (PERF-10):

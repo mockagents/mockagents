@@ -1,9 +1,11 @@
 package server
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/quota"
@@ -59,7 +61,9 @@ func QuotaEnforce(enf *quota.Enforcer) func(http.Handler) http.Handler {
 				return
 			}
 			if ok, retry := enf.AllowRequest(tenantID); !ok {
-				secs := int(retry.Seconds())
+				// Ceil, not truncate: 1.9s as "1" makes a compliant client retry
+				// early and collect a second 429 (audit L-27).
+				secs := retryAfterSeconds(retry)
 				if secs < 1 {
 					secs = 1
 				}
@@ -102,4 +106,15 @@ type ProviderQuotaError struct {
 type providerError struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
+}
+
+// retryAfterSeconds renders a wait as the whole-second Retry-After value,
+// rounding UP and never below 1: 1.9s as "1" made a compliant client retry
+// early and collect a second 429 (audit L-27).
+func retryAfterSeconds(d time.Duration) int {
+	secs := int(math.Ceil(d.Seconds()))
+	if secs < 1 {
+		secs = 1
+	}
+	return secs
 }
