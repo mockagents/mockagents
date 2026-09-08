@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/mockagents/mockagents/internal/types"
@@ -267,6 +268,17 @@ func (v *Validator) validateStreaming(ctx *validationContext, def *types.AgentDe
 	checkPair(s.ITLP50Ms, s.ITLP95Ms, "itl_p50_ms", "itl_p95_ms")
 }
 
+// maxChaosMs bounds every chaos delay an agent may declare (latency draws and
+// the synthetic timeout sleep). It mirrors the engine's own cap on a single
+// latency draw and the MCP/A2A validators' limits, so a typo such as
+// `timeout_ms: 600000` cannot park request goroutines for ten minutes.
+const maxChaosMs = 60_000
+
+// latencyDistributions is the accepted chaos.latency.distribution set. It is
+// mirrored in schema/mockagents-v1-agent.json (asserted by the schema parity
+// test); "" means "infer from min/max".
+var latencyDistributions = []string{"fixed", "uniform", "normal"}
+
 func (v *Validator) validateChaos(ctx *validationContext, def *types.AgentDefinition) {
 	c := def.Spec.Behavior.Chaos
 	if c == nil {
@@ -276,6 +288,64 @@ func (v *Validator) validateChaos(ctx *validationContext, def *types.AgentDefini
 		ctx.addError("spec.behavior.chaos.preset",
 			fmt.Sprintf("unknown chaos preset %q", c.Preset),
 			fmt.Sprintf("Use one of: %s", strings.Join(types.ChaosPresets, ", ")))
+	}
+	// The bounds below mirror the JSON schema, which nothing loads at runtime:
+	// until they were enforced here, `status_code: 42` passed `validate`, the
+	// GUI editor and the write API, and then panicked net/http's WriteHeader
+	// on every request to the agent (audit M-01).
+	if l := c.Latency; l != nil {
+		if l.Distribution != "" && !slices.Contains(latencyDistributions, l.Distribution) {
+			ctx.addError("spec.behavior.chaos.latency.distribution",
+				fmt.Sprintf("unknown latency distribution %q", l.Distribution),
+				fmt.Sprintf("Use one of: %s.", strings.Join(latencyDistributions, ", ")))
+		}
+		for field, ms := range map[string]int{"min_ms": l.MinMs, "max_ms": l.MaxMs, "mean_ms": l.MeanMs, "stddev_ms": l.StddevMs} {
+			if ms < 0 || ms > maxChaosMs {
+				ctx.addError("spec.behavior.chaos.latency."+field,
+					fmt.Sprintf("%s must be between 0 and %d", field, maxChaosMs), "")
+			}
+		}
+		if l.MinMs > 0 && l.MaxMs > 0 && l.MaxMs < l.MinMs {
+			ctx.addError("spec.behavior.chaos.latency.max_ms",
+				"max_ms must be >= min_ms", "")
+		}
+	}
+	if e := c.Errors; e != nil {
+		if e.Rate < 0 || e.Rate > 1 {
+			ctx.addError("spec.behavior.chaos.errors.rate",
+				"rate must be in [0.0, 1.0]", "")
+		}
+		if e.StatusCode != 0 && (e.StatusCode < 400 || e.StatusCode > 599) {
+			ctx.addError("spec.behavior.chaos.errors.status_code",
+				"status_code must be between 400 and 599",
+				"Injected errors are HTTP error statuses; net/http rejects codes outside 100-999 outright.")
+		}
+		for i, code := range e.StatusCodes {
+			if code < 400 || code > 599 {
+				ctx.addError(fmt.Sprintf("spec.behavior.chaos.errors.status_codes.%d", i),
+					"status_codes entries must be between 400 and 599", "")
+			}
+		}
+		if e.TimeoutMs < 0 || e.TimeoutMs > maxChaosMs {
+			ctx.addError("spec.behavior.chaos.errors.timeout_ms",
+				fmt.Sprintf("timeout_ms must be between 0 and %d", maxChaosMs),
+				"The timeout fault really sleeps the request for this long.")
+		}
+		if e.FailFirst < 0 {
+			ctx.addError("spec.behavior.chaos.errors.fail_first",
+				"fail_first must be >= 0", "")
+		}
+	}
+	if rl := c.RateLimit; rl != nil {
+		if rl.Requests < 1 {
+			ctx.addError("spec.behavior.chaos.rate_limit.requests",
+				"requests must be >= 1", "")
+		}
+		if rl.WindowMs < 1 {
+			ctx.addError("spec.behavior.chaos.rate_limit.window_ms",
+				"window_ms must be >= 1",
+				"A zero window silently disables the limiter.")
+		}
 	}
 	if cc := c.Connection; cc != nil {
 		if !connectionModes[cc.Mode] {

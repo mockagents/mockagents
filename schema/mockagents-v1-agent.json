@@ -414,10 +414,10 @@
               "enum": ["fixed", "uniform", "normal"],
               "description": "Latency distribution. Defaults to uniform when min/max differ, else fixed."
             },
-            "min_ms": { "type": "integer", "minimum": 0 },
-            "max_ms": { "type": "integer", "minimum": 0 },
-            "mean_ms": { "type": "integer", "minimum": 0, "description": "Mean for normal distribution." },
-            "stddev_ms": { "type": "integer", "minimum": 0, "description": "Stddev for normal distribution." }
+            "min_ms": { "type": "integer", "minimum": 0, "maximum": 60000 },
+            "max_ms": { "type": "integer", "minimum": 0, "maximum": 60000 },
+            "mean_ms": { "type": "integer", "minimum": 0, "maximum": 60000, "description": "Mean for normal distribution." },
+            "stddev_ms": { "type": "integer", "minimum": 0, "maximum": 60000, "description": "Stddev for normal distribution." }
           }
         },
         "errors": {
@@ -448,6 +448,7 @@
             "timeout_ms": {
               "type": "integer",
               "minimum": 0,
+              "maximum": 60000,
               "description": "How long to sleep before returning the synthetic timeout."
             },
             "message": {

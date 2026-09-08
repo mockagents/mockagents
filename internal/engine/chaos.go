@@ -395,6 +395,12 @@ func (c *ChaosInjector) maybeInjectError(ctx context.Context, agentName string, 
 
 	if e.Timeout {
 		timeout := time.Duration(e.TimeoutMs) * time.Millisecond
+		// Same ceiling as a latency draw: the validator rejects larger values,
+		// but a definition can reach the engine without passing through it
+		// (in-process registration), and the sleep is on the request path.
+		if timeout > maxChaosLatencyMs*time.Millisecond {
+			timeout = maxChaosLatencyMs * time.Millisecond
+		}
 		c.sleep(ctx, timeout)
 		return &ChaosError{
 			StatusCode: http.StatusGatewayTimeout,
@@ -405,7 +411,11 @@ func (c *ChaosInjector) maybeInjectError(ctx context.Context, agentName string, 
 	}
 
 	status := c.pickStatusCode(e)
-	if status == 0 {
+	if status < 400 || status > 599 {
+		// 0 means "unset"; anything else outside the error range would reach
+		// ResponseWriter.WriteHeader, which panics on codes outside 100-999
+		// and would mislabel a 2xx as a fault. The validator rejects these,
+		// but the engine must not trust that every definition went through it.
 		status = http.StatusInternalServerError
 	}
 	msg := e.Message
