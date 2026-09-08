@@ -1,11 +1,20 @@
 # Default values for the mockagents Helm chart.
 # Override with `helm install --values my-values.yaml` or `--set key=value`.
 
-# -- Number of replicas. MockAgents is stateful only via its optional
-# -- SQLite interaction log; for a pure mock server multiple replicas
-# -- behave as independent servers, which is fine for load-balanced
-# -- read-only traffic.
+# -- Number of replicas. READ BEFORE RAISING: MockAgents keeps its agent
+# -- registry, conversation sessions, interaction log, audit log and
+# -- per-tenant rate buckets PER POD, and in multi-tenant mode with the
+# -- default SQLite tenancy store every pod bootstraps its own platform key.
+# -- More than one replica (or autoscaling) is refused at render time unless
+# -- env.MOCKAGENTS_TENANCY_DSN points at a shared Postgres tenancy store, or
+# -- multiReplica.acknowledged=true declares that you want N independent
+# -- single-tenant mock servers behind one Service (fine for stateless
+# -- fixture traffic; logs, audit and the write API then differ per pod).
 replicaCount: 1
+
+multiReplica:
+  # -- Acknowledge running more than one replica WITHOUT a shared tenancy backend.
+  acknowledged: false
 
 image:
   # -- Container image to pull. Must contain the mockagents Go binary.
@@ -145,21 +154,43 @@ probes:
     timeoutSeconds: 1
     failureThreshold: 3
 
-# -- Optional ephemeral data directory for the SQLite interaction log.
-# -- When enabled, an emptyDir volume is mounted at /data. Set to a
-# -- specific PVC name to persist the log across pod restarts.
+# -- The /data volume. It is ALWAYS mounted and MOCKAGENTS_DATA_DIR points at
+# -- it, because the root filesystem is read-only and every SQLite store
+# -- (interaction log, audit log, tenancy) lives there. With enabled=false it
+# -- is an emptyDir: state survives container restarts but not pod
+# -- rescheduling. With enabled=true the chart creates a PersistentVolumeClaim
+# -- from size/accessModes/storageClass (or mounts existingClaim), so the
+# -- audit trail and, in multi-tenant mode, the tenants and API keys survive.
+# -- Multi-tenant mode on SQLite without persistence regenerates the platform
+# -- key and orphans every issued key on each reschedule.
 persistence:
   enabled: false
+  # -- Name of a pre-created PVC to mount instead of a chart-managed one.
   existingClaim: ""
   size: 1Gi
   accessModes:
     - ReadWriteOnce
   storageClass: ""
 
-# -- Extra environment variables merged into the container env.
+# -- Extra environment variables merged into the container env. Values
+# -- render into the Deployment in clear text: put secrets
+# -- (MOCKAGENTS_BOOTSTRAP_KEY, MOCKAGENTS_OIDC_CLIENT_SECRET, a
+# -- MOCKAGENTS_TENANCY_DSN carrying a password) in a Secret and reference it
+# -- with existingSecret instead.
 env: {}
 # env:
+#   MOCKAGENTS_MULTI_TENANT: "1"
 #   OTEL_EXPORTER_OTLP_ENDPOINT: http://collector.monitoring.svc:4318
+
+# -- Name of an existing Secret whose keys are exposed as environment
+# -- variables (envFrom secretRef), e.g.
+# --   kubectl create secret generic mockagents-secrets 
+# --     --from-literal=MOCKAGENTS_BOOTSTRAP_KEY=mak_... 
+# --     --from-literal=MOCKAGENTS_OIDC_CLIENT_SECRET=...
+existingSecret: ""
+
+# -- Additional envFrom entries (configMapRef / secretRef), passed through.
+extraEnvFrom: []
 
 # -- Extra command-line flags appended to `mockagents start`.
 extraArgs: []

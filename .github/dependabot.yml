@@ -1,0 +1,26 @@
+# Keeps the commit-SHA-pinned actions, Go modules, and the three package
+# ecosystems current (readiness audit M-37). Actions are pinned to SHAs in
+# the workflows; Dependabot updates the SHA and the trailing version comment.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      actions: { patterns: ["*"] }
+  - package-ecosystem: gomod
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      go-deps: { patterns: ["*"] }
+  - package-ecosystem: npm
+    directory: /gui
+    schedule: { interval: weekly }
+    groups:
+      gui-deps: { patterns: ["*"] }
+  - package-ecosystem: npm
+    directory: /sdk/typescript
+    schedule: { interval: weekly }
+  - package-ecosystem: pip
+    directory: /sdk/python
+    schedule: { interval: weekly }
