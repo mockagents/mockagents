@@ -49,10 +49,14 @@ type AgentDirWatcher struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	pending map[string]*time.Timer
-	// fileAgents maps a watched file path to the agent name it last
-	// registered, so a delete or rename-away can unregister the right agent
-	// (the file's content is gone by the time we react). Guarded by mu.
-	fileAgents map[string]string
+	// fileAgents maps a watched file path to the agent it last registered,
+	// so a delete or rename-away can unregister the right agent (the file's
+	// content is gone by the time we react). The value carries the owner
+	// tenant as well as the name: the registry allows the same name in
+	// different tenant buckets, so a name alone is not an identity — keying
+	// on it once let one tenant's delete remove every tenant's agent of that
+	// name (audit H-01). Guarded by mu.
+	fileAgents map[string]agentKey
 	mu         sync.Mutex
 	// closed is set by Stop under mu so no new debounce timer is armed and
 	// any timer firing during/after Stop bails instead of mutating the
@@ -64,6 +68,13 @@ type AgentDirWatcher struct {
 	wg       sync.WaitGroup
 }
 
+// agentKey identifies a registered agent the way the registry does: by name
+// within an owner tenant ("" = global).
+type agentKey struct {
+	name   string
+	tenant string
+}
+
 // NewAgentDirWatcher constructs a watcher but does not start it.
 // Call Start to begin observing filesystem events.
 func NewAgentDirWatcher(dir string, eng *engine.Engine, logger *slog.Logger) *AgentDirWatcher {
@@ -73,7 +84,28 @@ func NewAgentDirWatcher(dir string, eng *engine.Engine, logger *slog.Logger) *Ag
 		Logger:     logger,
 		Debounce:   150 * time.Millisecond,
 		pending:    make(map[string]*time.Timer),
-		fileAgents: make(map[string]string),
+		fileAgents: make(map[string]agentKey),
+	}
+}
+
+// seedFromRegistry adopts the agents the boot-time load registered from files
+// directly in Dir, so a later delete or rename of one of those files
+// unregisters its agent just like a file the watcher itself loaded. Without
+// this the watcher only knew about files it had seen change, and deleting a
+// boot-loaded file left its agent registered until restart.
+func (w *AgentDirWatcher) seedFromRegistry() {
+	dir := filepath.Clean(w.Dir)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, src := range w.Engine.Registry.Sources() {
+		path := filepath.Clean(src.Path)
+		if filepath.Dir(path) != dir {
+			continue // nested or foreign path: outside the non-recursive watch
+		}
+		if _, tracked := w.fileAgents[path]; tracked {
+			continue
+		}
+		w.fileAgents[path] = agentKey{name: src.Name, tenant: src.TenantID}
 	}
 }
 
@@ -97,6 +129,7 @@ func (w *AgentDirWatcher) Start() error {
 	}
 	w.fsw = fsw
 	w.done = make(chan struct{})
+	w.seedFromRegistry()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	w.cancel = cancel
@@ -243,32 +276,37 @@ func (w *AgentDirWatcher) reloadFile(path string) {
 		return
 	}
 	w.Engine.Registry.RegisterWithSource(result.Definition, path)
-	w.rememberFile(path, result.Definition.Metadata.Name)
+	w.rememberFile(path, agentKey{
+		name:   result.Definition.Metadata.Name,
+		tenant: result.Definition.Metadata.TenantID,
+	})
 	w.Logger.Info("watcher: agent reloaded",
 		"agent", result.Definition.Metadata.Name,
+		"tenant", result.Definition.Metadata.TenantID,
 		"file", filepath.Base(path),
 	)
 }
 
-// rememberFile records that path now declares agent `name`. If the path
-// previously declared a different name (an in-file metadata.name rename),
-// the old registration is dropped unless another file still declares it.
-func (w *AgentDirWatcher) rememberFile(path, name string) {
+// rememberFile records that path now declares agent `key`. If the path
+// previously declared a different agent (an in-file metadata.name or
+// tenant_id change), the old registration is dropped unless another file
+// still declares it.
+func (w *AgentDirWatcher) rememberFile(path string, key agentKey) {
 	w.mu.Lock()
 	prev, had := w.fileAgents[path]
-	w.fileAgents[path] = name
+	w.fileAgents[path] = key
 	w.mu.Unlock()
-	if had && prev != name {
+	if had && prev != key {
 		w.removeIfUnclaimed(prev, path)
 	}
 }
 
 // unregisterFile handles a file that has disappeared: it drops the path's
 // mapping and unregisters the agent it declared, unless another tracked
-// file still declares that same name.
+// file still declares that same agent.
 func (w *AgentDirWatcher) unregisterFile(path string) {
 	w.mu.Lock()
-	name, ok := w.fileAgents[path]
+	key, ok := w.fileAgents[path]
 	if ok {
 		delete(w.fileAgents, path)
 	}
@@ -276,19 +314,20 @@ func (w *AgentDirWatcher) unregisterFile(path string) {
 	if !ok {
 		return
 	}
-	w.removeIfUnclaimed(name, path)
+	w.removeIfUnclaimed(key, path)
 }
 
-// removeIfUnclaimed removes `name` from the registry unless some other
+// removeIfUnclaimed removes `key` from the registry unless some other
 // tracked file still maps to it. This makes a file rename safe regardless of
 // event ordering: if the new path registered the agent before the old path's
-// removal is processed, the new path still claims the name and we keep it.
-// Caller must not hold w.mu.
-func (w *AgentDirWatcher) removeIfUnclaimed(name, viaPath string) {
+// removal is processed, the new path still claims the agent and we keep it.
+// Removal is tenant-precise: a tenant's `foo` going away never touches the
+// global `foo` or another tenant's. Caller must not hold w.mu.
+func (w *AgentDirWatcher) removeIfUnclaimed(key agentKey, viaPath string) {
 	w.mu.Lock()
 	claimed := false
-	for _, n := range w.fileAgents {
-		if n == name {
+	for _, k := range w.fileAgents {
+		if k == key {
 			claimed = true
 			break
 		}
@@ -297,11 +336,11 @@ func (w *AgentDirWatcher) removeIfUnclaimed(name, viaPath string) {
 	if claimed {
 		return
 	}
-	if err := w.Engine.Registry.Remove(name); err != nil {
-		// Already gone (e.g. removed by another path under the same name).
+	if err := w.Engine.Registry.RemoveForTenant(key.name, key.tenant); err != nil {
+		// Already gone (e.g. the write API deleted it before removing the file).
 		return
 	}
-	w.Logger.Info("watcher: agent removed", "agent", name, "file", filepath.Base(viaPath))
+	w.Logger.Info("watcher: agent removed", "agent", key.name, "tenant", key.tenant, "file", filepath.Base(viaPath))
 }
 
 // isAgentFile reports whether the given path looks like a document
