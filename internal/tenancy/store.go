@@ -907,3 +907,74 @@ func generateAPIKey() (plaintext, prefix string, err error) {
 	plaintext = prefix + "_" + encoded
 	return plaintext, prefix, nil
 }
+
+// PresetKeyCreator is implemented by stores that can register an API key
+// whose plaintext the CALLER supplies instead of generating one. The
+// bootstrap path uses it so the platform credential can come from a secret
+// (MOCKAGENTS_BOOTSTRAP_KEY) rather than being generated and printed to the
+// log stream (audit H-09). Both bundled stores implement it.
+type PresetKeyCreator interface {
+	CreateAPIKeyWithPlaintext(ctx context.Context, tenantID, name string, role Role, plaintext string) (*APIKey, error)
+}
+
+// ValidatePresetAPIKey checks that a caller-supplied plaintext has the shape
+// Resolve expects — `mak_<8 hex>_<secret>` with a secret of at least 24
+// URL-safe base64 characters — and returns its public prefix. The secret
+// length floor matches what generateAPIKey produces (24 random bytes →
+// 32 characters), so a preset key is never weaker than a generated one.
+func ValidatePresetAPIKey(plaintext string) (prefix string, err error) {
+	if len(plaintext) <= apiKeyPrefixLen || plaintext[:4] != "mak_" || plaintext[apiKeyPrefixLen] != '_' {
+		return "", errors.New("key must have the form mak_<8 hex chars>_<secret>")
+	}
+	prefix = plaintext[:apiKeyPrefixLen]
+	if _, err := hex.DecodeString(prefix[4:]); err != nil {
+		return "", errors.New("key prefix must be mak_ followed by 8 hex characters")
+	}
+	secret := plaintext[apiKeyPrefixLen+1:]
+	if len(secret) < 24 {
+		return "", errors.New("key secret (after the second underscore) must be at least 24 characters")
+	}
+	for _, c := range secret {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+		default:
+			return "", errors.New("key secret may contain only A-Z, a-z, 0-9, '_' and '-'")
+		}
+	}
+	return prefix, nil
+}
+
+// CreateAPIKeyWithPlaintext registers plaintext as a key of the given tenant
+// and role. Unlike CreateAPIKey the secret is not returned — the caller
+// already has it — and it is validated with ValidatePresetAPIKey first.
+func (s *SQLiteStore) CreateAPIKeyWithPlaintext(ctx context.Context, tenantID, name string, role Role, plaintext string) (*APIKey, error) {
+	prefix, err := ValidatePresetAPIKey(plaintext)
+	if err != nil {
+		return nil, err
+	}
+	if !role.IsValid() {
+		return nil, fmt.Errorf("invalid role %q", role)
+	}
+	if _, err := s.GetTenant(ctx, tenantID); err != nil {
+		return nil, fmt.Errorf("tenant %s: %w", tenantID, err)
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(plaintext), bcryptCost)
+	if err != nil {
+		return nil, fmt.Errorf("bcrypt hash: %w", err)
+	}
+	keyID, err := randID("key")
+	if err != nil {
+		return nil, err
+	}
+	key := APIKey{ID: keyID, TenantID: tenantID, Name: name, Prefix: prefix, Role: role, CreatedAt: time.Now().UTC()}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO api_keys (id, tenant_id, name, prefix, hash, role, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		key.ID, key.TenantID, key.Name, key.Prefix, string(hash),
+		string(key.Role), key.CreatedAt.Format(time.RFC3339),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert api_key: %w", err)
+	}
+	return &key, nil
+}

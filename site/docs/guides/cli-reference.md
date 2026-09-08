@@ -461,6 +461,8 @@ mockagents contract diff contracts/support.json agents/support.yaml
 
 Set `MOCKAGENTS_MULTI_TENANT=1` before `mockagents start` to enable API-key auth
 + tenants + RBAC on the `/api/v1/*` management routes. On first boot a `default`
-tenant and a bootstrap `platform`/admin key are created and the plaintext is
-printed once to stderr. See the [Management API](management-api.md) guide for the
+tenant and a bootstrap `platform` key are created; supply the key with
+`MOCKAGENTS_BOOTSTRAP_KEY`, or read the generated one from
+`MOCKAGENTS_BOOTSTRAP_KEY_FILE` (default `<data dir>/bootstrap-admin.key`) —
+it is never printed. See the [Management API](management-api.md) guide for the
 control-plane routes and role floors.

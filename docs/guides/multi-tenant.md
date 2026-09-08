@@ -16,19 +16,36 @@ It is opt-in — set `MOCKAGENTS_MULTI_TENANT=1` before `mockagents start` to
 enable it. When the flag is off everything behaves exactly as today.
 
 On first boot with the flag set, MockAgents creates a `default` tenant and a
-`bootstrap-admin` API key, then prints the plaintext **exactly once** to stderr
-so you can capture it:
+`bootstrap-admin` API key with the `platform` role. The plaintext is never
+written to the log stream (in a container, stderr is the pod log and ends up in
+every log aggregator). You receive it one of two ways:
 
-```
-================================================================
-MockAgents multi-tenant mode enabled.
-Bootstrap admin key (shown once): mak_1c3a9e0f_MXh6A2ci8RaWGpQBxLHFhRRacKvKnovL
-Store this in your password manager. Use it via:
-  Authorization: Bearer <key>   or   X-Api-Key: <key>
-================================================================
-```
+- **Supply it yourself** with `MOCKAGENTS_BOOTSTRAP_KEY=mak_<8 hex>_<secret>`
+  (secret: 24+ URL-safe base64 characters). This is the path for Kubernetes,
+  where the value comes from a Secret. Nothing secret is printed.
+- **Let MockAgents generate it.** The key is written, mode 0600, to
+  `MOCKAGENTS_BOOTSTRAP_KEY_FILE` (default `<MOCKAGENTS_DATA_DIR>/bootstrap-admin.key`)
+  and stderr shows only the path and the public prefix:
+
+  ```
+  ================================================================
+  MockAgents multi-tenant mode enabled.
+  Bootstrap platform key (prefix mak_1c3a9e0f) written to:
+    /data/bootstrap-admin.key
+  Read it once, store it in your password manager, then delete the file.
+  Use it via:  Authorization: Bearer <key>   or   X-Api-Key: <key>
+  ================================================================
+  ```
+
+  If that file cannot be written (read-only filesystem), startup fails with
+  instructions instead of falling back to printing the secret.
 
 The key is bcrypt-hashed immediately; there is no recovery path if you lose it.
+
+Every `MOCKAGENTS_*` variable is parsed strictly: a value that is set but not
+valid (`MOCKAGENTS_MULTI_TENANT=maybe`, `MOCKAGENTS_PORT=808O`,
+`MOCKAGENTS_DEFAULT_RATE_PER_SEC=10rps`) is a startup error, never a silent
+default. Booleans accept `1/0`, `true/false`, `yes/no`, `on/off`.
 
 ## Roles & route authorization
 
