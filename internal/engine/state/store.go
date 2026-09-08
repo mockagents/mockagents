@@ -1,6 +1,7 @@
 package state
 
 import (
+	"sort"
 	"sync"
 	"time"
 )
@@ -30,21 +31,84 @@ type Store interface {
 	Cleanup()
 }
 
-// MemoryStore is an in-memory session store with TTL-based expiration.
+const (
+	// DefaultMaxSessions bounds the number of live sessions a MemoryStore
+	// retains. Past it the least-recently-used sessions are evicted on
+	// create, so a client that pins a fresh X-Session-Id per request cannot
+	// grow the process without bound (audit H-06). 0 disables the cap.
+	DefaultMaxSessions = 100_000
+	// DefaultMaxHistory bounds a session's retained message history (user +
+	// assistant entries, i.e. 128 turns). Older entries are dropped; TurnCount keeps
+	// counting, so turn-number scenarios are unaffected. 0 disables the cap.
+	DefaultMaxHistory = 256
+)
+
+// MemoryStore is an in-memory session store with TTL-based expiration and
+// an LRU cap on the number of sessions.
 type MemoryStore struct {
-	mu       sync.RWMutex
-	sessions map[string]*Session
-	ttl      time.Duration
+	mu          sync.RWMutex
+	sessions    map[string]*Session
+	ttl         time.Duration
+	maxSessions int
+	maxHistory  int
 }
 
-// NewMemoryStore creates an in-memory session store.
+// NewMemoryStore creates an in-memory session store with the default caps.
 func NewMemoryStore(ttl time.Duration) *MemoryStore {
 	if ttl <= 0 {
 		ttl = DefaultSessionTTL
 	}
 	return &MemoryStore{
-		sessions: make(map[string]*Session),
-		ttl:      ttl,
+		sessions:    make(map[string]*Session),
+		ttl:         ttl,
+		maxSessions: DefaultMaxSessions,
+		maxHistory:  DefaultMaxHistory,
+	}
+}
+
+// SetLimits overrides the session-count and per-session history caps
+// (0 = unlimited). Only sessions created afterwards pick up maxHistory.
+func (s *MemoryStore) SetLimits(maxSessions, maxHistory int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.maxSessions = maxSessions
+	s.maxHistory = maxHistory
+}
+
+// evictForSpaceLocked makes room for one more session when the cap is
+// reached: expired sessions go first; if that is not enough, the
+// least-recently-accessed 1/16th of the cap (at least one) is dropped so
+// the O(n log n) scan is amortised over many creates. Caller holds s.mu.
+func (s *MemoryStore) evictForSpaceLocked() {
+	if s.maxSessions <= 0 || len(s.sessions) < s.maxSessions {
+		return
+	}
+	for id, session := range s.sessions {
+		if session.IsExpired() {
+			delete(s.sessions, id)
+		}
+	}
+	if len(s.sessions) < s.maxSessions {
+		return
+	}
+	type entry struct {
+		id   string
+		last time.Time
+	}
+	entries := make([]entry, 0, len(s.sessions))
+	for id, session := range s.sessions {
+		entries = append(entries, entry{id: id, last: session.lastAccess()})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].last.Before(entries[j].last) })
+	drop := s.maxSessions / 16
+	if drop < 1 {
+		drop = 1
+	}
+	if drop > len(entries) {
+		drop = len(entries)
+	}
+	for _, e := range entries[:drop] {
+		delete(s.sessions, e.id)
 	}
 }
 
@@ -86,7 +150,9 @@ func (s *MemoryStore) GetOrCreate(id, agentName string) *Session {
 			return session
 		}
 	}
+	s.evictForSpaceLocked()
 	session := NewSession(id, agentName, s.ttl)
+	session.MaxHistory = s.maxHistory
 	// Key on the lookup id, not session.ID (F-ST-007): they are equal today
 	// since NewSession copies id verbatim, but keying on id keeps the map
 	// consistent with how callers look sessions up even if NewSession ever

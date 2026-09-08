@@ -282,8 +282,10 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 		if agent != nil {
 			streamCfg = agent.Spec.Behavior.Streaming
 		}
+		// Same input and output estimates as the non-streaming path below, so
+		// usage (and therefore cost + spend) does not depend on stream:true.
 		if err := streaming.StreamAnthropic(r.Context(), w, resp, streamCfg,
-			sumMessageTokens(inbound.Messages)); err != nil {
+			sumMessageTokens(inbound.Messages), EstimateTokens(resp.Content)); err != nil {
 			return
 		}
 		return

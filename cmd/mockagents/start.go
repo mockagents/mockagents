@@ -189,6 +189,23 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Initialize engine.
 	store := state.NewMemoryStore(state.DefaultSessionTTL)
+	// Session-store caps (audit H-06). 0 = unlimited.
+	//   MOCKAGENTS_SESSION_MAX     = max live sessions (default 100000)
+	//   MOCKAGENTS_SESSION_HISTORY = messages retained per session (default 256)
+	maxSessions, maxHistory := state.DefaultMaxSessions, state.DefaultMaxHistory
+	for _, k := range []struct {
+		name string
+		dst  *int
+	}{{"MOCKAGENTS_SESSION_MAX", &maxSessions}, {"MOCKAGENTS_SESSION_HISTORY", &maxHistory}} {
+		if v := strings.TrimSpace(os.Getenv(k.name)); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				*k.dst = n
+			} else {
+				logger.Warn("ignoring invalid "+k.name, "value", v)
+			}
+		}
+	}
+	store.SetLimits(maxSessions, maxHistory)
 	stopCleanup := store.StartCleanupTicker(5 * time.Minute)
 	defer stopCleanup()
 

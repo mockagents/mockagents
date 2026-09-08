@@ -1,6 +1,6 @@
 package streaming
 
-import "strings"
+import "unicode"
 
 const (
 	DefaultChunkSize    = 4
@@ -22,30 +22,36 @@ func NewChunker(chunkSize int) *Chunker {
 	return &Chunker{ChunkSize: chunkSize}
 }
 
-// Chunk splits content into pieces of approximately ChunkSize words.
-// Non-final chunks have a trailing space to preserve word spacing when
-// reassembled by the client.
+// Chunk splits content into pieces of ChunkSize words each (the last may be
+// shorter). The pieces are byte slices of the original string cut at word
+// starts, so concatenating them reproduces content exactly — newlines,
+// indentation, tabs and runs of spaces included. An earlier version split
+// on strings.Fields and re-joined with single spaces, which streamed a
+// markdown table or code block as one flattened line while the
+// non-streaming path returned it verbatim (audit H-07). Whitespace that
+// precedes a word travels with the chunk before it, so non-final chunks
+// still end with their separator.
 func (c *Chunker) Chunk(content string) []string {
 	if content == "" {
 		return nil
 	}
-
-	words := strings.Fields(content)
-	if len(words) == 0 {
-		return []string{content}
-	}
-
 	var chunks []string
-	for i := 0; i < len(words); i += c.ChunkSize {
-		end := i + c.ChunkSize
-		if end > len(words) {
-			end = len(words)
+	start, words := 0, 0
+	prevSpace := true
+	for i, r := range content {
+		isSpace := unicode.IsSpace(r)
+		if !isSpace && prevSpace {
+			// A word starts here.
+			if words == c.ChunkSize {
+				chunks = append(chunks, content[start:i])
+				start, words = i, 0
+			}
+			words++
 		}
-		chunk := strings.Join(words[i:end], " ")
-		if end < len(words) {
-			chunk += " "
-		}
-		chunks = append(chunks, chunk)
+		prevSpace = isSpace
 	}
-	return chunks
+	if words == 0 && len(chunks) == 0 {
+		return []string{content} // whitespace only
+	}
+	return append(chunks, content[start:])
 }
