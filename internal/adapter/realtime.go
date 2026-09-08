@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -49,6 +50,19 @@ type RealtimeHandler struct {
 	// server wires per-tenant spend accrual and interaction logging through
 	// this seam (round-7 R7-21).
 	OnResponse func(tenantID, model string, inputTokens, outputTokens int, resp *engine.Response)
+	// AllowedOrigins, when non-empty, restricts the WebSocket handshake to
+	// browsers whose Origin matches one of the listed origins (scheme://host
+	// [:port], compared case-insensitively; a "*" entry means any). Empty
+	// keeps the mock's permissive default. Non-browser clients send no
+	// Origin and are never affected.
+	AllowedOrigins []string
+	// TenantForConnection, when set, decides which tenant a new socket is
+	// scoped to instead of reading the request context directly. The server
+	// uses it to refuse to honour a cookie-derived principal on a
+	// cross-origin handshake: browsers attach cookies to cross-site WebSocket
+	// upgrades, so a page on any origin could otherwise open the socket as an
+	// SSO-logged-in operator's tenant and spend its quota (audit H-04).
+	TenantForConnection func(r *http.Request) string
 	// minted retains the session config supplied at ephemeral-key mint time
 	// (POST /v1/realtime/client_secrets), keyed by the ek_ value, so a connect
 	// presenting that key comes up with the configuration the client paid for
@@ -361,12 +375,17 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// The real Realtime API negotiates the "realtime" subprotocol (plus the
-		// browser key-bearing offers accepted above); a mock accepts any origin.
-		Subprotocols:       subprotocols,
-		InsecureSkipVerify: true,
-	})
+	// The real Realtime API negotiates the "realtime" subprotocol (plus the
+	// browser key-bearing offers accepted above). Origin policy: with no
+	// allowlist the mock accepts any origin, as before; with one, the library
+	// enforces it during the handshake (a mismatch is a 403 before upgrade).
+	accept := &websocket.AcceptOptions{Subprotocols: subprotocols}
+	if patterns := originPatterns(h.AllowedOrigins); patterns == nil {
+		accept.InsecureSkipVerify = true
+	} else {
+		accept.OriginPatterns = patterns
+	}
+	c, err := websocket.Accept(w, r, accept)
 	if err != nil {
 		return // Accept already wrote the HTTP error
 	}
@@ -375,6 +394,9 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 
 	ctx := r.Context()
 	tenant := engine.TenantIDFromContext(ctx)
+	if h.TenantForConnection != nil {
+		tenant = h.TenantForConnection(r)
+	}
 	sess := realtime.NewSession("sess_"+generateID(), r.URL.Query().Get("model"), h.generator(tenant))
 	sess.SetExpiry(time.Now().Add(time.Hour).Unix()) // reported as session.expires_at
 	// ?intent=transcription connects an input-transcription-only session (a
@@ -521,4 +543,34 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// originPatterns converts an origin allowlist into the host patterns
+// coder/websocket matches an Origin header's host against. It returns nil
+// (meaning "no restriction") for an empty list or one containing "*". The
+// library compares host[:port] only, so "https://app.example:8443" becomes
+// "app.example:8443".
+func originPatterns(allowed []string) []string {
+	if len(allowed) == 0 {
+		return nil
+	}
+	patterns := make([]string, 0, len(allowed))
+	for _, o := range allowed {
+		o = strings.TrimSpace(o)
+		if o == "*" {
+			return nil
+		}
+		if o == "" {
+			continue
+		}
+		if u, err := url.Parse(o); err == nil && u.Host != "" {
+			patterns = append(patterns, u.Host)
+			continue
+		}
+		patterns = append(patterns, o)
+	}
+	if len(patterns) == 0 {
+		return nil
+	}
+	return patterns
 }
