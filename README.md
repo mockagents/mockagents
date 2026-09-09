@@ -37,7 +37,7 @@ python my_existing_app.py                              # 3. it works — free, o
 No Go toolchain? Grab a prebuilt binary from
 [Releases](https://github.com/mockagents/mockagents/releases) — macOS and Linux
 on amd64 and arm64, Windows on amd64 — then skip to step 1. Asset names carry
-the version (`mockagents_0.4.0_linux_amd64.tar.gz`), so there is no
+the version (`mockagents_0.5.0_linux_amd64.tar.gz`), so there is no
 version-independent download URL.
 
 That's the whole idea: **swap the base URL, change nothing else.** Works with
@@ -55,9 +55,11 @@ AI SDK — anything that talks these APIs over HTTP.
 | Homebrew | `brew install mockagents/tap/mockagents` | ⏳ |
 | Docker | `docker run -p 8080:8080 mockagents/mockagents` | ⏳ |
 
-⏳ **Not yet published.** These packages are built and versioned in-tree, but the
-v0.4.0 release pipeline failed partway through, so the registries have nothing to
-serve — they will 404 until the next release completes. Use Go or a prebuilt
+⏳ **Not yet published.** These packages are built and versioned in-tree, but
+the registry publish jobs need account setup that has not been done yet (see
+[RELEASING.md](docs/RELEASING.md)), so they will 404 until a release completes
+those steps. The v0.4.0 run published binaries and failed on Docker Hub, npm and
+PyPI for exactly this reason. Use Go or a prebuilt
 binary in the meantime. The
 [install-paths workflow](https://github.com/mockagents/mockagents/actions/workflows/install-paths.yml)
 checks every row on this table daily and is the source of truth for this column.
