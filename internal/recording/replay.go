@@ -110,7 +110,7 @@ func (rp *Replay) extendMatchIndex() {
 		rp.byMatchKey = make(map[string][]*Interaction, len(all))
 	}
 	for _, it := range all[rp.builtLen:] {
-		key := rp.Matcher.Key(it.Method, it.Path, it.RequestBody)
+		key := rp.Matcher.Key(it.Method, it.Path, it.RequestBodyBytes())
 		rp.byMatchKey[key] = append(rp.byMatchKey[key], it)
 	}
 	rp.builtLen = len(all)
@@ -166,7 +166,9 @@ func (rp *Replay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusOK
 	}
 	w.WriteHeader(status)
-	_, _ = w.Write(it.ResponseBody)
+	// ResponseBodyBytes unwraps a body that was stored as text/base64 because
+	// it wasn't JSON (M-28), so the client gets the original bytes back.
+	_, _ = w.Write(it.ResponseBodyBytes())
 }
 
 // serveStreaming writes a captured SSE interaction back to the client,

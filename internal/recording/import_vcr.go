@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -227,23 +226,30 @@ func ImportVCR(r io.Reader, opts ImportVCROpts) ([]*Interaction, ImportResult, e
 			res.SkipReasons = append(res.SkipReasons, fmt.Sprintf("interaction %d: %s %s — not a POST to a known LLM path (use --all to include)", i, method, path))
 			continue
 		}
-		// A non-JSON request body hashes over its raw bytes; storing it
-		// JSON-string-wrapped (so the cassette stays loadable) would not match a
-		// raw client send, producing a dead interaction. Skip it with a reason.
+		// A non-JSON body on an LLM request path is almost always a
+		// mis-decoded (still-compressed or truncated) vcr entry rather than a
+		// real request. Skip it with a reason instead of importing an
+		// interaction no client will ever match.
 		if vi.Request.Body.Present && !json.Valid([]byte(vi.Request.Body.Raw)) {
 			res.Skipped++
 			res.SkipReasons = append(res.SkipReasons, fmt.Sprintf("interaction %d: non-JSON request body cannot be replay-matched — skipping", i))
 			continue
 		}
 
+		// A non-JSON response body is wrapped with its encoding rather than
+		// blindly quoted, so replay serves the original bytes back (M-28).
+		reqRaw, reqEnc := bodyToRawMessage(vi.Request.Body)
+		respRaw, respEnc := bodyToRawMessage(vi.Response.Body)
 		out = append(out, &Interaction{
-			Method:          method,
-			Path:            path,
-			RequestHeaders:  flattenHeaders(vi.Request.Headers),
-			RequestBody:     bodyToRawMessage(vi.Request.Body),
-			ResponseStatus:  statusOr(vi.Response.Status.Code, 200),
-			ResponseHeaders: flattenHeaders(vi.Response.Headers),
-			ResponseBody:    bodyToRawMessage(vi.Response.Body),
+			Method:               method,
+			Path:                 path,
+			RequestHeaders:       flattenHeaders(vi.Request.Headers),
+			RequestBody:          reqRaw,
+			RequestBodyEncoding:  reqEnc,
+			ResponseStatus:       statusOr(vi.Response.Status.Code, 200),
+			ResponseHeaders:      flattenHeaders(vi.Response.Headers),
+			ResponseBody:         respRaw,
+			ResponseBodyEncoding: respEnc,
 		})
 		res.Imported++
 	}
@@ -289,14 +295,11 @@ func flattenHeaders(h map[string][]string) map[string]string {
 // sending the same body) and wraps a non-JSON body as a JSON string so the
 // cassette file stays valid. Non-JSON request bodies therefore won't hash-match
 // a raw client send — an accepted limitation for --all of non-LLM traffic.
-func bodyToRawMessage(b vcrBody) json.RawMessage {
+func bodyToRawMessage(b vcrBody) (json.RawMessage, string) {
 	if !b.Present || b.Raw == "" {
-		return nil
+		return nil, BodyEncodingJSON
 	}
-	if json.Valid([]byte(b.Raw)) {
-		return json.RawMessage(b.Raw)
-	}
-	return json.RawMessage(strconv.Quote(b.Raw))
+	return EncodeBody([]byte(b.Raw))
 }
 
 func statusOr(code, def int) int {

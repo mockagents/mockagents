@@ -152,7 +152,11 @@ transport (protocol revision `2025-11-25`, with negotiation down to
 - **GET** the same URL (with `Accept: text/event-stream`) for the resumable
   server→client event stream; reconnect with `Last-Event-ID` to replay missed
   events. One GET stream per session — a second concurrent one gets **409**.
-- **DELETE** ends the session.
+- **DELETE** ends the session. A session that goes 30 minutes without a request
+  (and without a live GET stream keeping it warm) is reclaimed on its own, so a
+  client that disappears without a DELETE doesn't hold its replay buffer
+  forever. A later request with that id gets the same **404** as an unknown
+  one — reinitialize.
 
 Drive it by hand:
 

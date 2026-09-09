@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,8 +19,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Interaction is a single captured request/response pair.
@@ -38,6 +41,12 @@ type Interaction struct {
 	ResponseStatus  int               `json:"response_status"`
 	ResponseHeaders map[string]string `json:"response_headers,omitempty"`
 	ResponseBody    json.RawMessage   `json:"response_body,omitempty"`
+	// RequestBodyEncoding / ResponseBodyEncoding describe how a body that is
+	// NOT valid JSON was wrapped for storage: "text" (JSON string) or "base64"
+	// (JSON string of base64). Empty means the body is verbatim JSON, so every
+	// cassette recorded before audit M-28 keeps its exact shape.
+	RequestBodyEncoding  string `json:"request_body_encoding,omitempty"`
+	ResponseBodyEncoding string `json:"response_body_encoding,omitempty"`
 	// Streaming is true for captured Server-Sent Events responses.
 	// When set, ResponseBody is empty and StreamEvents holds the
 	// ordered chunks that were pushed to the client.
@@ -57,7 +66,10 @@ type StreamEvent struct {
 
 // Cassette is an in-memory collection of Interaction records indexed by
 // request hash. Cassettes are loaded from a .jsonl file and appended to
-// via Append, which rewrites the file (cassettes are small).
+// via Append, which writes ONE line through an O_APPEND open/write/close
+// (audit M-26): the old whole-file rewrite was O(n^2) over a recording session
+// and ran outside the mutex, so two concurrent recorders could rename
+// stale snapshots over each other and silently drop interactions.
 type Cassette struct {
 	Path string
 
@@ -67,6 +79,88 @@ type Cassette struct {
 	// can map to MULTIPLE interactions (a multi-turn loop replays them in
 	// sequence — R-04); single-interaction hashes keep a one-element slice.
 	byHash map[string][]*Interaction
+
+	// writeMu serializes ALL disk writes and guards the three fields below, so
+	// exactly one goroutine appends at a time and the file order matches the
+	// in-memory order.
+	writeMu sync.Mutex
+	// flushed is the number of leading interactions already on disk. Each
+	// writer persists interactions[flushed:] and advances it, so a concurrent
+	// writer that already covered a record never writes it twice.
+	flushed int
+	// rewrite forces the next write to rebuild the whole file atomically
+	// instead of appending — set when Load skipped a torn trailing line, whose
+	// partial bytes would otherwise be concatenated with the next record.
+	rewrite bool
+}
+
+// Body encodings for Interaction.RequestBodyEncoding / ResponseBodyEncoding.
+// The zero value ("") means the body is valid JSON stored verbatim, which is
+// what every cassette written before audit M-28 contains.
+const (
+	// BodyEncodingJSON stores the body verbatim as JSON.
+	BodyEncodingJSON = ""
+	// BodyEncodingText stores a non-JSON but valid-UTF-8 body as a JSON string.
+	BodyEncodingText = "text"
+	// BodyEncodingBase64 stores a body with non-UTF-8 bytes as base64 text.
+	BodyEncodingBase64 = "base64"
+)
+
+// EncodeBody prepares an arbitrary body for storage in a cassette and returns
+// the stored value plus its encoding. A non-JSON body (an HTML error page, a
+// proxy's plain-text 502, a gzip fragment) used to be assigned straight to a
+// json.RawMessage field, which made the whole interaction un-encodable and
+// failed the cassette write (audit M-28). Wrapping it keeps every line valid
+// JSON, and DecodeBody restores the original bytes byte-for-byte.
+func EncodeBody(b []byte) (json.RawMessage, string) {
+	if len(b) == 0 {
+		return nil, BodyEncodingJSON
+	}
+	if json.Valid(b) {
+		return json.RawMessage(b), BodyEncodingJSON
+	}
+	if utf8.Valid(b) {
+		return json.RawMessage(strconv.Quote(string(b))), BodyEncodingText
+	}
+	return json.RawMessage(strconv.Quote(base64.StdEncoding.EncodeToString(b))), BodyEncodingBase64
+}
+
+// DecodeBody restores the bytes EncodeBody stored. An unknown encoding, or a
+// value that does not decode, falls back to the raw stored bytes so an
+// unreadable body degrades to "served as-is" rather than to an empty response.
+func DecodeBody(raw json.RawMessage, encoding string) []byte {
+	if len(raw) == 0 {
+		return nil
+	}
+	switch encoding {
+	case BodyEncodingText, BodyEncodingBase64:
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return raw
+		}
+		if encoding == BodyEncodingText {
+			return []byte(s)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(s)
+		if err != nil {
+			return raw
+		}
+		return decoded
+	default:
+		return raw
+	}
+}
+
+// RequestBodyBytes returns the original request body bytes, decoding the
+// wrapper EncodeBody applied to a non-JSON body.
+func (i *Interaction) RequestBodyBytes() []byte {
+	return DecodeBody(i.RequestBody, i.RequestBodyEncoding)
+}
+
+// ResponseBodyBytes returns the original response body bytes, decoding the
+// wrapper EncodeBody applied to a non-JSON body.
+func (i *Interaction) ResponseBodyBytes() []byte {
+	return DecodeBody(i.ResponseBody, i.ResponseBodyEncoding)
 }
 
 // MaxCassetteLine bounds a single serialized interaction line on both the read
@@ -136,7 +230,30 @@ func Load(path string) (*Cassette, error) {
 		slog.Warn("cassette ends in an unparseable line, most likely a recording interrupted mid-write; skipping it and keeping the interactions before it",
 			"path", path, "line", tornLine, "kept", len(c.interactions), "error", tornErr)
 	}
+	// Everything just read is already on disk, so appends start after it. A
+	// torn tail or a missing final newline can't be appended to safely — the
+	// next record would be concatenated onto a partial line — so the first
+	// write rebuilds the file atomically instead.
+	c.flushed = len(c.interactions)
+	c.rewrite = tornErr != nil || !endsWithNewline(f)
 	return c, nil
+}
+
+// endsWithNewline reports whether the file's last byte is '\n'. An empty file
+// counts as terminated: there is no partial line to append to.
+func endsWithNewline(f *os.File) bool {
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	if info.Size() == 0 {
+		return true
+	}
+	var b [1]byte
+	if _, err := f.ReadAt(b[:], info.Size()-1); err != nil {
+		return false
+	}
+	return b[0] == '\n'
 }
 
 // Len returns the number of interactions in the cassette.
@@ -150,7 +267,7 @@ func (c *Cassette) Len() int {
 // is set. The hash is assigned by Append if blank.
 func (c *Cassette) Append(it *Interaction) error {
 	if it.Hash == "" {
-		it.Hash = HashRequest(it.Method, it.Path, it.RequestBody)
+		it.Hash = HashRequest(it.Method, it.Path, it.RequestBodyBytes())
 	}
 	if it.RecordedAt.IsZero() {
 		it.RecordedAt = time.Now().UTC()
@@ -165,7 +282,7 @@ func (c *Cassette) Append(it *Interaction) error {
 	if c.Path == "" {
 		return nil
 	}
-	return writeCassette(c.Path, snapshot)
+	return c.flush(snapshot)
 }
 
 // AppendAll adds many interactions and writes the cassette to disk ONCE. Hashes
@@ -177,7 +294,7 @@ func (c *Cassette) AppendAll(interactions []*Interaction) error {
 	c.mu.Lock()
 	for _, it := range interactions {
 		if it.Hash == "" {
-			it.Hash = HashRequest(it.Method, it.Path, it.RequestBody)
+			it.Hash = HashRequest(it.Method, it.Path, it.RequestBodyBytes())
 		}
 		if it.RecordedAt.IsZero() {
 			it.RecordedAt = now
@@ -191,7 +308,65 @@ func (c *Cassette) AppendAll(interactions []*Interaction) error {
 	if c.Path == "" {
 		return nil
 	}
-	return writeCassette(c.Path, snapshot)
+	return c.flush(snapshot)
+}
+
+// flush persists every interaction in snapshot that is not on disk yet. It is
+// the ONLY writer: writeMu serializes callers, so concurrent Appends append in
+// memory order and a caller whose records another goroutine already wrote does
+// nothing. An interaction that cannot be encoded is dropped with a warning
+// rather than aborting the write (audit M-28) — one poisoned record must not
+// stop the rest of a recording session from being saved.
+func (c *Cassette) flush(snapshot []*Interaction) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	if c.flushed >= len(snapshot) {
+		return nil
+	}
+
+	// A torn trailing line from a killed recorder can't be appended to: rebuild
+	// the file atomically once, then resume appending.
+	if c.rewrite {
+		if err := writeCassette(c.Path, snapshot); err != nil {
+			return err
+		}
+		c.rewrite = false
+		c.flushed = len(snapshot)
+		return nil
+	}
+
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	pending := snapshot[c.flushed:]
+	for _, it := range pending {
+		start := buf.Len()
+		if err := enc.Encode(it); err != nil {
+			buf.Truncate(start)
+			slog.Warn("cassette interaction could not be encoded; dropping it and keeping the rest of the recording",
+				"path", c.Path, "method", it.Method, "request_path", it.Path, "error", err)
+		}
+	}
+	// Advance regardless: a dropped record is gone, and holding it back would
+	// make every later flush retry the same failure.
+	c.flushed = len(snapshot)
+	if buf.Len() == 0 {
+		return nil
+	}
+
+	// The handle is opened per flush rather than held for the cassette's
+	// lifetime: one batch is a single open/write/close, and nothing keeps the
+	// file locked between recordings (on Windows an open handle blocks any
+	// rename or delete of the cassette).
+	f, err := os.OpenFile(c.Path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(buf.Bytes()); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // Lookup returns the FIRST interaction recorded for the given request hash, or
