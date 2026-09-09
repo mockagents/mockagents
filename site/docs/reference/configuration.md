@@ -17,6 +17,15 @@ this version.
 | `MOCKAGENTS_AGENTS_DIR` | `--agents-dir` | `./agents` | Directory of agent, pipeline, MCP and A2A definitions. |
 | `MOCKAGENTS_LOG_LEVEL` | `--log-level` | `info` | `debug`, `info`, `warn`, `error`. |
 | `MOCKAGENTS_DATA_DIR` | — | working directory | Where the three SQLite files live. Set it whenever the working directory is read-only (containers). |
+| `MOCKAGENTS_CORS_ORIGINS` | `--cors-origins` | any origin single-tenant, loopback GUI origins multi-tenant | Comma-separated browser origins allowed by CORS. |
+| `MOCKAGENTS_ENGINE_ENDPOINT` | `--engine-endpoint` | `0` | Mounts `POST /v1/engines/process`, the generic test endpoint. It is unauthenticated and unmetered, so leave it off outside a test harness. |
+
+## Shutdown
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `MOCKAGENTS_SHUTDOWN_TIMEOUT` | `20s` | How long in-flight requests may run after SIGTERM before they are cancelled. Kept inside Kubernetes' 30-second grace period by default. |
+| `MOCKAGENTS_SHUTDOWN_DRAIN_DELAY` | `0` (immediate) | How long to keep serving, with readiness reporting `draining`, before the listeners close. Gives a load balancer time to stop routing new connections. The Helm chart supplies this window with a preStop sleep instead. |
 
 ## Interaction log and audit trail
 
