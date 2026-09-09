@@ -65,6 +65,14 @@ resources:
     cpu: 500m
     memory: 256Mi
 
+# -- Pod termination (audit M-34). The preStop sleep gives kube-proxy time to
+# -- stop routing new connections to the pod before SIGTERM; the server then
+# -- drains in-flight requests for up to MOCKAGENTS_SHUTDOWN_TIMEOUT (default
+# -- 20s). 5 + 20 fits the 30s grace period below; raise both together if you
+# -- run streams longer than that.
+terminationGracePeriodSeconds: 30
+preStopSleepSeconds: 5
+
 # -- Node placement controls.
 nodeSelector: {}
 tolerations: []

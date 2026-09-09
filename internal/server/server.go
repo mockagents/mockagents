@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/mockagents/mockagents/internal/adapter"
@@ -36,8 +37,21 @@ const (
 	// ReadTimeout window (PERF-21, slow-loris hardening).
 	DefaultReadHeaderTimeout = 10 * time.Second
 	DefaultMaxBodyBytes      = 10 * 1024 * 1024 // 10 MB
-	ShutdownTimeout          = 5 * time.Second
+	// DefaultShutdownTimeout is how long Shutdown waits for in-flight requests
+	// (paced streams, pipeline runs) before cancelling them. Kubernetes' default
+	// termination grace is 30s and the chart's preStop sleep takes 5s of it, so
+	// 20s fits inside; the former 5s cut long streams on every rollout.
+	DefaultShutdownTimeout = 20 * time.Second
+	// ShutdownTimeout is the pre-Config name for the default; Config.ShutdownTimeout
+	// overrides it per server.
+	ShutdownTimeout = DefaultShutdownTimeout
 )
+
+// ErrShutdownDeadline reports that Shutdown had to cancel in-flight requests
+// because they did not finish within the timeout. It is a warning, not a
+// failure: the listeners closed, the streams were cancelled, and the stores
+// were drained — callers should log it, not exit non-zero (audit M-34).
+var ErrShutdownDeadline = errors.New("server: shutdown deadline reached; in-flight requests were cancelled")
 
 // Config holds HTTP server configuration.
 type Config struct {
@@ -73,6 +87,15 @@ type Config struct {
 	// AuditMaxRows bounds the audit table: a background pruner keeps only the
 	// newest AuditMaxRows rows. 0 (default) means unlimited (audit M-08).
 	AuditMaxRows int
+	// ShutdownTimeout bounds how long Shutdown waits for in-flight requests
+	// before cancelling them. 0 means DefaultShutdownTimeout.
+	ShutdownTimeout time.Duration
+	// ShutdownDrainDelay is how long Shutdown keeps serving — with readiness
+	// reporting "draining" — before closing the listeners, so a load balancer
+	// that polls readiness can stop routing new connections first. 0 (default)
+	// closes immediately; the Helm chart provides this window with a preStop
+	// sleep instead.
+	ShutdownDrainDelay time.Duration
 	// Prices is the per-model cost table used by /api/v1/logs and
 	// /api/v1/costs. Nil disables cost annotation (fields are zero).
 	Prices *pricingpkg.Table
@@ -143,6 +166,16 @@ type Server struct {
 	logger         *slog.Logger
 	config         Config
 	listener       net.Listener
+	// realtime is the WebSocket adapter, kept so Shutdown can close its
+	// hijacked connections (http.Server.Shutdown does not know about them).
+	realtime *adapter.RealtimeHandler
+	// baseCtx is the parent of every request context; Shutdown cancels it
+	// once the timeout passes so streaming handlers stop instead of pinning
+	// the process (audit M-34).
+	baseCtx    context.Context
+	cancelBase context.CancelFunc
+	// draining flips readiness to 503 for the whole shutdown sequence.
+	draining atomic.Bool
 }
 
 // New creates a new Server with the given engine and configuration.
@@ -296,6 +329,9 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 	if readHeaderTimeout <= 0 {
 		readHeaderTimeout = DefaultReadHeaderTimeout
 	}
+	// Every request context descends from baseCtx so Shutdown can cancel
+	// in-flight streams once the grace period is over (audit M-34).
+	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
 	s.httpServer = &http.Server{
 		Addr:              net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port)),
 		Handler:           handler,
@@ -303,6 +339,7 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 		WriteTimeout:      cfg.WriteTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
 		ReadHeaderTimeout: readHeaderTimeout,
+		BaseContext:       func(net.Listener) context.Context { return s.baseCtx },
 	}
 
 	return s
@@ -499,6 +536,17 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 func (s *Server) readinessHandlers() *ReadinessHandlers {
 	h := &ReadinessHandlers{
 		Checks: []ReadinessCheck{{
+			// First, so a draining pod is reported as such even when every
+			// dependency is healthy: kube-proxy must stop sending new
+			// connections before the listeners close (audit M-34).
+			Name: "draining",
+			Check: func(context.Context) error {
+				if s.draining.Load() {
+					return errors.New("server is shutting down")
+				}
+				return nil
+			},
+		}, {
 			Name: "fixtures",
 			Check: func(context.Context) error {
 				if s.engine == nil || s.engine.Registry == nil || s.engine.Registry.Count() == 0 {
@@ -681,9 +729,28 @@ func (s *Server) ListenAddr() string {
 // interaction-log writes so operators do not lose the last seconds of
 // traffic on a clean exit.
 func (s *Server) Shutdown() error {
-	ctx, cancel := context.WithTimeout(context.Background(), ShutdownTimeout)
+	timeout := s.config.ShutdownTimeout
+	if timeout <= 0 {
+		timeout = DefaultShutdownTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	s.logger.Info("shutting down server", "timeout", ShutdownTimeout)
+	s.logger.Info("shutting down server", "timeout", timeout)
+
+	// Readiness goes to 503 before anything closes, and stays there. With a
+	// drain delay the listeners keep accepting for that long so a balancer
+	// polling /api/v1/ready can take the instance out of rotation first.
+	s.draining.Store(true)
+	if d := s.config.ShutdownDrainDelay; d > 0 {
+		time.Sleep(d)
+	}
+	// Hijacked WebSocket connections are invisible to http.Server.Shutdown;
+	// close them so their handlers return instead of pinning the process.
+	if s.realtime != nil {
+		if n := s.realtime.CloseAll(); n > 0 {
+			s.logger.Info("closed realtime sessions", "count", n)
+		}
+	}
 
 	// Close the SSE broadcaster FIRST so any in-flight /logs/stream handlers
 	// unblock (their sub.C() closes) and return, instead of pinning
@@ -706,6 +773,16 @@ func (s *Server) Shutdown() error {
 	}
 
 	err := s.httpServer.Shutdown(ctx)
+	if errors.Is(err, context.DeadlineExceeded) {
+		// Requests still running after the grace period (paced streams,
+		// pipeline runs) are cancelled through their context, then the
+		// connections are closed. This is the normal end of a rollout with
+		// a long stream open, so it is reported as a warning, not a failure.
+		s.cancelBase()
+		_ = s.httpServer.Close()
+		err = ErrShutdownDeadline
+	}
+	s.cancelBase()
 	// Drain the async log worker after the HTTP server has stopped
 	// accepting new requests. Order matters: Submit paths must be
 	// closed first so we know the queue only contains already-enqueued

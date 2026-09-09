@@ -28,6 +28,7 @@ func (s *Server) wireRealtime(rt *adapter.RealtimeHandler) {
 	// locks the handshake down; the wildcard default stays permissive), and
 	// in every configuration a cookie-derived tenant principal is dropped on
 	// a cross-origin handshake (audit H-04).
+	s.realtime = rt
 	rt.AllowedOrigins = s.config.CORSAllowedOrigins
 	allowed := s.config.CORSAllowedOrigins
 	rt.TenantForConnection = func(r *http.Request) string {

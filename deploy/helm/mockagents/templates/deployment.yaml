@@ -44,6 +44,11 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "mockagents.serviceAccountName" . }}
       automountServiceAccountToken: false
+      # Rolling updates (audit M-34): kube-proxy removes the endpoint
+      # asynchronously, so the preStop sleep keeps the pod serving while the
+      # removal propagates; the server then gets SIGTERM and drains for up to
+      # MOCKAGENTS_SHUTDOWN_TIMEOUT (20s default), all inside the grace period.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -52,6 +57,12 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: {{ include "mockagents.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if gt (int .Values.preStopSleepSeconds) 0 }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", {{ .Values.preStopSleepSeconds | quote }}]
+          {{- end }}
           args:
             - start
             - --host

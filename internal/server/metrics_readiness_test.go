@@ -247,9 +247,12 @@ func TestReadinessPassesWithFixturesLoaded(t *testing.T) {
 	status, body := readiness(t, ts)
 	assert.Equal(t, http.StatusOK, status)
 	assert.Equal(t, "ready", body.Status)
-	require.Len(t, body.Checks, 1)
-	assert.Equal(t, "fixtures", body.Checks[0].Name)
+	// "draining" always leads the list (audit M-34); look the rest up by name.
+	require.Len(t, body.Checks, 2)
+	assert.Equal(t, "draining", body.Checks[0].Name)
 	assert.Equal(t, "ok", body.Checks[0].Status)
+	assert.Equal(t, "fixtures", body.Checks[1].Name)
+	assert.Equal(t, "ok", body.Checks[1].Status)
 }
 
 // TestReadinessFailsWithNoFixtures is the whole point of R9: a process with no
@@ -261,10 +264,12 @@ func TestReadinessFailsWithNoFixtures(t *testing.T) {
 	status, body := readiness(t, ts)
 	assert.Equal(t, http.StatusServiceUnavailable, status)
 	assert.Equal(t, "not_ready", body.Status)
-	require.Len(t, body.Checks, 1)
-	assert.Equal(t, "fixtures", body.Checks[0].Name)
-	assert.Equal(t, "failed", body.Checks[0].Status)
-	assert.Contains(t, body.Checks[0].Error, "no agent fixtures loaded")
+	require.Len(t, body.Checks, 2)
+	assert.Equal(t, "draining", body.Checks[0].Name)
+	assert.Equal(t, "ok", body.Checks[0].Status)
+	assert.Equal(t, "fixtures", body.Checks[1].Name)
+	assert.Equal(t, "failed", body.Checks[1].Status)
+	assert.Contains(t, body.Checks[1].Error, "no agent fixtures loaded")
 
 	// ...and liveness is deliberately unchanged: the process IS alive, so
 	// restarting it would fix nothing.
@@ -287,7 +292,7 @@ func TestReadinessFailsWhenLogStoreUnreachable(t *testing.T) {
 
 	status, body := readiness(t, ts)
 	require.Equal(t, http.StatusOK, status, "precondition: ready while the store is open")
-	require.Len(t, body.Checks, 2)
+	require.Len(t, body.Checks, 3) // draining, fixtures, log_store
 
 	require.NoError(t, store.Close())
 
