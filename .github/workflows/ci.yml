@@ -14,7 +14,9 @@ permissions:
 # is ever fully tested).
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Only pull requests are superseded: a run on main must always finish, or a
+  # red commit can land (and be tagged) untested (readiness audit M-37).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test-go:
@@ -30,10 +32,10 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         go-version: ["1.26"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ matrix.go-version }}
 
@@ -89,9 +91,9 @@ jobs:
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26"
       - name: Download dependencies
@@ -113,10 +115,10 @@ jobs:
         # half the runner minutes.
         python-version: ["3.10", "3.13"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -151,13 +153,13 @@ jobs:
     name: RAG demo (end to end)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26"
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
 
@@ -199,13 +201,13 @@ jobs:
           - recipe: crewai
             file: test_crewai.py
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26"
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
 
@@ -229,13 +231,13 @@ jobs:
     name: Framework recipe (Vercel AI SDK)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26"
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: "22"
 
@@ -263,14 +265,14 @@ jobs:
     name: GUI (typecheck, build, component + browser tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26"
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "22"
           cache: npm
@@ -307,7 +309,7 @@ jobs:
 
       - name: Upload Playwright report on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: playwright-report
           path: gui/playwright-report/
@@ -317,10 +319,10 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26"
 
@@ -356,7 +358,7 @@ jobs:
     name: Docker Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Build Docker image
         run: docker build -t mockagents:ci-test .
@@ -367,7 +369,8 @@ jobs:
           SIZE_MB=$((SIZE / 1024 / 1024))
           echo "Image size: ${SIZE_MB}MB"
           if [ "$SIZE_MB" -gt 50 ]; then
-            echo "Warning: Image size ${SIZE_MB}MB exceeds 50MB target"
+            echo "::error::Image size ${SIZE_MB}MB exceeds the 50MB budget"
+            exit 1
           fi
 
       - name: Smoke test
@@ -379,3 +382,66 @@ jobs:
           sleep 3
           curl -sf http://localhost:8080/api/v1/health
           docker stop mockagents-test
+
+  # The chart was previously never rendered in CI: its CI values and the
+  # `make helm-lint` / `helm-template` targets existed but no job ran them, so
+  # a values key could be declared without a template ever reading it
+  # (persistence.size), and a template change could ship unrendered. This job
+  # lints, renders the default and CI value sets, and asserts the replica guard
+  # refuses an unacknowledged multi-replica install (readiness audit C-01).
+  helm:
+    name: Helm Chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+
+      - name: Lint (CI values)
+        run: helm lint ./deploy/helm/mockagents --values ./deploy/helm/mockagents/ci/test-values.yaml
+
+      - name: Lint (defaults)
+        run: helm lint ./deploy/helm/mockagents
+
+      - name: Render (CI values)
+        run: |
+          helm template ci ./deploy/helm/mockagents --values ./deploy/helm/mockagents/ci/test-values.yaml > /tmp/ci.yaml
+          grep -q 'kind: PersistentVolumeClaim' /tmp/ci.yaml
+          grep -q 'MOCKAGENTS_DATA_DIR' /tmp/ci.yaml
+          grep -q 'secretRef' /tmp/ci.yaml
+
+      - name: Render (defaults)
+        run: |
+          helm template default ./deploy/helm/mockagents > /tmp/default.yaml
+          grep -q 'emptyDir' /tmp/default.yaml
+          grep -q 'MOCKAGENTS_DATA_DIR' /tmp/default.yaml
+          if grep -q 'kind: PersistentVolumeClaim' /tmp/default.yaml; then echo "::error::defaults must not create a PVC"; exit 1; fi
+
+      - name: Replica guard refuses split-brain
+        run: |
+          if helm template guard ./deploy/helm/mockagents --set replicaCount=2 >/dev/null 2>/tmp/guard.err; then
+            echo "::error::replicaCount=2 rendered without a tenancy DSN or acknowledgement"; exit 1
+          fi
+          grep -q 'MOCKAGENTS_TENANCY_DSN' /tmp/guard.err
+          helm template guard ./deploy/helm/mockagents --set replicaCount=2 --set env.MOCKAGENTS_TENANCY_DSN=postgres://x >/dev/null
+          helm template guard ./deploy/helm/mockagents --set replicaCount=2 --set multiReplica.acknowledged=true >/dev/null
+
+  # go.mod documents the toolchain pin as "govulncheck clean", but nothing in
+  # CI re-checked that claim on later dependency bumps (readiness audit M-37).
+  vuln:
+    name: Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.26"
+
+      - name: govulncheck
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1
+        with:
+          go-version-input: "1.26"
+          go-package: ./...

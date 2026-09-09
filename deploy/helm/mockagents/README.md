@@ -66,10 +66,14 @@ in the NOTES in that case.
 | Value                                | Purpose                                                  |
 | ------------------------------------ | -------------------------------------------------------- |
 | `image.tag`                          | Pin a specific Docker image tag.                         |
-| `replicaCount`                       | Horizontal scale (mock server is read-mostly).           |
+| `replicaCount`                       | Replicas. State is per pod, so >1 is refused unless `env.MOCKAGENTS_TENANCY_DSN` is set or `multiReplica.acknowledged=true` (see below). |
+| `multiReplica.acknowledged`          | Run N independent single-tenant mock servers behind one Service (logs, audit and the write API differ per pod). |
 | `service.type`                       | `ClusterIP` (default), `NodePort`, or `LoadBalancer`.    |
 | `ingress.enabled` + `ingress.hosts`  | Put an Ingress in front of the service.                  |
-| `persistence.enabled`                | Mount a PVC at `/data` for the SQLite interaction log.   |
+| `persistence.enabled`                | Create a PVC (size/accessModes/storageClass) for `/data`; off = emptyDir. `/data` is always mounted and `MOCKAGENTS_DATA_DIR` points at it, so the interaction log, audit log and tenancy DB survive container restarts; a PVC makes them survive rescheduling. |
+| `persistence.existingClaim`          | Mount a pre-created PVC instead of the chart-managed one. |
+| `existingSecret`                     | Secret exposed via `envFrom` for `MOCKAGENTS_BOOTSTRAP_KEY`, `MOCKAGENTS_OIDC_CLIENT_SECRET`, a `MOCKAGENTS_TENANCY_DSN` with a password. `env` values render in clear text. |
+| `extraEnvFrom`                       | Additional `envFrom` entries (configMapRef / secretRef). |
 | `env.OTEL_EXPORTER_OTLP_ENDPOINT`    | Ship traces to an OTLP/HTTP collector.                   |
 | `logLevel`                           | `debug`, `info`, `warn`, `error`.                        |
 | `host`                               | Bind address inside the pod; defaults to `0.0.0.0`.      |
@@ -135,4 +139,8 @@ key, and the readiness body carries no agent, tenant, or configuration data.
 ## What's still deferred
 
 - Cluster-tier RBAC + admission controls — bring your own cluster
-  defaults via `existingConfigMap` for tenancy bootstrap secrets.
+  defaults. Tenancy secrets go in a Secret referenced by `existingSecret`,
+  never in a ConfigMap.
+- Shared interaction/audit logs across replicas: both stores are SQLite
+  per pod today; only tenancy (and the spend ledger) can be shared, via
+  `MOCKAGENTS_TENANCY_DSN`.

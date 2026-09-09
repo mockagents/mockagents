@@ -26,8 +26,22 @@ MockAgents v{{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namesp
   kubectl --namespace {{ .Release.Namespace }} exec deploy/{{ include "mockagents.fullname" . }} -- \
     wget -qO- http://localhost:{{ .Values.service.port }}/api/v1/agents
 
-3. Point your OpenAI or Anthropic SDK at the service URL above. The
-   mock server accepts any API key — there is no auth layer.
+3. Point your OpenAI or Anthropic SDK at the service URL above. The LLM
+   endpoints accept any provider API key (the mock ignores it).
+{{- if eq (toString (index .Values.env "MOCKAGENTS_MULTI_TENANT")) "1" }}
+
+   Multi-tenant mode is ON: the management API (/api/v1/*) requires a
+   MockAgents API key. See docs/guides/multi-tenant.md for how the bootstrap
+   platform key is delivered; supply secrets through existingSecret rather
+   than env (env values render into the Deployment in clear text).
+{{- else }}
+
+   Single-tenant mode: the management API (/api/v1/*) is OPEN. Anyone who
+   can reach the Service can create or delete agents and read every logged
+   request body. Keep it inside the cluster (networkPolicy.enabled=true) or
+   enable multi-tenant mode before exposing it through an Ingress.
+{{- end }}
+
 
 {{- if and (not .Values.agents.existingConfigMap) (not .Values.agents.inline) }}
 

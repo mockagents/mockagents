@@ -1,3 +1,20 @@
+{{- /*
+Replica guard (readiness audit C-01). MockAgents keeps its agent registry,
+conversation sessions, interaction log, audit log and per-tenant rate buckets
+PER POD, and in multi-tenant mode with the default SQLite tenancy store every
+pod would bootstrap its own "default" tenant and its own platform key. Behind
+a round-robin Service that is split-brain: a key minted on one pod is a 401 on
+the next. Running more than one replica is therefore refused unless either a
+shared tenancy backend is configured (env.MOCKAGENTS_TENANCY_DSN) or the
+operator explicitly acknowledges N independent single-tenant mock servers.
+*/ -}}
+{{- $replicas := int .Values.replicaCount -}}
+{{- if .Values.autoscaling.enabled -}}
+{{- $replicas = int .Values.autoscaling.maxReplicas -}}
+{{- end -}}
+{{- if and (gt $replicas 1) (not .Values.multiReplica.acknowledged) (not (hasKey .Values.env "MOCKAGENTS_TENANCY_DSN")) -}}
+{{- fail (printf "replicaCount/autoscaling.maxReplicas is %d but MockAgents state is per pod (registry, sessions, interaction log, audit log, rate buckets; each pod would mint its own platform key in multi-tenant mode). Either set env.MOCKAGENTS_TENANCY_DSN to a shared Postgres tenancy store, or set multiReplica.acknowledged=true to run independent single-tenant mock servers behind the Service." $replicas) -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -26,6 +43,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "mockagents.serviceAccountName" . }}
+      automountServiceAccountToken: false
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -51,11 +69,26 @@ spec:
             - name: http
               containerPort: {{ .Values.service.port }}
               protocol: TCP
-          {{- with .Values.env }}
           env:
-            {{- range $key, $value := . }}
+            {{- /* The root filesystem is read-only; every SQLite store (interaction
+                   log, audit log, tenancy) must live on the always-mounted /data
+                   volume (audit H-10). Overridable through .Values.env. */}}
+            {{- if not (hasKey .Values.env "MOCKAGENTS_DATA_DIR") }}
+            - name: MOCKAGENTS_DATA_DIR
+              value: /data
+            {{- end }}
+            {{- range $key, $value := .Values.env }}
             - name: {{ $key }}
               value: {{ $value | quote }}
+            {{- end }}
+          {{- if or .Values.existingSecret .Values.extraEnvFrom }}
+          envFrom:
+            {{- if .Values.existingSecret }}
+            - secretRef:
+                name: {{ .Values.existingSecret | quote }}
+            {{- end }}
+            {{- with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
           {{- end }}
           {{- if .Values.probes.liveness.enabled }}
@@ -86,25 +119,21 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
-            {{- if .Values.persistence.enabled }}
             - name: data
               mountPath: /data
-            {{- end }}
       volumes:
         - name: agents
           configMap:
             name: {{ include "mockagents.agentsConfigMapName" . }}
         - name: tmp
           emptyDir: {}
-        {{- if .Values.persistence.enabled }}
         - name: data
-          {{- if .Values.persistence.existingClaim }}
+          {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:
-            claimName: {{ .Values.persistence.existingClaim }}
+            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-data" (include "mockagents.fullname" .)) | quote }}
           {{- else }}
           emptyDir: {}
           {{- end }}
-        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
