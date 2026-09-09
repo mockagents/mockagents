@@ -122,6 +122,10 @@ func itoa(n int) string {
 // see it in the queue.
 type NotifyHandler struct {
 	Server *Server
+	// AllowedOrigins mirrors StreamableHTTPHandler.AllowedOrigins: a browser
+	// Origin must be loopback or listed. The streamable notify route already
+	// checked this; the legacy route did not (audit M-25).
+	AllowedOrigins []string
 }
 
 // NewNotifyHandler builds the admin endpoint bound to the same Server.
@@ -134,6 +138,10 @@ func (h *NotifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !originAllowedBy(r.Header.Get("Origin"), h.AllowedOrigins) {
+		http.Error(w, "origin not allowed", http.StatusForbidden)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxMCPBodyBytes)

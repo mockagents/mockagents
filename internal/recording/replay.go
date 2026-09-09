@@ -119,9 +119,10 @@ func (rp *Replay) extendMatchIndex() {
 // ServeHTTP looks up the incoming request in the cassette and, on a hit,
 // writes the recorded status, headers and body back to the client.
 func (rp *Replay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
 	body, err := DrainBody(r)
 	if err != nil {
-		http.Error(w, "reading request body: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "reading request body: "+err.Error(), drainStatus(err))
 		return
 	}
 

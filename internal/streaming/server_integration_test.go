@@ -31,6 +31,7 @@ func startTestServer(t *testing.T, agents ...*types.AgentDefinition) string {
 	eng := engine.NewEngine(registry, store, logger)
 
 	cfg := server.DefaultConfig()
+	cfg.EnableEngineEndpoint = true
 	cfg.Port = 0
 	cfg.AgentsDir = t.TempDir()
 

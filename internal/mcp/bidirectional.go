@@ -131,6 +131,12 @@ func (b *bidirectional) enqueue(msg *OutboundMessage) {
 		}
 	}
 	b.outbound = append(b.outbound, msg)
+	// Bounded like the pending queue (audit M-25): with no subscriber attached
+	// this only ever grew. Drop the oldest so a late subscriber still gets the
+	// most recent messages.
+	if over := len(b.outbound) - maxPendingNotifications; over > 0 {
+		b.outbound = append(b.outbound[:0], b.outbound[over:]...)
+	}
 }
 
 // newServerID returns the next server-initiated request id as a raw

@@ -36,7 +36,8 @@ func setupTestServer(t *testing.T, agents ...*types.AgentDefinition) (*Server, s
 	}
 
 	cfg := DefaultConfig()
-	cfg.Port = 0 // Auto-assign port for testing.
+	cfg.EnableEngineEndpoint = true // these harnesses drive POST /v1/engines/process
+	cfg.Port = 0                    // Auto-assign port for testing.
 	cfg.AgentsDir = agentsDir
 
 	srv := New(eng, cfg, logger)
@@ -84,6 +85,7 @@ func setupTenantServer(t *testing.T, agents ...*types.AgentDefinition) (*Server,
 	}
 
 	cfg := DefaultConfig()
+	cfg.EnableEngineEndpoint = true // these harnesses drive POST /v1/engines/process
 	cfg.Port = 0
 	cfg.AgentsDir = agentsDir
 	cfg.TenancyStore = tenancyStore
@@ -177,6 +179,7 @@ func TestServer_HealthCheck(t *testing.T) {
 
 func TestServer_DefaultConfigBindsLocalhost(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.EnableEngineEndpoint = true // these harnesses drive POST /v1/engines/process
 
 	assert.Equal(t, DefaultHost, cfg.Host)
 	assert.Equal(t, "127.0.0.1", cfg.Host)

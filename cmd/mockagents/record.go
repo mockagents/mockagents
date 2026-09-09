@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -32,6 +34,7 @@ var (
 	recordUpstream       string
 	recordCassette       string
 	recordPort           int
+	recordBind           string
 	recordAPIKey         string
 	recordRedact         bool
 	recordRedactPatterns []string
@@ -41,6 +44,7 @@ func init() {
 	recordCmd.Flags().StringVar(&recordUpstream, "upstream", "", "Upstream base URL (e.g. https://api.openai.com) [required]")
 	recordCmd.Flags().StringVar(&recordCassette, "cassette", "cassette.jsonl", "Path to the cassette file to write")
 	recordCmd.Flags().IntVarP(&recordPort, "port", "p", 8080, "Port to listen on")
+	recordCmd.Flags().StringVar(&recordBind, "bind", "127.0.0.1", "Interface to bind (0.0.0.0 to expose; the proxy forwards --api-key to the upstream for anyone who can reach it)")
 	recordCmd.Flags().StringVar(&recordAPIKey, "api-key", "", "API key to forward to upstream (overrides client Authorization header)")
 	recordCmd.Flags().BoolVar(&recordRedact, "redact", false, "Mask common secret formats (sk-*, key-*, Bearer, AWS/GitHub/Slack/Google keys, JWTs) in recorded cassette bodies before they are written. Best-effort: review the cassette before committing")
 	recordCmd.Flags().StringArrayVar(&recordRedactPatterns, "redact-pattern", nil, "Additional regexp to mask in recorded bodies (repeatable; implies --redact). Applied to JSON string values only, so a pattern can never break the cassette's structure")
@@ -78,14 +82,19 @@ func runRecord(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(w, "ok: %d interactions recorded\n", cass.Len())
 	})
 
+	// Loopback by default (audit M-22): the proxy relays the operator's
+	// provider key upstream for every request it receives.
+	addr := net.JoinHostPort(recordBind, strconv.Itoa(recordPort))
 	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", recordPort),
+		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
-	fmt.Printf("mockagents record listening on :%d -> %s (cassette=%s)\n",
-		recordPort, recordUpstream, recordCassette)
+	fmt.Printf("mockagents record listening on %s -> %s (cassette=%s)\n",
+		addr, recordUpstream, recordCassette)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()

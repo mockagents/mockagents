@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -51,11 +52,12 @@ Examples:
 }
 
 var (
-	mcpTransport  string
-	mcpPort       int
-	mcpBind       string
-	mcpServerName string
-	mcpManage     bool
+	mcpTransport         string
+	mcpPort              int
+	mcpBind              string
+	mcpServerName        string
+	mcpManage            bool
+	mcpAllowRemoteManage bool
 )
 
 func init() {
@@ -68,6 +70,7 @@ func init() {
 	mcpCmd.Flags().StringVar(&mcpBind, "bind", "127.0.0.1", "Interface to bind when --transport=http (0.0.0.0 to expose)")
 	mcpCmd.Flags().StringVar(&mcpServerName, "server", "", "Name of the MCPServer to serve (required when multiple are loaded)")
 	mcpCmd.Flags().BoolVar(&mcpManage, "manage", false, "Also expose built-in agent-management tools backed by the write API")
+	mcpCmd.Flags().BoolVar(&mcpAllowRemoteManage, "allow-remote-manage", false, "Permit --manage on a non-loopback --bind (the management tools have no authentication)")
 	rootCmd.AddCommand(mcpCmd)
 }
 
@@ -93,6 +96,9 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	// loaded from --agents-dir. It composes with a declarative server (the admin
 	// tools are added alongside the def's own tools).
 	if mcpManage {
+		if err := checkManageBind(mcpTransport, mcpBind, mcpAllowRemoteManage); err != nil {
+			return err
+		}
 		registry := buildManageRegistry(docs)
 		mcpadmin.NewManager(registry, agentsDir, "").Register(server)
 		// Stderr, NEVER stdout: on --transport stdio, stdout IS the JSON-RPC
@@ -225,4 +231,22 @@ func newMCPMux(server *mcp.Server) *http.ServeMux {
 		fmt.Fprintln(w, "ok")
 	})
 	return mux
+}
+
+// checkManageBind refuses to expose the agent-management tools beyond the
+// loopback interface unless the operator opts in explicitly: they create,
+// replace and delete agent files on disk with no authentication, so on
+// 0.0.0.0 every LAN peer could rewrite the fixtures (audit M-23). stdio has
+// no network exposure and is always allowed.
+func checkManageBind(transport, bind string, allowRemote bool) error {
+	if transport != "http" || allowRemote {
+		return nil
+	}
+	if ip := net.ParseIP(strings.TrimSpace(bind)); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(bind), "localhost") {
+		return nil
+	}
+	return fmt.Errorf("--manage exposes unauthenticated agent-management tools; refusing to bind them to %q. Use --bind 127.0.0.1, --transport stdio, or pass --allow-remote-manage if the network is trusted", bind)
 }

@@ -21,7 +21,6 @@ func TestSkipAuth_ExactMatchOnly(t *testing.T) {
 		"/v1/messages",
 		"/v1/messages/count_tokens",
 		"/v1/models",
-		"/v1/engines/process",
 		// Azure surface delegates to the open OpenAI handlers (A-06).
 		"/openai/v1/chat/completions",
 		"/openai/v1/embeddings",
@@ -43,6 +42,7 @@ func TestSkipAuth_ExactMatchOnly(t *testing.T) {
 		"/v1/messages/extra",
 		"/v1/chat/completions/x",
 		"/v1/engines/secret",
+		"/v1/engines/process", // opt-in (Config.EnableEngineEndpoint); never open by default
 		"/v1/engines/",
 		"/api/v1/healthz",
 		"/api/v1/agents",

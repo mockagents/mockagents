@@ -144,10 +144,17 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 // client) is allowed; loopback hosts are always allowed; everything else must be
 // in AllowedOrigins (or AllowedOrigins must contain "*").
 func (h *StreamableHTTPHandler) originAllowed(origin string) bool {
+	return originAllowedBy(origin, h.AllowedOrigins)
+}
+
+// originAllowedBy is the shared DNS-rebinding guard for every admin route:
+// an empty Origin (non-browser client) passes, loopback origins pass, and
+// anything else must be listed (or the list must contain "*").
+func originAllowedBy(origin string, allowed []string) bool {
 	if origin == "" {
 		return true
 	}
-	for _, o := range h.AllowedOrigins {
+	for _, o := range allowed {
 		if o == "*" || o == origin {
 			return true
 		}

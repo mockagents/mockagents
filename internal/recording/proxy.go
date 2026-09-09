@@ -78,9 +78,10 @@ func NewProxy(upstream string, cassette *Cassette) (*Proxy, error) {
 // ServeHTTP forwards the incoming request, captures the response, and
 // writes both to the cassette before returning.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
 	body, err := DrainBody(r)
 	if err != nil {
-		http.Error(w, "failed to read request body: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "failed to read request body: "+err.Error(), drainStatus(err))
 		return
 	}
 

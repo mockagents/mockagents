@@ -43,13 +43,15 @@ and supports hot-reload via the management API.`,
 }
 
 var (
-	host      string
-	port      int
-	jsonLogs  bool
-	watchDir  bool
-	chaosRate string
-	chaosSeed string
-	chaosOff  bool
+	host           string
+	port           int
+	jsonLogs       bool
+	watchDir       bool
+	chaosRate      string
+	chaosSeed      string
+	chaosOff       bool
+	corsOrigins    string
+	engineEndpoint bool
 )
 
 func init() {
@@ -75,6 +77,10 @@ func init() {
 	startCmd.Flags().StringVar(&chaosRate, "chaos-rate", strings.TrimSpace(os.Getenv("MOCKAGENTS_CHAOS_RATE")), "Lowest-precedence server-wide chaos rate (0.0-1.0; env MOCKAGENTS_CHAOS_RATE)")
 	startCmd.Flags().StringVar(&chaosSeed, "chaos-seed", strings.TrimSpace(os.Getenv("MOCKAGENTS_CHAOS_SEED")), "Server-wide deterministic chaos seed (env MOCKAGENTS_CHAOS_SEED)")
 	startCmd.Flags().BoolVar(&chaosOff, "chaos-off", chaosOffDefault, "Set the inherited server-wide chaos rate to zero (env MOCKAGENTS_CHAOS_OFF)")
+	engineDefault, err := envBool("MOCKAGENTS_ENGINE_ENDPOINT")
+	recordStartupEnvError(err)
+	startCmd.Flags().StringVar(&corsOrigins, "cors-origins", strings.TrimSpace(os.Getenv("MOCKAGENTS_CORS_ORIGINS")), "Comma-separated browser origins allowed by CORS; empty = any origin in single-tenant mode, loopback GUI origins in multi-tenant mode (env MOCKAGENTS_CORS_ORIGINS)")
+	startCmd.Flags().BoolVar(&engineEndpoint, "engine-endpoint", engineDefault, "Mount the generic POST /v1/engines/process test endpoint (unauthenticated, unmetered; env MOCKAGENTS_ENGINE_ENDPOINT)")
 }
 
 func parseGlobalChaos(seedText, rateText string, off bool) (int64, *float64, error) {
@@ -229,6 +235,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	cfg := server.DefaultConfig()
 	cfg.Host = host
 	cfg.Port = port
+	cfg.EnableEngineEndpoint = engineEndpoint
 	cfg.AgentsDir = agentsDir
 	cfg.Version = version
 	cfg.LogStore = logStore
@@ -333,6 +340,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 	multiTenant, err := envBool("MOCKAGENTS_MULTI_TENANT")
 	if err != nil {
 		return err
+	}
+	// CORS (audit M-06): an explicit list always wins; otherwise single-tenant
+	// keeps the local-dev wildcard and multi-tenant defaults to the loopback
+	// GUI origins so a control plane never ships `*` with cookie auth on.
+	cfg.CORSAllowedOrigins = corsOriginsFor(multiTenant, corsOrigins)
+	if multiTenant && corsOrigins == "" {
+		logger.Info("CORS restricted to loopback GUI origins in multi-tenant mode; set --cors-origins to widen", "origins", cfg.CORSAllowedOrigins)
 	}
 	if multiTenant {
 		// Backend selection (REF-08 slice B): MOCKAGENTS_TENANCY_DSN opts into the
@@ -863,4 +877,28 @@ func newLogger(level slog.Level, jsonOutput bool) *slog.Logger {
 		handler = slog.NewTextHandler(os.Stderr, opts)
 	}
 	return slog.New(handler)
+}
+
+// defaultMultiTenantCORSOrigins are the origins the bundled GUI runs on in
+// development. They replace the `*` wildcard when multi-tenant mode is on and
+// no --cors-origins was given (audit M-06).
+var defaultMultiTenantCORSOrigins = []string{"http://localhost:3001", "http://127.0.0.1:3001"}
+
+// corsOriginsFor turns the --cors-origins flag into the server's allowlist.
+// Empty means "any origin" in single-tenant mode (a local dev tool) and the
+// loopback GUI origins in multi-tenant mode.
+func corsOriginsFor(multiTenant bool, flag string) []string {
+	var origins []string
+	for _, o := range strings.Split(flag, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			origins = append(origins, o)
+		}
+	}
+	if len(origins) > 0 {
+		return origins
+	}
+	if multiTenant {
+		return append([]string(nil), defaultMultiTenantCORSOrigins...)
+	}
+	return nil
 }
