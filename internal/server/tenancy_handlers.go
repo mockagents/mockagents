@@ -35,17 +35,65 @@ func principalOrUnauthorized(w http.ResponseWriter, r *http.Request) *tenancy.Pr
 // existence of other tenants) and returns ok=false. This is the
 // tenant-ownership gate for the {id}-addressed management routes — without
 // it, a tenant-A admin could operate on tenant-B by path id (X-SEC-001).
+//
+// The platform role is the one exception: it is the cross-tenant operator
+// that creates tenants, and its own key lives in the bootstrap tenant, so
+// without a bypass it could create a tenant but never mint that tenant's
+// first key (audit H-02). A platform caller may address any tenant that
+// exists; an unknown id is still a 404.
 func (h *TenancyHandlers) ensureOwnTenant(w http.ResponseWriter, r *http.Request) (string, bool) {
 	p := principalOrUnauthorized(w, r)
 	if p == nil {
 		return "", false
 	}
 	pathTenant := r.PathValue("id")
-	if pathTenant != p.TenantID {
-		writeError(w, http.StatusNotFound, "tenant not found")
+	if pathTenant == p.TenantID {
+		return pathTenant, true
+	}
+	if p.Role == tenancy.RolePlatform {
+		if !h.tenantExists(w, r, pathTenant) {
+			return "", false
+		}
+		return pathTenant, true
+	}
+	writeError(w, http.StatusNotFound, "tenant not found")
+	return "", false
+}
+
+// keyScopeTenant resolves which tenant a /api/v1/keys/{id} route operates
+// on. Every caller acts within its own tenant; a platform operator may name
+// another tenant with `?tenant=<id>` (the flat key routes carry no tenant in
+// the path, so this is the platform's only way to administer the keys it
+// minted for other tenants — audit H-02). A non-platform caller naming a
+// foreign tenant gets the same 404 the key lookup would have produced, so
+// the parameter leaks nothing about other tenants.
+func (h *TenancyHandlers) keyScopeTenant(w http.ResponseWriter, r *http.Request, p *tenancy.Principal) (string, bool) {
+	want := r.URL.Query().Get("tenant")
+	if want == "" || want == p.TenantID {
+		return p.TenantID, true
+	}
+	if p.Role != tenancy.RolePlatform {
+		writeError(w, http.StatusNotFound, "api key not found")
 		return "", false
 	}
-	return pathTenant, true
+	if !h.tenantExists(w, r, want) {
+		return "", false
+	}
+	return want, true
+}
+
+// tenantExists writes a 404 (unknown id) or 500 (store failure) and returns
+// false when the tenant cannot be confirmed to exist.
+func (h *TenancyHandlers) tenantExists(w http.ResponseWriter, r *http.Request, id string) bool {
+	if _, err := h.Store.GetTenant(r.Context(), id); err != nil {
+		if errors.Is(err, tenancy.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "tenant not found")
+			return false
+		}
+		writeServerError(w, err)
+		return false
+	}
+	return true
 }
 
 // maxJSONBodyBytes caps control-plane JSON request bodies (X-DOS-001).
@@ -208,7 +256,11 @@ func (h *TenancyHandlers) UpdateAPIKeyRole(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "invalid role (must be viewer, editor, or admin)")
 		return
 	}
-	prev, next, err := h.Store.UpdateAPIKeyRole(r.Context(), p.TenantID, id, req.Role)
+	tenantID, ok := h.keyScopeTenant(w, r, p)
+	if !ok {
+		return
+	}
+	prev, next, err := h.Store.UpdateAPIKeyRole(r.Context(), tenantID, id, req.Role)
 	if err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "api key not found")
@@ -238,7 +290,11 @@ func (h *TenancyHandlers) RotateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	result, oldPrefix, err := h.Store.RotateAPIKey(r.Context(), p.TenantID, id)
+	tenantID, ok := h.keyScopeTenant(w, r, p)
+	if !ok {
+		return
+	}
+	result, oldPrefix, err := h.Store.RotateAPIKey(r.Context(), tenantID, id)
 	if err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "api key not found")
@@ -440,7 +496,11 @@ func (h *TenancyHandlers) DeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if err := h.Store.DeleteAPIKey(r.Context(), p.TenantID, id); err != nil {
+	tenantID, ok := h.keyScopeTenant(w, r, p)
+	if !ok {
+		return
+	}
+	if err := h.Store.DeleteAPIKey(r.Context(), tenantID, id); err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "api key not found")
 			return

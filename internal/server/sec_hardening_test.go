@@ -14,6 +14,7 @@ import (
 // must match the open routes EXACTLY, so a future route mounted under one of the
 // prefixes (e.g. /v1/models-internal) does not silently inherit anonymous access.
 func TestSkipAuth_ExactMatchOnly(t *testing.T) {
+	open := newTestOpenRoutes()
 	exempt := []string{
 		"/api/v1/health",
 		"/v1/chat/completions",
@@ -26,9 +27,13 @@ func TestSkipAuth_ExactMatchOnly(t *testing.T) {
 		"/openai/v1/embeddings",
 		"/openai/deployments/gpt-4o/chat/completions",
 		"/openai/deployments/text-embedding-3-small/embeddings",
+		// Surfaces the former hand-written list omitted (audit H-03).
+		"/v1/embeddings",
+		"/v1/responses",
+		"/v1beta/models/gemini-2.0-flash:generateContent",
 	}
 	for _, p := range exempt {
-		if !skipAuth(httptest.NewRequest(http.MethodGet, p, nil)) {
+		if !open.skip(httptest.NewRequest(http.MethodGet, p, nil)) {
 			t.Errorf("skipAuth(%q) = false, want true (open route)", p)
 		}
 	}
@@ -47,7 +52,7 @@ func TestSkipAuth_ExactMatchOnly(t *testing.T) {
 		"/openai/v1/models",
 	}
 	for _, p := range notExempt {
-		if skipAuth(httptest.NewRequest(http.MethodGet, p, nil)) {
+		if open.skip(httptest.NewRequest(http.MethodGet, p, nil)) {
 			t.Errorf("skipAuth(%q) = true, want false (a prefix must not auto-exempt)", p)
 		}
 	}

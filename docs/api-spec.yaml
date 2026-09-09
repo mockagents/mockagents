@@ -937,7 +937,9 @@ paths:
     get:
       operationId: listAPIKeys
       summary: List a tenant's API keys
-      description: Requires `editor`. Per-tenant admins see only their own tenant.
+      description: >
+        Requires `editor`. Per-tenant callers see only their own tenant; the
+        `platform` role may address any existing tenant (an unknown id is 404).
       tags: [Keys]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
@@ -954,7 +956,10 @@ paths:
     post:
       operationId: createAPIKey
       summary: Mint an API key
-      description: Requires `admin`. Plaintext is returned exactly once.
+      description: >
+        Requires `admin`. Plaintext is returned exactly once. The `platform`
+        role may mint into any existing tenant — this is how a newly created
+        tenant receives its first admin key.
       tags: [Keys]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
@@ -1004,10 +1009,13 @@ paths:
     patch:
       operationId: updateAPIKeyRole
       summary: Change an API key's role
-      description: Requires `admin`. Emits `api_key.role_changed`.
+      description: >
+        Requires `admin`. Emits `api_key.role_changed`. Scoped to the caller's
+        own tenant; a `platform` caller may name another tenant with `?tenant=`.
       tags: [Keys]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: tenant, in: query, schema: { type: string }, description: "Tenant that owns the key (platform role only; others get 404)." }
       requestBody:
         required: true
         content:
@@ -1027,10 +1035,13 @@ paths:
     delete:
       operationId: deleteAPIKey
       summary: Delete an API key
-      description: Requires `admin`. Emits `api_key.deleted`.
+      description: >
+        Requires `admin`. Emits `api_key.deleted`. Scoped to the caller's own
+        tenant; a `platform` caller may name another tenant with `?tenant=`.
       tags: [Keys]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: tenant, in: query, schema: { type: string }, description: "Tenant that owns the key (platform role only; others get 404)." }
       responses:
         "204": { description: Deleted. }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -1042,10 +1053,12 @@ paths:
       description: >
         Preserves id/name/role/tenant; only the secret changes. Flushes the
         auth cache and emits `api_key.rotated` with old + new prefixes. Requires
-        `admin`.
+        `admin`. Scoped to the caller's own tenant; a `platform` caller may
+        name another tenant with `?tenant=`.
       tags: [Keys]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: tenant, in: query, schema: { type: string }, description: "Tenant that owns the key (platform role only; others get 404)." }
       responses:
         "200":
           description: Rotated — plaintext shown once.

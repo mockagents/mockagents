@@ -65,9 +65,12 @@ var managementRouteFloors = map[string]tenancy.Role{
 
 	// Interaction-log query + live feed. The aggregate metrics endpoint is
 	// admin-only so viewers can't fingerprint the operator's browser tabs.
-	"GET /api/v1/logs":                roleOpen,
-	"GET /api/v1/logs/{id}":           roleOpen,
-	"DELETE /api/v1/logs":             roleOpen,
+	"GET /api/v1/logs":      roleOpen,
+	"GET /api/v1/logs/{id}": roleOpen,
+	// Purging the tenant's interaction log is destructive, like every other
+	// delete route; it was the one write that any authenticated role could
+	// perform (audit M-05).
+	"DELETE /api/v1/logs":             tenancy.RoleAdmin,
 	"GET /api/v1/logs/stream":         roleOpen,
 	"GET /api/v1/logs/stream/metrics": tenancy.RoleAdmin,
 
