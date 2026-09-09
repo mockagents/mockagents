@@ -24,6 +24,12 @@ export default defineConfig({
     exclude: ["node_modules/**", ".next/**", "e2e/**"],
     // Components under test are presentational islands; a real browser is the
     // job of the Playwright smoke suite, not of this layer.
+    // An axe scan walks the rendered tree and is the slowest thing this suite
+    // does — over 11s for the log-console cases on a CI runner, against a 5s
+    // default. The bound still exists so a genuinely hung test fails rather
+    // than hanging the job; it is sized for the accessibility passes, which
+    // are an epic-level acceptance gate and cannot simply be dropped.
+    testTimeout: 30_000,
     css: false,
     restoreMocks: true,
   },

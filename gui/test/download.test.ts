@@ -36,8 +36,11 @@ describe("draftFilename", () => {
 
 describe("downloadText", () => {
   it("reports failure instead of appearing to succeed when the browser cannot", () => {
-    // jsdom has no createObjectURL. A silent no-op here would let the UI claim
-    // a draft was saved when nothing ever left the page.
+    // A browser without object-URL support (a locked-down environment, an older
+    // engine). Stubbed explicitly rather than relying on the test DOM to lack
+    // it: jsdom 30 implements createObjectURL, so the absence has to be staged
+    // for this to exercise the real failure path.
+    vi.stubGlobal("URL", {});
     expect(downloadText("a.yaml", "kind: Agent")).toBe(false);
   });
 
