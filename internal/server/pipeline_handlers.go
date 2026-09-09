@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -282,7 +283,7 @@ func (h *PipelineHandlers) UpdatePipeline(w http.ResponseWriter, r *http.Request
 		return
 	}
 	report := config.ValidateBytes(yamlBytes)
-	refErrs := h.validateAgentRefs(&def)
+	refErrs := h.validateAgentRefs(r.Context(), &def)
 	if len(report.Errors) > 0 || len(refErrs) > 0 {
 		writeJSON(w, http.StatusUnprocessableEntity, ValidateResponse{
 			OK:     false,
@@ -338,18 +339,26 @@ func (h *PipelineHandlers) UpdatePipeline(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, &def)
 }
 
-// validateAgentRefs checks every pipeline agent ref names a known agent,
-// returning per-ref validation errors (the same shape the validator emits).
-func (h *PipelineHandlers) validateAgentRefs(def *types.PipelineDefinition) []*config.ValidationError {
+// validateAgentRefs checks every pipeline agent ref names an agent the CALLER
+// can see, returning per-ref validation errors (the same shape the validator
+// emits).
+//
+// Resolution is tenant-scoped (audit M-04): the global-only lookup rejected a
+// ref to a tenant-owned agent, even though execution resolves refs in the
+// caller's scope and would have found it. An empty tenant (single-tenant mode,
+// or a cross-tenant operator with no scope selected) resolves global agents
+// only, which is the historical behavior.
+func (h *PipelineHandlers) validateAgentRefs(ctx context.Context, def *types.PipelineDefinition) []*config.ValidationError {
 	if h.AgentRegistry == nil {
 		return nil
 	}
+	tenantID := engine.TenantIDFromContext(ctx)
 	var errs []*config.ValidationError
 	for i, node := range def.Spec.Agents {
 		if node.Ref == "" {
 			continue // the per-document validator already flags empty refs
 		}
-		if h.AgentRegistry.Get(node.Ref) == nil {
+		if h.AgentRegistry.GetForTenant(node.Ref, tenantID) == nil {
 			errs = append(errs, &config.ValidationError{
 				Field:      fmt.Sprintf("spec.agents[%d].ref", i),
 				Message:    fmt.Sprintf("pipeline references unknown agent %q", node.Ref),

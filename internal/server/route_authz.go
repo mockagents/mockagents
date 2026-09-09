@@ -83,8 +83,14 @@ var managementRouteFloors = map[string]tenancy.Role{
 	// Execution is application behavior, not a config mutation. Viewer is the
 	// lowest authenticated role and tenant scope still flows into every node.
 	"POST /api/v1/pipelines/{name}/run": tenancy.RoleViewer, // R13 / #33
-	// Pipeline edit (write: persists YAML to disk) → editor (REF-07).
-	"PUT /api/v1/pipelines/{name}": tenancy.RoleEditor,
+	// Pipeline edit (write: persists YAML to disk). Pipelines carry no
+	// TenantID — the registry is global, and a PUT rewrites the definition
+	// every tenant sees and runs — so in multi-tenant mode this is a
+	// cross-tenant operator action, like tenant management and quota caps
+	// (audit M-04). An editor floor let any tenant's editor rewrite shared
+	// state. Reads and runs stay at viewer: a run resolves each agent ref in
+	// the caller's own tenant scope, so it reveals nothing across tenants.
+	"PUT /api/v1/pipelines/{name}": tenancy.RolePlatform,
 
 	// Config validation (write-ish: sprays YAML at the parser) → editor.
 	"POST /api/v1/config/validate": tenancy.RoleEditor,

@@ -19,7 +19,7 @@ import (
 // exporter configured (the default), HTTPMiddleware must return the handler
 // UNWRAPPED so there is zero per-request tracing overhead.
 func TestHTTPMiddleware_SkippedWhenDisabled(t *testing.T) {
-	if tracingEnabled {
+	if IsEnabled() {
 		t.Skip("tracing is globally enabled in this run")
 	}
 	h := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
@@ -41,11 +41,11 @@ func newTestTracerProvider(t *testing.T) *tracetest.SpanRecorder {
 	// A real provider is installed for this test, so flip the package flag the
 	// same way NewTracerProvider would — otherwise HTTPMiddleware (correctly)
 	// skips wrapping and no spans are emitted (PERF-02).
-	prevEnabled := tracingEnabled
-	tracingEnabled = true
+	prevEnabled := tracingEnabled.Load()
+	tracingEnabled.Store(true)
 	t.Cleanup(func() {
 		otel.SetTracerProvider(prev)
-		tracingEnabled = prevEnabled
+		tracingEnabled.Store(prevEnabled)
 	})
 	return rec
 }

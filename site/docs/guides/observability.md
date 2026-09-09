@@ -182,13 +182,33 @@ configured, so there is no runtime cost otherwise.
 | --- | --- |
 | `OTEL_EXPORTER_OTLP_ENDPOINT=https://…` | Send spans to an OTLP/HTTP collector |
 | `MOCKAGENTS_OTEL_STDOUT=1` | Pretty-print spans to stdout (local development) |
+| `OTEL_SERVICE_NAME=…` | Service name on every span (default `mockagents`) |
 
 Each request produces an outer `http.request` span and an inner
 `engine.process_request` span carrying `agent.name`, `agent.model`,
-`agent.protocol`, `agent.scenario`, and `agent.tool_calls`.
+`agent.protocol`, `agent.scenario`, and `agent.tool_calls`. When either
+exporter variable is set, `mockagents start` logs `tracing enabled` with the
+exporter it chose — if you do not see that line, the process is not exporting.
+
+MockAgents joins your trace rather than starting its own. A request carrying a
+W3C `traceparent` header continues that trace, so the mock's spans appear as
+children of the caller's span and the agent under test keeps one connected
+timeline across the boundary. Baggage propagates too. A request without a
+`traceparent` starts a root span, which is what an untraced client should
+produce.
+
+```console
+$ MOCKAGENTS_OTEL_STDOUT=1 mockagents start
+{"time":"…","level":"INFO","msg":"tracing enabled","service":"mockagents","exporter":"stdout",…}
+```
+
+Spans are flushed on shutdown, so a short-lived process still exports what it
+recorded.
 
 ## Related
 
+- [Operations](operations.md) — backup, key recovery, upgrades, replica limits
+- [Configuration reference](../reference/configuration.md) — every environment variable
 - [Chaos & Fault Injection](chaos.md) — what produces `mockagents_chaos_injections_total`
 - [Management API](management-api.md) — the rest of the `/api/v1` surface
 - [Multi-Tenant & Control Plane](https://github.com/mockagents/mockagents/blob/main/docs/guides/multi-tenant.md) — RBAC floors, including the one on `/metrics`
