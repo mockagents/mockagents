@@ -5,10 +5,16 @@
 // reported as durable when the server said it was not.
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AgentEditor, type AgentEditorProps } from "@/app/agents/[name]/edit/AgentEditor";
 import type { ConditionalSaveResult, ValidateResult } from "@/lib/api";
+
+// One test stubs `URL` to stage a browser without object-URL support; undo it
+// so the stub cannot leak into the tests that follow.
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const ORIGINAL = [
   "apiVersion: mockagents/v1",
@@ -361,7 +367,10 @@ describe("AgentEditor", () => {
     });
 
     it("reports a blocked download instead of appearing to have saved", async () => {
-      // jsdom has no createObjectURL, so this exercises the real failure path.
+      // Stage a browser without object-URL support, which is the real failure
+      // path. jsdom 30 implements createObjectURL, so it can no longer stand in
+      // for that environment by accident.
+      vi.stubGlobal("URL", {});
       const user = userEvent.setup();
       setup();
       await user.click(screen.getByRole("button", { name: /export draft/i }));

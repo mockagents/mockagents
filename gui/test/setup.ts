@@ -16,11 +16,11 @@ afterEach(() => {
 // cheap to add to any new test.
 expect.extend({ toHaveNoAxeViolations });
 
+// vitest 5 is the version that made `Matchers` the extension point for custom
+// assertions. Augmenting `Assertion` (what vitest 2 wanted) now collides with
+// vitest's own two declarations of it and fails with TS2428.
 declare module "vitest" {
-  interface Assertion {
-    toHaveNoAxeViolations(): Promise<void>;
-  }
-  interface AsymmetricMatchersContaining {
+  interface Matchers<R extends void | Promise<void> = void | Promise<void>, T = unknown> {
     toHaveNoAxeViolations(): Promise<void>;
   }
 }
