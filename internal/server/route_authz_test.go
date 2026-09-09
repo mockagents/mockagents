@@ -100,9 +100,12 @@ func TestMountManaged_PanicsOnUnknownRoute(t *testing.T) {
 // future edit that loosens one fails here.
 func TestManagementRouteFloors_FlaggedRoutes(t *testing.T) {
 	want := map[string]tenancy.Role{
-		"GET /api/v1/costs":                 tenancy.RoleViewer, // F-CO-005
-		"GET /api/v1/pipelines":             tenancy.RoleViewer, // F-PL-001
-		"GET /api/v1/pipelines/{name}":      tenancy.RoleViewer, // F-PL-001
+		"GET /api/v1/costs":            tenancy.RoleViewer, // F-CO-005
+		"GET /api/v1/pipelines":        tenancy.RoleViewer, // F-PL-001
+		"GET /api/v1/pipelines/{name}": tenancy.RoleViewer, // F-PL-001
+		// M-04: pipelines are global state, so writing one is a cross-tenant
+		// operator action.
+		"PUT /api/v1/pipelines/{name}":      tenancy.RolePlatform,
 		"POST /api/v1/agents/{name}/reload": tenancy.RoleEditor, // F-HD-001
 		"GET /api/v1/audit":                 tenancy.RoleAdmin,
 		"POST /api/v1/config/validate":      tenancy.RoleEditor,
@@ -157,7 +160,7 @@ func TestManagementRouteFloors_Snapshot(t *testing.T) {
 		"GET /api/v1/pipelines":                 tenancy.RoleViewer,
 		"GET /api/v1/pipelines/{name}":          tenancy.RoleViewer,
 		"POST /api/v1/pipelines/{name}/run":     tenancy.RoleViewer,
-		"PUT /api/v1/pipelines/{name}":          tenancy.RoleEditor,
+		"PUT /api/v1/pipelines/{name}":          tenancy.RolePlatform,
 		"POST /api/v1/config/validate":          tenancy.RoleEditor,
 		"GET /api/v1/quota":                     tenancy.RoleViewer,
 		"PUT /api/v1/tenants/{id}/quota":        tenancy.RolePlatform,

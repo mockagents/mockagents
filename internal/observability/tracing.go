@@ -12,6 +12,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"sync/atomic"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -37,13 +38,15 @@ const TracerName = "github.com/mockagents/mockagents"
 // `otel.Tracer(...).Start(...)` is skipped entirely when the user is
 // not actively tracing.
 //
-// Read-only after NewTracerProvider returns.
-var tracingEnabled bool
+// Effectively read-only after NewTracerProvider returns: it is set once at
+// startup and cleared by Shutdown. It is atomic because those two calls can
+// race with in-flight requests reading it.
+var tracingEnabled atomic.Bool
 
 // IsEnabled reports whether tracing is actively exporting to a
 // configured backend. Hot-path callers should guard span construction
 // with this flag to avoid paying the noop cost per request.
-func IsEnabled() bool { return tracingEnabled }
+func IsEnabled() bool { return tracingEnabled.Load() }
 
 // Shutdown is returned by NewTracerProvider; call it once at program
 // exit to flush pending spans. A noop Shutdown is returned when the
@@ -86,10 +89,22 @@ func NewTracerProvider(ctx context.Context, serviceName, version string) (trace.
 		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.TraceContext{})
-	tracingEnabled = true
+	// W3C trace context so an incoming `traceparent` joins the caller's trace,
+	// plus baggage so callers can carry their own correlation keys through.
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
+	tracingEnabled.Store(true)
 
-	return tp, tp.Shutdown, nil
+	shutdown := func(ctx context.Context) error {
+		// Stop new spans first: after Shutdown the provider drops everything,
+		// and a request that still thinks tracing is on pays the attribute cost
+		// for nothing.
+		tracingEnabled.Store(false)
+		return tp.Shutdown(ctx)
+	}
+	return tp, shutdown, nil
 }
 
 // StartSpan is a thin convenience wrapper so callers don't need to
@@ -120,11 +135,15 @@ func RecordError(span trace.Span, err error) {
 // read-only after NewTracerProvider returns, so deciding here at construction
 // time is safe as long as the tracer is set up before the server is built.
 func HTTPMiddleware(next http.Handler) http.Handler {
-	if !tracingEnabled {
+	if !IsEnabled() {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, span := StartSpan(r.Context(), "http.request",
+		// Join the caller's trace when it sent one (W3C `traceparent`).
+		// Without this every request started a fresh root span and a
+		// distributed trace stopped at the MockAgents boundary (audit H-08).
+		reqCtx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+		ctx, span := StartSpan(reqCtx, "http.request",
 			attribute.String("http.method", r.Method),
 			attribute.String("http.route", r.URL.Path),
 		)

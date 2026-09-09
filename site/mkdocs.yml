@@ -57,12 +57,14 @@ nav:
     - YAML Schema: guides/yaml-schema.md
     - Management API: guides/management-api.md
     - Observability & Metrics: guides/observability.md
+    - Operations: guides/operations.md
   - SDKs:
     - Python SDK: sdk/python-sdk.md
     - TypeScript SDK: sdk/typescript-sdk.md
     - Go SDK: sdk/go-sdk.md
   - Reference:
     - Agent Definition: reference/agent-definition.md
+    - Configuration: reference/configuration.md
     - Architecture: reference/architecture.md
   - Contributing: contributing.md
 

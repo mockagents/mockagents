@@ -417,6 +417,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 		cfg.SSO = sso
 	}
 
+	// Tracing must be installed BEFORE the server is built: the HTTP tracing
+	// middleware decides at construction time whether to wrap the handler
+	// (audit H-08). The deferred flush runs after Shutdown returns, so spans
+	// from the last requests still reach the exporter.
+	traceShutdown := setupTracing(cmd.Context(), logger)
+	defer flushTraces(traceShutdown, logger)
+
 	srv := server.New(eng, cfg, logger)
 
 	// Optional fsnotify auto-reload (US-2.3). When --watch is set we

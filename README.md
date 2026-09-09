@@ -686,9 +686,14 @@ Tracing is opt-in — the tracer provider is a no-op until you set
 `OTEL_EXPORTER_OTLP_ENDPOINT` (or `MOCKAGENTS_OTEL_STDOUT=1` for local
 development). Each request then produces an outer `http.request` span and an
 inner `engine.process_request` span carrying `agent.name`, `agent.model`,
-`agent.protocol`, `agent.scenario`, and `agent.tool_calls`.
+`agent.protocol`, `agent.scenario`, and `agent.tool_calls`. An incoming W3C
+`traceparent` is joined, so the mock's spans hang off the caller's trace
+instead of starting a disconnected one.
 
-**See the [Observability guide](site/docs/guides/observability.md).**
+**See the [Observability guide](site/docs/guides/observability.md), the
+[Operations guide](site/docs/guides/operations.md) for backup, key recovery and
+upgrades, and the [configuration reference](site/docs/reference/configuration.md)
+for every environment variable.**
 
 ## Kubernetes (Helm chart)
 
