@@ -266,10 +266,13 @@ func (r *AgentRegistry) ListNames() []string {
 }
 
 // Remove deletes every agent named `name`, in any tenant bucket, and fixes the
-// model indexes. Returns an error if no agent by that name exists. (In practice
-// the file watcher — the only caller — operates on a single agents directory
-// where names are unique; the across-buckets sweep preserves the historic
-// "remove by name" behavior.) Use RemoveForTenant for tenant-precise removal.
+// model indexes. Returns an error if no agent by that name exists.
+//
+// Deprecated: the across-buckets sweep predates tenant-owned agents, and no
+// production caller remains — the file watcher used it until a tenant deleting
+// its own `foo` also removed the global `foo` and every other tenant's (audit
+// H-01). Use RemoveForTenant, which is tenant-precise. Kept for tests and
+// callers that manage a single-tenant registry.
 func (r *AgentRegistry) Remove(name string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -345,6 +348,33 @@ func (r *AgentRegistry) Source(name, tenantID string) string {
 		return b[name]
 	}
 	return ""
+}
+
+// SourceEntry is one (owner tenant, agent name, backing file) triple from
+// Sources.
+type SourceEntry struct {
+	Name     string
+	TenantID string // "" = global
+	Path     string
+}
+
+// Sources lists every registered agent that has a known backing file, so a
+// component that reacts to that file later (the directory watcher) can start
+// from the same view of the directory the boot-time load produced. Entries
+// with an unknown source are omitted. Order is unspecified.
+func (r *AgentRegistry) Sources() []SourceEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []SourceEntry
+	for owner, byName := range r.sources {
+		for name, path := range byName {
+			if path == "" {
+				continue
+			}
+			out = append(out, SourceEntry{Name: name, TenantID: owner, Path: path})
+		}
+	}
+	return out
 }
 
 // GetOwnedForTenant returns the agent named `name` owned by tenantID ITSELF,
