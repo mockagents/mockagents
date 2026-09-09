@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -251,61 +252,121 @@ func (h *Handlers) ReloadAgent(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	tenantID := callerTenantID(r)
 
+	// Reload mutates the registry, so it takes the same lock as create,
+	// replace and delete (audit M-03). Without it a reload could interleave
+	// with a DELETE and re-register the definition the delete had just
+	// removed, resurrecting an agent the operator believed was gone — and the
+	// write API's read-revision → compare → write sequence had no protection
+	// against a reload landing in the middle of it.
+	h.agentWriteMu.Lock()
+	defer h.agentWriteMu.Unlock()
+
 	existing := h.Engine.Registry.GetForTenant(name, tenantID)
 	if existing == nil {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("agent %q not found", name))
 		return
 	}
+	owner := existing.Metadata.TenantID
 
-	// Scan agents directory for the file matching this agent.
+	result, err := h.loadAgentForReload(name, owner)
+	if err != nil {
+		var conflict *reloadConflictError
+		switch {
+		case errors.As(err, &conflict):
+			writeError(w, http.StatusConflict, conflict.Error())
+		case errors.Is(err, errReloadSourceMissing):
+			writeError(w, http.StatusNotFound, fmt.Sprintf("no definition file found for agent %q in %s", name, h.AgentsDir))
+		default:
+			h.Logger.Error("could not read the agent's definition file during reload",
+				"agent", name, "error", err)
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{
+				Error:   "could not read the agent definition file",
+				Details: err.Error(),
+			})
+		}
+		return
+	}
+
+	validator := &config.Validator{}
+	if errList := validator.Validate(result.Definition, result.FilePath, result.Node); errList != nil {
+		h.Logger.Error("validation failed during reload",
+			"agent", name,
+			"file", result.FilePath,
+			"errors", errList.Error(),
+		)
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{
+			Error:   "validation failed",
+			Details: errList.Error(),
+		})
+		return
+	}
+
+	h.Engine.Registry.RegisterWithSource(result.Definition, result.FilePath)
+	h.Logger.Info("agent reloaded",
+		"agent", name,
+		"file", filepath.Base(result.FilePath),
+	)
+	h.Recorder.RecordHTTP(r, audit.EventAgentReloaded, name,
+		audit.MarshalDetails(map[string]any{
+			"file": filepath.Base(result.FilePath),
+		}))
+	writeJSON(w, http.StatusOK, ReloadResponse{Status: "reloaded", Agent: name})
+}
+
+// errReloadSourceMissing means no file on disk defines this agent.
+var errReloadSourceMissing = errors.New("no definition file found for the agent")
+
+// reloadConflictError means a file exists but no longer describes the agent
+// the caller asked to reload.
+type reloadConflictError struct{ msg string }
+
+func (e *reloadConflictError) Error() string { return e.msg }
+
+// loadAgentForReload resolves and parses the definition file backing one
+// agent.
+//
+// The registry records the file each agent was loaded from, so the normal path
+// reads exactly that one file (audit M-03). Re-parsing and validating every
+// document in the agents directory to use exactly one of them made a reload
+// cost grow with the fixture set and surfaced unrelated files' parse errors in
+// this agent's log line.
+//
+// The directory scan survives as a fallback for an agent with no recorded
+// source — one registered in memory (embedded use, tests) whose definition
+// nonetheless exists on disk. Dropping it would turn a working reload into a
+// 404 for those callers.
+func (h *Handlers) loadAgentForReload(name, owner string) (*config.LoadResult, error) {
+	if source := h.Engine.Registry.Source(name, owner); source != "" {
+		result, err := config.LoadFile(source)
+		if err != nil {
+			return nil, err
+		}
+		config.ApplyDefaults(result.Definition)
+		// The file must still describe THIS agent. An edit that renamed it, or
+		// moved it to another tenant, would otherwise register a different
+		// definition under the caller's authority (F-HD-002).
+		if result.Definition.Metadata.Name != name || result.Definition.Metadata.TenantID != owner {
+			return nil, &reloadConflictError{msg: fmt.Sprintf(
+				"file %s no longer defines agent %q; it now defines %q",
+				filepath.Base(source), name, result.Definition.Metadata.Name)}
+		}
+		return result, nil
+	}
+
 	results, loadErrs := config.LoadDir(h.AgentsDir)
 	if len(loadErrs) > 0 {
 		h.Logger.Warn("errors loading agents during reload", "errors", fmt.Sprintf("%v", loadErrs))
 	}
-
-	var found bool
-	validator := &config.Validator{}
 	for _, result := range results {
 		config.ApplyDefaults(result.Definition)
-		// Match by name AND tenant (F-HD-002): if two tenants own
-		// same-named agents, reload only the file belonging to the same
-		// tenant as the agent the caller is authorized for — never
-		// register another tenant's definition over it.
-		if result.Definition.Metadata.Name != name ||
-			result.Definition.Metadata.TenantID != existing.Metadata.TenantID {
-			continue
+		// Match by name AND tenant (F-HD-002): if two tenants own same-named
+		// agents, reload only the file belonging to the same tenant as the
+		// agent the caller is authorized for.
+		if result.Definition.Metadata.Name == name && result.Definition.Metadata.TenantID == owner {
+			return result, nil
 		}
-		found = true
-
-		if errList := validator.Validate(result.Definition, result.FilePath, result.Node); errList != nil {
-			h.Logger.Error("validation failed during reload",
-				"agent", name,
-				"file", result.FilePath,
-				"errors", errList.Error(),
-			)
-			writeJSON(w, http.StatusBadRequest, ErrorResponse{
-				Error:   "validation failed",
-				Details: errList.Error(),
-			})
-			return
-		}
-
-		h.Engine.Registry.RegisterWithSource(result.Definition, result.FilePath)
-		h.Logger.Info("agent reloaded",
-			"agent", name,
-			"file", filepath.Base(result.FilePath),
-		)
-		h.Recorder.RecordHTTP(r, audit.EventAgentReloaded, name,
-			audit.MarshalDetails(map[string]any{
-				"file": filepath.Base(result.FilePath),
-			}))
-		writeJSON(w, http.StatusOK, ReloadResponse{Status: "reloaded", Agent: name})
-		return
 	}
-
-	if !found {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("no definition file found for agent %q in %s", name, h.AgentsDir))
-	}
+	return nil, errReloadSourceMissing
 }
 
 // respEncoder bundles a pooled bytes.Buffer with a json.Encoder bound to it so

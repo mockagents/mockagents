@@ -139,15 +139,24 @@ type Engine struct {
 func NewEngine(registry *AgentRegistry, store state.Store, logger *slog.Logger) *Engine {
 	matcher := NewScenarioMatcher()
 	matcher.log = logger // surface bad content_regex through the request logger (F-SM-001)
-	return &Engine{
+	chaos := NewChaosInjector()
+	eng := &Engine{
 		Registry:      registry,
 		States:        store,
 		Matcher:       matcher,
 		Generator:     NewResponseGenerator(),
 		ToolProcessor: NewToolCallProcessor(),
-		Chaos:         NewChaosInjector(),
+		Chaos:         chaos,
 		Logger:        logger,
 	}
+	if registry != nil {
+		// A redefined agent starts from clean fault counters. Without this, an
+		// agent edited through the write API or a hot reload kept the previous
+		// definition's FailFirst progress, so "fail the first 3 requests"
+		// silently became "fail zero" after a reload (audit M-02).
+		registry.OnAgentChange = chaos.ResetAgent
+	}
+	return eng
 }
 
 // ProcessRequest runs the full request processing pipeline:

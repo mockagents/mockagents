@@ -147,9 +147,11 @@ func (h *BedrockHandler) HandleConverse(w http.ResponseWriter, r *http.Request) 
 			writeBedrockError(w, http.StatusBadRequest, "ValidationException", err.Error())
 			return
 		}
-		status, kind := http.StatusInternalServerError, "InternalServerException"
-		if strings.Contains(err.Error(), "not found") {
-			status, kind = http.StatusNotFound, "ResourceNotFoundException"
+		status, kind := engineErrorStatus(err), "InternalServerException"
+		if engineErrorIsNotFound(err) {
+			kind = "ResourceNotFoundException"
+		} else if status == http.StatusBadRequest {
+			kind = "ValidationException"
 		}
 		writeBedrockError(w, status, kind, err.Error())
 		return

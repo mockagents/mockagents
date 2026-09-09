@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,13 +67,18 @@ type ChaosInjector struct {
 	Sleep   func(time.Duration)
 	RandSrc *rand.Rand
 	mu      sync.Mutex
-	// buckets holds one rolling-window counter per agent name. It grows by
-	// at most one entry per rate-limited agent and is never pruned (F-CH-006);
-	// that is bounded by the number of configured agents (a fixed, small
-	// set), not by request volume, so unbounded growth is not a concern.
+	// buckets holds one rolling-window counter per agent, keyed by
+	// chaosKey (tenant + name — audit M-02). Keying on the bare name let two
+	// tenants owning same-named agents share one rate-limit budget, so one
+	// tenant's traffic produced 429s for another's. It grows by at most one
+	// entry per rate-limited agent and is never pruned (F-CH-006); that is
+	// bounded by the number of configured agents (a fixed, small set), not by
+	// request volume, so unbounded growth is not a concern.
 	buckets map[string]*rateBucket
 	// errorCounts holds the cumulative request count per agent for the
-	// FailFirst stateful trigger. Bounded by the agent set, same as buckets.
+	// FailFirst stateful trigger, keyed the same way — otherwise tenant A's
+	// requests exhausted tenant B's "fail the first N" allowance. Bounded by
+	// the agent set, same as buckets.
 	errorCounts map[string]int
 	// connCounts is the FailFirst counter for connection-layer faults, kept
 	// SEPARATE from errorCounts so an agent configuring both errors.fail_first
@@ -132,7 +138,13 @@ func (c *ChaosInjector) ensureMaps() {
 	c.mu.Unlock()
 }
 
-func (c *ChaosInjector) globalAllows(agentName, action string) bool {
+// globalAllows draws the lowest-precedence global-rate decision for one
+// action. scope is the tenant-qualified agent key (M-02) and counts the
+// sequence; agentName is what feeds the deterministic decision, unchanged, so
+// a fixed --chaos-seed reproduces exactly the same faults it always did.
+// Two tenants owning same-named agents now advance independent sequences and
+// each sees that same reproducible pattern, instead of interleaving into one.
+func (c *ChaosInjector) globalAllows(scope, agentName, action string) bool {
 	c.mu.Lock()
 	if c.globalRate == nil {
 		c.mu.Unlock()
@@ -140,12 +152,40 @@ func (c *ChaosInjector) globalAllows(agentName, action string) bool {
 	}
 	rate := *c.globalRate
 	seed := c.globalSeed
-	key := agentName + "\x00" + action
-	c.globalCounts[key]++
-	sequence := c.globalCounts[key]
+	counterKey := scope + "\x00" + action
+	c.globalCounts[counterKey]++
+	sequence := c.globalCounts[counterKey]
 	c.mu.Unlock()
-	decision := commonchaos.Decide(commonchaos.Policy{Seed: seed, Rate: &rate, Source: "global-rate"}, fmt.Sprintf("%s\x00%d", key, sequence), action, "")
+	decisionKey := agentName + "\x00" + action
+	decision := commonchaos.Decide(commonchaos.Policy{Seed: seed, Rate: &rate, Source: "global-rate"}, fmt.Sprintf("%s\x00%d", decisionKey, sequence), action, "")
 	return decision.Apply
+}
+
+// chaosKey namespaces per-agent chaos state by owning tenant, following the
+// scopedSessionKey convention (NUL separator; tenant ids are server-generated
+// and never contain NUL). An empty tenant — single-tenant mode — keeps every
+// agent in one namespace exactly as before.
+func chaosKey(agent *types.AgentDefinition) string {
+	return agent.Metadata.TenantID + "\x00" + agent.Metadata.Name
+}
+
+// ResetAgent drops the stateful chaos counters for one agent, so a
+// re-registered or deleted-then-recreated definition starts from a clean
+// FailFirst count and rate-limit window instead of inheriting the previous
+// definition's progress (audit M-02).
+func (c *ChaosInjector) ResetAgent(tenantID, name string) {
+	scope := tenantID + "\x00" + name
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.buckets, scope)
+	delete(c.errorCounts, scope)
+	delete(c.connCounts, scope)
+	// globalCounts is keyed by scope + action, so clear every action for it.
+	for key := range c.globalCounts {
+		if strings.HasPrefix(key, scope+"\x00") {
+			delete(c.globalCounts, key)
+		}
+	}
 }
 
 func (c *ChaosInjector) hasGlobalPolicy() bool {
@@ -159,11 +199,11 @@ func (c *ChaosInjector) hasGlobalPolicy() bool {
 // precedence: the first N requests fault deterministically (bumping counter),
 // then it recovers. Otherwise it draws against the clamped rate. Caller must
 // have run ensureMaps so counter is non-nil.
-func (c *ChaosInjector) shouldTrigger(agentName string, rate float64, failFirst int, counter map[string]int) bool {
+func (c *ChaosInjector) shouldTrigger(scope string, rate float64, failFirst int, counter map[string]int) bool {
 	if failFirst > 0 {
 		c.mu.Lock()
-		counter[agentName]++
-		n := counter[agentName]
+		counter[scope]++
+		n := counter[scope]
 		c.mu.Unlock()
 		return n <= failFirst
 	}
@@ -210,8 +250,10 @@ func (c *ChaosInjector) Before(ctx context.Context, agent *types.AgentDefinition
 		return nil
 	}
 	c.ensureMaps()
+	// All stateful chaos counters are per (owning tenant, agent name).
+	scope := chaosKey(agent)
 	if cfg.RateLimit != nil && cfg.RateLimit.Requests > 0 {
-		if err := c.checkRateLimit(agent.Metadata.Name, cfg.RateLimit); err != nil {
+		if err := c.checkRateLimit(scope, cfg.RateLimit); err != nil {
 			// Metered here rather than inside each maybeInject* helper so the
 			// counter can never drift from what was actually returned to the
 			// caller: exactly one increment per fault that reached the client.
@@ -222,7 +264,7 @@ func (c *ChaosInjector) Before(ctx context.Context, agent *types.AgentDefinition
 	if cfg.Errors != nil && (cfg.Errors.Rate > 0 || cfg.Errors.FailFirst > 0 || (c.hasGlobalPolicy() && hasConfiguredError(cfg.Errors))) {
 		errorCfg := cfg.Errors
 		if cfg.Errors.Rate == 0 && cfg.Errors.FailFirst == 0 {
-			if !c.globalAllows(agent.Metadata.Name, "error") {
+			if !c.globalAllows(scope, agent.Metadata.Name, "error") {
 				errorCfg = nil
 			} else {
 				copy := *cfg.Errors
@@ -231,7 +273,7 @@ func (c *ChaosInjector) Before(ctx context.Context, agent *types.AgentDefinition
 			}
 		}
 		if errorCfg != nil {
-			if err := c.maybeInjectError(ctx, agent.Metadata.Name, errorCfg); err != nil {
+			if err := c.maybeInjectError(ctx, scope, errorCfg); err != nil {
 				metrics.RecordChaos(agent.Metadata.Name, metrics.ChaosError)
 				return err
 			}
@@ -242,7 +284,7 @@ func (c *ChaosInjector) Before(ctx context.Context, agent *types.AgentDefinition
 	if cfg.Connection != nil && (cfg.Connection.Rate > 0 || cfg.Connection.FailFirst > 0 || (c.hasGlobalPolicy() && cfg.Connection.Mode != "")) {
 		connectionCfg := cfg.Connection
 		if cfg.Connection.Rate == 0 && cfg.Connection.FailFirst == 0 {
-			if !c.globalAllows(agent.Metadata.Name, "connection") {
+			if !c.globalAllows(scope, agent.Metadata.Name, "connection") {
 				connectionCfg = nil
 			} else {
 				copy := *cfg.Connection
@@ -251,7 +293,7 @@ func (c *ChaosInjector) Before(ctx context.Context, agent *types.AgentDefinition
 			}
 		}
 		if connectionCfg != nil {
-			if err := c.maybeInjectConnectionFault(agent.Metadata.Name, connectionCfg); err != nil {
+			if err := c.maybeInjectConnectionFault(scope, connectionCfg); err != nil {
 				metrics.RecordChaos(agent.Metadata.Name, metrics.ChaosConnection)
 				return err
 			}
@@ -262,8 +304,8 @@ func (c *ChaosInjector) Before(ctx context.Context, agent *types.AgentDefinition
 
 // maybeInjectConnectionFault returns a *ChaosError carrying the connection mode
 // when this request should be faulted (by Rate or FailFirst), else nil.
-func (c *ChaosInjector) maybeInjectConnectionFault(agentName string, cc *types.ChaosConnectionConfig) error {
-	if !c.shouldTrigger(agentName, cc.Rate, cc.FailFirst, c.connCounts) {
+func (c *ChaosInjector) maybeInjectConnectionFault(scope string, cc *types.ChaosConnectionConfig) error {
+	if !c.shouldTrigger(scope, cc.Rate, cc.FailFirst, c.connCounts) {
 		return nil
 	}
 	// Defense in depth: a blank Mode (e.g. from a caller that skipped the config
@@ -285,7 +327,7 @@ func (c *ChaosInjector) After(ctx context.Context, agent *types.AgentDefinition)
 	if cfg == nil || cfg.Latency == nil {
 		return
 	}
-	if !c.globalAllows(agent.Metadata.Name, "latency") {
+	if !c.globalAllows(chaosKey(agent), agent.Metadata.Name, "latency") {
 		return
 	}
 	metrics.RecordChaos(agent.Metadata.Name, metrics.ChaosLatency)
@@ -436,7 +478,7 @@ func (c *ChaosInjector) pickStatusCode(e *types.ChaosErrorConfig) int {
 
 // checkRateLimit maintains a per-agent rolling window and returns a 429
 // ChaosError when the agent has exceeded its allotment.
-func (c *ChaosInjector) checkRateLimit(agent string, rl *types.ChaosRateLimitConfig) error {
+func (c *ChaosInjector) checkRateLimit(scope string, rl *types.ChaosRateLimitConfig) error {
 	if rl.WindowMs <= 0 {
 		return nil
 	}
@@ -446,9 +488,9 @@ func (c *ChaosInjector) checkRateLimit(agent string, rl *types.ChaosRateLimitCon
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	bucket, ok := c.buckets[agent]
+	bucket, ok := c.buckets[scope]
 	if !ok || now.Sub(bucket.windowStart) >= window {
-		c.buckets[agent] = &rateBucket{windowStart: now, count: 1}
+		c.buckets[scope] = &rateBucket{windowStart: now, count: 1}
 		return nil
 	}
 	bucket.count++

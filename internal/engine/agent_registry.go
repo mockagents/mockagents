@@ -40,6 +40,28 @@ type AgentRegistry struct {
 	// duplicated on update or resurrected after delete (FB04-01/02). "" means the
 	// source is unknown (e.g. an agent created in memory only).
 	sources map[string]map[string]string
+
+	// OnAgentChange, when set, is called after an agent is registered or
+	// removed, with the owning tenant and the agent name. The engine wires it
+	// to the chaos injector so a redefined agent starts from clean fault
+	// counters instead of inheriting the previous definition's FailFirst
+	// progress and rate-limit window (audit M-02).
+	//
+	// It is called WITHOUT the registry lock held, so the callback may take
+	// its own locks or call back into the registry. Set it before the
+	// registry starts serving; it is not guarded.
+	OnAgentChange func(tenantID, name string)
+}
+
+// notifyChange invokes OnAgentChange for each (tenant, name) pair. Callers
+// must have released the registry lock.
+func (r *AgentRegistry) notifyChange(pairs ...[2]string) {
+	if r.OnAgentChange == nil {
+		return
+	}
+	for _, p := range pairs {
+		r.OnAgentChange(p[0], p[1])
+	}
 }
 
 // NewAgentRegistry creates an empty agent registry.
@@ -95,6 +117,7 @@ func (r *AgentRegistry) Register(def *types.AgentDefinition) {
 	if def == nil {
 		return
 	}
+	defer r.notifyChange([2]string{def.Metadata.TenantID, def.Metadata.Name})
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.registerLocked(def, "")
@@ -109,6 +132,7 @@ func (r *AgentRegistry) RegisterWithSource(def *types.AgentDefinition, sourcePat
 	if def == nil {
 		return
 	}
+	defer r.notifyChange([2]string{def.Metadata.TenantID, def.Metadata.Name})
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.registerLocked(def, sourcePath)
@@ -274,6 +298,10 @@ func (r *AgentRegistry) ListNames() []string {
 // H-01). Use RemoveForTenant, which is tenant-precise. Kept for tests and
 // callers that manage a single-tenant registry.
 func (r *AgentRegistry) Remove(name string) error {
+	// Removed pairs are collected under the lock and announced after it, since
+	// the callback may take its own locks (audit M-02).
+	var removed [][2]string
+	defer func() { r.notifyChange(removed...) }()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	models := make(map[string]struct{})
@@ -284,6 +312,7 @@ func (r *AgentRegistry) Remove(name string) error {
 			continue
 		}
 		found = true
+		removed = append(removed, [2]string{owner, name})
 		if def.Spec.Model != "" {
 			if indexed, ok := r.byModel[def.Spec.Model]; ok && indexed == def {
 				delete(r.byModel, def.Spec.Model)
@@ -313,6 +342,14 @@ func (r *AgentRegistry) Remove(name string) error {
 // RemoveForTenant deletes the agent named `name` owned by `tenantID` ("" =
 // global). Returns an error if that specific (tenant, name) pair is absent.
 func (r *AgentRegistry) RemoveForTenant(name, tenantID string) error {
+	// Announced after the lock is released, and only when the agent was
+	// actually removed (audit M-02).
+	notify := false
+	defer func() {
+		if notify {
+			r.notifyChange([2]string{tenantID, name})
+		}
+	}()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	byName := r.agents[tenantID]
@@ -336,6 +373,7 @@ func (r *AgentRegistry) RemoveForTenant(name, tenantID string) error {
 		}
 	}
 	r.rebuildModelBucket(def.Spec.Model)
+	notify = true
 	return nil
 }
 

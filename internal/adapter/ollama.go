@@ -120,12 +120,7 @@ func (h *OllamaHandler) HandleChat(w http.ResponseWriter, r *http.Request) {
 			writeOllamaError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "not found") {
-			status = http.StatusNotFound
-		} else if strings.Contains(err.Error(), "empty") {
-			status = http.StatusBadRequest
-		}
+		status := engineErrorStatus(err)
 		writeOllamaError(w, status, err.Error())
 		return
 	}

@@ -241,12 +241,7 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 			writeAnthropicStrictError(w, se)
 			return
 		}
-		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "not found") {
-			status = http.StatusNotFound
-		} else if strings.Contains(err.Error(), "empty") {
-			status = http.StatusBadRequest
-		}
+		status := engineErrorStatus(err)
 		writeAnthropicError(w, status, "invalid_request_error", err.Error())
 		return
 	}

@@ -399,7 +399,18 @@ func (s *Store) QueryWithInfo(name string, query Query) (QueryResult, error) {
 			return QueryResult{}, errors.New("query vector values must be finite")
 		}
 	}
-	matches := make([]Match, 0, min(query.TopK, len(c.points)))
+	// Candidates carry a REFERENCE to the point's metadata while they are
+	// being ranked; the defensive copy happens once the survivors are known
+	// (audit M-21). Cloning every candidate up front allocated a map per
+	// point in the collection — up to 100k of them — to then discard all but
+	// TopK (at most 1000).
+	type candidate struct {
+		match Match
+		// meta is the point's live map, owned by the store. It is cloned
+		// before it leaves this function, and never handed out as-is.
+		meta map[string]any
+	}
+	candidates := make([]candidate, 0, min(query.TopK, len(c.points)))
 	for _, point := range c.points {
 		if !metadataMatches(point.Metadata, query.Filter) {
 			continue
@@ -408,16 +419,30 @@ func (s *Store) QueryWithInfo(name string, query Query) (QueryResult, error) {
 		if query.MinScore != nil && score < *query.MinScore {
 			continue
 		}
-		matches = append(matches, Match{ID: point.ID, ExternalID: point.ExternalID, Score: score, Metadata: cloneMap(point.Metadata)})
+		candidates = append(candidates, candidate{
+			match: Match{ID: point.ID, ExternalID: point.ExternalID, Score: score},
+			meta:  point.Metadata,
+		})
 	}
-	sort.Slice(matches, func(i, j int) bool {
-		if matches[i].Score != matches[j].Score {
-			return matches[i].Score > matches[j].Score
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].match.Score != candidates[j].match.Score {
+			return candidates[i].match.Score > candidates[j].match.Score
 		}
-		return matches[i].ID < matches[j].ID
+		return candidates[i].match.ID < candidates[j].match.ID
 	})
-	if len(matches) > query.TopK {
-		matches = matches[:query.TopK]
+	if len(candidates) > query.TopK {
+		candidates = candidates[:query.TopK]
+	}
+	matches := make([]Match, 0, len(candidates))
+	for _, cand := range candidates {
+		matches = append(matches, cand.match)
+	}
+	// Clone the surviving metadata before the slice escapes, while the read
+	// lock is still held. Done after the partial-result fault below would be
+	// lazier still, but that truncation is chaos-conditional and the clone
+	// must not depend on whether a fault fired.
+	for i := range matches {
+		matches[i].Metadata = cloneMap(candidates[i].meta)
 	}
 	partial := false
 	policy := commonchaos.InheritGlobal(commonchaos.Policy{Seed: c.chaosSeed, Rate: c.chaosRate}, s.globalSeed, s.globalRate)
