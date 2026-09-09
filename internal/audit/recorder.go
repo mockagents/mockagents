@@ -3,6 +3,8 @@ package audit
 import (
 	"context"
 	"net/http"
+
+	"github.com/mockagents/mockagents/internal/clientip"
 )
 
 // Recorder is a thin convenience layer over Store. It owns the
@@ -25,9 +27,12 @@ func NewRecorder(store Store, principalFn func(*http.Request) Actor) *Recorder {
 	return &Recorder{Store: store, PrincipalFrom: principalFn}
 }
 
-// Record appends an event. Errors are swallowed intentionally —
-// audit must never block the critical path. Operators see append
-// failures via the server log when they occur.
+// Record appends an event synchronously. Errors are swallowed intentionally
+// — audit must never block the critical path. Control-plane mutations
+// (agent/key/tenant writes) use this path: they are rare and the caller
+// expects the event to be queryable immediately. High-volume events that an
+// unauthenticated client can trigger (auth denials) go through AsyncWriter
+// instead — see EventFromHTTP.
 func (r *Recorder) Record(ctx context.Context, kind EventKind, actor Actor, target, details string) {
 	if r == nil || r.Store == nil {
 		return
@@ -42,31 +47,30 @@ func (r *Recorder) Record(ctx context.Context, kind EventKind, actor Actor, targ
 
 // RecordHTTP is the variant handlers call. It extracts the actor
 // from the request via PrincipalFrom (falling back to "anonymous" on
-// a nil fn) and stamps the remote IP automatically.
+// a nil fn) and stamps the client IP automatically.
 func (r *Recorder) RecordHTTP(req *http.Request, kind EventKind, target, details string) {
 	if r == nil || r.Store == nil {
 		return
 	}
+	e := r.EventFromHTTP(req, kind, target, details)
+	r.Record(req.Context(), kind, e.Actor, target, details)
+}
+
+// EventFromHTTP builds the event RecordHTTP would append, without appending
+// it, so a caller can hand it to an AsyncWriter. Safe on a nil Recorder
+// (the actor is then "anonymous" with the client IP).
+func (r *Recorder) EventFromHTTP(req *http.Request, kind EventKind, target, details string) *Event {
 	var actor Actor
-	if r.PrincipalFrom != nil {
+	if r != nil && r.PrincipalFrom != nil {
 		actor = r.PrincipalFrom(req)
 	}
 	if actor.Name == "" {
 		actor.Name = "anonymous"
 	}
 	if actor.RemoteIP == "" {
-		actor.RemoteIP = clientIP(req)
+		// Trusted-proxy aware (audit M-15): a client cannot choose its own
+		// attribution by sending X-Forwarded-For.
+		actor.RemoteIP = clientip.FromRequest(req)
 	}
-	r.Record(req.Context(), kind, actor, target, details)
-}
-
-// clientIP extracts a best-effort remote IP. We prefer the Go stdlib
-// RemoteAddr but fall back to X-Forwarded-For when present (common
-// behind Kubernetes ingresses). Intentionally does not strip the port
-// — the raw value is more informative in an audit context.
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		return xff
-	}
-	return r.RemoteAddr
+	return &Event{Kind: kind, Actor: actor, Target: target, Details: details}
 }

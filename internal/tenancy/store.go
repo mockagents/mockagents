@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/mockagents/mockagents/internal/quota"
@@ -748,6 +749,11 @@ func (s *SQLiteStore) Resolve(ctx context.Context, plaintext string) (*Principal
 	if cached := s.cache.Get(plaintext); cached != nil {
 		return cached, nil
 	}
+	// Negative hit (audit M-09): this exact plaintext failed within the last
+	// negativeTTL, so answer without a query or a bcrypt compare.
+	if s.cache.IsNegative(plaintext) {
+		return nil, ErrInvalidKey
+	}
 
 	prefix := plaintext[:apiKeyPrefixLen]
 
@@ -785,12 +791,15 @@ func (s *SQLiteStore) Resolve(ctx context.Context, plaintext string) (*Principal
 	// wrong-secret path. (Prefixes are 32 random bits, so collisions are
 	// astronomically rare and len(candidates) is 0 or 1 in practice.)
 	if len(candidates) == 0 {
+		bcryptCompares.Add(1)
 		_ = bcrypt.CompareHashAndPassword(timingDummyHash, []byte(plaintext))
+		s.cache.SetNegative(plaintext)
 		return nil, ErrInvalidKey
 	}
 
 	now := time.Now().UTC()
 	for _, c := range candidates {
+		bcryptCompares.Add(1)
 		if bcrypt.CompareHashAndPassword([]byte(c.hash), []byte(plaintext)) == nil {
 			// Coarsen the last_used write (PERF-03): only bump when it is stale
 			// by more than lastUsedResolution. Under the auth cache, a miss
@@ -811,6 +820,7 @@ func (s *SQLiteStore) Resolve(ctx context.Context, plaintext string) (*Principal
 			return principal, nil
 		}
 	}
+	s.cache.SetNegative(plaintext)
 	return nil, ErrInvalidKey
 }
 
@@ -1003,3 +1013,8 @@ func (s *SQLiteStore) CreateAPIKeyWithPlaintext(ctx context.Context, tenantID, n
 	}
 	return &key, nil
 }
+
+// bcryptCompares counts every bcrypt compare Resolve performs (both stores).
+// It exists so tests can assert that the negative cache and the failure
+// limiter really do keep bcrypt off the path for repeated bad keys.
+var bcryptCompares atomic.Int64

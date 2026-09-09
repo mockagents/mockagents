@@ -39,6 +39,11 @@ type authCache struct {
 	entries map[string]authCacheEntry
 	ttl     time.Duration
 	maxSize int
+	// negatives remembers plaintexts that recently FAILED to resolve, keyed
+	// the same way, so a repeated wrong key costs a map lookup instead of a
+	// bcrypt compare (readiness audit M-09). Bounded by maxSize and by a
+	// short TTL; cleared by Invalidate like everything else.
+	negatives map[string]time.Time
 }
 
 type authCacheEntry struct {
@@ -57,9 +62,10 @@ func newAuthCache(ttl time.Duration, maxSize int) *authCache {
 		maxSize = 1024
 	}
 	return &authCache{
-		entries: make(map[string]authCacheEntry, maxSize),
-		ttl:     ttl,
-		maxSize: maxSize,
+		entries:   make(map[string]authCacheEntry, maxSize),
+		negatives: make(map[string]time.Time),
+		ttl:       ttl,
+		maxSize:   maxSize,
 	}
 }
 
@@ -152,6 +158,7 @@ func (c *authCache) Invalidate() {
 	// Rebuild the map rather than iterating+deleting. Cheaper when
 	// the cache is close to full and GC-friendly.
 	c.entries = make(map[string]authCacheEntry, c.maxSize)
+	c.negatives = make(map[string]time.Time)
 }
 
 // Len returns the current number of entries. Used by tests and
@@ -164,4 +171,60 @@ func (c *authCache) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.entries)
+}
+
+// negativeTTL bounds how long a failed plaintext is remembered. Short on
+// purpose: it only has to outlast a burst of retries of the same wrong key.
+const negativeTTL = 30 * time.Second
+
+// IsNegative reports whether plaintext recently failed to resolve.
+func (c *authCache) IsNegative(plaintext string) bool {
+	if c == nil || plaintext == "" {
+		return false
+	}
+	k := c.hashKey(plaintext)
+	c.mu.RLock()
+	exp, ok := c.negatives[k]
+	c.mu.RUnlock()
+	return ok && time.Now().Before(exp)
+}
+
+// SetNegative remembers that plaintext failed to resolve. Bounded by the
+// cache's maxSize: at capacity an expired entry is dropped first, else a
+// random one.
+func (c *authCache) SetNegative(plaintext string) {
+	if c == nil || plaintext == "" {
+		return
+	}
+	k := c.hashKey(plaintext)
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.negatives[k]; !exists && len(c.negatives) >= c.maxSize {
+		evicted := false
+		for key, exp := range c.negatives {
+			if now.After(exp) {
+				delete(c.negatives, key)
+				evicted = true
+				break
+			}
+		}
+		if !evicted {
+			for key := range c.negatives {
+				delete(c.negatives, key)
+				break
+			}
+		}
+	}
+	c.negatives[k] = now.Add(negativeTTL)
+}
+
+// NegativeLen returns the number of remembered failures (tests/metrics).
+func (c *authCache) NegativeLen() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.negatives)
 }

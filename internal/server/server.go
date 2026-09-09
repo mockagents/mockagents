@@ -70,6 +70,9 @@ type Config struct {
 	// control-plane write produces an audit event and the
 	// /api/v1/audit read endpoint is mounted.
 	AuditStore audit.Store
+	// AuditMaxRows bounds the audit table: a background pruner keeps only the
+	// newest AuditMaxRows rows. 0 (default) means unlimited (audit M-08).
+	AuditMaxRows int
 	// Prices is the per-model cost table used by /api/v1/logs and
 	// /api/v1/costs. Nil disables cost annotation (fields are zero).
 	Prices *pricingpkg.Table
@@ -135,6 +138,8 @@ type Server struct {
 	logWorker      *LogWorker
 	logBroadcaster *LogBroadcaster
 	logPruner      *logPruner
+	auditWriter    *audit.AsyncWriter
+	auditPruner    *logPruner
 	logger         *slog.Logger
 	config         Config
 	listener       net.Listener
@@ -150,13 +155,23 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 	// The hook is a package-level variable on purpose: it lets the
 	// tenancy middleware stay oblivious of the audit package (no
 	// import cycle) while keeping existing signatures untouched.
+	//
+	// Denials go through a bounded async writer (audit M-08): they are the
+	// one audit event an unauthenticated client can generate at will, and a
+	// synchronous SQLite INSERT per 401 let a credential-stuffing burst
+	// serialize on the store's write lock from the request goroutine. The
+	// hook contract in tenancy says it must not block; now it doesn't.
+	auditWriter := audit.NewAsyncWriter(cfg.AuditStore, audit.DefaultAsyncQueueSize, logger)
 	tenancy.SetDenialHook(func(r *http.Request, status int, reason string) {
-		recorder.RecordHTTP(r, audit.EventAuthDenied,
+		if auditWriter == nil {
+			return
+		}
+		auditWriter.Submit(recorder.EventFromHTTP(r, audit.EventAuthDenied,
 			r.Method+" "+r.URL.Path,
 			audit.MarshalDetails(map[string]any{
 				"status_code": status,
 				"reason":      reason,
-			}))
+			})))
 	})
 
 	handlers := &Handlers{
@@ -202,8 +217,18 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 		// Retention pruner (SEC-05): keep only the newest LogMaxRows rows. Only
 		// started when a bound is configured; 0 means unlimited.
 		if cfg.LogMaxRows > 0 {
-			s.logPruner = newLogPruner(cfg.LogStore, cfg.LogMaxRows, DefaultLogPruneInterval, logger)
+			s.logPruner = newLogPruner("interaction-log", cfg.LogStore, cfg.LogMaxRows, DefaultLogPruneInterval, logger)
 			s.logPruner.start()
+		}
+	}
+	// Audit retention (audit M-08): every auth denial is a row, so without a
+	// bound anonymous traffic could fill the disk. 0 keeps the historical
+	// unbounded behaviour.
+	s.auditWriter = auditWriter
+	if cfg.AuditMaxRows > 0 {
+		if ps, ok := cfg.AuditStore.(pruneStore); ok {
+			s.auditPruner = newLogPruner("audit-log", ps, cfg.AuditMaxRows, DefaultLogPruneInterval, logger)
+			s.auditPruner.start()
 		}
 	}
 
@@ -676,6 +701,9 @@ func (s *Server) Shutdown() error {
 	if s.logPruner != nil {
 		s.logPruner.Stop()
 	}
+	if s.auditPruner != nil {
+		s.auditPruner.Stop()
+	}
 
 	err := s.httpServer.Shutdown(ctx)
 	// Drain the async log worker after the HTTP server has stopped
@@ -691,6 +719,14 @@ func (s *Server) Shutdown() error {
 			"dropped", m.Dropped,
 			"failed", m.Failed,
 		)
+	}
+	// Drain the audit denial writer last, for the same reason: no request can
+	// enqueue once the HTTP server has stopped.
+	if s.auditWriter != nil {
+		s.auditWriter.Stop(DefaultLogDrainTimeout)
+		if d := s.auditWriter.Dropped(); d > 0 {
+			s.logger.Warn("audit denial writer dropped events", "dropped", d)
+		}
 	}
 	return err
 }
