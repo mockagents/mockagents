@@ -65,7 +65,7 @@ func TestOrderLookupHappyPath(t *testing.T) {
 | `Client` / `NewClient`                        | `net/http` client for `/v1/chat/completions`, `/v1/messages`, and the management API.           |
 | `Chat` / `Message`                            | Typed requests returning `*ChatResponse`.                                                       |
 | `Scenario` / `RunScenario`                    | Declarative multi-turn conversation runner with automatic session scoping.                      |
-| `Expect` / `ExpectScenario`                   | `testing.TB`-integrated fluent matchers: `ToHaveContentContaining`, `ToHaveFinishReason`, `ToHaveStatusCode`, `ToHaveLatencyLessThanMs`, `ToHaveToolCallCount`, `ToHaveToolCall`. |
+| `Expect` / `ExpectScenario`                   | `testing.TB`-integrated fluent matchers: `ToHaveContentContaining`, `ToHaveFinishReason`, `ToHaveStatusCode`, `ToHaveLatencyLessThanMs`, `ToHaveToolCallCount`, `ToHaveToolCall`, `ToHaveToolCallSequence`. Tool-call matchers read the whole trajectory (every turn), outcome matchers read the last response. |
 | `FindFreePort` / `FindBinary`                 | Helpers exposed for advanced use cases and custom test harnesses.                               |
 
 ## Known limitations

@@ -64,6 +64,26 @@ func (r *ScenarioResult) Last() *ChatResponse {
 	return r.Responses[len(r.Responses)-1]
 }
 
+// ToolCalls returns every tool call the scenario produced, across all turns,
+// in invocation order.
+//
+// Trajectory assertions read this aggregate, matching the Python and
+// TypeScript SDKs and the `tool_call_sequence` / `tool_call_count` assertions
+// of `kind: TestSuite` YAML. Reading only the final response (what the Go
+// expectations used to do) silently ignored every tool call but the last
+// turn's, so the same check passed in Go and failed in the other two SDKs
+// (audit M-38).
+func (r *ScenarioResult) ToolCalls() []ToolCall {
+	var out []ToolCall
+	for _, resp := range r.Responses {
+		if resp == nil {
+			continue
+		}
+		out = append(out, resp.ToolCalls...)
+	}
+	return out
+}
+
 // LastContent is a convenience for pulling content off the final response.
 func (r *ScenarioResult) LastContent() string {
 	last := r.Last()

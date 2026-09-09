@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 
 import { login } from "@/lib/auth";
+import { safeRedirect } from "@/lib/redirect";
 
 type PageProps = {
   searchParams: Promise<{ error?: string; next?: string; burned?: string }>;
@@ -17,15 +18,14 @@ export default async function LoginPage({ searchParams }: PageProps) {
   async function loginAction(formData: FormData) {
     "use server";
     const result = await login(formData);
+    // Sanitize once, and use the sanitized value on both paths so a hostile
+    // `next` is never echoed back into the login URL either (GUI-08, M-38).
+    const dest = safeRedirect(next);
     if (!result.ok) {
       const params = new URLSearchParams({ error: result.error ?? "unknown" });
-      if (next) params.set("next", next);
+      if (dest !== "/") params.set("next", dest);
       redirect(`/login?${params.toString()}`);
     }
-    // Only allow a local path as the redirect target. `startsWith("/")` alone
-    // would accept a protocol-relative `//evil.com` (an off-origin absolute
-    // URL), so reject a leading `//` too (GUI-08).
-    const dest = next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
     redirect(dest);
   }
 

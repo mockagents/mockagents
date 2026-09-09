@@ -287,6 +287,15 @@ jobs:
         working-directory: gui
         run: npm ci
 
+      # The GUI is the one component that holds a raw admin key, so a known-
+      # vulnerable dependency in what actually ships is a release blocker
+      # (audit H-12). Scoped to production dependencies: the test toolchain
+      # (vitest 2.x and its vite/esbuild chain) still carries advisories whose
+      # only fix is a major upgrade, and it never runs in a deployment.
+      - name: Audit production dependencies
+        working-directory: gui
+        run: npm audit --omit=dev --audit-level=high
+
       - name: Typecheck
         working-directory: gui
         run: npm run typecheck
