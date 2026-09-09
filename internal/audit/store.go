@@ -28,6 +28,10 @@ CREATE TABLE IF NOT EXISTS audit_events (
 CREATE INDEX IF NOT EXISTS idx_audit_kind      ON audit_events(kind);
 CREATE INDEX IF NOT EXISTS idx_audit_actor     ON audit_events(actor_name);
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_events(timestamp);
+-- The multi-tenant read path always filters on actor_tenant and orders by id
+-- DESC; without this index every dashboard load walked the whole table
+-- (audit M-14).
+CREATE INDEX IF NOT EXISTS idx_audit_tenant_id ON audit_events(actor_tenant, id DESC);
 `
 
 // Store is the append-only audit persistence layer. All methods are
@@ -209,8 +213,8 @@ func (s *SQLiteStore) List(ctx context.Context, q Query) ([]*Event, error) {
 // by taking the Scan closure directly.
 func scanEvent(scan func(dest ...any) error) (*Event, error) {
 	var (
-		e      Event
-		tsStr  string
+		e     Event
+		tsStr string
 	)
 	err := scan(
 		&e.ID,
