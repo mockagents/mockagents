@@ -63,6 +63,12 @@ type RealtimeHandler struct {
 	// upgrades, so a page on any origin could otherwise open the socket as an
 	// SSO-logged-in operator's tenant and spend its quota (audit H-04).
 	TenantForConnection func(r *http.Request) string
+	// conns tracks open sockets so the server can close them on shutdown:
+	// hijacked connections are invisible to http.Server.Shutdown, so without
+	// this a single connected client held every rollout for the full grace
+	// period (audit M-34).
+	connsMu sync.Mutex
+	conns   map[*websocket.Conn]struct{}
 	// minted retains the session config supplied at ephemeral-key mint time
 	// (POST /v1/realtime/client_secrets), keyed by the ek_ value, so a connect
 	// presenting that key comes up with the configuration the client paid for
@@ -390,6 +396,8 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 		return // Accept already wrote the HTTP error
 	}
 	defer c.CloseNow()
+	h.track(c)
+	defer h.untrack(c)
 	c.SetReadLimit(realtimeReadLimit)
 
 	ctx := r.Context()
@@ -573,4 +581,42 @@ func originPatterns(allowed []string) []string {
 		return nil
 	}
 	return patterns
+}
+
+func (h *RealtimeHandler) track(c *websocket.Conn) {
+	h.connsMu.Lock()
+	defer h.connsMu.Unlock()
+	if h.conns == nil {
+		h.conns = make(map[*websocket.Conn]struct{})
+	}
+	h.conns[c] = struct{}{}
+}
+
+func (h *RealtimeHandler) untrack(c *websocket.Conn) {
+	h.connsMu.Lock()
+	defer h.connsMu.Unlock()
+	delete(h.conns, c)
+}
+
+// OpenConnections reports how many sockets are currently connected.
+func (h *RealtimeHandler) OpenConnections() int {
+	h.connsMu.Lock()
+	defer h.connsMu.Unlock()
+	return len(h.conns)
+}
+
+// CloseAll sends a going-away close frame to every open socket and returns
+// how many were closed. Handlers observe the closed socket as a read error
+// and return, which is what lets http.Server.Shutdown complete.
+func (h *RealtimeHandler) CloseAll() int {
+	h.connsMu.Lock()
+	conns := make([]*websocket.Conn, 0, len(h.conns))
+	for c := range h.conns {
+		conns = append(conns, c)
+	}
+	h.connsMu.Unlock()
+	for _, c := range conns {
+		_ = c.Close(websocket.StatusGoingAway, "server shutting down")
+	}
+	return len(conns)
 }

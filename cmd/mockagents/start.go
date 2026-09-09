@@ -293,6 +293,20 @@ func runStart(cmd *cobra.Command, args []string) error {
 			logger.Warn("ignoring invalid MOCKAGENTS_AUTH_FAILURES_PER_MINUTE", "value", v)
 		}
 	}
+	// Shutdown grace (audit M-34): MOCKAGENTS_SHUTDOWN_TIMEOUT bounds how long
+	// in-flight requests may run after SIGTERM (default 20s, inside Kubernetes'
+	// 30s grace); MOCKAGENTS_SHUTDOWN_DRAIN_DELAY keeps serving with readiness
+	// reporting "draining" for that long before the listeners close.
+	if d, ok, err := envDuration("MOCKAGENTS_SHUTDOWN_TIMEOUT"); err != nil {
+		return err
+	} else if ok {
+		cfg.ShutdownTimeout = d
+	}
+	if d, ok, err := envDuration("MOCKAGENTS_SHUTDOWN_DRAIN_DELAY"); err != nil {
+		return err
+	} else if ok {
+		cfg.ShutdownDrainDelay = d
+	}
 	if v := strings.TrimSpace(os.Getenv("MOCKAGENTS_TRUSTED_PROXIES")); v != "" {
 		if err := clientip.SetTrustedProxies(strings.Split(v, ",")); err != nil {
 			return fmt.Errorf("MOCKAGENTS_TRUSTED_PROXIES: %w", err)
@@ -417,13 +431,26 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	printStartBanner(os.Stderr, host, port)
 
-	sigCh := make(chan os.Signal, 1)
+	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	select {
 	case sig := <-sigCh:
 		logger.Info("received signal, shutting down", "signal", sig)
+		// A second signal during the grace period is an operator saying "now":
+		// skip the drain and exit (audit M-34).
+		go func() {
+			<-sigCh
+			logger.Warn("second signal received; exiting without draining")
+			os.Exit(1)
+		}()
 		if err := srv.Shutdown(); err != nil {
+			if errors.Is(err, server.ErrShutdownDeadline) {
+				// Long streams were cancelled at the deadline; the process
+				// still stopped cleanly, so this is not an exit-2 failure.
+				logger.Warn("shutdown reached its deadline; in-flight streams were cancelled")
+				return nil
+			}
 			logger.Error("shutdown error", "error", err)
 			return err
 		}
