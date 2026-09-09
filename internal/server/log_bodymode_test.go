@@ -131,7 +131,7 @@ func TestLogPruner_TrimsToMaxRows(t *testing.T) {
 		}
 	}
 
-	p := newLogPruner(store, 4, time.Hour, nil)
+	p := newLogPruner("interaction-log", store, 4, time.Hour, nil)
 	p.start()
 	p.Stop() // waits for the goroutine; the boot-time prune has completed
 

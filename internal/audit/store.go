@@ -253,3 +253,23 @@ func MarshalDetails(v any) string {
 	}
 	return string(b)
 }
+
+// PruneToMaxRows deletes every event older than the newest maxRows and
+// returns how many were removed. maxRows <= 0 is a no-op. Without retention
+// the audit table grew without bound, and since every auth denial is a row,
+// anonymous traffic could fill the operator's disk (readiness audit M-08).
+func (s *SQLiteStore) PruneToMaxRows(ctx context.Context, maxRows int) (int64, error) {
+	if maxRows <= 0 {
+		return 0, nil
+	}
+	// The subquery yields the id of the (maxRows+1)-th newest row, or NULL
+	// when the table is not yet over the bound — and `id <= NULL` matches
+	// nothing, so an under-sized table is left alone.
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM audit_events
+		 WHERE id <= (SELECT id FROM audit_events ORDER BY id DESC LIMIT 1 OFFSET ?)`, maxRows)
+	if err != nil {
+		return 0, fmt.Errorf("prune audit events: %w", err)
+	}
+	return res.RowsAffected()
+}

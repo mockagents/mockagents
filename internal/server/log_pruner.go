@@ -5,20 +5,26 @@ import (
 	"log/slog"
 	"sync"
 	"time"
-
-	"github.com/mockagents/mockagents/internal/storage"
 )
 
-// DefaultLogPruneInterval is how often the retention pruner runs when
-// Config.LogMaxRows is set.
+// DefaultLogPruneInterval is how often a retention pruner runs when a
+// row bound (Config.LogMaxRows / Config.AuditMaxRows) is set.
 const DefaultLogPruneInterval = 1 * time.Minute
 
-// logPruner enforces the interaction-log retention bound (Config.LogMaxRows) by
-// periodically deleting the oldest rows beyond the newest N. It runs on its own
-// goroutine with an explicit Stop so the server lifecycle controls it cleanly,
-// independent of the async write worker (SEC-05).
+// pruneStore is the one method a retention pruner needs. Both the interaction
+// log and the audit log stores implement it.
+type pruneStore interface {
+	PruneToMaxRows(ctx context.Context, maxRows int) (int64, error)
+}
+
+// logPruner enforces a table's retention bound by periodically deleting the
+// oldest rows beyond the newest N. It runs on its own goroutine with an
+// explicit Stop so the server lifecycle controls it cleanly, independent of
+// any async write worker (SEC-05). name labels log lines ("interaction-log",
+// "audit-log").
 type logPruner struct {
-	store    *storage.SQLiteStore
+	name     string
+	store    pruneStore
 	maxRows  int
 	interval time.Duration
 	logger   *slog.Logger
@@ -27,7 +33,7 @@ type logPruner struct {
 	stopOnce sync.Once
 }
 
-func newLogPruner(store *storage.SQLiteStore, maxRows int, interval time.Duration, logger *slog.Logger) *logPruner {
+func newLogPruner(name string, store pruneStore, maxRows int, interval time.Duration, logger *slog.Logger) *logPruner {
 	if interval <= 0 {
 		interval = DefaultLogPruneInterval
 	}
@@ -35,6 +41,7 @@ func newLogPruner(store *storage.SQLiteStore, maxRows int, interval time.Duratio
 		logger = slog.Default()
 	}
 	return &logPruner{
+		name:     name,
 		store:    store,
 		maxRows:  maxRows,
 		interval: interval,
@@ -68,11 +75,11 @@ func (p *logPruner) pruneOnce() {
 	defer cancel()
 	n, err := p.store.PruneToMaxRows(ctx, p.maxRows)
 	if err != nil {
-		p.logger.Warn("interaction-log retention prune failed", "error", err, "max_rows", p.maxRows)
+		p.logger.Warn("retention prune failed", "table", p.name, "error", err, "max_rows", p.maxRows)
 		return
 	}
 	if n > 0 {
-		p.logger.Debug("pruned old interaction logs", "deleted", n, "max_rows", p.maxRows)
+		p.logger.Debug("pruned old rows", "table", p.name, "deleted", n, "max_rows", p.maxRows)
 	}
 }
 

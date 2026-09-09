@@ -546,6 +546,9 @@ func (s *PostgresStore) Resolve(ctx context.Context, plaintext string) (*Princip
 	if cached := s.cache.Get(plaintext); cached != nil {
 		return cached, nil
 	}
+	if s.cache.IsNegative(plaintext) {
+		return nil, ErrInvalidKey
+	}
 
 	prefix := plaintext[:apiKeyPrefixLen]
 	type candidate struct {
@@ -576,12 +579,15 @@ func (s *PostgresStore) Resolve(ctx context.Context, plaintext string) (*Princip
 	// Timing-oracle defense (X-TN-002): equalize the prefix-miss latency with
 	// one dummy bcrypt compare.
 	if len(candidates) == 0 {
+		bcryptCompares.Add(1)
 		_ = bcrypt.CompareHashAndPassword(timingDummyHash, []byte(plaintext))
+		s.cache.SetNegative(plaintext)
 		return nil, ErrInvalidKey
 	}
 
 	now := time.Now().UTC()
 	for _, c := range candidates {
+		bcryptCompares.Add(1)
 		if bcrypt.CompareHashAndPassword([]byte(c.hash), []byte(plaintext)) == nil {
 			if shouldBumpLastUsed(c.lastUsed, now) {
 				_, _ = s.db.ExecContext(ctx,
@@ -593,6 +599,7 @@ func (s *PostgresStore) Resolve(ctx context.Context, plaintext string) (*Princip
 			return principal, nil
 		}
 	}
+	s.cache.SetNegative(plaintext)
 	return nil, ErrInvalidKey
 }
 

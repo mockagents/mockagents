@@ -17,6 +17,7 @@ import (
 	"context"
 
 	"github.com/mockagents/mockagents/internal/audit"
+	"github.com/mockagents/mockagents/internal/clientip"
 	"github.com/mockagents/mockagents/internal/config"
 	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/engine/state"
@@ -270,6 +271,33 @@ func runStart(cmd *cobra.Command, args []string) error {
 		defer auditStore.Close()
 		cfg.AuditStore = auditStore
 		logger.Info("audit logging enabled", "db", auditDB)
+	}
+	// Audit retention + auth-edge hardening (readiness audit M-08, M-09, M-15):
+	//   MOCKAGENTS_AUDIT_MAX_ROWS           = <n>      keep only the newest n audit rows (0 = unlimited)
+	//   MOCKAGENTS_AUTH_FAILURES_PER_MINUTE = <n>      per-IP failed-auth budget before 429 (0 = off)
+	//   MOCKAGENTS_TRUSTED_PROXIES          = cidr,... peers whose X-Forwarded-For is believed
+	if v := strings.TrimSpace(os.Getenv("MOCKAGENTS_AUDIT_MAX_ROWS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.AuditMaxRows = n
+		} else {
+			logger.Warn("ignoring invalid MOCKAGENTS_AUDIT_MAX_ROWS", "value", v)
+		}
+	}
+	if cfg.AuditMaxRows > 0 {
+		logger.Info("audit-log retention enabled", "max_rows", cfg.AuditMaxRows)
+	}
+	if v := strings.TrimSpace(os.Getenv("MOCKAGENTS_AUTH_FAILURES_PER_MINUTE")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			tenancy.SetAuthFailureLimit(n)
+		} else {
+			logger.Warn("ignoring invalid MOCKAGENTS_AUTH_FAILURES_PER_MINUTE", "value", v)
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("MOCKAGENTS_TRUSTED_PROXIES")); v != "" {
+		if err := clientip.SetTrustedProxies(strings.Split(v, ",")); err != nil {
+			return fmt.Errorf("MOCKAGENTS_TRUSTED_PROXIES: %w", err)
+		}
+		logger.Info("trusting X-Forwarded-For from proxies", "cidrs", clientip.TrustedProxies())
 	}
 
 	// Cost estimation: always on with the built-in default price

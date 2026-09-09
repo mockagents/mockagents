@@ -313,7 +313,9 @@ func TestRecorderUsesPrincipalFn(t *testing.T) {
 	if e.Actor.Name != "jane" || e.Actor.TenantID != "ten_x" || e.Actor.Role != "admin" {
 		t.Errorf("actor mismatch: %+v", e.Actor)
 	}
-	if e.Actor.RemoteIP != "10.0.0.7:443" {
+	// The client IP is the direct peer without its port (clientip.FromRequest),
+	// so the audit row and the auth failure limiter attribute the same address.
+	if e.Actor.RemoteIP != "10.0.0.7" {
 		t.Errorf("remote ip not stamped: %q", e.Actor.RemoteIP)
 	}
 	if e.Target != "ten_new" || e.Details != `{"name":"acme"}` {

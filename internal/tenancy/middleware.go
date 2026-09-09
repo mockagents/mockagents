@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
+
+	"github.com/mockagents/mockagents/internal/clientip"
 )
 
 // contextKey is unexported so other packages can't accidentally collide
@@ -172,6 +175,16 @@ func AuthMiddleware(store Store, skip func(*http.Request) bool) func(http.Handle
 				next.ServeHTTP(w, r)
 				return
 			}
+			// Per-source failure budget (audit M-09): a client that has burned
+			// through its failed attempts is answered before the store — and
+			// before bcrypt — is touched. The IP is trusted-proxy aware.
+			ip := clientip.FromRequest(r)
+			if ok, retry := authFailureAllowed(ip); !ok {
+				fireDenial(r, http.StatusTooManyRequests, "too many failed authentications")
+				w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
+				writeAuthError(w, http.StatusTooManyRequests, "too many failed authentication attempts from this address; retry later")
+				return
+			}
 			// Credential precedence: an API key (programmatic) first, then an SSO
 			// session cookie (browser). Either resolves to the same Principal so
 			// every downstream authz check is unchanged (REF-08 slice D).
@@ -182,6 +195,7 @@ func AuthMiddleware(store Store, skip func(*http.Request) bool) func(http.Handle
 					// 500 — fail closed. ErrNotFound is matched too for label
 					// accuracy (F-MW-002).
 					if errors.Is(err, ErrInvalidKey) || errors.Is(err, ErrInvalidSession) || errors.Is(err, ErrNotFound) {
+						recordAuthFailure(ip)
 						fireDenial(r, http.StatusUnauthorized, "invalid credential")
 						writeAuthError(w, http.StatusUnauthorized, "invalid api key or session token")
 						return
@@ -197,6 +211,7 @@ func AuthMiddleware(store Store, skip func(*http.Request) bool) func(http.Handle
 				principal, err := store.ResolveSession(r.Context(), token)
 				if err != nil {
 					if errors.Is(err, ErrInvalidSession) || errors.Is(err, ErrNotFound) {
+						recordAuthFailure(ip)
 						fireDenial(r, http.StatusUnauthorized, "invalid session")
 						writeAuthError(w, http.StatusUnauthorized, "invalid or expired session")
 						return
@@ -208,6 +223,7 @@ func AuthMiddleware(store Store, skip func(*http.Request) bool) func(http.Handle
 				next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), principal)))
 				return
 			}
+			recordAuthFailure(ip)
 			fireDenial(r, http.StatusUnauthorized, "missing credentials")
 			writeAuthError(w, http.StatusUnauthorized, "missing Authorization bearer token, X-Api-Key header, or session cookie")
 		})
