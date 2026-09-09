@@ -239,12 +239,7 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 			writeGeminiStrictError(w, se)
 			return
 		}
-		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "not found") {
-			status = http.StatusNotFound
-		} else if strings.Contains(err.Error(), "empty") {
-			status = http.StatusBadRequest
-		}
+		status := engineErrorStatus(err)
 		writeGeminiError(w, status, geminiStatusFor(status), err.Error())
 		return
 	}

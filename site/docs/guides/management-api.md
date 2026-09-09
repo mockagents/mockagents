@@ -76,6 +76,13 @@ curl -X POST http://localhost:8080/api/v1/agents/customer-support/reload
 { "status": "reloaded", "agent": "customer-support" }
 ```
 
+The file it re-reads is the one that agent was loaded from, not whichever
+document in the directory happens to share the name. If that file no longer
+defines this agent, because it was renamed or moved to another tenant, the
+reload fails with `409` instead of registering a different definition. Reload
+also takes the same lock as create, replace and delete, so it cannot interleave
+with them and bring back an agent a concurrent `DELETE` just removed.
+
 ## Create Agent
 
 ```

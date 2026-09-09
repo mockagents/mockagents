@@ -456,6 +456,13 @@ paths:
         Re-reads the named agent's definition file from disk and reloads it into
         the server. Emits an `agent.reloaded` audit event. Requires the `viewer`
         role in multi-tenant mode.
+
+
+        The file re-read is the one the agent was loaded from, so an unrelated
+        document elsewhere in the agents directory cannot be loaded in its
+        place. If that file no longer defines this agent — it was renamed, or
+        moved to another tenant — the request fails with `409` rather than
+        registering a different definition under the caller's authority.
       tags: [Agents]
       parameters:
         - name: name
@@ -471,12 +478,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReloadResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalServerError"
 

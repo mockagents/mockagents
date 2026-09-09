@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -358,12 +357,7 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 			writeResponsesStrictError(w, se)
 			return
 		}
-		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "not found") {
-			status = http.StatusNotFound
-		} else if strings.Contains(err.Error(), "empty") {
-			status = http.StatusBadRequest
-		}
+		status := engineErrorStatus(err)
 		writeError(w, status, "invalid_request_error", err.Error())
 		return
 	}

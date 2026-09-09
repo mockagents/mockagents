@@ -245,9 +245,15 @@ Pair with [`mockagents test`](testing-agents.md) assertions or your load tool
   automatically, but check you didn't set `enabled: false`; and remember
   `errors.rate` is a probability — use `rate: 1.0` or `fail_first` for
   deterministic tests.
-- **`fail_first` keeps failing / never resets** — the counter is per-agent and
-  resets only on server restart. For test isolation, restart the mock (or use
-  distinct agents) between suites.
+- **`fail_first` keeps failing / never resets** — the counter is per-agent.
+  It resets on a server restart, and also whenever the agent is re-registered:
+  a hot reload, or a create/replace through the write API, starts the count
+  over. For test isolation, reload the agent (or use distinct agents) between
+  suites.
+- **Two tenants share an agent name** — the fail-first count and the
+  rate-limit window are per (tenant, agent), so one tenant's traffic never
+  consumes another's allowance. In single-tenant mode there is one namespace
+  and nothing changes.
 - **Connection faults return 502 instead of resetting** — over HTTP/2 the
   server can't hijack the TCP connection; it falls back to a 502. Use
   HTTP/1.1 (the default for `http://` URLs) to exercise real transport faults.

@@ -141,8 +141,23 @@ func (s *MemoryStore) deleteIfSame(id string, session *Session) {
 }
 
 func (s *MemoryStore) GetOrCreate(id, agentName string) *Session {
+	// Fast path (audit M-20): every request called this, and taking the
+	// exclusive lock on a HIT serialised the whole fleet on one mutex even
+	// though a hit mutates nothing here — LRU order comes from the session's
+	// own lastAccess, updated under the session's lock, not from any
+	// bookkeeping in the map. A hit now only needs the read lock.
+	s.mu.RLock()
+	session, ok := s.sessions[id]
+	s.mu.RUnlock()
+	if ok && !session.IsExpired() {
+		return session
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Re-check under the write lock: between the two locks another goroutine
+	// may have created (or replaced) this session, and returning a second
+	// *Session for the same id would silently fork the conversation state.
 	if session, ok := s.sessions[id]; ok {
 		if session.IsExpired() {
 			delete(s.sessions, id)
@@ -151,7 +166,7 @@ func (s *MemoryStore) GetOrCreate(id, agentName string) *Session {
 		}
 	}
 	s.evictForSpaceLocked()
-	session := NewSession(id, agentName, s.ttl)
+	session = NewSession(id, agentName, s.ttl)
 	session.MaxHistory = s.maxHistory
 	// Key on the lookup id, not session.ID (F-ST-007): they are equal today
 	// since NewSession copies id verbatim, but keying on id keeps the map
