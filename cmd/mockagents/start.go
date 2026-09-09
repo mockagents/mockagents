@@ -620,6 +620,10 @@ func buildSSO(ctx context.Context, store tenancy.Store, logger *slog.Logger) (*s
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		RedirectURL:  redirect,
+		// Default-closed: an ID token must carry email_verified:true because
+		// the email domain decides tenant membership. The escape hatch is for
+		// issuers that never emit the claim (documented on the setting).
+		AllowUnverifiedEmail: envEnabled("MOCKAGENTS_OIDC_ALLOW_UNVERIFIED_EMAIL"),
 	})
 	if err != nil {
 		return nil, err

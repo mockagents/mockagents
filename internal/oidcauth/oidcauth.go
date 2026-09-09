@@ -6,6 +6,7 @@ package oidcauth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -41,12 +42,21 @@ type Settings struct {
 	ClientID     string
 	ClientSecret string
 	RedirectURL  string
+	// AllowUnverifiedEmail accepts an ID token whose email_verified claim is
+	// absent or false. Off by default: the callback maps the email's DOMAIN
+	// to a tenant, so an unverified address is a tenant-membership claim the
+	// issuer has not vouched for — on an IdP with self-service or social
+	// sign-up, anyone can pick "attacker@acme.com" (audit H-05). Turn this on
+	// only for an issuer that never emits the claim and whose directory is
+	// the sole source of accounts (some enterprise Entra ID tenants).
+	AllowUnverifiedEmail bool
 }
 
 // provider is the production Authenticator backed by a discovered OIDC provider.
 type provider struct {
-	oauth    oauth2.Config
-	verifier *oidc.IDTokenVerifier
+	oauth                oauth2.Config
+	verifier             *oidc.IDTokenVerifier
+	allowUnverifiedEmail bool
 }
 
 // New discovers the OIDC provider at Settings.Issuer and returns an
@@ -65,7 +75,8 @@ func New(ctx context.Context, s Settings) (Authenticator, error) {
 			Endpoint:     p.Endpoint(),
 			Scopes:       []string{oidc.ScopeOpenID, "email"},
 		},
-		verifier: p.Verifier(&oidc.Config{ClientID: s.ClientID}),
+		verifier:             p.Verifier(&oidc.Config{ClientID: s.ClientID}),
+		allowUnverifiedEmail: s.AllowUnverifiedEmail,
 	}, nil
 }
 
@@ -86,11 +97,45 @@ func (p *provider) Exchange(ctx context.Context, code, verifier string) (*Claims
 	if err != nil {
 		return nil, fmt.Errorf("oidc: id_token verify: %w", err)
 	}
-	var c struct {
-		Email string `json:"email"`
+	return claimsFrom(idToken.Claims, idToken.Subject, p.allowUnverifiedEmail)
+}
+
+// ErrEmailUnverified is returned when the ID token does not carry
+// `email_verified: true` and the Authenticator was not configured to accept
+// that. The signature, issuer and audience checks say nothing about whether
+// the issuer actually confirmed the address.
+var ErrEmailUnverified = errors.New("oidc: email is not verified by the issuer")
+
+// flexibleBool decodes the email_verified claim, which the spec defines as a
+// JSON boolean but some providers emit as the string "true"/"false".
+type flexibleBool bool
+
+func (b *flexibleBool) UnmarshalJSON(data []byte) error {
+	switch string(data) {
+	case "true", `"true"`:
+		*b = true
+	case "false", `"false"`, "null":
+		*b = false
+	default:
+		return fmt.Errorf("email_verified: unexpected value %s", data)
 	}
-	if err := idToken.Claims(&c); err != nil {
+	return nil
+}
+
+// claimsFrom extracts the identity claims through decode (idToken.Claims in
+// production) and enforces the email_verified gate. Split out so the gate is
+// testable without a live provider.
+func claimsFrom(decode func(any) error, subject string, allowUnverified bool) (*Claims, error) {
+	var c struct {
+		Email         string        `json:"email"`
+		EmailVerified *flexibleBool `json:"email_verified"`
+	}
+	if err := decode(&c); err != nil {
 		return nil, fmt.Errorf("oidc: parse claims: %w", err)
 	}
-	return &Claims{Email: c.Email, Subject: idToken.Subject}, nil
+	verified := c.EmailVerified != nil && bool(*c.EmailVerified)
+	if !verified && !allowUnverified {
+		return nil, fmt.Errorf("%w (email %q; set AllowUnverifiedEmail only for an issuer that never emits the claim)", ErrEmailUnverified, c.Email)
+	}
+	return &Claims{Email: c.Email, Subject: subject}, nil
 }

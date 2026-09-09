@@ -11,17 +11,28 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/mockagents/mockagents/internal/adapter"
 	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/storage"
+	"github.com/mockagents/mockagents/internal/tenancy"
 )
 
-// wireRealtime attaches quota enforcement and interaction logging to the
-// Realtime adapter's per-response seam.
+// wireRealtime attaches quota enforcement, interaction logging and the
+// origin policy to the Realtime adapter.
 func (s *Server) wireRealtime(rt *adapter.RealtimeHandler) {
+	// The socket honours the same origin allowlist as CORS (an explicit list
+	// locks the handshake down; the wildcard default stays permissive), and
+	// in every configuration a cookie-derived tenant principal is dropped on
+	// a cross-origin handshake (audit H-04).
+	rt.AllowedOrigins = s.config.CORSAllowedOrigins
+	allowed := s.config.CORSAllowedOrigins
+	rt.TenantForConnection = func(r *http.Request) string {
+		return realtimeTenantFor(r, allowed)
+	}
 	if enf := s.config.QuotaEnforcer; enf != nil {
 		rt.CheckQuota = func(tenantID string) error {
 			if tenantID == "" {
@@ -91,4 +102,50 @@ func RealtimeBrowserAuth(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// realtimeTenantFor returns the tenant a realtime socket should be scoped to.
+// A principal resolved from an API key (header or lifted subprotocol token)
+// is always honoured: a foreign page cannot attach one. A principal that can
+// only have come from the SSO session cookie is honoured only when the
+// handshake is same-origin or from an allow-listed origin, because browsers
+// send cookies on cross-site WebSocket upgrades and the mock accepts any
+// Origin by default (audit H-04). Requests without an Origin header are not
+// browsers and keep their principal.
+func realtimeTenantFor(r *http.Request, allowedOrigins []string) string {
+	tenant := engine.TenantIDFromContext(r.Context())
+	if tenant == "" {
+		return ""
+	}
+	if tenancy.ExtractAPIKey(r) != "" {
+		return tenant // key-derived principal
+	}
+	if _, err := r.Cookie(tenancy.SessionCookieName); err != nil {
+		return tenant // no cookie either: principal came from somewhere explicit
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" || originAllowedForSocket(origin, r.Host, allowedOrigins) {
+		return tenant
+	}
+	return ""
+}
+
+// originAllowedForSocket reports whether origin is the server's own origin
+// (host[:port] match, scheme-agnostic) or one of the allow-listed origins.
+// A "*" entry allows every origin, matching the CORS middleware's reading.
+func originAllowedForSocket(origin, host string, allowed []string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if strings.EqualFold(u.Host, host) {
+		return true
+	}
+	for _, a := range allowed {
+		a = strings.TrimSpace(a)
+		if a == "*" || strings.EqualFold(a, origin) {
+			return true
+		}
+	}
+	return false
 }
