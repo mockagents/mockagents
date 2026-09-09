@@ -14,6 +14,11 @@ type Expectation struct {
 	response *ChatResponse
 	latency  float64 // override for scenario-level latency
 	prefix   string  // message prefix, e.g. "scenario "
+	// toolCalls is what the trajectory assertions read. For a single response
+	// it is that response's calls; for a scenario it is the aggregate across
+	// every turn, which is what the Python and TypeScript SDKs (and the YAML
+	// TestSuite assertions) compare against.
+	toolCalls []ToolCall
 }
 
 // Expect returns an Expectation bound to a ChatResponse.
@@ -22,11 +27,17 @@ func Expect(t testing.TB, response *ChatResponse) *Expectation {
 	if response == nil {
 		t.Fatalf("mockagents: Expect called with nil response")
 	}
-	return &Expectation{t: t, response: response, latency: response.LatencyMs}
+	return &Expectation{
+		t:         t,
+		response:  response,
+		latency:   response.LatencyMs,
+		toolCalls: response.ToolCalls,
+	}
 }
 
-// ExpectScenario returns an Expectation bound to the last response of a
-// ScenarioResult, using the scenario's total latency for latency checks.
+// ExpectScenario returns an Expectation over a ScenarioResult: outcome checks
+// (content, finish reason, status) read the LAST response, while trajectory
+// checks (tool calls) read every turn. Latency is the scenario total.
 func ExpectScenario(t testing.TB, result *ScenarioResult) *Expectation {
 	t.Helper()
 	if result == nil {
@@ -37,10 +48,11 @@ func ExpectScenario(t testing.TB, result *ScenarioResult) *Expectation {
 		t.Fatalf("mockagents: scenario %q produced no responses", result.ScenarioName)
 	}
 	return &Expectation{
-		t:        t,
-		response: last,
-		latency:  result.TotalLatencyMs,
-		prefix:   fmt.Sprintf("scenario %q: ", result.ScenarioName),
+		t:         t,
+		response:  last,
+		latency:   result.TotalLatencyMs,
+		prefix:    fmt.Sprintf("scenario %q: ", result.ScenarioName),
+		toolCalls: result.ToolCalls(),
 	}
 }
 
@@ -85,22 +97,24 @@ func (e *Expectation) ToHaveLatencyLessThanMs(ms float64) *Expectation {
 	return e
 }
 
-// ToHaveToolCallCount asserts the number of tool calls in the response.
+// ToHaveToolCallCount asserts the total number of tool calls across the whole
+// trajectory. This is the `tool_call_count` assertion of `kind: TestSuite`
+// YAML, so a check written here transfers to a YAML suite unchanged.
 func (e *Expectation) ToHaveToolCallCount(count int) *Expectation {
 	e.t.Helper()
-	if len(e.response.ToolCalls) != count {
-		e.t.Errorf("%sexpected %d tool calls, got %d",
-			e.prefix, count, len(e.response.ToolCalls))
+	if len(e.toolCalls) != count {
+		e.t.Errorf("%sexpected %d tool calls, got %d %v",
+			e.prefix, count, len(e.toolCalls), toolCallNames(e.toolCalls))
 	}
 	return e
 }
 
-// ToHaveToolCall asserts the response contains a tool call with the given
-// name. When args is non-nil, every key in args must deep-equal the
+// ToHaveToolCall asserts a tool call with the given name happened anywhere in
+// the trajectory. When args is non-nil, every key in args must deep-equal the
 // matching key on the actual tool call.
 func (e *Expectation) ToHaveToolCall(name string, args map[string]any) *Expectation {
 	e.t.Helper()
-	for _, tc := range e.response.ToolCalls {
+	for _, tc := range e.toolCalls {
 		if tc.Name != name {
 			continue
 		}
@@ -109,7 +123,30 @@ func (e *Expectation) ToHaveToolCall(name string, args map[string]any) *Expectat
 		}
 	}
 	e.t.Errorf("%sexpected tool call %q with args %v, got %v",
-		e.prefix, name, args, toolCallSummary(e.response.ToolCalls))
+		e.prefix, name, args, toolCallSummary(e.toolCalls))
+	return e
+}
+
+// ToHaveToolCallSequence asserts the exact ordered sequence of tool-call names
+// across the whole trajectory, compared for FULL equality rather than as a
+// subsequence — an unexpected extra call fails it.
+//
+// This is the `tool_call_sequence` assertion of `kind: TestSuite` YAML and the
+// counterpart of the Python and TypeScript SDKs' matcher of the same name; the
+// Go SDK previously had no equivalent (audit M-38).
+func (e *Expectation) ToHaveToolCallSequence(names []string) *Expectation {
+	e.t.Helper()
+	got := toolCallNames(e.toolCalls)
+	if len(got) != len(names) {
+		e.t.Errorf("%sexpected tool call sequence %v, got %v", e.prefix, names, got)
+		return e
+	}
+	for i := range names {
+		if got[i] != names[i] {
+			e.t.Errorf("%sexpected tool call sequence %v, got %v", e.prefix, names, got)
+			return e
+		}
+	}
 	return e
 }
 
@@ -144,6 +181,16 @@ func argsMatch(actual, expected map[string]any) bool {
 		}
 	}
 	return true
+}
+
+// toolCallNames extracts the ordered names, for sequence comparison and for
+// failure messages that say what actually happened.
+func toolCallNames(calls []ToolCall) []string {
+	out := make([]string, 0, len(calls))
+	for _, c := range calls {
+		out = append(out, c.Name)
+	}
+	return out
 }
 
 func toolCallSummary(calls []ToolCall) []string {

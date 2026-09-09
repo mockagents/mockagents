@@ -258,7 +258,23 @@ export class MockAgentClient {
     body: unknown,
   ): AsyncGenerator<{ event: string; data: string }, void, void> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    // The deadline covers the wait for response HEADERS only. It used to span
+    // the whole stream, so any stream that ran longer than timeoutMs (30s by
+    // default) was aborted mid-flight — a paced or long-running mock stream
+    // would fail for no reason the caller could see (audit M-38). Once headers
+    // arrive the server is demonstrably alive, and how long it keeps streaming
+    // is the scenario's business.
+    let headerTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(
+      () => controller.abort(),
+      this.timeoutMs,
+    );
+    const clearHeaderTimer = () => {
+      if (headerTimer !== undefined) {
+        clearTimeout(headerTimer);
+        headerTimer = undefined;
+      }
+    };
+
     let resp: Response;
     try {
       resp = await this.fetchImpl(`${this.baseUrl}${path}`, {
@@ -268,17 +284,16 @@ export class MockAgentClient {
         signal: controller.signal,
       });
     } catch (err) {
-      clearTimeout(timer);
+      clearHeaderTimer();
       throw err;
     }
+    clearHeaderTimer();
 
     if (!resp.ok) {
-      clearTimeout(timer);
       const text = await resp.text().catch(() => "");
       throw new HTTPError(resp.status, text);
     }
     if (!resp.body) {
-      clearTimeout(timer);
       return;
     }
 
@@ -291,15 +306,18 @@ export class MockAgentClient {
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        // SSE frames are terminated by a blank line. Process every
-        // complete frame that the buffer currently holds.
-        let sep = buffer.indexOf("\n\n");
-        while (sep !== -1) {
-          const frame = buffer.slice(0, sep);
-          buffer = buffer.slice(sep + 2);
+        // SSE frames are terminated by a blank line, which is CRLFCRLF as
+        // often as LFLF — the spec allows either, and proxies rewrite one into
+        // the other. Splitting on "\n\n" alone meant a CRLF server produced ONE
+        // giant unterminated frame and the stream yielded nothing until it
+        // ended (audit M-38).
+        let sep = findFrameBoundary(buffer);
+        while (sep !== null) {
+          const frame = buffer.slice(0, sep.end);
+          buffer = buffer.slice(sep.end + sep.sepLen);
           const event = parseSSEFrame(frame);
           if (event !== null) yield event;
-          sep = buffer.indexOf("\n\n");
+          sep = findFrameBoundary(buffer);
         }
       }
       // Drain any trailing frame that lacked a terminating blank line.
@@ -309,7 +327,16 @@ export class MockAgentClient {
         if (event !== null) yield event;
       }
     } finally {
-      clearTimeout(timer);
+      clearHeaderTimer();
+      // Cancel rather than only releasing the lock: a caller that breaks out of
+      // the for-await early (took the first chunk, hit an assertion) would
+      // otherwise leave the response body — and the socket behind it — open
+      // until the process exited.
+      try {
+        await reader.cancel();
+      } catch {
+        /* already closed */
+      }
       try {
         reader.releaseLock();
       } catch {
@@ -380,6 +407,21 @@ export function parseOpenAIResponse(
  * event/data parts. Returns null when the frame has no data line.
  * Multiple data lines are joined with newlines per the SSE spec.
  */
+/** Locate the end of the first complete SSE frame in `buf`.
+ *
+ * A frame ends at a blank line, which the spec permits to be either LF LF or
+ * CRLF CRLF (and a mixed pair in between). Returns the index the frame text
+ * ends at plus the length of the separator to skip, or null when the buffer
+ * holds no complete frame yet.
+ */
+export function findFrameBoundary(buf: string): { end: number; sepLen: number } | null {
+  const crlf = buf.indexOf("\r\n\r\n");
+  const lf = buf.indexOf("\n\n");
+  if (crlf === -1 && lf === -1) return null;
+  if (crlf !== -1 && (lf === -1 || crlf < lf)) return { end: crlf, sepLen: 4 };
+  return { end: lf, sepLen: 2 };
+}
+
 export function parseSSEFrame(frame: string): { event: string; data: string } | null {
   let event = "";
   const dataLines: string[] = [];

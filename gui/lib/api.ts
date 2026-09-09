@@ -133,6 +133,27 @@ function baseUrl(): string {
   return (process.env.MOCKAGENTS_API_URL ?? "http://localhost:8080").replace(/\/+$/, "");
 }
 
+/** Deadline for a management-API call. Without one, a backend that accepts the
+ * connection and then stalls holds a Next.js server render open until the
+ * platform's own timeout — the page never renders and the user gets no error
+ * to act on (audit M-38). Every fetch in this module carries a signal. */
+const API_TIMEOUT_MS = 10_000;
+
+/** Running a pipeline executes agents server-side, so it is legitimately
+ * slower than a read. It still gets a bound. */
+const RUN_TIMEOUT_MS = 60_000;
+
+/** Health and readiness probes answer immediately or not at all; a slow probe
+ * is itself the signal, so this one is short. */
+const PROBE_TIMEOUT_MS = 5_000;
+
+/** apiSignal builds the per-request abort signal. Aborting surfaces as a
+ * TimeoutError from fetch, which the callers already treat as a network
+ * failure. */
+function apiSignal(ms: number = API_TIMEOUT_MS): AbortSignal {
+  return AbortSignal.timeout(ms);
+}
+
 /** Reads the auth cookie when running inside a server component. Returns
  * the empty string when the cookie is absent or when called outside a
  * request context (next/headers throws in that case). */
@@ -168,6 +189,7 @@ async function fetchJSON<T>(path: string, opts: RequestOptions = {}): Promise<T>
     // Always skip the Next.js data cache — operators want the GUI to
     // reflect the running server state in real time, not a stale snapshot.
     cache: "no-store",
+    signal: apiSignal(),
     method: opts.method ?? "GET",
     headers,
     body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
@@ -728,6 +750,7 @@ export async function getPipelineWithVersion(
   if (key) headers.Authorization = `Bearer ${key}`;
   const res = await fetch(`${baseUrl()}/api/v1/pipelines/${encodeURIComponent(name)}`, {
     cache: "no-store",
+    signal: apiSignal(),
     headers,
   });
   if (res.status === 404) return null;
@@ -769,6 +792,7 @@ export async function savePipeline(
     res = await fetch(`${baseUrl()}/api/v1/pipelines/${encodeURIComponent(name)}`, {
       method: "PUT",
       cache: "no-store",
+      signal: apiSignal(),
       headers,
       body: JSON.stringify(definition),
     });
@@ -804,6 +828,7 @@ export async function validateYAML(yaml: string): Promise<ValidateResult> {
   const res = await fetch(`${baseUrl()}/api/v1/config/validate`, {
     method: "POST",
     cache: "no-store",
+    signal: apiSignal(),
     headers,
     body: yaml,
   });
@@ -841,7 +866,7 @@ export const getServerStatus = cache(async function getServerStatus(): Promise<S
 
   const probe = async (path: string): Promise<Response | null> => {
     try {
-      return await fetch(`${baseUrl()}${path}`, { cache: "no-store", headers });
+      return await fetch(`${baseUrl()}${path}`, { cache: "no-store", headers, signal: apiSignal(PROBE_TIMEOUT_MS) });
     } catch {
       return null;
     }
@@ -986,6 +1011,7 @@ export async function runPipeline(
     res = await fetch(`${baseUrl()}/api/v1/pipelines/${encodeURIComponent(name)}/run`, {
       method: "POST",
       cache: "no-store",
+      signal: apiSignal(RUN_TIMEOUT_MS),
       headers,
       // The server decodes with DisallowUnknownFields — send exactly these.
       body: JSON.stringify({ input, session_id: sessionId }),
@@ -1070,6 +1096,7 @@ export async function getAgentSource(name: string): Promise<AgentSource | null> 
 
   const res = await fetch(`${baseUrl()}/api/v1/agents/${encodeURIComponent(name)}`, {
     cache: "no-store",
+    signal: apiSignal(),
     headers,
   });
   if (res.status === 404) return null;
@@ -1127,6 +1154,7 @@ export async function saveAgentConditional(
     res = await fetch(`${baseUrl()}/api/v1/agents/${encodeURIComponent(name)}`, {
       method: "PUT",
       cache: "no-store",
+      signal: apiSignal(),
       headers,
       body: yaml,
     });
@@ -1254,6 +1282,7 @@ export async function saveAgentYAML(yaml: string): Promise<SaveResult> {
   const res = await fetch(`${baseUrl()}/api/v1/agents/${encodeURIComponent(name)}`, {
     method: "PUT",
     cache: "no-store",
+    signal: apiSignal(),
     headers,
     body: yaml,
   });

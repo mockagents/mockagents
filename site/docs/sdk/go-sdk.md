@@ -156,6 +156,25 @@ mockagents.ExpectScenario(t, result).
     ToHaveLatencyLessThanMs(1000)
 ```
 
+Outcome checks and trajectory checks read different things, and the difference
+matters on a multi-turn scenario. `ToHaveContentContaining`,
+`ToHaveFinishReason` and `ToHaveStatusCode` read the **last** response.
+`ToHaveToolCall`, `ToHaveToolCallCount` and `ToHaveToolCallSequence` read the
+**aggregate across every turn**, in invocation order, which is what the Python
+and TypeScript SDKs do and what `tool_call_sequence` / `tool_call_count` mean
+in a `kind: TestSuite` document. A check written here transfers to YAML
+unchanged.
+
+```go
+mockagents.ExpectScenario(t, result).
+    ToHaveToolCallSequence([]string{"get_weather", "search_orders"}).
+    ToHaveToolCallCount(2)
+```
+
+The sequence is compared for full equality, not as a subsequence: an
+unexpected extra call fails it. `result.ToolCalls()` returns the same
+aggregate if you want to inspect it directly.
+
 ## Parity with the other SDKs
 
 | Capability | Python | TypeScript | Go |
@@ -166,5 +185,6 @@ mockagents.ExpectScenario(t, result).
 | Normalized `StreamChunk` | yes | yes | yes |
 | Scenarios + runner | yes | yes | yes |
 | Fluent assertions | `expect()` (raises) | `expect()` (throws) | `Expect` (`t.Errorf`) |
+| Trajectory assertions (aggregate across turns) | `to_have_tool_call_sequence` | `toHaveToolCallSequence` | `ToHaveToolCallSequence` |
 | Test integration | pytest plugin | Vitest/Jest | `testing.TB` native |
 | **In-process engine (no subprocess)** | — | — | **`NewInProcessClient`** |

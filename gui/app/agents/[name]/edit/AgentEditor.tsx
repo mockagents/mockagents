@@ -105,7 +105,15 @@ export function AgentEditor({
     setExportFailed(!downloadText(draftFilename(name), draft));
   }
   const lines = useMemo(() => draft.split("\n"), [draft]);
-  const diff = useMemo(() => diffLines(base, draft), [base, draft]);
+  // The diff is only ever rendered in the preview phase, but this memo used to
+  // recompute on every `draft` change — an O(n·m) LCS table (up to ~9M cells
+  // for a document at MAX_DIFF_LINES) built on each keystroke while typing
+  // (audit M-38). Gating on the phase makes editing allocation-free and moves
+  // the one computation that matters to the moment the user asks to see it.
+  const diff = useMemo(
+    () => (phase === "previewing" ? diffLines(base, draft) : null),
+    [phase, base, draft],
+  );
 
   const errorLines = useMemo(() => {
     const errs: ValidationError[] = [
@@ -404,7 +412,7 @@ export function AgentEditor({
           </div>
           {phase === "previewing" ? (
             <div className="col gap-3">
-              <DiffPanel diff={diff} />
+              {diff && <DiffPanel diff={diff} />}
               <ActiveRuntimeWarning
                 pipelines={referencingPipelines}
                 readable={pipelinesReadable}
