@@ -243,11 +243,11 @@ func streamOpenAIToolCalls(
 		// Argument chunks — split JSON into pieces.
 		argChunks := chunkString(argsStr, 20)
 		for _, argChunk := range argChunks {
-			if err := ctx.Err(); err != nil {
+			// Context-aware like every other pace in this package: a
+			// disconnected client must not keep the goroutine alive for
+			// chunks × delay (audit M-17).
+			if err := sleepCtx(ctx, time.Duration(delayMs)*time.Millisecond); err != nil {
 				return err
-			}
-			if delayMs > 0 {
-				time.Sleep(time.Duration(delayMs) * time.Millisecond)
 			}
 			chunk := argChunk
 			if err := sse.WriteData(ChatCompletionChunk{

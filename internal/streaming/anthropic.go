@@ -94,15 +94,18 @@ type anthropicMessageStop struct {
 }
 
 // StreamAnthropic writes an engine Response as an Anthropic-format SSE
-// stream. The optional promptTokens is the computed input-token count for
-// message_start's usage (round-9 R9-10 — a hardcoded value diverged from the
-// non-streaming path); omitted, a deterministic default applies.
+// stream. The optional tokens are the adapter-computed usage counts —
+// tokens[0] the input-token count for message_start's usage (round-9 R9-10),
+// tokens[1] the output-token count for message_delta's usage (audit M-18: a
+// local formula billed the same scenario differently under stream:true, so
+// cost dashboards and the spend quota disagreed by transport). Omitted, a
+// deterministic default applies for direct callers.
 func StreamAnthropic(
 	ctx context.Context,
 	w http.ResponseWriter,
 	resp *engine.Response,
 	streamCfg *types.StreamingConfig,
-	promptTokens ...int,
+	tokens ...int,
 ) error {
 	sse, err := NewSSEWriter(w)
 	if err != nil {
@@ -132,8 +135,8 @@ func StreamAnthropic(
 
 	// 1. message_start
 	inputTokens := 25 // deterministic default for direct callers
-	if len(promptTokens) > 0 {
-		inputTokens = promptTokens[0]
+	if len(tokens) > 0 {
+		inputTokens = tokens[0]
 	}
 	if err := sse.WriteEvent("message_start", anthropicMessageStart{
 		Type: "message_start",
@@ -265,7 +268,10 @@ func StreamAnthropic(
 	if resp.FinishReason != "" {
 		stopReason = AnthropicStopReason(resp.FinishReason)
 	}
-	outputTokens := len(resp.Content)/4 + 1
+	outputTokens := len(resp.Content)/4 + 1 // direct-caller default only
+	if len(tokens) > 1 {
+		outputTokens = tokens[1] // the adapter's count — identical to non-streaming
+	}
 	if err := sse.WriteEvent("message_delta", anthropicMessageDelta{
 		Type: "message_delta",
 		Delta: struct {

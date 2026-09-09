@@ -30,6 +30,9 @@ type Session struct {
 	CreatedAt  time.Time      `json:"created_at"`
 	LastAccess time.Time      `json:"last_access"`
 	TTL        time.Duration  `json:"-"`
+	// MaxHistory caps len(Messages); older entries are dropped after each
+	// completed turn (audit H-06). 0 = unlimited.
+	MaxHistory int `json:"-"`
 }
 
 // WithLocked runs fn while holding the session's mutation lock. Use it
@@ -140,6 +143,21 @@ func (s *Session) appendAssistantMessage(content string, toolCalls []ToolCallMsg
 		Timestamp: now,
 	})
 	s.LastAccess = now
+	// Trim to the retained-history cap after the turn is complete, dropping
+	// the oldest entries. A client that pins one session id for a long run
+	// used to grow Messages forever (audit H-06). TurnCount is untouched.
+	if s.MaxHistory > 0 && len(s.Messages) > s.MaxHistory {
+		drop := len(s.Messages) - s.MaxHistory
+		s.Messages = append(s.Messages[:0], s.Messages[drop:]...)
+	}
+}
+
+// lastAccess returns LastAccess under the session lock, for the store's
+// LRU eviction scan.
+func (s *Session) lastAccess() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.LastAccess
 }
 
 // IsExpired returns true if the session has exceeded its TTL.

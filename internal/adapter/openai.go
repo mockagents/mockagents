@@ -510,11 +510,13 @@ func sumMessageTokens(msgs []engine.RequestMessage) int {
 	return total
 }
 
+// extractSessionID returns the client-pinned session id, or "" when the
+// request carries none. It used to mint "sess-<random>" for header-less
+// requests — an id the client was never told and could never present again —
+// which made the engine persist one 30-minute session per request (audit
+// H-06). An empty id tells the engine to run the turn on a throwaway session.
 func extractSessionID(r *http.Request) string {
-	if id := r.Header.Get("X-Session-Id"); id != "" {
-		return id
-	}
-	return "sess-" + generateID()
+	return r.Header.Get("X-Session-Id")
 }
 
 // generateID returns a unique, non-cryptographic id for responses, sessions,

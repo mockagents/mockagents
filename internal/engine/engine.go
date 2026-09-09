@@ -291,7 +291,18 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 	// independently pick the same client session_id share conversation
 	// history or variables. Anonymous / single-tenant callers share the
 	// empty-tenant namespace, so single-tenant behavior is unchanged.
-	session := e.States.GetOrCreate(scopedSessionKey(tenantID, agent.Metadata.Name, req.SessionID), agent.Metadata.Name)
+	//
+	// A request with no session id at all (the default for every SDK) gets
+	// a throwaway session: nothing can ever address it again, so storing it
+	// only pinned memory for the TTL — one session per request under load
+	// (audit H-06). Turn numbering and templates behave exactly as they did
+	// for the previously minted-and-forgotten ids.
+	var session *state.Session
+	if req.SessionID == "" {
+		session = state.NewSession("", agent.Metadata.Name, state.DefaultSessionTTL)
+	} else {
+		session = e.States.GetOrCreate(scopedSessionKey(tenantID, agent.Metadata.Name, req.SessionID), agent.Metadata.Name)
+	}
 	var resp *Response
 	if err := session.ApplyTurn(userMsg, func(turnCount int, variables map[string]any) (string, []state.ToolCallMsg, error) {
 		// 4. Match scenario.
