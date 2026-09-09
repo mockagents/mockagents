@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -56,23 +57,23 @@ func init() {
 		defaultHost = envHost
 	}
 	defaultPort := server.DefaultPort
-	if envPort := os.Getenv("MOCKAGENTS_PORT"); envPort != "" {
-		if p, err := fmt.Sscanf(envPort, "%d", &defaultPort); p != 1 || err != nil {
-			defaultPort = server.DefaultPort
-		}
+	// A typo here used to fall back to 8080 silently, so the pod listened on
+	// the wrong port with a healthy-looking log. Recorded now, reported by
+	// runStart (init cannot return an error).
+	if p, ok, err := envInt("MOCKAGENTS_PORT", 1, 65535); err != nil {
+		recordStartupEnvError(err)
+	} else if ok {
+		defaultPort = p
 	}
+	chaosOffDefault, err := envBool("MOCKAGENTS_CHAOS_OFF")
+	recordStartupEnvError(err)
 	startCmd.Flags().StringVar(&host, "host", defaultHost, "HTTP server bind address")
 	startCmd.Flags().IntVarP(&port, "port", "p", defaultPort, "HTTP server port")
 	startCmd.Flags().BoolVar(&jsonLogs, "json-logs", false, "Output logs in JSON format")
 	startCmd.Flags().BoolVarP(&watchDir, "watch", "w", false, "Auto-reload agent YAML files on change (fsnotify)")
 	startCmd.Flags().StringVar(&chaosRate, "chaos-rate", strings.TrimSpace(os.Getenv("MOCKAGENTS_CHAOS_RATE")), "Lowest-precedence server-wide chaos rate (0.0-1.0; env MOCKAGENTS_CHAOS_RATE)")
 	startCmd.Flags().StringVar(&chaosSeed, "chaos-seed", strings.TrimSpace(os.Getenv("MOCKAGENTS_CHAOS_SEED")), "Server-wide deterministic chaos seed (env MOCKAGENTS_CHAOS_SEED)")
-	startCmd.Flags().BoolVar(&chaosOff, "chaos-off", envEnabled("MOCKAGENTS_CHAOS_OFF"), "Set the inherited server-wide chaos rate to zero (env MOCKAGENTS_CHAOS_OFF)")
-}
-
-func envEnabled(name string) bool {
-	value := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
-	return value == "1" || value == "true" || value == "yes" || value == "on"
+	startCmd.Flags().BoolVar(&chaosOff, "chaos-off", chaosOffDefault, "Set the inherited server-wide chaos rate to zero (env MOCKAGENTS_CHAOS_OFF)")
 }
 
 func parseGlobalChaos(seedText, rateText string, off bool) (int64, *float64, error) {
@@ -99,13 +100,25 @@ func parseGlobalChaos(seedText, rateText string, off bool) (int64, *float64, err
 }
 
 func runStart(cmd *cobra.Command, args []string) error {
+	if err := joinStartupEnvErrors(); err != nil {
+		return err
+	}
 	globalSeed, globalRate, err := parseGlobalChaos(chaosSeed, chaosRate, chaosOff)
 	if err != nil {
 		return err
 	}
 	// Configure structured logger.
-	logLevel := parseLogLevel(cmd)
+	logLevel, err := parseLogLevel(cmd)
+	if err != nil {
+		return err
+	}
 	logger := newLogger(logLevel, jsonLogs)
+	// Quota defaults are read up front so a typo fails the start, not the
+	// enforcement (an unparsable limit used to mean "unlimited").
+	quotaDefaults, err := quotaDefaultsFromEnv()
+	if err != nil {
+		return err
+	}
 
 	// Resolve agents directory.
 	agentsDir, _ := cmd.Flags().GetString("agents-dir")
@@ -215,13 +228,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	//   MOCKAGENTS_LOG_BODIES   = full | sanitized | none  (default full)
 	//   MOCKAGENTS_LOG_MAX_ROWS = <n>                       (default 0 = unlimited)
 	cfg.LogBodyMode = server.NormalizeLogBodyMode(os.Getenv("MOCKAGENTS_LOG_BODIES"))
-	if v := strings.TrimSpace(os.Getenv("MOCKAGENTS_LOG_MAX_ROWS")); v != "" {
-		var n int
-		if c, err := fmt.Sscanf(v, "%d", &n); c == 1 && err == nil && n > 0 {
-			cfg.LogMaxRows = n
-		} else {
-			logger.Warn("ignoring invalid MOCKAGENTS_LOG_MAX_ROWS", "value", v)
-		}
+	if n, ok, err := envInt("MOCKAGENTS_LOG_MAX_ROWS", 0, 0); err != nil {
+		return err
+	} else if ok {
+		cfg.LogMaxRows = n // 0 = unlimited
 	}
 	if cfg.LogBodyMode != server.LogBodyFull {
 		logger.Info("interaction-log body capture mode", "mode", string(cfg.LogBodyMode))
@@ -256,10 +266,16 @@ func runStart(cmd *cobra.Command, args []string) error {
 	cfg.Prices = prices
 
 	// Optional multi-tenant mode (experimental). Enabled by setting
-	// MOCKAGENTS_MULTI_TENANT=1. On first boot we seed a "default"
-	// tenant and an admin API key; the plaintext is printed to stderr
-	// exactly once so the operator can capture it.
-	if os.Getenv("MOCKAGENTS_MULTI_TENANT") == "1" {
+	// MOCKAGENTS_MULTI_TENANT=1 (or true/yes/on — an unrecognised value is a
+	// startup error, because "true" used to be read as OFF and ran the
+	// control plane unauthenticated). On first boot we seed a "default"
+	// tenant and a platform API key; see bootstrapTenancy for how the
+	// plaintext is handed to the operator.
+	multiTenant, err := envBool("MOCKAGENTS_MULTI_TENANT")
+	if err != nil {
+		return err
+	}
+	if multiTenant {
 		// Backend selection (REF-08 slice B): MOCKAGENTS_TENANCY_DSN opts into the
 		// pluggable Postgres store; unset keeps the zero-dependency SQLite default.
 		var tenancyStore tenancy.Store
@@ -285,7 +301,12 @@ func runStart(cmd *cobra.Command, args []string) error {
 		// assignment, since EnableAuthCache is a concrete method.)
 		defer tenancyStore.Close()
 		cfg.TenancyStore = tenancyStore
-		if err := bootstrapTenancy(cmd.Context(), tenancyStore, logger); err != nil {
+		keyFile, _ := envString("MOCKAGENTS_BOOTSTRAP_KEY_FILE")
+		if keyFile == "" {
+			keyFile = dataPath("bootstrap-admin.key")
+		}
+		preset, _ := envString("MOCKAGENTS_BOOTSTRAP_KEY")
+		if err := bootstrapTenancy(cmd.Context(), tenancyStore, logger, preset, keyFile); err != nil {
 			return fmt.Errorf("bootstrap tenancy: %w", err)
 		}
 
@@ -293,7 +314,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 		// overrides are set at runtime via PUT /api/v1/tenants/{id}/quota. The
 		// enforcer is always created in multi-tenant mode so the /api/v1/quota
 		// endpoints exist; with zero defaults it simply enforces nothing.
-		quotaDefaults := quotaDefaultsFromEnv()
 		cfg.QuotaEnforcer = quota.NewEnforcer(quotaDefaults)
 		if quotaDefaults.RatePerSec > 0 || quotaDefaults.MonthlySpendUSD > 0 {
 			logger.Info("tenancy: per-tenant quota defaults",
@@ -512,12 +532,21 @@ func registerPipelines(pipelines []*config.PipelineLoadResult, logger *slog.Logg
 	return reg
 }
 
-// bootstrapTenancy creates a "default" tenant and an admin API key if
-// none exist yet. The plaintext key is printed to stderr exactly once —
-// after this run it is bcrypt-hashed and unrecoverable. Callers can
-// preset a specific plaintext via MOCKAGENTS_BOOTSTRAP_KEY (useful in
-// Helm deployments where the key is piped in from a Secret).
-func bootstrapTenancy(ctx context.Context, store tenancy.Store, logger *slog.Logger) error {
+// bootstrapTenancy creates a "default" tenant and a platform API key if none
+// exist yet. The plaintext is never written to the log stream (audit H-09:
+// stderr is the pod log, shipped to every aggregator). Two ways to receive it:
+//
+//   - preset (MOCKAGENTS_BOOTSTRAP_KEY): the operator supplies the plaintext,
+//     e.g. from a Kubernetes Secret; it is hashed and registered as the
+//     platform key. Nothing secret is printed.
+//   - otherwise a key is generated and written, mode 0600, to keyFile
+//     (MOCKAGENTS_BOOTSTRAP_KEY_FILE, default <data dir>/bootstrap-admin.key);
+//     stderr shows only the path and the public prefix. If the file cannot be
+//     written the generated key is discarded again and startup fails with
+//     instructions, rather than falling back to printing the secret.
+//
+// After bootstrap the key is bcrypt-hashed and unrecoverable.
+func bootstrapTenancy(ctx context.Context, store tenancy.Store, logger *slog.Logger, preset, keyFile string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -550,36 +579,89 @@ func bootstrapTenancy(ctx context.Context, store tenancy.Store, logger *slog.Log
 	for _, k := range existing {
 		if k.Role == tenancy.RolePlatform {
 			logger.Info("tenancy: platform key already exists", "key_id", k.ID, "prefix", k.Prefix)
+			if preset != "" {
+				if p, err := tenancy.ValidatePresetAPIKey(preset); err == nil && p != k.Prefix {
+					logger.Warn("tenancy: MOCKAGENTS_BOOTSTRAP_KEY does not match the existing platform key and was ignored",
+						"existing_prefix", k.Prefix, "preset_prefix", p)
+				}
+			}
 			return nil
 		}
 	}
 	// The bootstrap key is the platform operator: it can manage the tenant
 	// collection. The management API cannot mint this role (X-TN-001), so the
 	// bootstrap path is the only source of a platform credential.
+	if preset != "" {
+		prefix, err := tenancy.ValidatePresetAPIKey(preset)
+		if err != nil {
+			return fmt.Errorf("MOCKAGENTS_BOOTSTRAP_KEY: %w", err)
+		}
+		pc, ok := store.(tenancy.PresetKeyCreator)
+		if !ok {
+			return errors.New("MOCKAGENTS_BOOTSTRAP_KEY: this tenancy store cannot register a preset key")
+		}
+		key, err := pc.CreateAPIKeyWithPlaintext(ctx, tenant.ID, "bootstrap-admin", tenancy.RolePlatform, preset)
+		if err != nil {
+			return err
+		}
+		logger.Info("tenancy: platform key registered from MOCKAGENTS_BOOTSTRAP_KEY", "key_id", key.ID, "prefix", prefix)
+		return nil
+	}
 	result, err := store.CreateAPIKey(ctx, tenant.ID, "bootstrap-admin", tenancy.RolePlatform)
 	if err != nil {
 		return err
 	}
+	if err := writeSecretFile(keyFile, result.Plaintext); err != nil {
+		// Discard the key we cannot hand over; otherwise a platform credential
+		// nobody knows would exist and block every future bootstrap.
+		_ = store.DeleteAPIKey(ctx, tenant.ID, result.Key.ID)
+		return fmt.Errorf("could not write the platform key to %s: %w — set MOCKAGENTS_BOOTSTRAP_KEY to supply the key from a secret, or point MOCKAGENTS_BOOTSTRAP_KEY_FILE / MOCKAGENTS_DATA_DIR at a writable location", keyFile, err)
+	}
 	fmt.Fprintln(os.Stderr, "================================================================")
 	fmt.Fprintln(os.Stderr, "MockAgents multi-tenant mode enabled.")
-	fmt.Fprintf(os.Stderr, "Bootstrap admin key (shown once): %s\n", result.Plaintext)
-	fmt.Fprintln(os.Stderr, "Store this in your password manager. Use it via:")
-	fmt.Fprintln(os.Stderr, "  Authorization: Bearer <key>   or   X-Api-Key: <key>")
+	fmt.Fprintf(os.Stderr, "Bootstrap platform key (prefix %s) written to:\n  %s\n", result.Key.Prefix, keyFile)
+	fmt.Fprintln(os.Stderr, "Read it once, store it in your password manager, then delete the file.")
+	fmt.Fprintln(os.Stderr, "Use it via:  Authorization: Bearer <key>   or   X-Api-Key: <key>")
 	fmt.Fprintln(os.Stderr, "================================================================")
 	return nil
 }
 
-// quotaDefaultsFromEnv reads the default per-tenant quota from the environment.
-// Any unset/garbage value parses to 0 (= unlimited for that dimension), so the
-// zero-config default enforces nothing until an operator sets limits.
-func quotaDefaultsFromEnv() quota.Config {
-	pf := func(k string) float64 { v, _ := strconv.ParseFloat(os.Getenv(k), 64); return v }
-	pi := func(k string) int { n, _ := strconv.Atoi(os.Getenv(k)); return n }
-	return quota.Config{
-		RatePerSec:      pf("MOCKAGENTS_DEFAULT_RATE_PER_SEC"),
-		RateBurst:       pi("MOCKAGENTS_DEFAULT_RATE_BURST"),
-		MonthlySpendUSD: pf("MOCKAGENTS_DEFAULT_MONTHLY_SPEND_USD"),
+// writeSecretFile writes value to path, creating or truncating it with mode
+// 0600 (owner read/write only; advisory on Windows).
+func writeSecretFile(path, value string) error {
+	if dir := filepath.Dir(path); dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
 	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(value + "\n"); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// quotaDefaultsFromEnv reads the default per-tenant quota from the environment.
+// Unset means 0 (= unlimited for that dimension); a value that is set but not
+// a valid non-negative number is an error, so a typo cannot silently disable
+// enforcement (audit M-35).
+func quotaDefaultsFromEnv() (quota.Config, error) {
+	var cfg quota.Config
+	var err error
+	if cfg.RatePerSec, _, err = envFloat("MOCKAGENTS_DEFAULT_RATE_PER_SEC", 0); err != nil {
+		return quota.Config{}, err
+	}
+	if cfg.RateBurst, _, err = envInt("MOCKAGENTS_DEFAULT_RATE_BURST", 0, 0); err != nil {
+		return quota.Config{}, err
+	}
+	if cfg.MonthlySpendUSD, _, err = envFloat("MOCKAGENTS_DEFAULT_MONTHLY_SPEND_USD", 0); err != nil {
+		return quota.Config{}, err
+	}
+	return cfg, nil
 }
 
 // buildSSO constructs the OIDC SSO handlers from the environment, or returns
@@ -609,10 +691,15 @@ func buildSSO(ctx context.Context, store tenancy.Store, logger *slog.Logger) (*s
 		return nil, fmt.Errorf("MOCKAGENTS_OIDC_DEFAULT_ROLE %q is invalid (use viewer/editor/admin)", role)
 	}
 	ttl := 24 * time.Hour
-	if v := os.Getenv("MOCKAGENTS_OIDC_SESSION_TTL"); v != "" {
-		if d, perr := time.ParseDuration(v); perr == nil && d > 0 {
-			ttl = d
-		}
+	// "24" (no unit) used to be silently ignored and keep the 24h default.
+	if d, ok, err := envDuration("MOCKAGENTS_OIDC_SESSION_TTL"); err != nil {
+		return nil, err
+	} else if ok {
+		ttl = d
+	}
+	secureCookies, err := envBool("MOCKAGENTS_OIDC_SECURE_COOKIES")
+	if err != nil {
+		return nil, err
 	}
 
 	auth, err := oidcauth.New(ctx, oidcauth.Settings{
@@ -628,8 +715,7 @@ func buildSSO(ctx context.Context, store tenancy.Store, logger *slog.Logger) (*s
 	if err != nil {
 		return nil, err
 	}
-	secure := strings.HasPrefix(strings.ToLower(redirect), "https://") ||
-		os.Getenv("MOCKAGENTS_OIDC_SECURE_COOKIES") == "1"
+	secure := strings.HasPrefix(strings.ToLower(redirect), "https://") || secureCookies
 	logger.Info("SSO/OIDC login enabled",
 		"issuer", issuer, "mapped_domains", len(domainMap), "default_role", string(role))
 	return &server.SSOHandlers{
@@ -681,18 +767,19 @@ func parseDomainMap(s string) map[string]string {
 	return m
 }
 
-func parseLogLevel(cmd *cobra.Command) slog.Level {
+func parseLogLevel(cmd *cobra.Command) (slog.Level, error) {
 	level, _ := cmd.Flags().GetString("log-level")
 	switch strings.ToLower(level) {
 	case "debug":
-		return slog.LevelDebug
+		return slog.LevelDebug, nil
+	case "info", "":
+		return slog.LevelInfo, nil
 	case "warn", "warning":
-		return slog.LevelWarn
+		return slog.LevelWarn, nil
 	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
+		return slog.LevelError, nil
 	}
+	return slog.LevelInfo, fmt.Errorf("unknown log level %q (use debug, info, warn, error)", level)
 }
 
 func newLogger(level slog.Level, jsonOutput bool) *slog.Logger {

@@ -595,3 +595,37 @@ func (s *PostgresStore) Resolve(ctx context.Context, plaintext string) (*Princip
 	}
 	return nil, ErrInvalidKey
 }
+
+// CreateAPIKeyWithPlaintext registers a caller-supplied plaintext as a key
+// (see PresetKeyCreator).
+func (s *PostgresStore) CreateAPIKeyWithPlaintext(ctx context.Context, tenantID, name string, role Role, plaintext string) (*APIKey, error) {
+	prefix, err := ValidatePresetAPIKey(plaintext)
+	if err != nil {
+		return nil, err
+	}
+	if !role.IsValid() {
+		return nil, fmt.Errorf("invalid role %q", role)
+	}
+	if _, err := s.GetTenant(ctx, tenantID); err != nil {
+		return nil, fmt.Errorf("tenant %s: %w", tenantID, err)
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(plaintext), bcryptCost)
+	if err != nil {
+		return nil, fmt.Errorf("bcrypt hash: %w", err)
+	}
+	keyID, err := randID("key")
+	if err != nil {
+		return nil, err
+	}
+	key := APIKey{ID: keyID, TenantID: tenantID, Name: name, Prefix: prefix, Role: role, CreatedAt: time.Now().UTC()}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO api_keys (id, tenant_id, name, prefix, hash, role, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		key.ID, key.TenantID, key.Name, key.Prefix, string(hash),
+		string(key.Role), key.CreatedAt.Format(time.RFC3339),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert api_key: %w", err)
+	}
+	return &key, nil
+}
