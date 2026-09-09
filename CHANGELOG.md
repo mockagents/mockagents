@@ -3,14 +3,122 @@
 All notable changes to MockAgents are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
-The current release is **[v0.4.0](https://github.com/mockagents/mockagents/releases/tag/v0.4.0)**
-(tagged 2026-06-17, published 2026-06-20) — the first tagged release. The
+The current release is **[v0.5.0](https://github.com/mockagents/mockagents/releases/tag/v0.5.0)**
+(tagged 2026-09-09). v0.4.0 was the first tagged release. The
 **v0.1 → v0.2 → v0.3** headings below it mark the internal development
 milestones that preceded it; all are on `main`.
 
 ---
 
-## [Unreleased]
+## [0.5.0] - 2026-09-09
+
+This release is dominated by the **production-readiness audit** of 2026-09-03
+([`docs/reviews/2026-09-03-production-readiness-audit.md`](docs/reviews/2026-09-03-production-readiness-audit.md))
+and the fifteen fix iterations that answered it: 1 critical, 13 high and 38
+medium findings, closed across PRs #119–#127 and #134–#140.
+
+**Read this first if you run multi-tenant mode or a chart deployment.** Several
+defaults changed because the old ones were unsafe, and a few of those will
+change behaviour for existing callers:
+
+- `POST /v1/engines/process` is **no longer mounted by default**. It let a
+  caller name any global agent directly, skipped auth like the provider
+  surfaces, and was not quota-metered. Enable it with `--engine-endpoint`
+  (`MOCKAGENTS_ENGINE_ENDPOINT=1`) if a test harness depends on it.
+- `PUT /api/v1/pipelines/{name}` now requires the **platform** role in
+  multi-tenant mode. Pipelines carry no tenant id, so one write changes what
+  every tenant sees and runs; an editor floor let any tenant edit shared state.
+  Reads and runs are unchanged.
+- **Multi-tenant mode no longer answers CORS with `*`.** It defaults to the
+  loopback GUI origins; set `--cors-origins` (`MOCKAGENTS_CORS_ORIGINS`) for any
+  other browser client. Single-tenant mode still allows any origin, because it
+  is an unauthenticated local-development tool — do not expose it.
+- `mockagents record` and `mockagents replay` now **bind to `127.0.0.1`**
+  instead of every interface, matching `mockagents mcp`. They relay your
+  provider key, so the old default exposed it to the network.
+- `DELETE /api/v1/logs` requires **admin**; it was the one write any
+  authenticated role could perform.
+- The **bootstrap platform key is no longer printed to stderr**, where it
+  landed in every log aggregator. It is written to a file, or supplied from a
+  secret via `MOCKAGENTS_BOOTSTRAP_KEY` / `_FILE`.
+- A **single-replica chart** is now the enforced default. Running more than one
+  replica without a shared tenancy backend requires
+  `multiReplica.acknowledged=true`, because the replicas do not share state.
+
+### Security
+- **Tenant isolation gaps closed**: the file watcher scoped reloads and removals
+  by owning tenant; the platform role stopped implicitly reading every tenant's
+  data without an explicit `?tenant=`; the OIDC callback now requires
+  `email_verified` (overridable with `MOCKAGENTS_OIDC_ALLOW_UNVERIFIED_EMAIL`);
+  chaos fail-first counters and rate-limit windows are per (tenant, agent), so
+  one tenant's traffic no longer produces 429s for another.
+- **Authentication hardening**: a per-IP failed-authentication limiter
+  (`MOCKAGENTS_AUTH_FAILURES_PER_MINUTE`, default 30) and a negative auth cache,
+  so a credential-stuffing loop no longer costs a bcrypt hash per attempt.
+  Client IPs come from a trusted-proxy allowlist (`MOCKAGENTS_TRUSTED_PROXIES`)
+  rather than an unvalidated `X-Forwarded-For`.
+- **Unauthenticated surfaces closed**: request-body caps and admin-timeout
+  clamps on the MCP admin endpoints, an origin guard on the legacy notify
+  endpoint, `--allow-remote-manage` required for a non-loopback `mcp --manage`,
+  and body caps on the recording proxies.
+- **GUI**: `next` moved to a release without the four server-action advisories,
+  the login `?next=` guard now parses the URL instead of pattern-matching (a
+  backslash-prefixed path escaped it), and CI gates production dependencies at
+  `--audit-level=high`.
+- **Supply chain**: every GitHub Action pinned to a SHA, `govulncheck` and Helm
+  lint added to CI, and Dependabot enabled.
+
+### Fixed
+- **Recording cassettes could lose interactions.** `Append` rewrote the whole
+  file outside the mutex, so two concurrent recorders raced on `os.Rename` and
+  the loser's snapshot replaced the winner's. Appends are now single-writer,
+  one line at a time. A non-JSON upstream body (an HTML error page) no longer
+  poisons the write either — it is stored with an explicit encoding and replayed
+  byte-for-byte.
+- **Recorded SSE streams were cut at 60 seconds** by a whole-request client
+  timeout. Each phase is bounded separately now; the stream itself is not.
+- **Streamable MCP sessions never expired**, so a client that crashed without
+  sending DELETE kept its session and replay buffer until 256 newer sessions
+  pushed it out. Idle sessions are reclaimed after 30 minutes, before the FIFO
+  cap is consulted.
+- **`POST /reload` could resurrect a deleted agent** by racing the write API.
+  It now takes the same lock and re-reads the file the registry recorded for
+  that agent, returning 409 if that file no longer defines it.
+- **Engine errors were classified by their prose** in six adapters, so a
+  template failure inside a scenario named `empty-cart` was returned to the
+  caller as a 400. Classification is by typed error now.
+- **OpenTelemetry tracing was dead code**: the provider was never constructed,
+  so the documented exporter variables produced no spans and no error. It is
+  wired at startup, and an incoming W3C `traceparent` is joined rather than
+  starting a disconnected trace.
+- **SDK parity**: the TypeScript SDK now accepts CRLF-terminated SSE frames and
+  bounds its timeout to the response headers rather than the whole stream; the
+  Go SDK's tool-call assertions read the whole trajectory, matching Python,
+  TypeScript, and `tool_call_sequence` in YAML.
+- Graceful shutdown drains in-flight requests with a readiness signal
+  (`MOCKAGENTS_SHUTDOWN_TIMEOUT`, `_DRAIN_DELAY`) instead of cutting them, and
+  SSE writes refresh their deadline per frame instead of dying at the first one.
+
+### Performance
+- The session store's `GetOrCreate` takes a read lock on a hit, which is nearly
+  every request; it used to serialise the whole process on one write lock.
+- Vector queries clone metadata **after** top-k truncation, so a 10,000-point
+  collection no longer allocates 10,000 maps to return three.
+- Audit writes moved off the request goroutine, with row-count retention
+  (`MOCKAGENTS_AUDIT_MAX_ROWS`).
+
+### Documentation
+- **New**: an [operations guide](site/docs/guides/operations.md) covering
+  backup and restore, platform-key recovery, OIDC secret rotation, the move to
+  Postgres, upgrades and replica limits; and a
+  [configuration reference](site/docs/reference/configuration.md) listing every
+  environment variable, which a test now keeps honest.
+
+### Also in this release
+
+Everything below landed on `main` between v0.4.0 and this tag, alongside the
+audit work above.
+
 
 ### Fixed
 - **Two agents sharing a `metadata.name` are no longer silent.** The registry

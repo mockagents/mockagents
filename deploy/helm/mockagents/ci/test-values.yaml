@@ -3,7 +3,7 @@
 # envFrom, extraArgs, and the acknowledged multi-replica path.
 image:
   repository: mockagents/mockagents
-  tag: "0.4.0"
+  tag: "0.5.0"
 
 # Two independent single-tenant mock servers behind the Service. Without
 # the acknowledgement (or env.MOCKAGENTS_TENANCY_DSN) the chart refuses to
