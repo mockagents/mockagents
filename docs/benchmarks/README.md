@@ -33,7 +33,7 @@ output, and writes two artifacts into this directory:
 The GOMAXPROCS suffix is stripped from benchmark names before parsing
 so results from a laptop and a CI runner stay comparable.
 
-> **Baseline freshness:** `latest.{json,md}` was refreshed **2026-08-21** and
+> **Baseline freshness:** `latest.{json,md}` was refreshed **2026-09-09** and
 > now comes from **`linux/amd64`, measured by the perf-guard workflow itself**
 > — no longer from the Windows dev box. Two reasons:
 >
@@ -50,6 +50,14 @@ so results from a laptop and a CI runner stay comparable.
 >    `ScenarioMatcher_ContentContains` and `_Default` with `allocs/op` still 1.
 >    A real, intentional, one-word cost; the baseline simply was not
 >    regenerated alongside it.
+>
+> The **2026-09-09** refresh followed exactly that procedure: the committed
+> baseline had drifted back to a Windows measurement, so the guard reported
+> +28-96% `ns/op` movement on every run and blocked on one real allocation
+> change (`ProcessRequest_TemplateResponse` 18 -> 17 allocs/op, an improvement).
+> The new numbers come from the perf-guard run on `0b240bb` and were verified
+> against a second runner's artifact: allocs/op identical on all 15 comparable
+> benchmarks, B/op within 1 byte on three, median `ns/op` drift 0.9% (max 6.8%).
 >
 > To refresh: run the workflow (`gh workflow run "Perf guard" --ref main`),
 > download its `bench-report-<sha>` artifact, and commit `latest.{json,md}`
