@@ -12,8 +12,8 @@ jobs:
   offline-baseline:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Run offline three-way baseline
@@ -31,7 +31,7 @@ jobs:
             --baseline testdata/drift/tavily/baseline.json \
             --format json \
             --output drift-reports/tavily-search.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: provider-drift-offline
           path: drift-reports/
@@ -39,8 +39,8 @@ jobs:
   cohere-live:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Check Cohere credentials
@@ -84,7 +84,7 @@ jobs:
             --ignore-path '$.id' \
             --format json \
             --output drift-reports/cohere-live-report.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: steps.credentials.outputs.enabled == 'true'
         with:
           name: provider-drift-cohere-live
@@ -93,8 +93,8 @@ jobs:
   openai-moderation-live:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Check OpenAI credentials
@@ -137,7 +137,7 @@ jobs:
             --mock testdata/drift/openai-moderation/mock.json \
             --format json \
             --output drift-reports/openai-moderation-live-report.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: steps.credentials.outputs.enabled == 'true'
         with:
           name: provider-drift-openai-moderation-live
@@ -146,8 +146,8 @@ jobs:
   tavily-live:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Check Tavily credentials
@@ -190,7 +190,7 @@ jobs:
             --mock testdata/drift/tavily/mock.json \
             --format json \
             --output drift-reports/tavily-live-report.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: steps.credentials.outputs.enabled == 'true'
         with:
           name: provider-drift-tavily-live
