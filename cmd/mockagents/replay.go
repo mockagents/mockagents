@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -26,6 +28,7 @@ Requests that don't match any recorded interaction return 404 by default.`,
 var (
 	replayCassette       string
 	replayPort           int
+	replayBind           string
 	replayMatchIgnore    []string
 	replayRecordMode     string
 	replayUpstream       string
@@ -38,6 +41,7 @@ var (
 func init() {
 	replayCmd.Flags().StringVar(&replayCassette, "cassette", "cassette.jsonl", "Path to the cassette file to load")
 	replayCmd.Flags().IntVarP(&replayPort, "port", "p", 8080, "Port to listen on")
+	replayCmd.Flags().StringVar(&replayBind, "bind", "127.0.0.1", "Interface to bind (0.0.0.0 to expose; record-on-miss forwards --api-key upstream)")
 	replayCmd.Flags().StringArrayVar(&replayMatchIgnore, "match-ignore", nil, "Top-level request body field to ignore when matching (repeatable, e.g. --match-ignore temperature --match-ignore seed). Replay-time only; the cassette is unchanged")
 	replayCmd.Flags().StringVar(&replayRecordMode, "record-mode", "none", "Record mode: none (replay only) | new_episodes (record on miss) | once (record only if the cassette is new) | all (always forward+record)")
 	replayCmd.Flags().StringVar(&replayUpstream, "upstream", "", "Upstream base URL for record-on-miss (required for new_episodes/all and for once on a new cassette)")
@@ -140,14 +144,18 @@ func runReplay(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(w, "ok: %d interactions loaded\n", cass.Len())
 	})
 
+	// Loopback by default (audit M-22): record-on-miss relays --api-key upstream.
+	addr := net.JoinHostPort(replayBind, strconv.Itoa(replayPort))
 	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", replayPort),
+		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
-	fmt.Printf("mockagents replay listening on :%d (cassette=%s, %d interactions)\n",
-		replayPort, replayCassette, cass.Len())
+	fmt.Printf("mockagents replay listening on %s (cassette=%s, %d interactions)\n",
+		addr, replayCassette, cass.Len())
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()

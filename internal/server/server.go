@@ -96,6 +96,12 @@ type Config struct {
 	// closes immediately; the Helm chart provides this window with a preStop
 	// sleep instead.
 	ShutdownDrainDelay time.Duration
+	// EnableEngineEndpoint mounts POST /v1/engines/process, the generic
+	// engine endpoint used by conformance tests and the SDK harness. It lets
+	// the caller name any global agent directly, is exempt from auth like the
+	// provider surfaces, and is not quota-metered — so it stays off unless a
+	// deployment opts in (audit M-07).
+	EnableEngineEndpoint bool
 	// Prices is the per-model cost table used by /api/v1/logs and
 	// /api/v1/costs. Nil disables cost annotation (fields are zero).
 	Prices *pricingpkg.Table
@@ -518,8 +524,13 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// API key in an Authorization header.
 	s.mountManaged(mux, "GET /metrics", MetricsHandler(s.config.Metrics))
 
-	// Generic engine endpoint (internal/testing).
-	mux.HandleFunc("POST /v1/engines/process", s.handleProcessRequest)
+	// Generic engine endpoint (internal/testing): opt-in, see
+	// Config.EnableEngineEndpoint (audit M-07). Only an enabled mount is
+	// added to the auth-exempt set.
+	if s.config.EnableEngineEndpoint {
+		mux.HandleFunc("POST /v1/engines/process", s.handleProcessRequest)
+		s.open.add("POST /v1/engines/process")
+	}
 }
 
 // readinessHandlers builds the readiness check set from what this server was

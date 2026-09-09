@@ -66,6 +66,12 @@ func (s *Server) EmitNotification(method string, params map[string]any) {
 	n := &Notification{Method: method, Params: params}
 	s.mu.Lock()
 	s.pending = append(s.pending, n)
+	// Bounded (audit M-25): the legacy transport only drains this on the
+	// next request, so an admin caller could grow it without limit. The
+	// oldest notifications go first; the newest are what a client needs.
+	if over := len(s.pending) - maxPendingNotifications; over > 0 {
+		s.pending = append(s.pending[:0], s.pending[over:]...)
+	}
 	s.mu.Unlock()
 	// Also push through the bidirectional queue so any SSE subscriber
 	// sees the notification in the same ordered stream as server-
@@ -866,3 +872,7 @@ func (s *Server) handleLoggingSetLevel(req *Request) *Response {
 	s.mu.Unlock()
 	return newResult(req.ID, map[string]any{})
 }
+
+// maxPendingNotifications bounds the legacy-transport notification queue and
+// the bidirectional outbound queue (drop-oldest past the cap).
+const maxPendingNotifications = 1024

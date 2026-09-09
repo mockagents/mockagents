@@ -349,3 +349,19 @@ func DrainBody(r *http.Request) ([]byte, error) {
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	return body, nil
 }
+
+// MaxRequestBodyBytes caps a request body the proxy or replay server will
+// read. DrainBody used to be a bare io.ReadAll, so one oversized POST
+// allocated without bound (audit M-22); provider APIs reject bodies far
+// below this anyway.
+const MaxRequestBodyBytes = 10 << 20 // 10 MiB
+
+// drainStatus maps a DrainBody error to an HTTP status: 413 when the cap
+// tripped, 400 otherwise.
+func drainStatus(err error) int {
+	var tooBig *http.MaxBytesError
+	if errors.As(err, &tooBig) {
+		return http.StatusRequestEntityTooLarge
+	}
+	return http.StatusBadRequest
+}

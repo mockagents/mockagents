@@ -147,9 +147,11 @@ func (h *ResponseHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// Same cap as every other MCP entry point (audit M-24).
+	r.Body = http.MaxBytesReader(w, r.Body, maxMCPBodyBytes)
 	var resp Response
 	if err := json.NewDecoder(r.Body).Decode(&resp); err != nil {
-		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "invalid JSON: "+err.Error(), readCapStatus(err))
 		return
 	}
 	if resp.JSONRPC == "" {
@@ -178,6 +180,10 @@ type SendRequestHandler struct {
 	DefaultTimeout time.Duration
 }
 
+// maxAdminRequestTimeout caps how long an admin trigger may wait for the
+// client's reply, whatever X-MCP-Timeout-Ms asks for.
+const maxAdminRequestTimeout = 60 * time.Second
+
 // NewSendRequestHandler returns a handler bound to the given method.
 func NewSendRequestHandler(s *Server, method string) *SendRequestHandler {
 	return &SendRequestHandler{Server: s, Method: method}
@@ -199,10 +205,17 @@ func (h *SendRequestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			timeout = v
 		}
 	}
+	// A client-chosen timeout used to be unbounded: X-MCP-Timeout-Ms of a
+	// few billion parked a goroutine and a pending-request entry for the
+	// life of the process (audit M-24).
+	if timeout > maxAdminRequestTimeout {
+		timeout = maxAdminRequestTimeout
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxMCPBodyBytes)
 	var params map[string]any
 	if r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
-			http.Error(w, "invalid params JSON: "+err.Error(), http.StatusBadRequest)
+			http.Error(w, "invalid params JSON: "+err.Error(), readCapStatus(err))
 			return
 		}
 	}

@@ -15,7 +15,6 @@ import (
 var builtinOpenRoutes = []string{
 	"GET /api/v1/health",
 	"GET /api/v1/ready",
-	"POST /v1/engines/process",
 	"GET /auth/login",
 	"GET /auth/callback",
 	"POST /auth/logout",
