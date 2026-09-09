@@ -2,8 +2,10 @@ package recording
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -42,6 +44,12 @@ type Proxy struct {
 	// it is appended to the cassette (R-03). It never touches the response
 	// forwarded to the client.
 	Redactor *Redactor
+	// BodyTimeout bounds how long a NON-streaming upstream response body may
+	// take to arrive once headers are in. Zero uses DefaultBodyTimeout;
+	// negative disables the bound. SSE responses are exempt — a recording
+	// session legitimately holds a stream open for as long as the client wants
+	// (audit M-33: a single Client.Timeout cut every long stream at 60s).
+	BodyTimeout time.Duration
 	// SkipRecordOnError, when true, suppresses Cassette.Append for upstream
 	// responses with status >= 400 (the client still receives the error). This
 	// keeps a record-on-miss fallback (R-01) from caching a transient 429/500 as
@@ -71,8 +79,55 @@ func NewProxy(upstream string, cassette *Cassette) (*Proxy, error) {
 	return &Proxy{
 		Upstream: u,
 		Cassette: cassette,
-		Client:   &http.Client{Timeout: 60 * time.Second},
+		// No Client.Timeout: it covers the whole exchange INCLUDING the body,
+		// so it killed every SSE recording at 60s (audit M-33). Each phase is
+		// bounded separately instead — connect, TLS, and response headers on
+		// the transport, the non-streaming body read in ServeHTTP.
+		Client: &http.Client{Transport: NewProxyTransport()},
 	}, nil
+}
+
+// Per-phase upstream timeouts (audit M-33). These bound the phases that can
+// hang against an unresponsive upstream without capping a legitimately long
+// streamed response.
+const (
+	// DefaultDialTimeout bounds TCP connect.
+	DefaultDialTimeout = 10 * time.Second
+	// DefaultTLSHandshakeTimeout bounds the TLS handshake.
+	DefaultTLSHandshakeTimeout = 10 * time.Second
+	// DefaultResponseHeaderTimeout bounds the wait for the upstream's response
+	// headers. It is generous because a slow model can take a while to produce
+	// the first byte, but unlike a whole-request timeout it stops counting once
+	// the stream starts.
+	DefaultResponseHeaderTimeout = 120 * time.Second
+	// DefaultBodyTimeout bounds reading a NON-streaming response body.
+	DefaultBodyTimeout = 120 * time.Second
+	// DefaultIdleConnTimeout bounds how long a pooled connection stays open.
+	DefaultIdleConnTimeout = 90 * time.Second
+)
+
+// NewProxyTransport builds the http.Transport the recording proxy uses:
+// bounded connect / TLS / response-header phases, unbounded body so streams
+// can run as long as the client keeps reading.
+func NewProxyTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = (&net.Dialer{
+		Timeout:   DefaultDialTimeout,
+		KeepAlive: 30 * time.Second,
+	}).DialContext
+	t.TLSHandshakeTimeout = DefaultTLSHandshakeTimeout
+	t.ResponseHeaderTimeout = DefaultResponseHeaderTimeout
+	t.ExpectContinueTimeout = 1 * time.Second
+	t.IdleConnTimeout = DefaultIdleConnTimeout
+	return t
+}
+
+// bodyTimeout resolves the non-streaming body read bound.
+func (p *Proxy) bodyTimeout() time.Duration {
+	if p.BodyTimeout == 0 {
+		return DefaultBodyTimeout
+	}
+	return p.BodyTimeout
 }
 
 // ServeHTTP forwards the incoming request, captures the response, and
@@ -93,7 +148,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	target.Path = singleJoin(p.Upstream.Path, path.Clean(r.URL.Path))
 	target.RawQuery = r.URL.RawQuery
 
-	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), bytes.NewReader(body))
+	// One cancelable context for the whole upstream exchange: the client going
+	// away cancels it, and the non-streaming path arms a body-read deadline on
+	// it once the response type is known.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	proxyReq, err := http.NewRequestWithContext(ctx, r.Method, target.String(), bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, "building upstream request: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -118,24 +179,39 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Non-streaming: bound the body read. This is the phase a whole-request
+	// timeout used to cover, and the only one where an upstream that stops
+	// mid-body would otherwise hang the handler forever.
+	if d := p.bodyTimeout(); d > 0 {
+		timer := time.AfterFunc(d, cancel)
+		defer timer.Stop()
+	}
 	respBody, err := io.ReadAll(upstreamResp.Body)
 	if err != nil {
 		http.Error(w, "reading upstream response: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 
+	// A non-JSON body (HTML error page, plain-text 502) is wrapped rather than
+	// assigned straight to a json.RawMessage, which would have made the whole
+	// interaction un-encodable and failed the cassette write (audit M-28).
+	reqRaw, reqEnc := EncodeBody(body)
+	respRaw, respEnc := EncodeBody(respBody)
 	it := &Interaction{
-		Method:          r.Method,
-		Path:            r.URL.Path,
-		RequestHeaders:  CaptureHeaders(r.Header, DefaultCaptureHeaders),
-		RequestBody:     body,
-		ResponseStatus:  upstreamResp.StatusCode,
-		ResponseHeaders: CaptureHeaders(upstreamResp.Header, DefaultCaptureHeaders),
-		ResponseBody:    respBody,
+		Method:               r.Method,
+		Path:                 r.URL.Path,
+		RequestHeaders:       CaptureHeaders(r.Header, DefaultCaptureHeaders),
+		RequestBody:          reqRaw,
+		RequestBodyEncoding:  reqEnc,
+		ResponseStatus:       upstreamResp.StatusCode,
+		ResponseHeaders:      CaptureHeaders(upstreamResp.Header, DefaultCaptureHeaders),
+		ResponseBody:         respRaw,
+		ResponseBodyEncoding: respEnc,
 	}
-	// Compute the hash from the ORIGINAL request body before any redaction, so
-	// replay (which sees the un-redacted request) still matches (R-03).
-	it.Hash = HashRequest(it.Method, it.Path, it.RequestBody)
+	// Compute the hash from the ORIGINAL request body before any redaction or
+	// encoding wrapper, so replay (which sees the un-redacted request) still
+	// matches (R-03).
+	it.Hash = HashRequest(it.Method, it.Path, body)
 	if !p.skipRecording(it.ResponseStatus) {
 		if p.Redactor != nil {
 			p.Redactor.Apply(it)
@@ -212,17 +288,19 @@ func (p *Proxy) serveStreaming(w http.ResponseWriter, r *http.Request, reqBody [
 		}
 	}
 
+	reqRaw, reqEnc := EncodeBody(reqBody)
 	it := &Interaction{
-		Method:          r.Method,
-		Path:            r.URL.Path,
-		RequestHeaders:  CaptureHeaders(r.Header, DefaultCaptureHeaders),
-		RequestBody:     reqBody,
-		ResponseStatus:  upstreamResp.StatusCode,
-		ResponseHeaders: CaptureHeaders(upstreamResp.Header, DefaultCaptureHeaders),
-		Streaming:       true,
-		StreamEvents:    events,
+		Method:              r.Method,
+		Path:                r.URL.Path,
+		RequestHeaders:      CaptureHeaders(r.Header, DefaultCaptureHeaders),
+		RequestBody:         reqRaw,
+		RequestBodyEncoding: reqEnc,
+		ResponseStatus:      upstreamResp.StatusCode,
+		ResponseHeaders:     CaptureHeaders(upstreamResp.Header, DefaultCaptureHeaders),
+		Streaming:           true,
+		StreamEvents:        events,
 	}
-	it.Hash = HashRequest(it.Method, it.Path, it.RequestBody)
+	it.Hash = HashRequest(it.Method, it.Path, reqBody)
 	// A stream that broke mid-flight (upstream reset/crash) is a transient
 	// failure, not a canonical response — on the record-on-miss path, skipping
 	// it avoids permanently caching a truncated, [DONE]-less stream. The status

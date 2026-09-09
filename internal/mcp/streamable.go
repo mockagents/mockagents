@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -63,6 +64,11 @@ const (
 	maxSessionLogEvents = 1024
 	// defaultMaxSessions bounds the live session table (FIFO eviction).
 	defaultMaxSessions = 256
+	// defaultSessionIdleTTL reclaims a session that has neither been used by a
+	// POST/GET nor kept warm by a live GET stream for this long. MCP clients
+	// are supposed to DELETE their session; real ones crash, close the laptop
+	// lid, or lose the network instead (audit M-30).
+	defaultSessionIdleTTL = 30 * time.Minute
 	// maxSubscribersPerSession caps concurrent GET streams per session. The
 	// spec allows AT MOST ONE server→client stream per session and says a
 	// second concurrent GET MUST be refused with 409 Conflict (round-10
@@ -111,6 +117,13 @@ type StreamableHTTPHandler struct {
 	// HeartbeatInterval overrides the 15s GET-stream keepalive (tests use a
 	// short value). Zero uses the default.
 	HeartbeatInterval time.Duration
+}
+
+// SetSessionIdleTTL overrides how long a session survives without being used
+// (default 30 minutes). Call it before the handler starts serving; it replaces
+// the session table, so any session already minted is dropped.
+func (h *StreamableHTTPHandler) SetSessionIdleTTL(d time.Duration) {
+	h.sessions = newSessionManagerTTL(h.sessions.max, d)
 }
 
 // NewStreamableHTTPHandler returns a ready-to-mount streamable handler.
@@ -381,6 +394,10 @@ func (h *StreamableHTTPHandler) handleGet(w http.ResponseWriter, r *http.Request
 				return
 			}
 			flusher.Flush()
+			// A client parked on a long-lived stream sends no requests, so keep
+			// its session out of the idle sweep for as long as the stream is
+			// actually writable (M-30).
+			sess.touch(time.Now())
 		case ev, ok := <-ch:
 			if !ok {
 				return // session terminated
@@ -472,44 +489,121 @@ func writeSSEEvent(w io.Writer, id int64, data []byte) error {
 
 // --- session manager -------------------------------------------------------
 
-// sessionManager holds the live streamable sessions, capped FIFO.
+// sessionManager holds the live streamable sessions, capped FIFO with an idle
+// TTL. Without the TTL a client that never sends DELETE left its session (and
+// its 1024-event replay log) resident until 256 newer sessions pushed it out,
+// so an abandoned session pinned memory indefinitely and, worse, FIFO eviction
+// could drop a session that was still in active use ahead of one that had been
+// idle for hours (audit M-30).
 type sessionManager struct {
 	mu       sync.Mutex
 	sessions map[string]*streamSession
 	order    []string
 	max      int
+	idleTTL  time.Duration
+	// now is the clock, swappable in tests.
+	now func() time.Time
 }
 
 func newSessionManager(max int) *sessionManager {
+	return newSessionManagerTTL(max, defaultSessionIdleTTL)
+}
+
+func newSessionManagerTTL(max int, idleTTL time.Duration) *sessionManager {
 	if max <= 0 {
 		max = defaultMaxSessions
 	}
-	return &sessionManager{sessions: make(map[string]*streamSession), max: max}
+	if idleTTL <= 0 {
+		idleTTL = defaultSessionIdleTTL
+	}
+	return &sessionManager{
+		sessions: make(map[string]*streamSession),
+		max:      max,
+		idleTTL:  idleTTL,
+		now:      time.Now,
+	}
 }
 
 func (m *sessionManager) create() *streamSession {
 	s := newStreamSession(newSessionID())
 	m.mu.Lock()
+	now := m.now()
+	s.touch(now)
 	m.sessions[s.id] = s
 	m.order = append(m.order, s.id)
+	// Reclaim idle sessions FIRST, so a burst of new sessions never evicts a
+	// live one while an abandoned session is still holding a slot.
+	expired := m.sweepLocked(now)
 	for len(m.order) > m.max {
-		evict := m.order[0]
-		m.order = m.order[1:]
-		if old, ok := m.sessions[evict]; ok {
-			delete(m.sessions, evict)
-			old.close()
+		if s, ok := m.removeLocked(m.order[0]); ok {
+			expired = append(expired, s)
 		}
 	}
 	m.mu.Unlock()
+	for _, old := range expired {
+		old.close()
+	}
 	return s
 }
 
+// sweepLocked removes every session idle for longer than idleTTL and returns
+// them for the caller to close outside the lock. Caller holds mu.
+func (m *sessionManager) sweepLocked(now time.Time) []*streamSession {
+	var expired []*streamSession
+	cutoff := now.Add(-m.idleTTL)
+	// order is insertion-ordered, not last-seen-ordered, so scan all of it.
+	for _, id := range append([]string(nil), m.order...) {
+		s, ok := m.sessions[id]
+		if !ok {
+			continue
+		}
+		if s.lastSeen().Before(cutoff) {
+			if removed, ok := m.removeLocked(id); ok {
+				expired = append(expired, removed)
+			}
+		}
+	}
+	return expired
+}
+
+// removeLocked drops a session from the table and the FIFO order without
+// closing it. Caller holds mu.
+func (m *sessionManager) removeLocked(id string) (*streamSession, bool) {
+	s, ok := m.sessions[id]
+	if !ok {
+		return nil, false
+	}
+	delete(m.sessions, id)
+	for i, oid := range m.order {
+		if oid == id {
+			m.order = append(m.order[:i:i], m.order[i+1:]...)
+			break
+		}
+	}
+	return s, true
+}
+
+// get returns a live session and marks it as just-used. A session past its
+// idle TTL is treated as gone (and reclaimed), so a stale Mcp-Session-Id gets
+// the same 404 it would after a restart rather than silently resuming.
 func (m *sessionManager) get(id string) (*streamSession, bool) {
 	if id == "" {
 		return nil, false
 	}
 	m.mu.Lock()
+	now := m.now()
 	s, ok := m.sessions[id]
+	if ok && s.lastSeen().Before(now.Add(-m.idleTTL)) {
+		s, ok = m.removeLocked(id)
+		m.mu.Unlock()
+		if ok {
+			s.close()
+		}
+		return nil, false
+	}
+	if ok {
+		s.touch(now)
+	}
 	m.mu.Unlock()
 	return s, ok
 }
@@ -519,16 +613,7 @@ func (m *sessionManager) delete(id string) bool {
 		return false
 	}
 	m.mu.Lock()
-	s, ok := m.sessions[id]
-	if ok {
-		delete(m.sessions, id)
-		for i, oid := range m.order {
-			if oid == id {
-				m.order = append(m.order[:i:i], m.order[i+1:]...)
-				break
-			}
-		}
-	}
+	s, ok := m.removeLocked(id)
 	m.mu.Unlock()
 	if ok {
 		s.close()
@@ -576,6 +661,10 @@ type loggedEvent struct {
 type streamSession struct {
 	id string
 
+	// seen is the last-use timestamp in UnixNano, read by the idle sweep
+	// without taking the session lock.
+	seen atomic.Int64
+
 	mu     sync.Mutex
 	nextID int64
 	log    []loggedEvent
@@ -584,10 +673,22 @@ type streamSession struct {
 }
 
 func newStreamSession(id string) *streamSession {
-	return &streamSession{
+	s := &streamSession{
 		id:   id,
 		subs: make(map[chan loggedEvent]struct{}),
 	}
+	s.seen.Store(time.Now().UnixNano())
+	return s
+}
+
+// touch records that the session was just used, deferring idle expiry.
+func (s *streamSession) touch(now time.Time) {
+	s.seen.Store(now.UnixNano())
+}
+
+// lastSeen reports when the session was last used.
+func (s *streamSession) lastSeen() time.Time {
+	return time.Unix(0, s.seen.Load())
 }
 
 // broadcastNotification appends a notification to the resumable log and pushes

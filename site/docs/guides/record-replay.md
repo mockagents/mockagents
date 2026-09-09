@@ -30,6 +30,14 @@ python run_checkout_flow.py
 Cassettes are JSON-lines — safe to `git diff`, review, and check in. SSE
 (streaming) responses are captured and replayed faithfully.
 
+Each interaction is appended as one line as it happens, so a long recording
+session costs the same per request no matter how many are already on file, and
+a run interrupted mid-write keeps everything recorded before it. Bodies that
+aren't JSON — an HTML error page from a gateway, a plain-text 502 — are stored
+wrapped, with a `request_body_encoding` / `response_body_encoding` field of
+`text` (or `base64` for non-UTF-8 bytes); replay unwraps them and serves the
+original bytes back.
+
 ### Redact secrets before they hit the cassette
 
 Your `--api-key` is never written, but request/response **bodies** can still
