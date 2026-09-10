@@ -6,7 +6,7 @@ Candidate baseline: `6ddb03e54a14484e5929a19673f0cfd8a1975f07`. This is an engin
 
 ## Execution brief
 
-**Objective:** resolve all 30 confirmed audit findings, validate the complete supported product, and produce a release candidate with reproducible signoff evidence. Current status: **planning complete; implementation not started**. No audit finding is closed by writing this plan.
+**Objective:** resolve all 30 confirmed audit findings, validate the complete supported product, and produce a release candidate with reproducible signoff evidence. Current implementation and verification state is maintained in the [evidence register](2026-09-10-implementation-evidence.md). No audit finding is closed by writing this plan or landing code without its required candidate evidence.
 
 The default scope includes the Go server, multi-tenant control plane, record/replay, A2A, vector adapters, all SDKs/launchers, GUI integration, Helm and advertised distribution channels. Do not silently defer a finding by treating its feature as optional. The release candidate is eligible for signoff only after Phases 1 and 2 close all 30 findings; Phase 3 contains continuing preventive improvements, not a place to move unresolved confirmed defects.
 

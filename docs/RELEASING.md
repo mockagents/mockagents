@@ -16,10 +16,17 @@ which fires on any pushed `v*` tag and:
 The whole thing is driven by **one tag push** — but several **one-time account
 setups** must be done first, or individual publish jobs will fail.
 
-> **Version coupling — read this first.** The `npx mockagents` launcher and the
+All build, package, security, Helm, and install-channel checks run through the
+reusable candidate verification workflow before a publisher can start. Run the
+same verification for the exact candidate commit and retain its artifacts.
+Account and registry checkboxes below are prerequisites that require live
+verification; their presence here is not evidence that they are configured.
+
+> **Version coupling — read this first.** Set `VERSION` to the candidate package
+> version (without the `v` tag prefix). The `npx mockagents` launcher and the
 > Python/npm wrappers download the GitHub release binary whose version equals
 > their own `package.json` / `pyproject.toml` version. So **the tag must equal
-> the package versions.** They are all currently **`0.4.0`**. The release
+> every package version.** The release
 > workflow enforces this (`Verify package versions match the tag`) and fails
 > fast on a mismatch. To release a different version, bump all of these together
 > first: `sdk/npx/package.json`, `sdk/typescript/package.json`,
@@ -168,20 +175,20 @@ Once the one-time setup is in place:
 
 1. **Land everything** you want in the release on `main` (merge open PRs first) —
    do this **before** the next step so the changelog captures exactly what ships.
-2. **Finalize the changelog.** Promote the accumulated `## [Unreleased]` section
-   to the release version (renames it to `## [0.4.0] - <today>` and opens a fresh
+2. **Set and verify the candidate version.** For example, `VERSION=0.5.0`.
+   Promote the accumulated `## [Unreleased]` section to the release version and open a fresh
    empty `## [Unreleased]`), then commit:
    ```bash
-   make changelog-finalize VERSION=0.4.0     # or: sh scripts/finalize-changelog.sh 0.4.0
-   git add CHANGELOG.md && git commit -m "docs(changelog): release 0.4.0"
+   make changelog-finalize VERSION="$VERSION"
+   git add CHANGELOG.md && git commit -m "docs(changelog): release $VERSION"
    ```
 3. **Confirm versions are aligned** to the tag you're about to push (see the
-   version-coupling note above) — all should read `0.4.0`.
+   version-coupling note above), then run `scripts/release-preflight.sh "v$VERSION"`.
 4. **Tag and push:**
    ```bash
    git checkout main && git pull
-   git tag -a v0.4.0 -m "MockAgents v0.4.0"
-   git push origin v0.4.0
+   git tag -a "v$VERSION" -m "MockAgents v$VERSION"
+   git push origin "v$VERSION"
    ```
 5. **Watch the release workflow:** `gh run watch` (or the Actions tab). Jobs:
    `test` → `release-binaries` / `release-docker` / `release-python` /
@@ -189,11 +196,16 @@ Once the one-time setup is in place:
 
 ### Verify
 
+Verify immutable versions and digests for every enabled channel. A prerelease
+must never update stable container/npm tags. If publication stops partway,
+record each successful immutable artifact and resume only missing work; never
+replace registry bytes under an existing version.
+
 ```bash
-gh release view v0.4.0                                   # binaries + checksums attached
+gh release view "v$VERSION"                             # binaries + checksums attached
 docker run --rm -p 8080:8080 mockagents/mockagents &     # image runs
-pipx run mockagents==0.4.0 --version                     # PyPI wheel bootstraps the binary
-npx mockagents@0.4.0 --version                           # npx launcher downloads the binary
+pipx run "mockagents==$VERSION" --version               # PyPI wheel bootstraps the binary
+npx "mockagents@$VERSION" --version                     # npx launcher downloads the binary
 npm view @mockagents/sdk version                         # SDK published
 brew install mockagents/tap/mockagents                   # (if the tap is set up)
 ```
@@ -220,5 +232,5 @@ above is done.
 ## Maintenance note
 
 Homebrew distribution uses GoReleaser's `homebrew_casks:` block (a cask, not the
-deprecated `brews:` formula), so `goreleaser-action` floats to `latest`. The cask
+deprecated `brews:` formula). The workflow pins its GoReleaser Action major. The cask
 is **macOS-only** — there is no Linux Homebrew path by design.

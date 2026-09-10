@@ -1,5 +1,17 @@
 # VectorMock
 
+## Distance and projection contract
+
+The shared core ranks deterministically; adapters convert results to each
+provider's public score convention. Chroma returns requested documents, URIs,
+metadata, embeddings, and distances. Qdrant Euclidean scores and thresholds use
+Qdrant ordering semantics rather than a universal larger-is-better rule.
+
+Vector arithmetic and encoder results must be finite. Dimension mismatches,
+non-finite values, and encoder failures return provider-shaped non-2xx errors,
+never successful empty results. Adapter tests should use analytical vectors for
+every metric and both sides of threshold boundaries.
+
 MockAgents includes in-memory Qdrant- and Pinecone-compatible vector surfaces
 on the same server as the LLM APIs. They share one deterministic, bounded,
 process-local store and never call a network upstream.

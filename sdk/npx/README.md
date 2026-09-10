@@ -11,8 +11,10 @@ export OPENAI_BASE_URL=http://localhost:8080/v1
 ```
 
 On first run this downloads the platform-matched `mockagents` binary from GitHub
-Releases (sha256-verified, fail-closed) and caches it; subsequent runs reuse the
-cache. All arguments are passed straight through to the binary
+Releases (sha256-verified, fail-closed) and caches it by requested version,
+operating system, and architecture; subsequent runs reuse only that exact slot.
+Downloads publish atomically after verification, so concurrent or interrupted
+installs cannot expose a partial executable. All arguments pass through to the binary
 (`start`, `validate`, `test`, `record`, `replay`, `mcp`, …).
 
 **Binary resolution order:** `$MOCKAGENTS_BINARY` → the npx cache. To use an

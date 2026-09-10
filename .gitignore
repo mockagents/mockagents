@@ -1,7 +1,6 @@
-# Coding-agent instructions / config — keep local, never publish to GitHub
+# Local coding-tool configuration. The root AGENTS.md is intentionally tracked.
 .claude/
 CLAUDE.md
-AGENTS.md
 .cursor/
 .cursorrules
 .windsurfrules

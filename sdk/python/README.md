@@ -12,8 +12,11 @@ pip install mockagents
 Python 3.10 through 3.13 is supported. The package controls the MockAgents Go
 binary. Install it separately, set `MOCKAGENTS_BINARY=/absolute/path/mockagents`,
 or opt in to verified release downloads with `MOCKAGENTS_AUTO_DOWNLOAD=1`.
-Downloaded binaries are checksum verified and cached by package version and
-platform. An explicit binary path always overrides the cache.
+Downloaded binaries are checksum verified and cached by requested version,
+operating system, and architecture. Publication into the cache is atomic, so
+concurrent or interrupted installs cannot expose a partial executable. Legacy
+unversioned entries are left untouched. An explicit binary path always
+overrides the cache.
 
 ## Start a server
 

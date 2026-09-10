@@ -66,20 +66,20 @@ platform-role key at all**. Restarting the server does not produce a new one.
 
 Two recovery paths, in order of preference:
 
-**1. Rotate it with an admin key of the default tenant.** Rotation regenerates
+**1. Rotate it with another platform key.** Rotation regenerates
 a key's secret in place, preserving its id, name, role and tenant, and returns
 the new plaintext once:
 
 ```bash
 curl -sX POST http://localhost:8080/api/v1/keys/<platform-key-id>/rotate \
-  -H "Authorization: Bearer $ADMIN_KEY"
+  -H "Authorization: Bearer $PLATFORM_KEY"
 ```
 
 Find the id with `GET /api/v1/tenants/<default-tenant-id>/keys` using the same
-admin key. This is the only path that needs no downtime.
+platform key. Tenant admins cannot mutate platform credentials.
 
-**2. Delete the row and re-bootstrap.** If no admin key of the default tenant
-survives, stop the server, remove the platform key row, and start it again with
+**2. Delete the row and re-bootstrap.** If no platform key survives, stop the
+server, remove the platform key row, and start it again with
 the plaintext you want:
 
 ```bash
@@ -156,14 +156,21 @@ A safe upgrade:
 4. Confirm authentication still works with a real key, not just the health
    endpoint, since readiness does not exercise the tenancy store.
 
-Downgrading after a schema change is not supported: an older binary may not
-recognize a newer table. Restore the backup instead.
+Downgrading after a schema change is not supported. Older instances do not
+enforce credential-version revocation; drain them during upgrade and favor a
+forward repair. Restore the pre-upgrade backup only as an incident procedure.
 
 Agent YAML is validated at load time. `mockagents validate ./agents` before an
 upgrade tells you whether your definitions still parse under the new version;
 a definition the server rejects is logged and skipped, not fatal.
 
 ## Running more than one replica
+
+Conversation turns commit state only after response generation succeeds. A
+failed turn does not advance the counter, retain the user message, or keep
+nested variable mutations. This state remains memory-backed and is lost on
+restart. A2A task state is also bounded, process-local, and expires after a
+terminal TTL; it is not a durable migration target.
 
 The default deployment is a **single writer**. Two replicas sharing one SQLite
 file on a shared volume will corrupt each other's writes.

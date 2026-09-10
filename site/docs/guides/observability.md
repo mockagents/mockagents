@@ -131,7 +131,7 @@ scrape_configs:
       - targets: ["localhost:8080"]
 ```
 
-In **multi-tenant mode** `/metrics` requires a `viewer`-or-above API key, because
+In **multi-tenant mode** `/metrics` requires a platform API key, because
 agent and scenario names are metric labels. Health and readiness stay open;
 metrics do not:
 
@@ -147,11 +147,15 @@ scrape_configs:
 ### Kubernetes
 
 The Helm chart ships a Prometheus Operator `ServiceMonitor` pointing at
-`/metrics`, off by default:
+`/metrics`, off by default. In multi-tenant mode, configure its authorization
+to reference a Secret containing a dedicated platform credential:
 
 ```bash
 helm install demo ./deploy/helm/mockagents \
-  --set serviceMonitor.enabled=true
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.authorization.enabled=true \
+  --set serviceMonitor.authorization.credentials.name=mockagents-metrics \
+  --set serviceMonitor.authorization.credentials.key=token
 ```
 
 The chart's probes are already split — `livenessProbe` on `/api/v1/health`,

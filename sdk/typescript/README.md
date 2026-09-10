@@ -74,6 +74,11 @@ expect(result).toHaveNodeSequence(["plan", "research", "write"]);
 
 ## API surface
 
+`MockAgentServer.stop()` waits for observed child exit, escalates from SIGTERM
+to SIGKILL after its grace period, and clears lifecycle timers. Startup errors
+include bounded subprocess diagnostics. A release candidate must pass the real
+Linux stubborn-child test; mocked signal tests alone are insufficient.
+
 | Export | Purpose |
 | --- | --- |
 | `MockAgentServer` | Spawns the Go binary, picks a free port, polls `/api/v1/health`. |

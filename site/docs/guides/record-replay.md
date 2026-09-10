@@ -1,5 +1,17 @@
 # Record & Replay (the fastest on-ramp)
 
+## Privacy and streaming failures
+
+Redaction runs before cassette persistence. For streams, the recorder assembles
+complete bounded SSE frames across arbitrary chunks (including CRLF), then
+redacts JSON without changing replay framing. Existing cassettes remain readable.
+An incomplete or oversized frame is an explicit recording error: the unsafe
+interaction is not persisted and a stream trailer reports the failure.
+
+Redaction reduces accidental retention; use synthetic credentials and protect
+cassette storage. Configure custom patterns for application-specific secrets.
+Disabling the redactor records upstream data verbatim.
+
 The quickest way to a deterministic test double is **not** to hand-write YAML —
 it's to record your real provider traffic once and replay it forever. Reach for
 hand-authored agents only for the cases you can't easily record (synthetic edge

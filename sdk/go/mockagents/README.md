@@ -70,6 +70,12 @@ func TestOrderLookupHappyPath(t *testing.T) {
 
 ## Known limitations
 
+`Server` continuously captures child stdout and stderr into one synchronized,
+bounded diagnostic buffer. Startup failure and `Stop` wait for process exit and
+reap the child; sending a signal alone is not treated as shutdown. Always defer
+`Stop`, including from test helpers. Linux race-detector process tests are part
+of the release gate for lifecycle changes.
+
 - **No framework adapters** — because Go applications typically call
   OpenAI/Anthropic APIs directly, there is no equivalent to the LangChain
   or CrewAI adapters shipped by the Python and TS SDKs. The `Client` type

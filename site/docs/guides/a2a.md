@@ -1,5 +1,17 @@
 # Mocking A2A Agents
 
+## Task retention and continuation
+
+Tasks use an in-memory bounded store with task-count, retained-byte,
+per-task-history, and terminal-task TTL limits. New work is rejected when a
+budget would be exceeded; active tasks are not silently evicted. Reads and
+transition responses are immutable snapshots.
+
+Send and streaming endpoints can continue supported nonterminal task IDs.
+Missing, terminal, expired, and invalid transitions are rejected. Tasks do not
+survive restart or cross replicas, even with PostgreSQL tenancy; continuation
+requires sticky routing.
+
 The [Agent2Agent (A2A) protocol](https://a2a-protocol.org) lets agents from
 different vendors discover and call each other: a public **Agent Card**, a
 JSON-RPC endpoint for `message/send`, and a **Task** lifecycle with streaming

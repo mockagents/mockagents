@@ -9,10 +9,11 @@ If you just want to fix one thing and get out, this is the whole path:
 ```bash
 git clone https://github.com/mockagents/mockagents.git
 cd mockagents
-go build ./... && go test ./internal/...      # ~1 min; no Python, no Docker, no cgo
+go build ./... && go test ./internal/...      # focused Go baseline; no Python or Docker
 ```
 
-That's the full toolchain. Go 1.26+ is the only hard requirement — SQLite is
+That is the focused Go toolchain. Use the exact toolchain selected by `go.mod`
+(currently Go 1.26.6). SQLite is
 `modernc.org/sqlite`, so there is no C compiler, no database to install, and
 nothing to run in the background.
 
@@ -26,7 +27,8 @@ Then:
    touched, not the whole suite.
 4. Open a PR. CI runs the rest.
 
-Docs-only change? Skip step 3 entirely; there is nothing to build.
+Docs-only changes still run `make docs-check`; commands, links, and release
+claims are part of the supported product.
 
 ### What we owe you back
 
@@ -49,7 +51,8 @@ cd mockagents
 make setup
 ```
 
-**Requirements:** Go 1.26+, Python 3.10+ (for SDK)
+**Requirements:** the Go toolchain selected by `go.mod`; Python 3.10+ and
+Node.js 18+ when changing their SDKs.
 
 ### Branch model & git hooks
 
@@ -67,6 +70,7 @@ make test          # Go tests
 make test-python   # Python SDK tests
 make test-all      # All tests
 make lint          # Code quality checks
+make docs-check    # Documentation drift and links
 ```
 
 ### Race detection
@@ -82,12 +86,8 @@ coverage:
 
 - **Locally:** install a C toolchain (Linux/macOS already have one; on
   Windows install mingw-w64), then `make test-race`.
-- **In CI (recommended):** the Go workflow runs `-race` on its Linux and
-  macOS legs, which always have a C toolchain. The Windows leg runs the
-  suite **without** `-race` (it still gates compilation and behavior there);
-  race coverage for the shared, platform-independent code comes from the
-  Linux/macOS legs. Don't add `-race` to the Windows leg — it makes the job
-  depend on whatever C compiler happens to be on the runner image.
+- **In CI (recommended):** the dedicated Linux race job has a C toolchain.
+  Windows compatibility is checked separately without `-race`.
 
 ## Project Structure
 
