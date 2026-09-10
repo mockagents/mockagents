@@ -67,6 +67,7 @@ func TestStoreConformance(t *testing.T) {
 		{"UpdateRole", conformUpdateRole},
 		{"Rotate", conformRotate},
 		{"BulkRotateWithExclude", conformBulkRotate},
+		{"TargetRoleAuthorization", conformTargetRoleAuthorization},
 		{"DeleteTenantCascade", conformDeleteCascade},
 		{"InvalidKeyRejected", conformInvalidKey},
 		{"UsersAndSessions", conformUsersAndSessions},
@@ -80,6 +81,40 @@ func TestStoreConformance(t *testing.T) {
 				t.Run(c.name, func(t *testing.T) { c.run(t, f.make(t)) })
 			}
 		})
+	}
+}
+
+func conformTargetRoleAuthorization(t *testing.T, s Store) {
+	ctx := context.Background()
+	tenant := mustTenant(t, s, "authority")
+	creator, ok := s.(PresetKeyCreator)
+	if !ok {
+		t.Fatal("store does not support bootstrap credentials")
+	}
+	const platformPlain = "mak_abcdef12_abcdefghijklmnopqrstuvwxyz012345"
+	platform, err := creator.CreateAPIKeyWithPlaintext(ctx, tenant.ID, "platform", RolePlatform, platformPlain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := mustKey(t, s, tenant.ID, "admin", RoleAdmin)
+	adminCtx := WithMutationActor(ctx, &Principal{TenantID: tenant.ID, KeyID: admin.Key.ID, Role: RoleAdmin})
+	if _, _, err := s.RotateAPIKey(adminCtx, tenant.ID, platform.ID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("rotate = %v", err)
+	}
+	if _, _, err := s.UpdateAPIKeyRole(adminCtx, tenant.ID, platform.ID, RoleViewer); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("role = %v", err)
+	}
+	if err := s.DeleteAPIKey(adminCtx, tenant.ID, platform.ID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("delete = %v", err)
+	}
+	if _, _, err := s.BulkRotateTenantKeys(adminCtx, tenant.ID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("bulk = %v", err)
+	}
+	if _, err := s.Resolve(ctx, platformPlain); err != nil {
+		t.Fatalf("denial changed platform credential: %v", err)
+	}
+	if _, _, err := s.RotateAPIKey(adminCtx, tenant.ID, admin.Key.ID); err != nil {
+		t.Fatalf("ordinary target = %v", err)
 	}
 }
 

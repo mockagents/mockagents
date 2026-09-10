@@ -327,10 +327,11 @@ func (s *PostgresStore) RotateAPIKey(ctx context.Context, callerTenantID, id str
 
 	var tenantID, name, oldPrefix, role, createdStr string
 	var lastUsedStr sql.NullString
+	var version int64
 	err = tx.QueryRowContext(ctx,
-		`SELECT tenant_id, name, prefix, role, created_at, last_used
+		`SELECT tenant_id, name, prefix, role, created_at, last_used, credential_version
 		 FROM api_keys WHERE id = $1 AND tenant_id = $2 FOR UPDATE`, id, callerTenantID,
-	).Scan(&tenantID, &name, &oldPrefix, &role, &createdStr, &lastUsedStr)
+	).Scan(&tenantID, &name, &oldPrefix, &role, &createdStr, &lastUsedStr, &version)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, "", ErrNotFound
@@ -349,11 +350,15 @@ func (s *PostgresStore) RotateAPIKey(ctx context.Context, callerTenantID, id str
 	if err != nil {
 		return nil, "", fmt.Errorf("bcrypt hash: %w", err)
 	}
-	if _, err = tx.ExecContext(ctx,
-		`UPDATE api_keys SET prefix = $1, hash = $2, last_used = NULL, credential_version = credential_version + 1 WHERE id = $3`,
-		newPrefix, string(hash), id,
-	); err != nil {
+	res, err := tx.ExecContext(ctx,
+		`UPDATE api_keys SET prefix = $1, hash = $2, last_used = NULL, credential_version = credential_version + 1 WHERE id = $3 AND tenant_id = $4 AND role = $5 AND credential_version = $6`,
+		newPrefix, string(hash), id, callerTenantID, role, version,
+	)
+	if err != nil {
 		return nil, "", err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, "", ErrConflict
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, "", err
@@ -381,7 +386,7 @@ func (s *PostgresStore) BulkRotateTenantKeys(ctx context.Context, tenantID strin
 		}
 	}
 	// $1 = tenant_id; excluded ids start at $2.
-	query := `SELECT id, name, prefix, role, created_at FROM api_keys WHERE tenant_id = $1`
+	query := `SELECT id, name, prefix, role, created_at, credential_version FROM api_keys WHERE tenant_id = $1`
 	args := []any{tenantID}
 	if len(excludeSet) > 0 {
 		placeholders := make([]string, 0, len(excludeSet))
@@ -399,19 +404,18 @@ func (s *PostgresStore) BulkRotateTenantKeys(ctx context.Context, tenantID strin
 	if err != nil {
 		return nil, nil, err
 	}
-	type existing struct{ id, name, prefix, role, createdStr string }
+	type existing struct {
+		id, name, prefix, role, createdStr string
+		version                            int64
+	}
 	var existingKeys []existing
 	for rows.Next() {
 		var e existing
-		if err := rows.Scan(&e.id, &e.name, &e.prefix, &e.role, &e.createdStr); err != nil {
+		if err := rows.Scan(&e.id, &e.name, &e.prefix, &e.role, &e.createdStr, &e.version); err != nil {
 			rows.Close()
 			return nil, nil, err
 		}
 		existingKeys = append(existingKeys, e)
-		if err := authorizeKeyTarget(ctx, tenantID, Role(e.role)); err != nil {
-			rows.Close()
-			return nil, nil, err
-		}
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -447,19 +451,35 @@ func (s *PostgresStore) BulkRotateTenantKeys(ctx context.Context, tenantID strin
 		return nil, nil, err
 	}
 	defer tx.Rollback() //nolint:errcheck // best-effort on error path
+	for _, rot := range rotations {
+		var currentRole string
+		var currentVersion int64
+		if err := tx.QueryRowContext(ctx, `SELECT role, credential_version FROM api_keys WHERE id = $1 AND tenant_id = $2 FOR UPDATE`, rot.e.id, tenantID).Scan(&currentRole, &currentVersion); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, nil, ErrConflict
+			}
+			return nil, nil, err
+		}
+		if err := authorizeKeyTarget(ctx, tenantID, Role(currentRole)); err != nil {
+			return nil, nil, err
+		}
+		if currentRole != rot.e.role || currentVersion != rot.e.version {
+			return nil, nil, ErrConflict
+		}
+	}
 
 	results := make([]*NewAPIKeyResult, 0, len(rotations))
 	oldPrefixes := make([]string, 0, len(rotations))
 	for _, rot := range rotations {
 		res, execErr := tx.ExecContext(ctx,
-			`UPDATE api_keys SET prefix = $1, hash = $2, last_used = NULL, credential_version = credential_version + 1 WHERE id = $3`,
-			rot.newPrefix, string(rot.hash), rot.e.id,
+			`UPDATE api_keys SET prefix = $1, hash = $2, last_used = NULL, credential_version = credential_version + 1 WHERE id = $3 AND tenant_id = $4 AND role = $5 AND credential_version = $6`,
+			rot.newPrefix, string(rot.hash), rot.e.id, tenantID, rot.e.role, rot.e.version,
 		)
 		if execErr != nil {
 			return nil, nil, execErr
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			continue // deleted between the read and here; skip
+			return nil, nil, ErrConflict
 		}
 		created, _ := time.Parse(time.RFC3339, rot.e.createdStr)
 		results = append(results, &NewAPIKeyResult{

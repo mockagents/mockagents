@@ -505,21 +505,18 @@ func (s *SQLiteStore) RotateAPIKey(ctx context.Context, callerTenantID, id strin
 		role        string
 		createdStr  string
 		lastUsedStr sql.NullString
+		version     int64
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT tenant_id, name, prefix, role, created_at, last_used
+		`SELECT tenant_id, name, prefix, role, created_at, last_used, credential_version
 		 FROM api_keys WHERE id = ? AND tenant_id = ?`, id, callerTenantID,
-	).Scan(&tenantID, &name, &oldPrefix, &role, &createdStr, &lastUsedStr)
+	).Scan(&tenantID, &name, &oldPrefix, &role, &createdStr, &lastUsedStr, &version)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, "", ErrNotFound
 		}
 		return nil, "", err
 	}
-	if err := authorizeKeyTarget(ctx, tenantID, Role(role)); err != nil {
-		return nil, "", err
-	}
-
 	plaintext, newPrefix, err := generateAPIKey()
 	if err != nil {
 		return nil, "", err
@@ -534,13 +531,29 @@ func (s *SQLiteStore) RotateAPIKey(ctx context.Context, callerTenantID, id strin
 		return nil, "", err
 	}
 	defer tx.Rollback() //nolint:errcheck // best-effort on error path
+	var currentRole string
+	var currentVersion int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT role, credential_version FROM api_keys WHERE id = ? AND tenant_id = ?`, id, callerTenantID,
+	).Scan(&currentRole, &currentVersion); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, "", ErrNotFound
+		}
+		return nil, "", err
+	}
+	if err := authorizeKeyTarget(ctx, tenantID, Role(currentRole)); err != nil {
+		return nil, "", err
+	}
+	if currentRole != role || currentVersion != version {
+		return nil, "", ErrConflict
+	}
 	// Reset last_used — a rotated key has no prior usage of its
 	// new plaintext, and preserving the timestamp would confuse
 	// "when did this credential last work?" investigations.
 	res, err := tx.ExecContext(ctx,
 		`UPDATE api_keys SET prefix = ?, hash = ?, last_used = NULL, credential_version = credential_version + 1
-		 WHERE id = ? AND tenant_id = ? AND prefix = ?`,
-		newPrefix, string(hash), id, callerTenantID, oldPrefix,
+		 WHERE id = ? AND tenant_id = ? AND prefix = ? AND role = ? AND credential_version = ?`,
+		newPrefix, string(hash), id, callerTenantID, oldPrefix, role, version,
 	)
 	if err != nil {
 		return nil, "", err
@@ -599,7 +612,7 @@ func (s *SQLiteStore) BulkRotateTenantKeys(ctx context.Context, tenantID string,
 			excludeSet[kid] = struct{}{}
 		}
 	}
-	query := `SELECT id, name, prefix, role, created_at
+	query := `SELECT id, name, prefix, role, created_at, credential_version
 		 FROM api_keys WHERE tenant_id = ?`
 	args := []any{tenantID}
 	if len(excludeSet) > 0 {
@@ -627,19 +640,16 @@ func (s *SQLiteStore) BulkRotateTenantKeys(ctx context.Context, tenantID string,
 	}
 	type existing struct {
 		id, name, prefix, role, createdStr string
+		version                            int64
 	}
 	var existingKeys []existing
 	for rows.Next() {
 		var e existing
-		if err := rows.Scan(&e.id, &e.name, &e.prefix, &e.role, &e.createdStr); err != nil {
+		if err := rows.Scan(&e.id, &e.name, &e.prefix, &e.role, &e.createdStr, &e.version); err != nil {
 			rows.Close()
 			return nil, nil, err
 		}
 		existingKeys = append(existingKeys, e)
-		if err := authorizeKeyTarget(ctx, tenantID, Role(e.role)); err != nil {
-			rows.Close()
-			return nil, nil, err
-		}
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -680,23 +690,37 @@ func (s *SQLiteStore) BulkRotateTenantKeys(ctx context.Context, tenantID string,
 		return nil, nil, err
 	}
 	defer tx.Rollback() //nolint:errcheck // best-effort on error path
+	// Re-read and authorize every target under the write transaction before
+	// changing any row. Any drift aborts the entire batch.
+	for _, rot := range rotations {
+		var currentRole string
+		var currentVersion int64
+		if err := tx.QueryRowContext(ctx, `SELECT role, credential_version FROM api_keys WHERE id = ? AND tenant_id = ?`, rot.e.id, tenantID).Scan(&currentRole, &currentVersion); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, nil, ErrConflict
+			}
+			return nil, nil, err
+		}
+		if err := authorizeKeyTarget(ctx, tenantID, Role(currentRole)); err != nil {
+			return nil, nil, err
+		}
+		if currentRole != rot.e.role || currentVersion != rot.e.version {
+			return nil, nil, ErrConflict
+		}
+	}
 
 	results := make([]*NewAPIKeyResult, 0, len(rotations))
 	oldPrefixes := make([]string, 0, len(rotations))
 	for _, rot := range rotations {
 		res, execErr := tx.ExecContext(ctx,
-			`UPDATE api_keys SET prefix = ?, hash = ?, last_used = NULL, credential_version = credential_version + 1 WHERE id = ?`,
-			rot.newPrefix, string(rot.hash), rot.e.id,
+			`UPDATE api_keys SET prefix = ?, hash = ?, last_used = NULL, credential_version = credential_version + 1 WHERE id = ? AND tenant_id = ? AND role = ? AND credential_version = ?`,
+			rot.newPrefix, string(rot.hash), rot.e.id, tenantID, rot.e.role, rot.e.version,
 		)
 		if execErr != nil {
 			return nil, nil, execErr
 		}
-		// A key deleted between the SELECT and here updates zero rows. Skip it so
-		// we never hand back a plaintext for a key that no longer exists. The
-		// read happened outside the tx, so this narrow race is possible even
-		// though the single connection serializes individual statements.
 		if n, _ := res.RowsAffected(); n == 0 {
-			continue
+			return nil, nil, ErrConflict
 		}
 
 		created, _ := time.Parse(time.RFC3339, rot.e.createdStr)

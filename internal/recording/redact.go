@@ -196,7 +196,11 @@ func (r *Redactor) redactStreamData(s string) string {
 	if s == "" {
 		return s
 	}
-	lines := strings.Split(s, "\n")
+	separator := "\n"
+	if strings.Contains(s, "\r\n") {
+		separator = "\r\n"
+	}
+	lines := strings.Split(s, separator)
 	for i, line := range lines {
 		payload := strings.TrimPrefix(line, "data: ")
 		prefix := line[:len(line)-len(payload)]
@@ -207,7 +211,7 @@ func (r *Redactor) redactStreamData(s string) string {
 			lines[i] = storage.SanitizeBody(line)
 		}
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, separator)
 }
 
 func redactHeaderValues(r *Redactor, h map[string]string) {

@@ -247,6 +247,10 @@ func (p *Proxy) skipRecording(status int) bool {
 // (partial) cassette entry.
 func (p *Proxy) serveStreaming(w http.ResponseWriter, r *http.Request, reqBody []byte, upstreamResp *http.Response) {
 	copyHeaders(w.Header(), upstreamResp.Header)
+	// The upstream may have buffered its SSE response and supplied a content
+	// length. The proxy streams and may need trailers, so it must frame the
+	// downstream response itself.
+	w.Header().Del("Content-Length")
 	// Streaming headers are committed before recording finishes. Declare the
 	// recording error trailer up front so redaction/append failures remain
 	// observable instead of being silently discarded after WriteHeader.

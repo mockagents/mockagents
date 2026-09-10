@@ -97,3 +97,23 @@ func TestCachedResolveChecksSharedDatabaseAuthority(t *testing.T) {
 		t.Fatalf("deleted key accepted: %v", err)
 	}
 }
+
+func TestCachedResolveFailsClosedWhenAuthorityUnavailable(t *testing.T) {
+	ctx := context.Background()
+	s, err := NewSQLiteStore(filepath.Join(t.TempDir(), "closed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.EnableAuthCache(time.Hour, 8)
+	tenant, _ := s.CreateTenant(ctx, "closed")
+	key, _ := s.CreateAPIKey(ctx, tenant.ID, "key", RoleViewer)
+	if _, err := s.Resolve(ctx, key.Plaintext); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := s.Resolve(ctx, key.Plaintext); err == nil || p != nil {
+		t.Fatalf("authority outage failed open: p=%#v err=%v", p, err)
+	}
+}
