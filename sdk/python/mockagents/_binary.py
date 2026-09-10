@@ -24,6 +24,7 @@ import platform
 import shutil
 import stat
 import tarfile
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Optional
@@ -63,11 +64,18 @@ def cache_dir() -> Path:
     """Per-user cache directory the SDK downloads the binary into."""
     if _is_windows():
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        return Path(base) / "mockagents" / "bin"
+        return Path(base) / "mockagents"
     if platform.system().lower() == "darwin":
-        return Path.home() / "Library" / "Caches" / "mockagents" / "bin"
+        return Path.home() / "Library" / "Caches" / "mockagents"
     base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(base) / "mockagents" / "bin"
+    return Path(base) / "mockagents"
+
+
+def versioned_binary_path(version: str, root: Optional[Path] = None) -> Path:
+    """Return the cache slot shared with the npx launcher."""
+    os_tok, arch_tok = asset_os_arch()
+    normalized = version.removeprefix("v")
+    return (root or cache_dir()) / normalized / f"{os_tok}-{arch_tok}" / binary_filename()
 
 
 #: A console-script wrapper is a small stub; the real Go binary is tens of MB.
@@ -121,11 +129,12 @@ def _acceptable(path: str, skip: set) -> bool:
     )
 
 
-def find_binary(exclude: Optional[list] = None) -> Optional[str]:
+def find_binary(exclude: Optional[list] = None, version: Optional[str] = None) -> Optional[str]:
     """Return a path to the mockagents Go binary, or ``None`` if not resolvable.
 
     Search order: ``$MOCKAGENTS_BINARY`` (or ``$MOCKAGENTS_BIN``, the name the
-    TypeScript SDK uses), ``PATH``, ``./mockagents(.exe)``, the SDK cache. ``exclude`` is a list of paths to ignore (the ``mockagents``
+    TypeScript SDK uses), ``PATH``, ``./mockagents(.exe)``, then the requested
+    version's SDK cache when ``version`` is supplied. ``exclude`` is a list of paths to ignore (the ``mockagents``
     console-script launcher passes its own path so it never selects itself); a
     PATH entry that is a Python console-script wrapper is also skipped.
     """
@@ -153,9 +162,10 @@ def find_binary(exclude: Optional[list] = None) -> Optional[str]:
         if _acceptable(candidate, skip):
             return str(Path(candidate).resolve())
 
-    cached = cache_dir() / binary_filename()
-    if cached.is_file():
-        return str(cached)
+    if version:
+        cached = versioned_binary_path(version)
+        if cached.is_file():
+            return str(cached)
 
     return None
 
@@ -192,12 +202,17 @@ def download_binary(version: str, dest_dir: Optional[Path] = None, *, verify: bo
     if verify:
         _verify_checksum(base, asset, data)
 
-    dest_dir = dest_dir or cache_dir()
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    out = dest_dir / binary_filename()
-    _extract_binary(asset, data, out)
-    if not _is_windows():
-        out.chmod(out.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    out = versioned_binary_path(version, dest_dir)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    temp_dir = Path(tempfile.mkdtemp(prefix=".install-", dir=out.parent))
+    temp_out = temp_dir / binary_filename()
+    try:
+        _extract_binary(asset, data, temp_out)
+        if not _is_windows():
+            temp_out.chmod(temp_out.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        os.replace(temp_out, out)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
     return str(out)
 
 
@@ -303,14 +318,15 @@ def ensure_binary(
     path). Raises :class:`BinaryNotFoundError` with actionable install guidance
     when the binary is absent and auto-download is disabled (or fails).
     """
-    found = find_binary(exclude=exclude)
+    from . import __version__ as pkg_version
+
+    desired_version = version or pkg_version
+    found = find_binary(exclude=exclude, version=desired_version)
     if found:
         return found
 
     if auto_download or _env_truthy("MOCKAGENTS_AUTO_DOWNLOAD"):
-        from . import __version__ as pkg_version
-
-        return download_binary(version or pkg_version)
+        return download_binary(desired_version)
 
     raise BinaryNotFoundError(
         "the 'mockagents' binary was not found.\n\n" + install_hint()

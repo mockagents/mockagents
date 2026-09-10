@@ -32,13 +32,19 @@ function binaryName() {
 function cacheDir() {
   if (process.platform === 'win32') {
     const base = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
-    return path.join(base, 'mockagents', 'bin');
+    return path.join(base, 'mockagents');
   }
   if (process.platform === 'darwin') {
-    return path.join(os.homedir(), 'Library', 'Caches', 'mockagents', 'bin');
+    return path.join(os.homedir(), 'Library', 'Caches', 'mockagents');
   }
   const base = process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
-  return path.join(base, 'mockagents', 'bin');
+  return path.join(base, 'mockagents');
+}
+
+function versionedBinaryPath(version, root = cacheDir()) {
+  const { os: osToken, arch } = assetOsArch();
+  const normalized = version.replace(/^v/, '');
+  return path.join(root, normalized, `${osToken}-${arch}`, binaryName());
 }
 
 function isFile(p) {
@@ -49,11 +55,13 @@ function isFile(p) {
   }
 }
 
-function findBinary() {
+function findBinary(version) {
   const explicit = process.env.MOCKAGENTS_BINARY;
   if (explicit && isFile(explicit)) return explicit; // reject a directory etc.
-  const cached = path.join(cacheDir(), binaryName());
-  if (isFile(cached)) return cached;
+  if (version) {
+    const cached = versionedBinaryPath(version);
+    if (isFile(cached)) return cached;
+  }
   return null;
 }
 
@@ -128,35 +136,45 @@ async function download(version) {
     throw new Error(`checksum mismatch for ${asset}: expected ${want}, got ${got}. Refusing to install.`);
   }
 
-  const dir = cacheDir();
+  const out = versionedBinaryPath(ver);
+  const dir = path.dirname(out);
   fs.mkdirSync(dir, { recursive: true });
-  const archivePath = path.join(dir, asset);
+  const tempDir = fs.mkdtempSync(path.join(dir, '.install-'));
+  const archivePath = path.join(tempDir, asset);
   fs.writeFileSync(archivePath, data);
 
   // Extract just the binary. bsdtar (Windows 10+/macOS) handles .zip via -xf;
   // .tar.gz is handled by tar everywhere via -xzf.
   const bin = binaryName();
-  const args = ext === 'zip' ? ['-xf', archivePath, '-C', dir, bin] : ['-xzf', archivePath, '-C', dir, bin];
+  const args = ext === 'zip' ? ['-xf', archivePath, '-C', tempDir, bin] : ['-xzf', archivePath, '-C', tempDir, bin];
   try {
     execFileSync('tar', args, { stdio: 'inherit' });
   } catch (e) {
-    try { fs.unlinkSync(archivePath); } catch (_) { /* best effort */ }
+    fs.rmSync(tempDir, { recursive: true, force: true });
     if (e && e.code === 'ENOENT') {
       throw new Error(`extraction needs 'tar' on PATH, which was not found.\n${INSTALL_HINT}`);
     }
     throw new Error(`failed to extract ${asset}: ${e.message}`);
   }
-  fs.unlinkSync(archivePath);
-
-  const out = path.join(dir, bin);
-  if (process.platform !== 'win32') fs.chmodSync(out, 0o755);
-  return out;
+  try {
+    const tempOut = path.join(tempDir, bin);
+    if (process.platform !== 'win32') fs.chmodSync(tempOut, 0o755);
+    try {
+      fs.renameSync(tempOut, out);
+    } catch (error) {
+      // A concurrent verified installer may have published the same slot.
+      if (!isFile(out)) throw error;
+    }
+    return out;
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 async function ensureBinary(version) {
-  const found = findBinary();
+  const found = findBinary(version);
   if (found) return found;
   return download(version);
 }
 
-module.exports = { ensureBinary, findBinary, download, assetOsArch, cacheDir, binaryName, INSTALL_HINT };
+module.exports = { ensureBinary, findBinary, download, assetOsArch, cacheDir, versionedBinaryPath, binaryName, INSTALL_HINT };

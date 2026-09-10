@@ -24,7 +24,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     version = positional[0] if positional else __version__
 
     if not force:
-        existing = find_binary()
+        existing = find_binary(version=version)
         if existing:
             print(f"mockagents already available at {existing} (use --force to re-download)")
             return 0

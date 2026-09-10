@@ -26,6 +26,7 @@ export class MockAgentServer {
   public readonly binaryPath: string;
   public readonly logLevel: string;
   private process: ChildProcess | null = null;
+  private stopPromise: Promise<void> | null = null;
   private logs: string[] = [];
 
   constructor(options: MockAgentServerOptions = {}) {
@@ -40,7 +41,7 @@ export class MockAgentServer {
   }
 
   get isRunning(): boolean {
-    return this.process !== null && this.process.exitCode === null;
+    return this.process !== null && !hasExited(this.process);
   }
 
   /** Returns a client pre-configured for this server. */
@@ -78,9 +79,14 @@ export class MockAgentServer {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    this.process.on("error", (err) => {
+    const healthAbort = new AbortController();
+    let spawnError: Error | null = null;
+    const spawnFailure = new Promise<never>((_resolve, reject) => this.process?.once("error", (err) => {
+      spawnError = err;
       this.logs.push(`spawn error: ${err.message}`);
-    });
+      healthAbort.abort();
+      reject(err);
+    }));
     this.process.stdout?.on("data", (chunk: Buffer) => {
       this.logs.push(chunk.toString());
     });
@@ -89,9 +95,11 @@ export class MockAgentServer {
     });
 
     try {
-      await waitForHealth(this.url, timeoutMs);
+      await Promise.race([waitForHealth(this.url, timeoutMs, healthAbort.signal), spawnFailure]);
     } catch (err) {
-      await this.stop();
+      healthAbort.abort();
+      if (spawnError) this.process = null;
+      else await this.stop();
       throw new ServerError(
         `server did not become ready within ${timeoutMs}ms: ${(err as Error).message}\n` +
           `logs:\n${this.logs.join("")}`,
@@ -102,26 +110,56 @@ export class MockAgentServer {
   /** Terminate the subprocess if it is running. Safe to call repeatedly. */
   async stop(timeoutMs: number = 5_000): Promise<void> {
     if (!this.process) return;
+    if (this.stopPromise) return this.stopPromise;
     const proc = this.process;
-    this.process = null;
+    this.stopPromise = (async () => {
+      if (hasExited(proc)) {
+        if (this.process === proc) this.process = null;
+        return;
+      }
 
-    proc.kill("SIGTERM");
-
-    await new Promise<void>((resolve) => {
-      let done = false;
-      const finish = () => {
-        if (!done) {
-          done = true;
-          resolve();
+      proc.kill("SIGTERM");
+      if (!(await waitForExit(proc, timeoutMs))) {
+        // ChildProcess.killed only means signal delivery succeeded. Completion
+        // is represented by exitCode/signalCode or an exit/close event.
+        if (!hasExited(proc)) proc.kill("SIGKILL");
+        if (!(await waitForExit(proc, Math.max(timeoutMs, 1_000)))) {
+          throw new ServerError("server process did not exit after SIGKILL");
         }
-      };
-      proc.once("exit", finish);
-      setTimeout(() => {
-        if (!proc.killed) proc.kill("SIGKILL");
-        finish();
-      }, timeoutMs);
-    });
+      }
+      if (this.process === proc) this.process = null;
+    })();
+    try {
+      await this.stopPromise;
+    } finally {
+      this.stopPromise = null;
+    }
   }
+}
+
+function hasExited(proc: ChildProcess): boolean {
+  return proc.exitCode !== null || proc.signalCode !== null;
+}
+
+function waitForExit(proc: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (hasExited(proc)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      proc.off("exit", onExit);
+      proc.off("close", onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    proc.once("exit", onExit);
+    proc.once("close", onExit);
+    timer = setTimeout(() => finish(hasExited(proc)), timeoutMs);
+    timer.unref();
+  });
 }
 
 /** Resolve a free TCP port by asking the kernel for one. */
@@ -161,10 +199,11 @@ export function findBinary(): string {
   return binaryName;
 }
 
-async function waitForHealth(baseUrl: string, timeoutMs: number): Promise<void> {
+async function waitForHealth(baseUrl: string, timeoutMs: number, signal?: AbortSignal): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastErr: unknown;
   while (Date.now() < deadline) {
+    if (signal?.aborted) throw new Error("health check aborted");
     try {
       const resp = await fetch(`${baseUrl}/api/v1/health`, {
         signal: AbortSignal.timeout(500),

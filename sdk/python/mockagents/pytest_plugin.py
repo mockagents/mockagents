@@ -85,8 +85,8 @@ def mockagents_server(request: pytest.FixtureRequest) -> Iterator[MockAgentServe
     agents_dir = _resolve_agents_dir(request.config)
     binary: Optional[str] = request.config.getoption("--mockagents-binary")
     server = MockAgentServer(agents_dir=agents_dir, binary_path=binary)
-    server.start()
     try:
+        server.start()
         yield server
     finally:
         server.stop()

@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 )
@@ -32,7 +31,8 @@ type Server struct {
 
 	mu   sync.Mutex
 	cmd  *exec.Cmd
-	logs strings.Builder
+	done chan error
+	logs logBuffer
 }
 
 // NewServer builds a Server (without starting it).
@@ -71,8 +71,6 @@ func (s *Server) Client() *Client {
 // Logs returns everything captured on the subprocess's stdout+stderr
 // since the last Start call.
 func (s *Server) Logs() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	return s.logs.String()
 }
 
@@ -80,7 +78,15 @@ func (s *Server) Logs() string {
 func (s *Server) IsRunning() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.cmd != nil && s.cmd.Process != nil && (s.cmd.ProcessState == nil || !s.cmd.ProcessState.Exited())
+	if s.cmd == nil || s.cmd.Process == nil || s.done == nil {
+		return false
+	}
+	select {
+	case <-s.done:
+		return false
+	default:
+		return true
+	}
 }
 
 // Start spawns the subprocess, picking a free port if Port was zero, and
@@ -88,8 +94,13 @@ func (s *Server) IsRunning() bool {
 func (s *Server) Start(ctx context.Context, timeout time.Duration) error {
 	s.mu.Lock()
 	if s.cmd != nil {
-		s.mu.Unlock()
-		return errors.New("server already started")
+		select {
+		case <-s.done:
+			s.cmd, s.done = nil, nil
+		default:
+			s.mu.Unlock()
+			return errors.New("server already started")
+		}
 	}
 
 	if s.Port == 0 {
@@ -108,15 +119,19 @@ func (s *Server) Start(ctx context.Context, timeout time.Duration) error {
 		"--log-level", s.LogLevel,
 	}
 	cmd := exec.Command(s.BinaryPath, args...)
-	cmd.Stdout = &teeWriter{buf: &s.logs}
-	cmd.Stderr = &teeWriter{buf: &s.logs}
+	s.logs.Reset()
+	cmd.Stdout = &s.logs
+	cmd.Stderr = &s.logs
 
 	if err := cmd.Start(); err != nil {
 		s.mu.Unlock()
 		return fmt.Errorf("starting mockagents binary %q: %w", s.BinaryPath, err)
 	}
 	s.cmd = cmd
+	s.done = make(chan error, 1)
+	done := s.done
 	s.mu.Unlock()
+	go func() { done <- cmd.Wait(); close(done) }()
 
 	if err := waitForHealth(ctx, s.URL(), timeout); err != nil {
 		// Tear down on failed startup so callers don't leak processes.
@@ -132,10 +147,20 @@ func (s *Server) Start(ctx context.Context, timeout time.Duration) error {
 func (s *Server) Stop(timeout time.Duration) error {
 	s.mu.Lock()
 	cmd := s.cmd
-	s.cmd = nil
+	done := s.done
 	s.mu.Unlock()
-	if cmd == nil || cmd.Process == nil {
+	if cmd == nil || cmd.Process == nil || done == nil {
 		return nil
+	}
+	select {
+	case <-done:
+		s.mu.Lock()
+		if s.cmd == cmd {
+			s.cmd, s.done = nil, nil
+		}
+		s.mu.Unlock()
+		return nil
+	default:
 	}
 
 	// On Unix, SIGTERM for graceful; on Windows, Kill is the only
@@ -146,15 +171,22 @@ func (s *Server) Stop(timeout time.Duration) error {
 		_ = cmd.Process.Signal(os.Interrupt)
 	}
 
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
 	select {
 	case <-done:
+		s.mu.Lock()
+		if s.cmd == cmd {
+			s.cmd, s.done = nil, nil
+		}
+		s.mu.Unlock()
 		return nil
 	case <-time.After(timeout):
 		_ = cmd.Process.Kill()
 		<-done
+		s.mu.Lock()
+		if s.cmd == cmd {
+			s.cmd, s.done = nil, nil
+		}
+		s.mu.Unlock()
 		return fmt.Errorf("server did not exit within %s, killed", timeout)
 	}
 }
@@ -223,16 +255,34 @@ func waitForHealth(ctx context.Context, baseURL string, timeout time.Duration) e
 	return lastErr
 }
 
-// teeWriter is a thread-safe io.Writer that appends everything to an
-// underlying strings.Builder.
-type teeWriter struct {
+// logBuffer synchronizes the shared stdout/stderr sink and readers.
+type logBuffer struct {
 	mu  sync.Mutex
-	buf *strings.Builder
+	buf []byte
 }
 
+const maxCapturedLogBytes = 8 * 1024 * 1024
+
 // Write satisfies io.Writer.
-func (t *teeWriter) Write(p []byte) (int, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.buf.Write(p)
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf = append(b.buf, p...)
+	if len(b.buf) > maxCapturedLogBytes {
+		copy(b.buf, b.buf[len(b.buf)-maxCapturedLogBytes:])
+		b.buf = b.buf[:maxCapturedLogBytes]
+	}
+	return len(p), nil
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf)
+}
+
+func (b *logBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf = b.buf[:0]
 }

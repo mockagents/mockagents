@@ -218,3 +218,58 @@ def test_client_returns_mock_agent_client():
     client = server.client()
     assert client.base_url == "http://127.0.0.1:8080"
     client.close()
+
+
+def test_verbose_child_pipes_are_drained_without_deadlock():
+    payload_size = 2 * 1024 * 1024
+    child = (
+        "import sys,time; "
+        f"sys.stdout.buffer.write(b'o'*{payload_size}); sys.stdout.flush(); "
+        f"sys.stderr.buffer.write(b'e'*{payload_size}); sys.stderr.flush(); "
+        "time.sleep(300)"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    server = MockAgentServer.__new__(MockAgentServer)
+    server._process = proc
+    server._logs = []
+    server._log_bytes = 0
+    server._log_lock = threading.Lock()
+    server._log_threads = []
+    for stream in (proc.stdout, proc.stderr):
+        thread = threading.Thread(target=server._drain_stream, args=(stream,), daemon=True)
+        thread.start()
+        server._log_threads.append(thread)
+    try:
+        deadline = time.monotonic() + 10
+        while sum(len(part) for part in server.logs) < payload_size * 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert sum(len(part) for part in server.logs) == payload_size * 2
+    finally:
+        server.stop()
+    assert proc.poll() is not None
+
+
+def test_start_failure_reaps_child(monkeypatch):
+    real_popen = subprocess.Popen
+    processes = []
+
+    def spawn_child(*_args, **_kwargs):
+        proc = real_popen(
+            [sys.executable, "-c", "import time; time.sleep(300)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        processes.append(proc)
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", spawn_child)
+    server = MockAgentServer(binary_path="unused")
+    monkeypatch.setattr(server, "_wait_for_ready", lambda _timeout: (_ for _ in ()).throw(TimeoutError("no health")))
+
+    with pytest.raises(TimeoutError, match="no health"):
+        server.start(timeout=0.01)
+
+    assert processes[0].poll() is not None
+    assert server._process is None

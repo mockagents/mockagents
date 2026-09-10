@@ -7,6 +7,7 @@ import io
 import os
 import platform
 import tarfile
+from pathlib import Path
 
 import pytest
 
@@ -173,6 +174,7 @@ def test_download_binary_extracts_and_verifies(tmp_path, monkeypatch):
     assert os.path.basename(path) == "mockagents"
     with open(path, "rb") as fh:
         assert fh.read() == payload
+    assert Path(path).parts[-3:-1] == ("0.1.0", "linux-amd64")
 
 
 def test_download_binary_404_is_actionable(tmp_path, monkeypatch):
@@ -255,3 +257,23 @@ def test_download_binary_windows_zip(tmp_path, monkeypatch):
     assert os.path.basename(path) == "mockagents.exe"
     with open(path, "rb") as fh:
         assert fh.read() == payload
+
+
+def test_versioned_cache_does_not_reuse_another_release(tmp_path, monkeypatch):
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(_binary, "cache_dir", lambda: tmp_path)
+    old = _binary.versioned_binary_path("0.4.0")
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"old release")
+
+    assert _binary.find_binary(version="0.4.0") == str(old)
+    assert _binary.find_binary(version="0.5.0") is None
+
+
+def test_versioned_cache_layout_matches_npx_launcher(tmp_path, monkeypatch):
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    assert _binary.versioned_binary_path("v0.5.0", tmp_path) == (
+        tmp_path / "0.5.0" / "linux-amd64" / "mockagents"
+    )

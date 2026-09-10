@@ -47,3 +47,35 @@ test('findBinary honors MOCKAGENTS_BINARY but rejects a directory', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('versioned cache never returns a binary from another release', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ma-npx-cache-'));
+  const oldCache = process.env.XDG_CACHE_HOME;
+  const oldLocalAppData = process.env.LOCALAPPDATA;
+  const explicit = process.env.MOCKAGENTS_BINARY;
+  try {
+    process.env.XDG_CACHE_HOME = tmp;
+    process.env.LOCALAPPDATA = tmp;
+    delete process.env.MOCKAGENTS_BINARY;
+    const v1 = bin.versionedBinaryPath('v0.4.0');
+    fs.mkdirSync(path.dirname(v1), { recursive: true });
+    fs.writeFileSync(v1, 'old');
+    assert.strictEqual(bin.findBinary('0.4.0'), v1);
+    assert.strictEqual(bin.findBinary('0.5.0'), null);
+  } finally {
+    if (oldCache === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = oldCache;
+    if (oldLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = oldLocalAppData;
+    if (explicit === undefined) delete process.env.MOCKAGENTS_BINARY;
+    else process.env.MOCKAGENTS_BINARY = explicit;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('versioned cache layout includes release and platform', () => {
+  withPlatform('linux', 'x64', () => {
+    const location = bin.versionedBinaryPath('v0.5.0', path.join('cache', 'mockagents'));
+    assert.strictEqual(location, path.join('cache', 'mockagents', '0.5.0', 'linux-amd64', 'mockagents'));
+  });
+});
