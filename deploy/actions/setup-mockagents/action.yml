@@ -41,7 +41,7 @@ inputs:
   go-version:
     description: "Go version used to install the CLI."
     required: false
-    default: "1.26"
+    default: "1.26.6"
   export-env:
     description: >-
       When 'true' (default), export OPENAI_BASE_URL, ANTHROPIC_BASE_URL and
@@ -58,7 +58,7 @@ runs:
   using: "composite"
   steps:
     - name: Set up Go
-      uses: actions/setup-go@v6
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: ${{ inputs.go-version }}
 

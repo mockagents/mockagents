@@ -52,7 +52,7 @@ and the action builds the CLI from source instead:
 | `agents-dir`  | `./agents`  | Directory of `kind:Agent` YAML definitions to load.                                      |
 | `port`        | `8080`      | Port the mock server listens on.                                                         |
 | `start`       | `true`      | Start the server in the background. Set `false` to only install the CLI.                 |
-| `go-version`  | `1.26`      | Go version used to build/install the CLI.                                                |
+| `go-version`  | `1.26.6`    | Go version used to build/install the CLI.                                                |
 | `export-env`  | `true`      | Export `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` / `MOCKAGENTS_BASE_URL` to `GITHUB_ENV`. |
 
 ## Outputs

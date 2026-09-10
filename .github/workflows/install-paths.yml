@@ -57,7 +57,19 @@ jobs:
           if [[ -z "$tag" ]]; then
             tag=$(gh release list --repo "${{ github.repository }}" --exclude-pre-releases --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName')
           fi
-          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid stable release tag: $tag"; exit 1; }
+          # A completed prerelease must be verified too. Stable-only channels
+          # (currently Homebrew) remain declared pending and therefore do not
+          # make an otherwise complete prerelease look broken.
+          [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$ ]] || {
+            echo "invalid release tag: $tag"; exit 1;
+          }
+          prerelease="${tag#*-}"
+          if [[ "$tag" == *-* ]]; then
+            IFS=. read -ra identifiers <<< "$prerelease"
+            for identifier in "${identifiers[@]}"; do
+              [[ ! "$identifier" =~ ^0[0-9]+$ ]] || { echo "invalid release tag: $tag"; exit 1; }
+            done
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 

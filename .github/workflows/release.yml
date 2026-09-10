@@ -26,6 +26,7 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     outputs:
+      tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
       stable: ${{ steps.version.outputs.stable }}
       npm-channel: ${{ steps.version.outputs.npm-channel }}
@@ -88,9 +89,30 @@ jobs:
         run: npm ci --no-audit --no-fund && npm test && npm pack --dry-run
       - run: docker build --tag mockagents-candidate:${{ github.sha }} .
 
+  publish-preflight:
+    name: Verify publication configuration
+    needs: [preflight, prepare-artifacts]
+    runs-on: ubuntu-latest
+    # Resolving this protected environment before the first mutation proves
+    # that the PyPI publisher is configured and obtains any required approval.
+    environment: pypi
+    permissions:
+      contents: read
+    steps:
+      - name: Require registry credentials
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          for name in DOCKERHUB_USERNAME DOCKERHUB_TOKEN NPM_TOKEN; do
+            [[ -n "${!name:-}" ]] || { echo "::error::$name is not configured"; exit 1; }
+          done
+
   release-binaries:
     name: Release Binaries
-    needs: [preflight, prepare-artifacts]
+    needs: [preflight, prepare-artifacts, publish-preflight]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -121,7 +143,7 @@ jobs:
 
   release-docker:
     name: Release Docker Image
-    needs: [preflight, prepare-artifacts]
+    needs: [preflight, prepare-artifacts, publish-preflight]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -172,9 +194,32 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  verify-binary-assets:
+    name: Verify published binary assets
+    needs: [preflight, release-binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download, checksum, and execute the exact candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir release-assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir release-assets
+          (cd release-assets && sha256sum -c checksums.txt)
+          tar -xzf release-assets/mockagents_${VERSION}_linux_amd64.tar.gz -C release-assets
+          observed=$(release-assets/mockagents --version)
+          [[ "$observed" == "mockagents version $VERSION" ]] || {
+            echo "::error::published binary reports '$observed', expected $VERSION"; exit 1;
+          }
+
   release-python:
     name: Release Python SDK
-    needs: [preflight, prepare-artifacts, release-binaries]
+    needs: [preflight, prepare-artifacts, publish-preflight, verify-binary-assets]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -201,7 +246,7 @@ jobs:
 
   release-npm:
     name: Release npm packages
-    needs: [preflight, prepare-artifacts, release-binaries]
+    needs: [preflight, prepare-artifacts, publish-preflight, verify-binary-assets]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

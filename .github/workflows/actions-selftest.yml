@@ -33,7 +33,7 @@ jobs:
     name: setup-mockagents (server + exported env)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Start MockAgents from source
         uses: ./deploy/actions/setup-mockagents
@@ -58,7 +58,7 @@ jobs:
     name: mockagents-test (validate + JUnit suite)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run a TestSuite from source
         id: ma
