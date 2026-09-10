@@ -2,11 +2,10 @@ module github.com/mockagents/mockagents
 
 go 1.26.1
 
-// Require the patched Go toolchain: go1.26.1's standard library carries the
-// vulnerabilities GO-2026-4865/4866/4870/4918/4946/4947/4971/4980/4982/5037 and
-// the net/textproto fix. All are resolved by building with go1.26.4 (govulncheck
-// clean). Kept as a toolchain bump rather than raising the `go` language floor.
-toolchain go1.26.4
+// Pin the release toolchain to the current security patch level. Keep this in
+// sync with Dockerfile and verify every release candidate with govulncheck;
+// the `go` directive above remains the language compatibility floor.
+toolchain go1.26.6
 
 require (
 	github.com/coder/websocket v1.8.15

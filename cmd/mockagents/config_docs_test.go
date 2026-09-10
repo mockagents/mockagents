@@ -35,34 +35,36 @@ func TestConfigurationReferenceCoversEveryEnvVar(t *testing.T) {
 	documented := string(doc)
 
 	found := map[string]string{} // name -> first file that mentions it
-	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	// Scan only production Go source roots. Walking the entire checkout made
+	// this contract test depend on unrelated ignored/cache directories being
+	// readable, so a local .pytest_cache ACL could fail the Go suite before the
+	// test inspected any configuration source.
+	for _, sourceRoot := range []string{"cmd", "internal", filepath.Join("sdk", "go"), "tools"} {
+		err = filepath.WalkDir(filepath.Join(root, sourceRoot), func(path string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if d.IsDir() {
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, name := range envVarRe.FindAllString(string(data), -1) {
+				if _, ok := found[name]; !ok {
+					rel, _ := filepath.Rel(root, path)
+					found[name] = filepath.ToSlash(rel)
+				}
+			}
+			return nil
+		})
 		if err != nil {
-			return err
+			t.Fatalf("walking production source root %s: %v", sourceRoot, err)
 		}
-		if d.IsDir() {
-			switch d.Name() {
-			case ".git", "node_modules", "site", "dist", ".gotmp":
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return readErr
-		}
-		for _, name := range envVarRe.FindAllString(string(data), -1) {
-			if _, ok := found[name]; !ok {
-				rel, _ := filepath.Rel(root, path)
-				found[name] = filepath.ToSlash(rel)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walking the tree: %v", err)
 	}
 	if len(found) == 0 {
 		t.Fatal("found no MOCKAGENTS_* variables; the scan is broken")
