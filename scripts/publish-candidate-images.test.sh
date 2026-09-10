@@ -32,8 +32,17 @@ case "$1 ${2:-}" in
     if [[ "$*" == *'--format'* ]]; then
       case "$*" in *amd64*) echo '{"digest":"sha256:manifest-amd64"}';; *) echo '{"digest":"sha256:manifest-arm64"}';; esac
     elif [[ "$*" == *'--raw'* ]]; then
+      if [[ "${FAKE_MODE:-missing}" == missing ]] && [[ "$*" == *':1.2.3 '* ]]; then
+        if grep -qxF "index:${4}" "$FAKE_STATE" 2>/dev/null; then
+          printf '{"manifests":[{"digest":"sha256:manifest-amd64"},{"digest":"sha256:manifest-arm64"}]}\n'
+          exit
+        fi
+        exit 1
+      fi
       [[ "${FAKE_MODE:-missing}" == identical ]] || exit 1
       printf '{"manifests":[{"digest":"sha256:manifest-amd64"},{"digest":"sha256:manifest-arm64"}]}\n'
+    elif [[ "${3:-}" == create && "${4:-}" == --tag && "${5:-}" == *:1.2.3 ]]; then
+      echo "index:${5}" >> "$FAKE_STATE"
     fi ;;
   push*)
     echo "${*: -1}" >> "$FAKE_STATE" ;;

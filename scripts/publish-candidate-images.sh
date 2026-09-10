@@ -61,6 +61,12 @@ ensure_version_index() {
   else
     docker buildx imagetools create --tag "$target" \
       "${amd}@${amd_digest}" "${arm}@${arm_digest}"
+    raw=$(docker buildx imagetools inspect "$target" --raw)
+    actual=$(jq -r '.manifests[]?.digest' <<<"$raw" | sort)
+    if [ "$actual" != "$desired" ]; then
+      echo "published image index identity mismatch: $target" >&2
+      return 1
+    fi
   fi
 }
 
