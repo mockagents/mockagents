@@ -257,14 +257,115 @@ func diffTool(name string, old, new ToolContract) []Change {
 	}
 	oldConstraints := schemaConstraints(old.Parameters)
 	newConstraints := schemaConstraints(new.Parameters)
-	if !reflect.DeepEqual(oldConstraints, newConstraints) {
+	if schemaConstraintsTightened(oldConstraints, newConstraints) {
 		changes = append(changes, Change{
 			Severity: SeverityBreaking,
 			Path:     "tools." + name + ".parameters",
-			Message:  "parameter schema constraints changed",
+			Message:  "parameter schema constraints tightened or changed incompatibly",
+		})
+	} else if !reflect.DeepEqual(oldConstraints, newConstraints) {
+		changes = append(changes, Change{
+			Severity: SeverityAdditive,
+			Path:     "tools." + name + ".parameters",
+			Message:  "parameter schema constraints relaxed",
 		})
 	}
 	return changes
+}
+
+// schemaConstraintsTightened reports whether the new root schema accepts fewer
+// values than the old one for the common scalar/collection constraints. For
+// constraints whose implication cannot be proved cheaply (patterns,
+// combinators, and unknown extension keywords), a change remains conservatively
+// breaking. This keeps the release gate fail closed without misclassifying
+// straightforward relaxations as breaking changes.
+func schemaConstraintsTightened(old, new map[string]interface{}) bool {
+	keys := make(map[string]struct{}, len(old)+len(new))
+	for key := range old {
+		keys[key] = struct{}{}
+	}
+	for key := range new {
+		keys[key] = struct{}{}
+	}
+	for key := range keys {
+		ov, oldOK := old[key]
+		nv, newOK := new[key]
+		if reflect.DeepEqual(ov, nv) {
+			continue
+		}
+		if !newOK { // removing a validation keyword relaxes the schema
+			continue
+		}
+		if !oldOK { // adding a validation keyword narrows an unconstrained schema
+			return true
+		}
+		switch key {
+		case "minimum", "exclusiveMinimum", "minLength", "minItems", "minProperties":
+			o, ook := schemaNumber(ov)
+			n, nok := schemaNumber(nv)
+			if !ook || !nok || n > o {
+				return true
+			}
+		case "maximum", "exclusiveMaximum", "maxLength", "maxItems", "maxProperties":
+			o, ook := schemaNumber(ov)
+			n, nok := schemaNumber(nv)
+			if !ook || !nok || n < o {
+				return true
+			}
+		case "enum":
+			if !schemaEnumContainsAll(nv, ov) {
+				return true
+			}
+		case "additionalProperties":
+			o, ook := ov.(bool)
+			n, nok := nv.(bool)
+			if !ook || !nok || (o && !n) {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+func schemaNumber(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func schemaEnumContainsAll(container, subset interface{}) bool {
+	c, cok := container.([]interface{})
+	s, sok := subset.([]interface{})
+	if !cok || !sok {
+		return false
+	}
+	for _, want := range s {
+		found := false
+		for _, got := range c {
+			if reflect.DeepEqual(got, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // schemaConstraints retains every root-level validation keyword except keys

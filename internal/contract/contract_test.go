@@ -167,6 +167,31 @@ func TestDiffBreakingRootSchemaConstraints(t *testing.T) {
 	}
 }
 
+func TestDiffRootConstraintRelaxationsAreAdditive(t *testing.T) {
+	tests := []struct {
+		name, key string
+		old, new  any
+	}{
+		{"additional properties allowed", "additionalProperties", false, true},
+		{"enum value added", "enum", []any{"a"}, []any{"a", "b"}},
+		{"minimum lowered", "minimum", 5.0, 1.0},
+		{"maximum raised", "maximum", 5.0, 10.0},
+		{"maximum removed", "maxLength", 8.0, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldC, newC := Extract(sampleAgent()), Extract(sampleAgent())
+			oldC.Tools[0].Parameters[tt.key] = tt.old
+			if tt.new != nil {
+				newC.Tools[0].Parameters[tt.key] = tt.new
+			}
+			if changes := Diff(oldC, newC); HasBreaking(changes) {
+				t.Fatalf("relaxation reported breaking: %+v", changes)
+			}
+		})
+	}
+}
+
 func TestDiffIgnoresSchemaAnnotations(t *testing.T) {
 	oldC := Extract(sampleAgent())
 	newC := Extract(sampleAgent())
