@@ -9,6 +9,8 @@ RELEASE="${RELEASE:-mockagents}"
 APP_HOST="${APP_HOST:-mockagents.local}"
 BASE_URL="${BASE_URL:-}"
 EXPECTED_IMAGE="${EXPECTED_IMAGE:-}"
+EXPECTED_IMAGE_ID="${EXPECTED_IMAGE_ID:-}"
+EXPECTED_SOURCE_COMMIT="${EXPECTED_SOURCE_COMMIT:-}"
 IMAGE_REGISTRY="${IMAGE_REGISTRY:-registry.local:5000/mockagents/mockagents}"
 PLATFORM_KEY="${MOCKAGENTS_PLATFORM_KEY:-}"
 CREDS_FILE="${HOMELAB_CREDS_FILE:-$(cd "$(dirname "$0")" && pwd)/.homelab-credentials}"
@@ -37,10 +39,16 @@ if [ -z "$EXPECTED_IMAGE" ] && [ -r "$CREDS_FILE" ]; then
   deployed_tag="$(sed -n 's/^IMAGE_TAG=//p' "$CREDS_FILE" | head -1)"
   [ -z "$deployed_tag" ] || EXPECTED_IMAGE="${IMAGE_REGISTRY}:${deployed_tag}"
 fi
+if [ -r "$CREDS_FILE" ]; then
+  [ -n "$EXPECTED_IMAGE_ID" ] || EXPECTED_IMAGE_ID="$(sed -n 's/^IMAGE_ID=//p' "$CREDS_FILE" | head -1)"
+  [ -n "$EXPECTED_SOURCE_COMMIT" ] || EXPECTED_SOURCE_COMMIT="$(sed -n 's/^SOURCE_COMMIT=//p' "$CREDS_FILE" | head -1)"
+fi
 [ -n "$EXPECTED_IMAGE" ] || {
   log 'EXPECTED_IMAGE is required when the credentials file has no IMAGE_TAG' >&2
   exit 2
 }
+[ -n "$EXPECTED_IMAGE_ID" ] || { log 'EXPECTED_IMAGE_ID is required for exact candidate verification' >&2; exit 2; }
+[ -n "$EXPECTED_SOURCE_COMMIT" ] || { log 'EXPECTED_SOURCE_COMMIT is required for exact candidate verification' >&2; exit 2; }
 
 if [ -z "$BASE_URL" ]; then
   TRAEFIK_IP="$(kubectl -n kube-system get service traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
@@ -88,6 +96,12 @@ ready="$(kubectl -n "$NAMESPACE" get deployment "$RELEASE" -o jsonpath='{.status
 image="$(kubectl -n "$NAMESPACE" get deployment "$RELEASE" -o jsonpath='{.spec.template.spec.containers[0].image}')"
 log "deployed image=${image}"
 [ "$image" = "$EXPECTED_IMAGE" ] && ok 'deployed image matches candidate' || bad "deployed image mismatch (${image})"
+image_id="$(kubectl -n "$NAMESPACE" get pods -l "app.kubernetes.io/instance=${RELEASE}" -o jsonpath='{.items[0].status.containerStatuses[0].imageID}')"
+[ "$image_id" = "$EXPECTED_IMAGE_ID" ] && ok 'running image digest matches candidate' || bad 'running image digest mismatch'
+case "$image" in
+  *"${EXPECTED_SOURCE_COMMIT:0:12}") ok 'image tag identifies source commit' ;;
+  *) bad 'image tag does not identify expected source commit' ;;
+esac
 
 expect_status 200 health GET /api/v1/health
 expect_status 200 readiness GET /api/v1/ready

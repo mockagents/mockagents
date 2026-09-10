@@ -24,13 +24,14 @@ grep -q 'EXPECTED_CANDIDATE_TAG: \${{ needs.preflight.outputs.tag }}' "$release"
 grep -q 'EXPECTED_CANDIDATE_VERSION: \${{ needs.preflight.outputs.version }}' "$release"
 grep -q 'npm publish candidate/npm/mockagents-sdk-' "$release"
 grep -q 'packages-dir: candidate/python/' "$release"
-grep -q 'docker load --input candidate/images/linux-amd64.tar' "$release"
+grep -q 'bash scripts/publish-candidate-images.sh' "$release"
 grep -q 'mockagents-candidate:${GITHUB_SHA}-amd64' "$release"
 grep -q 'existing immutable release asset differs' "$release"
 if grep -q -- '--clobber' "$release"; then
   echo 'release workflow may overwrite an immutable GitHub asset' >&2
   exit 1
 fi
+bash scripts/publish-candidate-images.test.sh
 grep -q 'name: Verify publication configuration' "$release"
 grep -q 'name: Verify published binary assets' "$release"
 grep -q 'sha256sum -c checksums.txt' "$release"

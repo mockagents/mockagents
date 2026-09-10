@@ -243,20 +243,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/verify-candidate-artifacts.sh candidate
-          docker load --input candidate/images/linux-amd64.tar
-          docker load --input candidate/images/linux-arm64.tar
-          for registry in mockagents/mockagents ghcr.io/${GITHUB_REPOSITORY}; do
-            docker tag "mockagents-candidate:${GITHUB_SHA}-amd64" "${registry}:${VERSION}-amd64"
-            docker tag "mockagents-candidate:${GITHUB_SHA}-arm64" "${registry}:${VERSION}-arm64"
-            docker push "${registry}:${VERSION}-amd64"
-            docker push "${registry}:${VERSION}-arm64"
-          done
-          while IFS= read -r tag; do
-            [[ -n "$tag" ]] || continue
-            base="${tag%:*}"
-            docker buildx imagetools create --tag "$tag" \
-              "${base}:${VERSION}-amd64" "${base}:${VERSION}-arm64"
-          done <<< "$RELEASE_TAGS"
+          bash scripts/publish-candidate-images.sh
 
   verify-binary-assets:
     name: Verify published binary assets

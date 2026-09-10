@@ -8,7 +8,7 @@
 #
 # What it does, in order:
 #   0. Preflight: kubectl/docker/helm, cluster reachable, registry reachable.
-#   1. Build mockagents:build-<ts> and push to the in-cluster registry.
+#   1. Build mockagents:build-<ts>-<commit> and push to the in-cluster registry.
 #   2. Create the namespace.
 #   3. Render examples/*.yaml into the mockagents-agents ConfigMap.
 #   4. helm upgrade --install (image, ingress, agents, persistence, [tenancy]).
@@ -106,14 +106,17 @@ log "cluster reachable; $(kubectl get nodes --no-headers | wc -l | tr -d ' ') no
 header "Step 1 — Image"
 if $SKIP_BUILD; then
   BUILD_TAG="$(curl -fsS "http://${REGISTRY_PUSH}/v2/${IMAGE_REPO}/tags/list" 2>/dev/null \
-    | tr ',' '\n' | grep -oE 'build-[0-9]{8}-[0-9]{6}' | sort | tail -1)"
+    | tr ',' '\n' | grep -oE 'build-[0-9]{8}-[0-9]{6}-[0-9a-f]{12}' | sort | tail -1)"
   [ -n "$BUILD_TAG" ] || error "--skip-build but no build-* tag in the registry; run without --skip-build first"
   log "reusing existing tag ${BUILD_TAG}"
+  SOURCE_COMMIT="${BUILD_TAG##*-}"
 else
-  BUILD_TAG="build-$(date -u +%Y%m%d-%H%M%S)"
+  SOURCE_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+  BUILD_TAG="build-$(date -u +%Y%m%d-%H%M%S)-${SOURCE_COMMIT:0:12}"
   PUSH_IMG="${REGISTRY_PUSH}/${IMAGE_REPO}:${BUILD_TAG}"
   log "building ${PUSH_IMG}"
-  docker build -t "$PUSH_IMG" -f "${REPO_ROOT}/Dockerfile" "$REPO_ROOT" || error "docker build failed"
+  docker build --label "org.opencontainers.image.revision=${SOURCE_COMMIT}" \
+    -t "$PUSH_IMG" -f "${REPO_ROOT}/Dockerfile" "$REPO_ROOT" || error "docker build failed"
   docker push "$PUSH_IMG" || error "docker push failed — is the insecure registry trusted? (see DEPLOY_MOCKAGENTS.md Step 0b)"
   log "pushed ${PUSH_IMG}"
 fi
@@ -155,6 +158,9 @@ if $MULTI_TENANT; then
 fi
 helm "${HELM_ARGS[@]}" || error "helm upgrade --install failed"
 kubectl -n "$NAMESPACE" rollout status "deployment/${RELEASE}" --timeout=240s
+DEPLOYED_IMAGE_ID="$(kubectl -n "$NAMESPACE" get pods -l "app.kubernetes.io/instance=${RELEASE}" \
+  -o jsonpath='{.items[0].status.containerStatuses[0].imageID}')"
+[ -n "$DEPLOYED_IMAGE_ID" ] || error "running pod did not report an imageID digest"
 log "release ${RELEASE} rolled out at image tag ${BUILD_TAG}"
 
 # --- 5. multi-tenant bootstrap key ------------------------------------------
@@ -195,6 +201,8 @@ fi
   echo "# MockAgents homelab — generated $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "APP_URL=http://${APP_HOST}"
   echo "IMAGE_TAG=${BUILD_TAG}"
+  echo "IMAGE_ID=${DEPLOYED_IMAGE_ID}"
+  echo "SOURCE_COMMIT=${SOURCE_COMMIT}"
   [ -n "$BOOTSTRAP_KEY" ] && echo "MOCKAGENTS_BOOTSTRAP_ADMIN_KEY=${BOOTSTRAP_KEY}"
 } > "$CREDS_FILE"
 chmod 600 "$CREDS_FILE" 2>/dev/null || true

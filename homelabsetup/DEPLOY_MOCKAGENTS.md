@@ -121,7 +121,7 @@ the app URL, image tag, and — in multi-tenant mode — the bootstrap admin key
 | Step | Action |
 |------|--------|
 | 0 | Preflight — `kubectl`/`helm`/`docker`, cluster + registry reachable. |
-| 1 | Build `mockagents:build-<UTC-timestamp>` and push to the in-cluster registry (immutable tag, never `:latest`). `--skip-build` reuses the newest existing tag. |
+| 1 | Build `mockagents:build-<UTC-timestamp>-<commit>` and push to the in-cluster registry (immutable tag, never `:latest`). `--skip-build` reuses the newest existing tag. |
 | 2 | Create the `mockagents` namespace. |
 | 3 | Render `examples/*.yaml` into the `mockagents-agents` ConfigMap (mounted read-only at `/agents`). |
 | 4 | `helm upgrade --install` with the registry image, the agents ConfigMap, and a Traefik ingress on `APP_HOST`. `--persist` adds a PVC for the SQLite log; `--multi-tenant` sets `MOCKAGENTS_MULTI_TENANT=1`. |
@@ -163,7 +163,7 @@ Run the release regression harness after deploying the exact candidate image:
 # credentials file. You may instead export MOCKAGENTS_PLATFORM_KEY. The image
 # is also resolved from that file; set EXPECTED_IMAGE explicitly for a custom
 # registry path (or set IMAGE_REGISTRY while keeping its recorded tag).
-EXPECTED_IMAGE="registry.local:5000/mockagents/mockagents:build-YYYYMMDD-HHMMSS" \
+EXPECTED_IMAGE="registry.local:5000/mockagents/mockagents:build-YYYYMMDD-HHMMSS-abcdef123456" \
   ./homelabsetup/regression-homelab.sh
 ```
 
@@ -191,7 +191,7 @@ as the `base_url` for any OpenAI/Anthropic SDK.
 ./homelabsetup/deploy-homelab.sh --skip-build
 ```
 
-Because every build uses a unique `build-<timestamp>` tag (never `:latest`),
+Because every build uses a unique `build-<timestamp>-<commit>` tag (never `:latest`),
 K3s always pulls the new content — no `crictl rmi` cache dance needed.
 
 ---
