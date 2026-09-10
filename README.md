@@ -672,6 +672,11 @@ model-name changes are **info**.
 `kind=fallback` means a request hit no fixture at all — and
 `mockagents_chaos_injections_total{agent,kind}`.
 
+Single-tenant mode serves this endpoint without authentication. In
+multi-tenant mode it requires a platform API key because the labels describe
+process-wide agents and scenarios; configure the Helm ServiceMonitor with a
+dedicated platform credential as described in the observability guide.
+
 ```console
 $ curl -s localhost:8080/metrics | grep chaos_injections
 mockagents_chaos_injections_total{agent="flaky-agent",kind="error"} 3

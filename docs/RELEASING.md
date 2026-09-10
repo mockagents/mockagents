@@ -11,14 +11,17 @@ which fires on any pushed `v*` tag and:
 - publishes the Python SDK to PyPI (`mockagents`, via Trusted Publishing);
 - publishes the npm packages: `mockagents` (the `npx` launcher),
   `@mockagents/sdk`, and `@mockagents/vitest`;
-- optionally publishes the Homebrew formula to `mockagents/homebrew-tap`.
+- publishes the Homebrew cask to `mockagents/homebrew-tap` for stable releases.
 
 The whole thing is driven by **one tag push** — but several **one-time account
 setups** must be done first, or individual publish jobs will fail.
 
 All build, package, security, Helm, and install-channel checks run through the
-reusable candidate verification workflow before a publisher can start. Run the
-same verification for the exact candidate commit and retain its artifacts.
+reusable candidate verification workflow before a publisher can start.
+`prepare-artifacts` then builds the binaries, wheel/source distribution, npm
+tarballs and per-platform container images exactly once, records their SHA-256
+digests and toolchain metadata, and uploads one candidate bundle keyed by the
+commit SHA. Publisher jobs only verify and consume that bundle.
 Account and registry checkboxes below are prerequisites that require live
 verification; their presence here is not evidence that they are configured.
 
@@ -52,11 +55,11 @@ verification; their presence here is not evidence that they are configured.
 - [ ] **npm** — the unscoped package `mockagents` and the `@mockagents` org/scope
       (for `@mockagents/sdk` and `@mockagents/vitest`). Create the `@mockagents`
       org on npmjs.com.
-- [ ] **Homebrew tap** (optional, macOS) — create the repo
+- [ ] **Homebrew tap** (required for stable releases, macOS) — create the repo
       `github.com/mockagents/homebrew-tap`. The release publishes a Homebrew
       **cask** (the modern path for prebuilt binaries; macOS only — Linux users
-      use the binary / `go install` / Docker / npx / pipx). Without the tap the
-      Homebrew step auto-skips and the rest of the release still succeeds.
+      use the binary / `go install` / Docker / npx / pipx). Prereleases do not
+      update this stable channel.
 
 ### 2. Repository secrets (`Settings → Secrets and variables → Actions`)
 
@@ -65,7 +68,7 @@ verification; their presence here is not evidence that they are configured.
 | `DOCKERHUB_USERNAME` | `release-docker` | Docker Hub push |
 | `DOCKERHUB_TOKEN` | `release-docker` | Docker Hub push (access token, not password) |
 | `NPM_TOKEN` | `release-npm` | npm publish (Automation token with publish rights) |
-| `HOMEBREW_TAP_TOKEN` | `release-binaries` (GoReleaser) | push the formula to the tap (a PAT with `repo` write on `homebrew-tap`). Omit to skip Homebrew. |
+| `HOMEBREW_TAP_TOKEN` | `release-homebrew` | push the cask to the tap (a PAT with Contents write on `homebrew-tap`); required for stable tags. |
 
 `GITHUB_TOKEN` (GHCR push, GitHub Release) and PyPI Trusted Publishing need no
 manually-created secret.
@@ -87,10 +90,10 @@ manually-created secret.
 
 ### 4. Channel setup — step by step
 
-The `release-binaries` job (binaries + the GitHub Release + the Homebrew cask)
-needs nothing but the automatic `GITHUB_TOKEN`. The other publish jobs each need
-one prerequisite below; set up whichever channels you want — they are independent,
-and a missing one only fails its own job.
+The `release-binaries` job needs only the automatic `GITHUB_TOKEN`. Registry
+and stable Homebrew prerequisites are checked together before the first
+publication mutation so a missing required channel cannot produce a partial
+release by configuration alone.
 
 #### Docker Hub → `release-docker`
 The job pushes to **both** `mockagents/mockagents` (Docker Hub) and
@@ -132,8 +135,10 @@ Uses OIDC, so there is no API token to store — register a **trusted publisher*
 2. Nothing else: the job already sets `permissions: id-token: write`, and the
    `pypi` GitHub environment auto-creates on first run (no protection rules needed).
 
-#### Homebrew (optional) → the GoReleaser cask
-Auto-skips when `HOMEBREW_TAP_TOKEN` is unset, so the release succeeds without it.
+#### Homebrew (stable releases) → cask from prepared archives
+
+The cask references the same prepared macOS archives and checksums attached to
+the GitHub Release. Prereleases leave the stable tap unchanged.
 
 1. Create the public repo **`github.com/mockagents/homebrew-tap`** (empty).
 2. Create a GitHub **PAT** (classic with `repo`, or fine-grained with Contents:write on `homebrew-tap`).
@@ -145,11 +150,11 @@ Auto-skips when `HOMEBREW_TAP_TOKEN` is unset, so the release succeeds without i
 
 ## Recovering a partial release
 
-If a tag was pushed before some channel's prerequisite was ready, the binaries +
-GitHub Release still publish, while the unconfigured channels' jobs fail at their
-login/auth step — **before** uploading anything. So once you add the missing
-secret/namespace, **re-run only the failed jobs on the same run; no new tag is
-needed:**
+Missing registry credentials and the stable Homebrew token fail the shared
+preflight before any publication. A registry outage or permission change can
+still interrupt publication after another channel succeeds. Once the external
+problem is fixed, **re-run only the failed jobs on the same run; no new tag is
+needed when that registry has not accepted its immutable version:**
 
 ```bash
 RUN=$(gh run list --repo mockagents/mockagents --workflow=release.yml --limit 1 --json databaseId -q '.[0].databaseId')
@@ -157,9 +162,10 @@ gh run rerun "$RUN" --failed --repo mockagents/mockagents
 gh run watch "$RUN" --exit-status --repo mockagents/mockagents
 ```
 
-`--failed` re-runs only the failed jobs and their dependents;
-the already-succeeded `release-binaries` is left intact, so the live GitHub Release
-is untouched.
+`--failed` re-runs only the failed jobs and their dependents. Every retry
+downloads the original commit-keyed candidate bundle. Existing GitHub Release
+assets are downloaded and byte-compared; a mismatch fails instead of replacing
+the asset, while missing assets are uploaded.
 
 > **The one case that needs a new version:** if a job *did* publish to npm or PyPI
 > before failing (those versions are **immutable** and cannot be re-uploaded), bump
@@ -233,6 +239,7 @@ above is done.
 
 ## Maintenance note
 
-Homebrew distribution uses GoReleaser's `homebrew_casks:` block (a cask, not the
-deprecated `brews:` formula). The workflow pins its GoReleaser Action major. The cask
-is **macOS-only** — there is no Linux Homebrew path by design.
+Homebrew distribution is generated by `release-homebrew` from the checksums of
+the already prepared GitHub archives. The cask is **macOS-only** — there is no
+Linux Homebrew path by design. GoReleaser itself is pinned to the exact version
+recorded in the candidate manifest.

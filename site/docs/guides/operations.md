@@ -6,7 +6,8 @@ does not exist, this guide says so instead of implying one.
 
 The short version: MockAgents keeps its state in three SQLite files (or
 Postgres for tenancy), holds exactly one credential you cannot regenerate from
-the API, and is a single-writer process unless you give it a shared backend.
+the API, and keeps several runtime stores per process even when tenancy uses a
+shared backend.
 
 ## What has state
 
@@ -194,7 +195,7 @@ Postgres-backed replicas enforce one budget rather than N.
 
 `GET /api/v1/ready` is the operational signal — it fails when the fixture
 registry is empty or the interaction log stops answering. `GET /metrics` is a
-Prometheus scrape target (viewer-gated in multi-tenant mode). Both are covered
+Prometheus scrape target (platform-gated in multi-tenant mode). Both are covered
 in [Observability](observability.md).
 
 The audit trail is queryable at `GET /api/v1/audit` with an admin key. It

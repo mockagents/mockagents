@@ -6,9 +6,8 @@ name: Documentation
 #   Source = "GitHub Actions"
 # On a PRIVATE repository this additionally requires a plan that includes
 # Pages for private repos (GitHub Pro/Team/Enterprise), or making the repo
-# public. Until Pages is enabled the Pages API returns 404; the build job is
-# always safe to run, and the deploy job below is marked continue-on-error so
-# an un-provisioned Pages setup does not fail the whole workflow run.
+# public. Until Pages is enabled the Pages API returns 404; configure it before
+# enabling this workflow so a failed documentation deployment remains visible.
 
 on:
   push:
@@ -20,8 +19,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: "pages"
@@ -32,10 +29,10 @@ jobs:
     name: Build MkDocs site
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -47,7 +44,7 @@ jobs:
         run: mkdocs build --strict
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v5
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site/site
 
@@ -55,13 +52,14 @@ jobs:
     name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
-    # Best-effort: don't red-X the run when Pages isn't enabled yet (see the
-    # header note). Once Pages is provisioned this deploys normally.
-    continue-on-error: true
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

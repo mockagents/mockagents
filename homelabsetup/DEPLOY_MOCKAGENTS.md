@@ -105,6 +105,7 @@ export KUBECONFIG="$HOME/.kube/config-mockagents-homelab"
 |--------|---------|
 | `bootstrap-homelab.sh` | Install K3s (server + agents), MetalLB, and the in-cluster registry + containerd mirror. Run once per cluster. |
 | `deploy-homelab.sh` | Build & push the image, render `examples/` into a ConfigMap, `helm upgrade --install`, verify, print URLs. |
+| `regression-homelab.sh` | Run candidate identity, rollout, health/readiness, provider, vector, metrics authorization and key-revocation checks against an existing deployment. |
 | `fresh-deploy-homelab.sh` | Clean redeploy: cleanup → deploy (keeps the cluster + registry). |
 | `stop-homelab.sh` | Scale to 0 and stop K3s (preserves PVCs). Pairs with restart. |
 | `restart-homelab.sh` | Start K3s and scale back to the pre-shutdown replica count. |
@@ -154,6 +155,26 @@ curl -H "Host: mockagents.local" -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}' \
   "http://$TRAEFIK_IP/v1/chat/completions"
 ```
+
+Run the release regression harness after deploying the exact candidate image:
+
+```bash
+# Multi-tenant deploys read the platform key from the generated, ignored
+# credentials file. You may instead export MOCKAGENTS_PLATFORM_KEY. The image
+# is also resolved from that file; set EXPECTED_IMAGE explicitly for a custom
+# registry path (or set IMAGE_REGISTRY while keeping its recorded tag).
+EXPECTED_IMAGE="registry.local:5000/mockagents/mockagents:build-YYYYMMDD-HHMMSS" \
+  ./homelabsetup/regression-homelab.sh
+```
+
+The harness never prints keys or response bodies. It creates uniquely named,
+disposable tenant/key and vector fixtures and removes them on exit. With a
+platform key it verifies anonymous/viewer/platform metrics authorization and
+immediate rejection of a rotated key. Without a platform key it runs the
+single-tenant path and reports the multi-tenant checks as skipped. A release
+candidate needs the multi-tenant run as well as the default Helm topology,
+authenticated ServiceMonitor render, negative replica renders, and local
+record/replay and A2A gates described in `docs/RELEASING.md`.
 
 Once the hosts entry is in place you can use `http://mockagents.local` directly
 as the `base_url` for any OpenAI/Anthropic SDK.

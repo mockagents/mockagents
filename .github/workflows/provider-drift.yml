@@ -12,8 +12,8 @@ jobs:
   offline-baseline:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: Run offline three-way baseline
@@ -31,7 +31,7 @@ jobs:
             --baseline testdata/drift/tavily/baseline.json \
             --format json \
             --output drift-reports/tavily-search.json
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: provider-drift-offline
           path: drift-reports/
@@ -39,8 +39,8 @@ jobs:
   cohere-live:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: Check Cohere credentials
@@ -84,7 +84,7 @@ jobs:
             --ignore-path '$.id' \
             --format json \
             --output drift-reports/cohere-live-report.json
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: steps.credentials.outputs.enabled == 'true'
         with:
           name: provider-drift-cohere-live
@@ -93,8 +93,8 @@ jobs:
   openai-moderation-live:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: Check OpenAI credentials
@@ -137,7 +137,7 @@ jobs:
             --mock testdata/drift/openai-moderation/mock.json \
             --format json \
             --output drift-reports/openai-moderation-live-report.json
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: steps.credentials.outputs.enabled == 'true'
         with:
           name: provider-drift-openai-moderation-live
@@ -146,8 +146,8 @@ jobs:
   tavily-live:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: Check Tavily credentials
@@ -190,7 +190,7 @@ jobs:
             --mock testdata/drift/tavily/mock.json \
             --format json \
             --output drift-reports/tavily-live-report.json
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: steps.credentials.outputs.enabled == 'true'
         with:
           name: provider-drift-tavily-live
