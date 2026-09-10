@@ -3,6 +3,7 @@ package recording
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -60,17 +61,62 @@ func NewRedactor(extraPatterns []string) (*Redactor, error) {
 // Apply masks secrets in every recorded surface of it: request/response bodies,
 // stream-event payloads, and captured header values. Safe to call on a nil
 // Redactor or a nil Interaction (both no-ops).
-func (r *Redactor) Apply(it *Interaction) {
+func (r *Redactor) Apply(it *Interaction) error {
 	if r == nil || it == nil {
-		return
+		return nil
 	}
 	it.RequestBody = r.redactBody(it.RequestBody)
 	it.ResponseBody = r.redactBody(it.ResponseBody)
-	for i := range it.StreamEvents {
-		it.StreamEvents[i].Data = r.redactStreamData(it.StreamEvents[i].Data)
+	if it.Streaming && len(it.StreamEvents) > 0 {
+		frames, err := assembleSSEFrames(it.StreamEvents, maxRecordedSSEFrameBytes)
+		if err != nil {
+			return fmt.Errorf("redacting recorded SSE: %w", err)
+		}
+		for i := range frames {
+			frames[i].Data = r.redactStreamData(frames[i].Data)
+		}
+		it.StreamEvents = frames
 	}
 	redactHeaderValues(r, it.RequestHeaders)
 	redactHeaderValues(r, it.ResponseHeaders)
+	return nil
+}
+
+const maxRecordedSSEFrameBytes = 1 << 20
+
+func assembleSSEFrames(chunks []StreamEvent, maxBytes int) ([]StreamEvent, error) {
+	if maxBytes <= 0 {
+		return nil, errors.New("invalid SSE frame size limit")
+	}
+	var pending string
+	var frames []StreamEvent
+	for _, chunk := range chunks {
+		pending += chunk.Data
+		for {
+			lf := strings.Index(pending, "\n\n")
+			crlf := strings.Index(pending, "\r\n\r\n")
+			end, delimiterLen := lf, 2
+			if crlf >= 0 && (end < 0 || crlf < end) {
+				end, delimiterLen = crlf, 4
+			}
+			if end < 0 {
+				break
+			}
+			frameLen := end + delimiterLen
+			if frameLen > maxBytes {
+				return nil, fmt.Errorf("SSE frame exceeds %d bytes", maxBytes)
+			}
+			frames = append(frames, StreamEvent{DelayMs: chunk.DelayMs, Data: pending[:frameLen]})
+			pending = pending[frameLen:]
+		}
+		if len(pending) > maxBytes {
+			return nil, fmt.Errorf("SSE frame exceeds %d bytes", maxBytes)
+		}
+	}
+	if pending != "" {
+		return nil, errors.New("incomplete SSE frame at end of stream")
+	}
+	return frames, nil
 }
 
 // redactString masks secrets in a single plain string: prefix masking, the
@@ -140,12 +186,12 @@ func (r *Redactor) redactJSONValue(v any) any {
 	}
 }
 
-// redactStreamData masks secrets in an SSE chunk. SSE is line-oriented
+// redactStreamData masks secrets in a complete SSE frame. SSE is line-oriented
 // (`data: {json}`); each line's JSON payload is redacted through the same
 // structure-preserving value walk as a body, so a custom pattern can never
 // corrupt the frame. Non-JSON payloads get prefix masking only (structure-safe).
-// Limitation: a secret split across two network chunks is not caught, since each
-// chunk is redacted independently.
+// Apply assembles arbitrary network chunks into complete bounded frames before
+// calling this method, so JSON redaction never falls back merely due to a split.
 func (r *Redactor) redactStreamData(s string) string {
 	if s == "" {
 		return s

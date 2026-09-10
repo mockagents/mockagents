@@ -12,6 +12,7 @@
 package tenancy
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -131,6 +132,10 @@ type Principal struct {
 	TenantID string `json:"-"`
 	KeyID    string `json:"-"`
 	Role     Role   `json:"-"`
+	// CredentialVersion changes whenever the key's authentication material
+	// changes. Cached bcrypt proofs are accepted only while this matches the
+	// authoritative row, which makes rotation/revocation safe across replicas.
+	CredentialVersion int64 `json:"-"`
 }
 
 // ErrNotFound is returned by Store methods when a lookup misses.
@@ -141,6 +146,42 @@ var ErrNotFound = errors.New("tenancy: not found")
 // so a duplicate is not conflated with a bad request (400) or a DB failure
 // (500). See F-TN-008.
 var ErrConflict = errors.New("tenancy: already exists")
+
+// ErrForbidden is returned when an actor is not allowed to mutate the target
+// credential. In particular, tenant admins may never mutate platform keys.
+var ErrForbidden = errors.New("tenancy: forbidden")
+
+type mutationActorContextKey struct{}
+
+// WithMutationActor binds the authenticated actor to a store mutation. Store
+// implementations enforce target-role policy at the mutation boundary, rather
+// than relying on a race-prone handler pre-read.
+func WithMutationActor(ctx context.Context, actor *Principal) context.Context {
+	if actor == nil {
+		return ctx
+	}
+	copy := *actor
+	return context.WithValue(ctx, mutationActorContextKey{}, &copy)
+}
+
+func mutationActor(ctx context.Context) *Principal {
+	p, _ := ctx.Value(mutationActorContextKey{}).(*Principal)
+	return p
+}
+
+func authorizeKeyTarget(ctx context.Context, tenantID string, target Role) error {
+	actor := mutationActor(ctx)
+	if actor == nil { // trusted internal/bootstrap callers retain compatibility
+		return nil
+	}
+	if actor.Role == RolePlatform {
+		return nil
+	}
+	if actor.TenantID != tenantID || target == RolePlatform {
+		return ErrForbidden
+	}
+	return nil
+}
 
 // ErrInvalidKey is returned when an API key doesn't exist or the hash
 // doesn't match. Middleware turns this into a 401.

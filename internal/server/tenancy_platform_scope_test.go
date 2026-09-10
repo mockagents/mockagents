@@ -30,12 +30,52 @@ func platformScopeFixture(t *testing.T, caller func(bootstrap, acme *tenancy.Ten
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/tenants/{id}/keys", h.ListAPIKeys)
 	mux.HandleFunc("POST /api/v1/tenants/{id}/keys", h.CreateAPIKey)
+	mux.HandleFunc("POST /api/v1/tenants/{id}/keys/rotate", h.BulkRotateTenantKeys)
 	mux.HandleFunc("PATCH /api/v1/keys/{id}", h.UpdateAPIKeyRole)
 	mux.HandleFunc("POST /api/v1/keys/{id}/rotate", h.RotateAPIKey)
 	mux.HandleFunc("DELETE /api/v1/keys/{id}", h.DeleteAPIKey)
 	srv := httptest.NewServer(servePrincipal(caller(bootstrap, acme), mux))
 	t.Cleanup(srv.Close)
 	return srv, acme, store
+}
+
+func TestTenantAdminCannotMutatePlatformKeyInOwnTenant(t *testing.T) {
+	srv, _, store := platformScopeFixture(t, func(bootstrap, _ *tenancy.Tenant) *tenancy.Principal {
+		return &tenancy.Principal{TenantID: bootstrap.ID, KeyID: "k_admin", Role: tenancy.RoleAdmin}
+	})
+	bootstrap, err := store.ListTenants(context.Background())
+	if err != nil || len(bootstrap) < 1 {
+		t.Fatalf("list tenants: %v", err)
+	}
+	var defaultTenant *tenancy.Tenant
+	for _, tenant := range bootstrap {
+		if tenant.Name == "default" {
+			defaultTenant = tenant
+		}
+	}
+	if defaultTenant == nil {
+		t.Fatal("default tenant missing")
+	}
+	platform, err := store.CreateAPIKeyWithPlaintext(context.Background(), defaultTenant.ID, "platform", tenancy.RolePlatform, "mak_12345678_abcdefghijklmnopqrstuvwxyz012345")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct{ method, path, body string }{
+		{http.MethodPost, "/api/v1/keys/" + platform.ID + "/rotate", ""},
+		{http.MethodPatch, "/api/v1/keys/" + platform.ID, `{"role":"viewer"}`},
+		{http.MethodDelete, "/api/v1/keys/" + platform.ID, ""},
+		{http.MethodPost, "/api/v1/tenants/" + defaultTenant.ID + "/keys/rotate", ""},
+	}
+	for _, tc := range cases {
+		resp := do(t, tc.method, srv.URL+tc.path, tc.body)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("%s %s = %d, want 403", tc.method, tc.path, resp.StatusCode)
+		}
+	}
+	if _, err := store.Resolve(context.Background(), "mak_12345678_abcdefghijklmnopqrstuvwxyz012345"); err != nil {
+		t.Fatalf("denied mutation changed platform credential: %v", err)
+	}
 }
 
 func do(t *testing.T, method, url, body string) *http.Response {

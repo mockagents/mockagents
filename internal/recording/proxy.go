@@ -214,7 +214,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	it.Hash = HashRequest(it.Method, it.Path, body)
 	if !p.skipRecording(it.ResponseStatus) {
 		if p.Redactor != nil {
-			p.Redactor.Apply(it)
+			if err := p.Redactor.Apply(it); err != nil {
+				w.Header().Set("X-Mockagents-Record-Error", err.Error())
+				goto respond
+			}
 		}
 		if err := p.Cassette.Append(it); err != nil {
 			// Log via http.Error would overwrite headers; write the response
@@ -223,6 +226,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+respond:
 	copyHeaders(w.Header(), upstreamResp.Header)
 	w.WriteHeader(upstreamResp.StatusCode)
 	_, _ = w.Write(respBody)
@@ -243,6 +247,12 @@ func (p *Proxy) skipRecording(status int) bool {
 // (partial) cassette entry.
 func (p *Proxy) serveStreaming(w http.ResponseWriter, r *http.Request, reqBody []byte, upstreamResp *http.Response) {
 	copyHeaders(w.Header(), upstreamResp.Header)
+	// Streaming headers are committed before recording finishes. Declare the
+	// recording error trailer up front so redaction/append failures remain
+	// observable instead of being silently discarded after WriteHeader.
+	if p.Redactor != nil {
+		w.Header().Add("Trailer", "X-Mockagents-Record-Error")
+	}
 	w.WriteHeader(upstreamResp.StatusCode)
 	flusher, _ := w.(http.Flusher)
 	if flusher != nil {
@@ -307,7 +317,10 @@ func (p *Proxy) serveStreaming(w http.ResponseWriter, r *http.Request, reqBody [
 	// is 200 here, so skipRecording (status-only) can't catch it.
 	if !p.skipRecording(it.ResponseStatus) && !(p.SkipRecordOnError && upstreamErrored) {
 		if p.Redactor != nil {
-			p.Redactor.Apply(it)
+			if err := p.Redactor.Apply(it); err != nil {
+				w.Header().Set("X-Mockagents-Record-Error", err.Error())
+				return
+			}
 		}
 		if err := p.Cassette.Append(it); err != nil {
 			w.Header().Set("X-Mockagents-Record-Error", err.Error())

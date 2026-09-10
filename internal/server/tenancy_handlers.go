@@ -260,8 +260,12 @@ func (h *TenancyHandlers) UpdateAPIKeyRole(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	prev, next, err := h.Store.UpdateAPIKeyRole(r.Context(), tenantID, id, req.Role)
+	prev, next, err := h.Store.UpdateAPIKeyRole(tenancy.WithMutationActor(r.Context(), p), tenantID, id, req.Role)
 	if err != nil {
+		if errors.Is(err, tenancy.ErrForbidden) {
+			writeError(w, http.StatusForbidden, "insufficient role for target api key")
+			return
+		}
 		if errors.Is(err, tenancy.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "api key not found")
 			return
@@ -294,8 +298,12 @@ func (h *TenancyHandlers) RotateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	result, oldPrefix, err := h.Store.RotateAPIKey(r.Context(), tenantID, id)
+	result, oldPrefix, err := h.Store.RotateAPIKey(tenancy.WithMutationActor(r.Context(), p), tenantID, id)
 	if err != nil {
+		if errors.Is(err, tenancy.ErrForbidden) {
+			writeError(w, http.StatusForbidden, "insufficient role for target api key")
+			return
+		}
 		if errors.Is(err, tenancy.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "api key not found")
 			return
@@ -341,6 +349,10 @@ type BulkRotateResult struct {
 // (admin clicks "Rotate" on every key one by one) leaves a
 // window where half the keys are still the compromised values.
 func (h *TenancyHandlers) BulkRotateTenantKeys(w http.ResponseWriter, r *http.Request) {
+	p := principalOrUnauthorized(w, r)
+	if p == nil {
+		return
+	}
 	tenantID, ok := h.ensureOwnTenant(w, r)
 	if !ok {
 		return
@@ -356,8 +368,12 @@ func (h *TenancyHandlers) BulkRotateTenantKeys(w http.ResponseWriter, r *http.Re
 			excludeIDs = append(excludeIDs, principal.KeyID)
 		}
 	}
-	results, oldPrefixes, err := h.Store.BulkRotateTenantKeys(r.Context(), tenantID, excludeIDs...)
+	results, oldPrefixes, err := h.Store.BulkRotateTenantKeys(tenancy.WithMutationActor(r.Context(), p), tenantID, excludeIDs...)
 	if err != nil {
+		if errors.Is(err, tenancy.ErrForbidden) {
+			writeError(w, http.StatusForbidden, "bulk rotation contains an api key above the caller's role")
+			return
+		}
 		if errors.Is(err, tenancy.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "tenant not found")
 			return
@@ -413,7 +429,7 @@ func (h *TenancyHandlers) RotateMyAPIKey(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusUnauthorized, "self-rotation requires an authenticated request")
 		return
 	}
-	result, oldPrefix, err := h.Store.RotateAPIKey(r.Context(), principal.TenantID, principal.KeyID)
+	result, oldPrefix, err := h.Store.RotateAPIKey(tenancy.WithMutationActor(r.Context(), principal), principal.TenantID, principal.KeyID)
 	if err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
 			// The principal was authenticated but the underlying
@@ -462,7 +478,7 @@ func (h *TenancyHandlers) BurnMyAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "burn requires an authenticated request")
 		return
 	}
-	result, oldPrefix, err := h.Store.RotateAPIKey(r.Context(), principal.TenantID, principal.KeyID)
+	result, oldPrefix, err := h.Store.RotateAPIKey(tenancy.WithMutationActor(r.Context(), principal), principal.TenantID, principal.KeyID)
 	if err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "api key not found")
@@ -506,7 +522,11 @@ func (h *TenancyHandlers) DeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.Store.DeleteAPIKey(r.Context(), tenantID, id); err != nil {
+	if err := h.Store.DeleteAPIKey(tenancy.WithMutationActor(r.Context(), p), tenantID, id); err != nil {
+		if errors.Is(err, tenancy.ErrForbidden) {
+			writeError(w, http.StatusForbidden, "insufficient role for target api key")
+			return
+		}
 		if errors.Is(err, tenancy.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "api key not found")
 			return

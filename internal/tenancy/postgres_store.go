@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
     hash       TEXT NOT NULL,
     role       TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    last_used  TEXT
+    last_used  TEXT,
+    credential_version BIGINT NOT NULL DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys(tenant_id);
@@ -124,6 +125,10 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 	if _, err := db.ExecContext(ctx, postgresSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply tenancy schema: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS credential_version BIGINT NOT NULL DEFAULT 1`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate tenancy credential version: %w", err)
 	}
 	return &PostgresStore{db: db}, nil
 }
@@ -295,6 +300,9 @@ func (s *PostgresStore) UpdateAPIKeyRole(ctx context.Context, tenantID, id strin
 		}
 		return "", "", err
 	}
+	if err := authorizeKeyTarget(ctx, tenantID, Role(prev)); err != nil {
+		return "", "", err
+	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE api_keys SET role = $1 WHERE id = $2 AND tenant_id = $3`, string(role), id, tenantID,
 	); err != nil {
@@ -329,6 +337,9 @@ func (s *PostgresStore) RotateAPIKey(ctx context.Context, callerTenantID, id str
 		}
 		return nil, "", err
 	}
+	if err := authorizeKeyTarget(ctx, tenantID, Role(role)); err != nil {
+		return nil, "", err
+	}
 
 	plaintext, newPrefix, err := generateAPIKey()
 	if err != nil {
@@ -339,7 +350,7 @@ func (s *PostgresStore) RotateAPIKey(ctx context.Context, callerTenantID, id str
 		return nil, "", fmt.Errorf("bcrypt hash: %w", err)
 	}
 	if _, err = tx.ExecContext(ctx,
-		`UPDATE api_keys SET prefix = $1, hash = $2, last_used = NULL WHERE id = $3`,
+		`UPDATE api_keys SET prefix = $1, hash = $2, last_used = NULL, credential_version = credential_version + 1 WHERE id = $3`,
 		newPrefix, string(hash), id,
 	); err != nil {
 		return nil, "", err
@@ -397,6 +408,10 @@ func (s *PostgresStore) BulkRotateTenantKeys(ctx context.Context, tenantID strin
 			return nil, nil, err
 		}
 		existingKeys = append(existingKeys, e)
+		if err := authorizeKeyTarget(ctx, tenantID, Role(e.role)); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -437,7 +452,7 @@ func (s *PostgresStore) BulkRotateTenantKeys(ctx context.Context, tenantID strin
 	oldPrefixes := make([]string, 0, len(rotations))
 	for _, rot := range rotations {
 		res, execErr := tx.ExecContext(ctx,
-			`UPDATE api_keys SET prefix = $1, hash = $2, last_used = NULL WHERE id = $3`,
+			`UPDATE api_keys SET prefix = $1, hash = $2, last_used = NULL, credential_version = credential_version + 1 WHERE id = $3`,
 			rot.newPrefix, string(rot.hash), rot.e.id,
 		)
 		if execErr != nil {
@@ -525,12 +540,30 @@ func (s *PostgresStore) GetSpend(ctx context.Context, tenantID, month string) (f
 
 // DeleteAPIKey permanently removes a key, scoped to tenantID.
 func (s *PostgresStore) DeleteAPIKey(ctx context.Context, tenantID, id string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM api_keys WHERE id = $1 AND tenant_id = $2`, id, tenantID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	var targetRole string
+	if err := tx.QueryRowContext(ctx, `SELECT role FROM api_keys WHERE id = $1 AND tenant_id = $2 FOR UPDATE`, id, tenantID).Scan(&targetRole); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if err := authorizeKeyTarget(ctx, tenantID, Role(targetRole)); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM api_keys WHERE id = $1 AND tenant_id = $2`, id, tenantID)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	s.cache.Invalidate()
 	return nil
@@ -544,6 +577,19 @@ func (s *PostgresStore) Resolve(ctx context.Context, plaintext string) (*Princip
 		return nil, ErrInvalidKey
 	}
 	if cached := s.cache.Get(plaintext); cached != nil {
+		var tenantID, role string
+		var version int64
+		err := s.db.QueryRowContext(ctx, `SELECT k.tenant_id, k.role, k.credential_version
+			FROM api_keys k JOIN tenants t ON t.id = k.tenant_id WHERE k.id = $1`, cached.KeyID).
+			Scan(&tenantID, &role, &version)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && (tenantID != cached.TenantID || version != cached.CredentialVersion) {
+			s.cache.Invalidate()
+			return nil, ErrInvalidKey
+		}
+		if err != nil {
+			return nil, err
+		}
+		cached.Role = Role(role)
 		return cached, nil
 	}
 	if s.cache.IsNegative(plaintext) {
@@ -553,18 +599,19 @@ func (s *PostgresStore) Resolve(ctx context.Context, plaintext string) (*Princip
 	prefix := plaintext[:apiKeyPrefixLen]
 	type candidate struct {
 		id, tenantID, role, hash string
+		version                  int64
 		lastUsed                 sql.NullString
 	}
 	var candidates []candidate
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, tenant_id, role, hash, last_used FROM api_keys WHERE prefix = $1`, prefix,
+		`SELECT id, tenant_id, role, hash, credential_version, last_used FROM api_keys WHERE prefix = $1`, prefix,
 	)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var c candidate
-		if err := rows.Scan(&c.id, &c.tenantID, &c.role, &c.hash, &c.lastUsed); err != nil {
+		if err := rows.Scan(&c.id, &c.tenantID, &c.role, &c.hash, &c.version, &c.lastUsed); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -594,7 +641,7 @@ func (s *PostgresStore) Resolve(ctx context.Context, plaintext string) (*Princip
 					`UPDATE api_keys SET last_used = $1 WHERE id = $2`, now.Format(time.RFC3339), c.id,
 				)
 			}
-			principal := &Principal{TenantID: c.tenantID, KeyID: c.id, Role: Role(c.role)}
+			principal := &Principal{TenantID: c.tenantID, KeyID: c.id, Role: Role(c.role), CredentialVersion: c.version}
 			s.cache.Set(plaintext, principal)
 			return principal, nil
 		}
