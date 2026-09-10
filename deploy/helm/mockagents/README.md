@@ -66,8 +66,8 @@ in the NOTES in that case.
 | Value                                | Purpose                                                  |
 | ------------------------------------ | -------------------------------------------------------- |
 | `image.tag`                          | Pin a specific Docker image tag.                         |
-| `replicaCount`                       | Replicas. State is per pod, so >1 is refused unless `env.MOCKAGENTS_TENANCY_DSN` is set or `multiReplica.acknowledged=true` (see below). |
-| `multiReplica.acknowledged`          | Run N independent single-tenant mock servers behind one Service (logs, audit and the write API differ per pod). |
+| `replicaCount`                       | Replicas. Values above 1 are refused unless `multiReplica.acknowledged=true`, even when a tenancy DSN is configured. |
+| `multiReplica.acknowledged`          | Explicitly accept per-pod registry, session, interaction-log, audit-log and rate-state behavior. |
 | `service.type`                       | `ClusterIP` (default), `NodePort`, or `LoadBalancer`.    |
 | `ingress.enabled` + `ingress.hosts`  | Put an Ingress in front of the service.                  |
 | `persistence.enabled`                | Create a PVC (size/accessModes/storageClass) for `/data`; off = emptyDir. `/data` is always mounted and `MOCKAGENTS_DATA_DIR` points at it, so the interaction log, audit log and tenancy DB survive container restarts; a PVC makes them survive rescheduling. |
@@ -82,6 +82,7 @@ in the NOTES in that case.
 | `podDisruptionBudget.enabled`        | **v0.2** — render a PDB so node drains can't take every replica at once. |
 | `networkPolicy.enabled`              | **v0.2** — render a NetworkPolicy locking down ingress + egress. |
 | `serviceMonitor.enabled`             | **v0.2** — render a Prometheus Operator ServiceMonitor for `/metrics` (the endpoint itself landed with the R9 operability slice). |
+| `serviceMonitor.authorization`       | Reference a platform-key Secret for authenticated multi-tenant scrapes. The Secret must exist in the ServiceMonitor namespace. |
 
 ## Verify before installing
 
@@ -113,12 +114,19 @@ helm uninstall demo
   user-supplied `ingressFrom` / `egressRules` arrays. DNS egress
   is allowed by default via `allowDNS`.
 - **ServiceMonitor** — opt in with `serviceMonitor.enabled=true`.
-  Requires the Prometheus Operator CRDs; defaults to a 30s scrape
+  Requires the Prometheus Operator CRDs to be installed before applying the
+  rendered manifest; defaults to a 30s scrape
   interval against the named `http` port. Forwards user-supplied
   `relabelings` / `metricRelabelings` / extra `labels` so the right
-  Prometheus instance picks it up. In multi-tenant mode `/metrics`
-  needs a viewer-or-above API key, so add a `bearerTokenSecret` to the
-  endpoint; single-tenant deployments scrape it unauthenticated.
+  Prometheus instance picks it up. In multi-tenant mode `/metrics` needs a
+  dedicated platform key. Create its Secret in the ServiceMonitor namespace
+  and set `serviceMonitor.authorization.enabled=true`,
+  `credentials.name`, and `credentials.key`.
+
+  Rotate without a scrape outage by minting the replacement platform key,
+  updating the referenced Secret, waiting for Prometheus to reload it and
+  confirming successful scrapes, then revoking the old key. Platform keys are
+  bootstrap-managed credentials and must not be shared with application users.
 
 All four are off by default. With every flag enabled, `helm template`
 renders 10 resources; defaults still render the same 6 as v0.1.
@@ -141,6 +149,8 @@ key, and the readiness body carries no agent, tenant, or configuration data.
 - Cluster-tier RBAC + admission controls — bring your own cluster
   defaults. Tenancy secrets go in a Secret referenced by `existingSecret`,
   never in a ConfigMap.
-- Shared interaction/audit logs across replicas: both stores are SQLite
-  per pod today; only tenancy (and the spend ledger) can be shared, via
-  `MOCKAGENTS_TENANCY_DSN`.
+- Multi-replica operation requires `multiReplica.acknowledged=true` regardless
+  of `MOCKAGENTS_TENANCY_DSN`. Postgres shares tenancy credentials and the
+  spend ledger only. Registry edits, sessions, interaction and audit logs, and
+  rate state remain per pod; use sticky routing where session continuity is
+  required and accept that write/read results can differ by pod.

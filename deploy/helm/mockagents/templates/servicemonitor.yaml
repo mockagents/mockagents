@@ -27,6 +27,13 @@ spec:
       path: {{ .Values.serviceMonitor.path }}
       interval: {{ .Values.serviceMonitor.interval }}
       scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+      {{- if .Values.serviceMonitor.authorization.enabled }}
+      authorization:
+        type: {{ .Values.serviceMonitor.authorization.type | quote }}
+        credentials:
+          name: {{ required "serviceMonitor.authorization.credentials.name is required when authorization is enabled" .Values.serviceMonitor.authorization.credentials.name | quote }}
+          key: {{ required "serviceMonitor.authorization.credentials.key is required when authorization is enabled" .Values.serviceMonitor.authorization.credentials.key | quote }}
+      {{- end }}
       {{- with .Values.serviceMonitor.relabelings }}
       relabelings:
         {{- toYaml . | nindent 8 }}

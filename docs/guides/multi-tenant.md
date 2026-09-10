@@ -1,5 +1,20 @@
 # Multi-Tenant Mode & Control-Plane Operations
 
+## Credential authority and revocation
+
+Key mutations authorize both caller and target. Tenant admins may manage
+ordinary keys in their tenant, but cannot rotate, demote, delete, or
+bulk-rotate a platform key. Platform operations require a platform caller. The
+store repeats target-role and credential-version checks inside the mutation
+transaction; concurrent drift fails the operation and bulk rotation is atomic.
+
+Cached authentication still checks the authoritative store for existence,
+tenant, role, and credential version. Rotation, deletion, or demotion takes
+effect on the next authorization lookup on every instance sharing the store. A
+request authorized before commit may finish. Authority-store outages fail
+closed. Drain older instances during rollout before relying on these semantics.
+SQLite and PostgreSQL add and backfill `credential_version` at startup.
+
 MockAgents includes an optional SaaS-style control plane: API-key auth, tenants,
 RBAC, key rotation, and an audit log over the management API (`/api/v1/*`).
 
@@ -61,7 +76,7 @@ self-escalate. Roles gate the control-plane routes:
 | `GET  /api/v1/ready`                      | open     |
 | `GET  /api/v1/identity`                   | open     |
 | `GET  /api/v1/agents`, `/api/v1/logs`     | viewer   |
-| `GET  /metrics`                           | viewer   |
+| `GET  /metrics`                           | platform |
 | `GET  /api/v1/pipelines[/{name}]`         | viewer   |
 | `POST /api/v1/pipelines/{name}/run`       | viewer   |
 | `POST /api/v1/agents/{name}/reload`       | editor   |
@@ -119,7 +134,7 @@ class of reason: a kubelet or load balancer carries no API key, and gating the
 probes would take every pod out of rotation. Neither response contains agent,
 tenant, or configuration data. `GET /metrics` is **not** in that group — agent
 and scenario names appear there as metric labels — so a Prometheus scrape
-config needs a viewer key:
+config needs a dedicated platform key:
 
 ```yaml
 # prometheus.yml
@@ -131,14 +146,16 @@ scrape_configs:
 ```
 
 ```bash
-# Mint a viewer key for a read-only CI bot:
-curl -H "Authorization: Bearer $ADMIN_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"ci-bot","role":"viewer"}' \
-  http://localhost:8080/api/v1/tenants/$TENANT_ID/keys
+# Platform keys are bootstrap-managed. Put the dedicated scrape key in a
+# narrowly readable secret; do not reuse an application tenant credential.
 ```
 
 ## Rotation and role changes
+
+For a metrics key, provision its replacement and update Prometheus first,
+confirm successful authenticated scrapes, and only then revoke the old key.
+This ordering avoids a monitoring gap while preserving immediate revocation
+once the old credential is removed.
 
 `POST /api/v1/keys/{id}/rotate` regenerates an existing key's secret in place.
 The key id, name, role, and tenant stay stable so every consumer that references

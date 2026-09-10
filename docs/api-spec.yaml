@@ -160,8 +160,8 @@ paths:
         `mockagents_build_info`, `mockagents_uptime_seconds`,
         `mockagents_agents_loaded`, `mockagents_ready`, and
         `mockagents_metrics_series_dropped_total` gauges and counters. Open in
-        single-tenant mode; requires a viewer-or-above API key in multi-tenant
-        mode, because agent and scenario names appear as metric labels.
+        single-tenant mode; requires a platform API key in multi-tenant mode,
+        because process-wide agent and scenario names appear as metric labels.
       tags: [Health]
       responses:
         "200":

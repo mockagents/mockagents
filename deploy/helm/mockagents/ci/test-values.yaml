@@ -5,9 +5,8 @@ image:
   repository: mockagents/mockagents
   tag: "0.5.0"
 
-# Two independent single-tenant mock servers behind the Service. Without
-# the acknowledgement (or env.MOCKAGENTS_TENANCY_DSN) the chart refuses to
-# render more than one replica — see templates/deployment.yaml.
+# Multi-replica paths are deliberately acknowledged. A tenancy DSN would not
+# bypass this guard because the non-tenancy runtime state remains per pod.
 replicaCount: 2
 multiReplica:
   acknowledged: true
@@ -56,3 +55,17 @@ extraEnvFrom:
 
 extraArgs:
   - --json-logs
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+
+serviceMonitor:
+  enabled: true
+  authorization:
+    enabled: true
+    type: Bearer
+    credentials:
+      name: mockagents-metrics
+      key: token

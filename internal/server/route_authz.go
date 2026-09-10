@@ -103,9 +103,9 @@ var managementRouteFloors = map[string]tenancy.Role{
 
 	// Prometheus scrape target (FR-J02). Not under /api/v1, but it goes
 	// through the same chokepoint so its policy is declared in one place with
-	// everything else. Viewer-gated because agent and scenario NAMES are
-	// metric labels: a multi-tenant scrape config needs a viewer API key.
-	"GET /metrics": tenancy.RoleViewer,
+	// everything else. Platform-only because this process-wide aggregate can
+	// contain agent and scenario names from every tenant as metric labels.
+	"GET /metrics": tenancy.RolePlatform,
 }
 
 // mountManaged registers a management-API route on mux, applying the role

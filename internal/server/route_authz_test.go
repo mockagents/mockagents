@@ -164,7 +164,7 @@ func TestManagementRouteFloors_Snapshot(t *testing.T) {
 		"POST /api/v1/config/validate":          tenancy.RoleEditor,
 		"GET /api/v1/quota":                     tenancy.RoleViewer,
 		"PUT /api/v1/tenants/{id}/quota":        tenancy.RolePlatform,
-		"GET /metrics":                          tenancy.RoleViewer,
+		"GET /metrics":                          tenancy.RolePlatform,
 	}
 
 	const sync = " — update this snapshot AND docs/guides/multi-tenant.md"

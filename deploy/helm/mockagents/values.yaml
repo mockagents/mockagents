@@ -6,14 +6,13 @@
 # -- per-tenant rate buckets PER POD, and in multi-tenant mode with the
 # -- default SQLite tenancy store every pod bootstraps its own platform key.
 # -- More than one replica (or autoscaling) is refused at render time unless
-# -- env.MOCKAGENTS_TENANCY_DSN points at a shared Postgres tenancy store, or
-# -- multiReplica.acknowledged=true declares that you want N independent
-# -- single-tenant mock servers behind one Service (fine for stateless
-# -- fixture traffic; logs, audit and the write API then differ per pod).
+# -- multiReplica.acknowledged=true. A Postgres tenancy DSN shares credentials
+# -- and spend only; it does not share the registry, sessions, interaction
+# -- logs, audit logs or rate state and therefore never bypasses this guard.
 replicaCount: 1
 
 multiReplica:
-  # -- Acknowledge running more than one replica WITHOUT a shared tenancy backend.
+  # -- Acknowledge the documented consistency limits of every multi-replica deployment.
   acknowledged: false
 
 image:
@@ -274,9 +273,9 @@ networkPolicy:
 # -- mockagents_build_info / _uptime_seconds / _agents_loaded / _ready
 # -- gauges and mockagents_metrics_series_dropped_total.
 # --
-# -- In MULTI-TENANT mode /metrics requires a viewer-or-above API key
-# -- (agent and scenario names are labels), so the scrape needs a
-# -- bearerTokenSecret; single-tenant deployments scrape it unauthenticated.
+# -- In MULTI-TENANT mode /metrics requires a dedicated platform API key
+# -- because the endpoint contains process-wide labels. Configure the Secret
+# -- selector below; single-tenant deployments may scrape unauthenticated.
 serviceMonitor:
   enabled: false
   # Override the namespace the ServiceMonitor is created in. Default
@@ -289,6 +288,15 @@ serviceMonitor:
   # Path the metrics endpoint serves on. Matches the Go binary
   # default; override only if extraArgs changes the route.
   path: /metrics
+  authorization:
+    # Enable for every multi-tenant deployment.
+    enabled: false
+    type: Bearer
+    credentials:
+      # Secret must be in the ServiceMonitor namespace. Store the raw platform
+      # API key under this key; provision the replacement before rotation.
+      name: ""
+      key: token
   # Extra labels added to the ServiceMonitor (e.g. release: kube-prom)
   # so the right Prometheus instance picks it up.
   labels: {}

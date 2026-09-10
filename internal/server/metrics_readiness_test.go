@@ -17,6 +17,7 @@ import (
 	"github.com/mockagents/mockagents/internal/metrics"
 	"github.com/mockagents/mockagents/internal/quota"
 	"github.com/mockagents/mockagents/internal/storage"
+	"github.com/mockagents/mockagents/internal/tenancy"
 	"github.com/mockagents/mockagents/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -323,8 +324,8 @@ func TestReadinessOpenInMultiTenantMode(t *testing.T) {
 		"a kubelet has no API key; gating readiness would take every pod out of rotation")
 }
 
-func TestMetricsRequiresCredentialsInMultiTenantMode(t *testing.T) {
-	_, addr, key := setupTenantServer(t, testFullAgent("mt-metrics", "gpt-mt-metrics"))
+func TestMetricsRequiresPlatformCredentialsInMultiTenantMode(t *testing.T) {
+	srv, addr, tenantKey := setupTenantServer(t, testFullAgent("mt-metrics", "gpt-mt-metrics"))
 
 	resp, err := http.Get(addr + "/metrics")
 	require.NoError(t, err)
@@ -334,7 +335,21 @@ func TestMetricsRequiresCredentialsInMultiTenantMode(t *testing.T) {
 
 	req, err := http.NewRequest(http.MethodGet, addr+"/metrics", nil)
 	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Authorization", "Bearer "+tenantKey)
+	resp, err = http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode,
+		"tenant-scoped credentials must not read process-wide metrics")
+
+	tenants, err := srv.config.TenancyStore.ListTenants(t.Context())
+	require.NoError(t, err)
+	require.Len(t, tenants, 1)
+	platformKey, err := srv.config.TenancyStore.CreateAPIKey(t.Context(), tenants[0].ID, "prometheus", tenancy.RolePlatform)
+	require.NoError(t, err)
+	req, err = http.NewRequest(http.MethodGet, addr+"/metrics", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+platformKey.Plaintext)
 	resp, err = http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()

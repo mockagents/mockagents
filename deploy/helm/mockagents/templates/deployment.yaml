@@ -4,16 +4,18 @@ conversation sessions, interaction log, audit log and per-tenant rate buckets
 PER POD, and in multi-tenant mode with the default SQLite tenancy store every
 pod would bootstrap its own "default" tenant and its own platform key. Behind
 a round-robin Service that is split-brain: a key minted on one pod is a 401 on
-the next. Running more than one replica is therefore refused unless either a
-shared tenancy backend is configured (env.MOCKAGENTS_TENANCY_DSN) or the
-operator explicitly acknowledges N independent single-tenant mock servers.
+the next. Running more than one replica is therefore refused unless the
+operator explicitly acknowledges the remaining per-pod state and accepts the
+documented routing and consistency limitations. A shared tenancy backend
+(env.MOCKAGENTS_TENANCY_DSN) does not make the other stores shared and never
+bypasses the acknowledgement.
 */ -}}
 {{- $replicas := int .Values.replicaCount -}}
 {{- if .Values.autoscaling.enabled -}}
 {{- $replicas = int .Values.autoscaling.maxReplicas -}}
 {{- end -}}
-{{- if and (gt $replicas 1) (not .Values.multiReplica.acknowledged) (not (hasKey .Values.env "MOCKAGENTS_TENANCY_DSN")) -}}
-{{- fail (printf "replicaCount/autoscaling.maxReplicas is %d but MockAgents state is per pod (registry, sessions, interaction log, audit log, rate buckets; each pod would mint its own platform key in multi-tenant mode). Either set env.MOCKAGENTS_TENANCY_DSN to a shared Postgres tenancy store, or set multiReplica.acknowledged=true to run independent single-tenant mock servers behind the Service." $replicas) -}}
+{{- if and (gt $replicas 1) (not .Values.multiReplica.acknowledged) -}}
+{{- fail (printf "replicaCount/autoscaling.maxReplicas is %d but MockAgents keeps registry edits, sessions, interaction logs, audit logs and rate state per pod. A tenancy DSN shares credentials only and is not sufficient. Read the multi-replica limitations and set multiReplica.acknowledged=true to accept them explicitly." $replicas) -}}
 {{- end -}}
 apiVersion: apps/v1
 kind: Deployment
