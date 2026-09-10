@@ -43,6 +43,14 @@ jobs:
         id: version
         run: bash scripts/release-preflight.sh "$GITHUB_REF_NAME"
 
+      - name: Require the tagged commit on main
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::release tag must point to a commit already on main"
+            exit 1
+          }
+
   prepare-artifacts:
     name: Prepare and inspect all artifacts
     needs: preflight
@@ -153,6 +161,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.preflight.outputs.tag }}
           STABLE: ${{ needs.preflight.outputs.stable }}
+          EXPECTED_CANDIDATE_COMMIT: ${{ github.sha }}
+          EXPECTED_CANDIDATE_TAG: ${{ needs.preflight.outputs.tag }}
+          EXPECTED_CANDIDATE_VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           set -euo pipefail
           bash scripts/verify-candidate-artifacts.sh candidate
@@ -226,6 +237,9 @@ jobs:
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
           RELEASE_TAGS: ${{ steps.meta.outputs.tags }}
+          EXPECTED_CANDIDATE_COMMIT: ${{ github.sha }}
+          EXPECTED_CANDIDATE_TAG: ${{ needs.preflight.outputs.tag }}
+          EXPECTED_CANDIDATE_VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           set -euo pipefail
           bash scripts/verify-candidate-artifacts.sh candidate
@@ -285,6 +299,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           VERSION: ${{ needs.preflight.outputs.version }}
+          EXPECTED_CANDIDATE_COMMIT: ${{ github.sha }}
+          EXPECTED_CANDIDATE_TAG: ${{ needs.preflight.outputs.tag }}
+          EXPECTED_CANDIDATE_VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           set -euo pipefail
           bash scripts/verify-candidate-artifacts.sh candidate
@@ -334,6 +351,10 @@ jobs:
           path: candidate
 
       - name: Verify prepared wheel and source distribution
+        env:
+          EXPECTED_CANDIDATE_COMMIT: ${{ github.sha }}
+          EXPECTED_CANDIDATE_TAG: ${{ needs.preflight.outputs.tag }}
+          EXPECTED_CANDIDATE_VERSION: ${{ needs.preflight.outputs.version }}
         run: bash scripts/verify-candidate-artifacts.sh candidate
 
       - name: Publish to PyPI
@@ -359,6 +380,10 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Verify prepared package tarballs
+        env:
+          EXPECTED_CANDIDATE_COMMIT: ${{ github.sha }}
+          EXPECTED_CANDIDATE_TAG: ${{ needs.preflight.outputs.tag }}
+          EXPECTED_CANDIDATE_VERSION: ${{ needs.preflight.outputs.version }}
         run: bash scripts/verify-candidate-artifacts.sh candidate
 
       - name: Publish prepared @mockagents/sdk tarball

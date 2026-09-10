@@ -13,11 +13,15 @@ grep -q 'os: \[ubuntu-latest, windows-latest\]' .github/workflows/verify.yml
 grep -q 'npm run test:e2e' .github/workflows/verify.yml
 grep -q 'docker build --tag mockagents-candidate:' .github/workflows/verify.yml
 grep -q 'tag: \${{ steps.version.outputs.tag }}' "$release"
+grep -q 'git merge-base --is-ancestor "$GITHUB_SHA" origin/main' "$release"
 grep -q 'name: release-candidate-${{ github.sha }}' "$release"
 grep -q 'version: "v2.15.4"' "$release"
 grep -q 'args: release --clean --skip=publish' "$release"
 grep -q 'govulncheck -mode=binary candidate/inspect/mockagents' "$release"
 grep -q 'bash scripts/verify-candidate-artifacts.sh candidate' "$release"
+grep -q 'EXPECTED_CANDIDATE_COMMIT: \${{ github.sha }}' "$release"
+grep -q 'EXPECTED_CANDIDATE_TAG: \${{ needs.preflight.outputs.tag }}' "$release"
+grep -q 'EXPECTED_CANDIDATE_VERSION: \${{ needs.preflight.outputs.version }}' "$release"
 grep -q 'npm publish candidate/npm/mockagents-sdk-' "$release"
 grep -q 'packages-dir: candidate/python/' "$release"
 grep -q 'docker load --input candidate/images/linux-amd64.tar' "$release"
