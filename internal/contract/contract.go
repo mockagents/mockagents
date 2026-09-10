@@ -43,6 +43,32 @@ type StreamContract struct {
 	Enabled bool `json:"enabled"`
 }
 
+// Validate rejects decoded JSON values that are structurally valid Go values
+// but are not meaningful extracted contracts. Without this check, inputs such
+// as {} compare equal and can make a contract gate report a false success.
+func Validate(c *Contract) error {
+	if c == nil {
+		return fmt.Errorf("contract is null")
+	}
+	if c.Name == "" {
+		return fmt.Errorf("contract name is required")
+	}
+	if c.Protocol == "" {
+		return fmt.Errorf("contract protocol is required")
+	}
+	seenTools := make(map[string]struct{}, len(c.Tools))
+	for i, tool := range c.Tools {
+		if tool.Name == "" {
+			return fmt.Errorf("contract tools[%d].name is required", i)
+		}
+		if _, exists := seenTools[tool.Name]; exists {
+			return fmt.Errorf("contract tool name %q is duplicated", tool.Name)
+		}
+		seenTools[tool.Name] = struct{}{}
+	}
+	return nil
+}
+
 // Extract builds a Contract from an AgentDefinition. The result is
 // deterministic: tools and scenarios are sorted by name so lexical
 // diffs are noise-free across reordering refactors.

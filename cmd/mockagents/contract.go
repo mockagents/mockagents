@@ -67,6 +67,9 @@ func loadContract(path string) (*contract.Contract, error) {
 		if err := json.Unmarshal(data, &c); err != nil {
 			return nil, fmt.Errorf("%s: invalid contract JSON: %w", path, err)
 		}
+		if err := contract.Validate(&c); err != nil {
+			return nil, fmt.Errorf("%s: invalid contract JSON: %w", path, err)
+		}
 		return &c, nil
 	}
 	// Otherwise treat as agent YAML.
