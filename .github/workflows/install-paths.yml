@@ -44,16 +44,24 @@ jobs:
       tag: ${{ steps.target.outputs.tag }}
       version: ${{ steps.target.outputs.version }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Resolve one immutable release
         id: target
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED: ${{ inputs.version }}
-          RELEASE_RUN_TAG: ${{ github.event.workflow_run.head_branch }}
+          RELEASE_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
           tag="$REQUESTED"
-          if [[ -z "$tag" && "${{ github.event_name }}" == workflow_run ]]; then tag="$RELEASE_RUN_TAG"; fi
+          if [[ -z "$tag" && "${{ github.event_name }}" == workflow_run ]]; then
+            mapfile -t candidates < <(git tag --points-at "$RELEASE_RUN_SHA" | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$' || true)
+            [[ "${#candidates[@]}" -eq 1 ]] || { echo "expected one release tag for $RELEASE_RUN_SHA, found ${#candidates[@]}"; exit 1; }
+            tag="${candidates[0]}"
+            [[ "$(git rev-list -n 1 "$tag")" == "$RELEASE_RUN_SHA" ]] || { echo "release tag does not target workflow SHA"; exit 1; }
+          fi
           if [[ -z "$tag" ]]; then
             tag=$(gh release list --repo "${{ github.repository }}" --exclude-pre-releases --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName')
           fi

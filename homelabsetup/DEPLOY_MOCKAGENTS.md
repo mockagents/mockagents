@@ -167,6 +167,14 @@ EXPECTED_IMAGE="registry.local:5000/mockagents/mockagents:build-YYYYMMDD-HHMMSS-
   ./homelabsetup/regression-homelab.sh
 ```
 
+For release signoff, supply identity from the candidate manifest or registry,
+not from the deploy-generated credentials file:
+
+```bash
+RELEASE_GATE=true EXPECTED_IMAGE="$IMAGE" EXPECTED_IMAGE_ID="$DIGEST" \
+  EXPECTED_SOURCE_COMMIT="$CANDIDATE_SHA" ./homelabsetup/regression-homelab.sh
+```
+
 The harness never prints keys or response bodies. It creates uniquely named,
 disposable tenant/key and vector fixtures and removes them on exit. With a
 platform key it verifies anonymous/viewer/platform metrics authorization and

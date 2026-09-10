@@ -11,6 +11,7 @@ BASE_URL="${BASE_URL:-}"
 EXPECTED_IMAGE="${EXPECTED_IMAGE:-}"
 EXPECTED_IMAGE_ID="${EXPECTED_IMAGE_ID:-}"
 EXPECTED_SOURCE_COMMIT="${EXPECTED_SOURCE_COMMIT:-}"
+RELEASE_GATE="${RELEASE_GATE:-false}"
 IMAGE_REGISTRY="${IMAGE_REGISTRY:-registry.local:5000/mockagents/mockagents}"
 PLATFORM_KEY="${MOCKAGENTS_PLATFORM_KEY:-}"
 CREDS_FILE="${HOMELAB_CREDS_FILE:-$(cd "$(dirname "$0")" && pwd)/.homelab-credentials}"
@@ -34,6 +35,11 @@ need jq
 
 if [ -z "$PLATFORM_KEY" ] && [ -r "$CREDS_FILE" ]; then
   PLATFORM_KEY="$(sed -n 's/^MOCKAGENTS_BOOTSTRAP_ADMIN_KEY=//p' "$CREDS_FILE" | head -1)"
+fi
+if [ "$RELEASE_GATE" = true ]; then
+  [ -n "$EXPECTED_IMAGE" ] || { log 'release gate requires independently supplied EXPECTED_IMAGE' >&2; exit 2; }
+  [ -n "$EXPECTED_IMAGE_ID" ] || { log 'release gate requires independently supplied EXPECTED_IMAGE_ID' >&2; exit 2; }
+  [ -n "$EXPECTED_SOURCE_COMMIT" ] || { log 'release gate requires independently supplied EXPECTED_SOURCE_COMMIT' >&2; exit 2; }
 fi
 if [ -z "$EXPECTED_IMAGE" ] && [ -r "$CREDS_FILE" ]; then
   deployed_tag="$(sed -n 's/^IMAGE_TAG=//p' "$CREDS_FILE" | head -1)"

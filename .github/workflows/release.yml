@@ -344,10 +344,14 @@ jobs:
           EXPECTED_CANDIDATE_VERSION: ${{ needs.preflight.outputs.version }}
         run: bash scripts/verify-candidate-artifacts.sh candidate
 
+      - name: Verify any already-published PyPI files
+        run: python scripts/verify-pypi-candidate.py candidate/python "${{ needs.preflight.outputs.version }}"
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: candidate/python/
+          skip-existing: true
 
   release-npm:
     name: Release npm packages
@@ -373,18 +377,8 @@ jobs:
           EXPECTED_CANDIDATE_VERSION: ${{ needs.preflight.outputs.version }}
         run: bash scripts/verify-candidate-artifacts.sh candidate
 
-      - name: Publish prepared @mockagents/sdk tarball
-        run: npm publish candidate/npm/mockagents-sdk-*.tgz --access public --tag "${{ needs.preflight.outputs.npm-channel }}"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish prepared @mockagents/vitest tarball
-        run: npm publish candidate/npm/mockagents-vitest-*.tgz --access public --tag "${{ needs.preflight.outputs.npm-channel }}"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish prepared mockagents launcher tarball
-        run: npm publish candidate/npm/mockagents-[0-9]*.tgz --tag "${{ needs.preflight.outputs.npm-channel }}"
+      - name: Publish missing npm packages and verify existing bytes
+        run: bash scripts/publish-candidate-npm.sh candidate/npm "${{ needs.preflight.outputs.npm-channel }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

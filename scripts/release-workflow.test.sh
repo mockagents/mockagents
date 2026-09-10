@@ -22,7 +22,9 @@ grep -q 'bash scripts/verify-candidate-artifacts.sh candidate' "$release"
 grep -q 'EXPECTED_CANDIDATE_COMMIT: \${{ github.sha }}' "$release"
 grep -q 'EXPECTED_CANDIDATE_TAG: \${{ needs.preflight.outputs.tag }}' "$release"
 grep -q 'EXPECTED_CANDIDATE_VERSION: \${{ needs.preflight.outputs.version }}' "$release"
-grep -q 'npm publish candidate/npm/mockagents-sdk-' "$release"
+grep -q 'bash scripts/publish-candidate-npm.sh' "$release"
+grep -q 'skip-existing: true' "$release"
+grep -q 'python scripts/verify-pypi-candidate.py' "$release"
 grep -q 'packages-dir: candidate/python/' "$release"
 grep -q 'bash scripts/publish-candidate-images.sh' "$release"
 grep -q 'mockagents-candidate:${GITHUB_SHA}-amd64' "$release"
@@ -32,6 +34,7 @@ if grep -q -- '--clobber' "$release"; then
   exit 1
 fi
 bash scripts/publish-candidate-images.test.sh
+bash scripts/publication-resume.test.sh
 grep -q 'name: Verify publication configuration' "$release"
 grep -q 'name: Verify published binary assets' "$release"
 grep -q 'sha256sum -c checksums.txt' "$release"
@@ -50,7 +53,10 @@ if grep -Eq 'npm install --no-audit|go-version: "1\.26"' "$release"; then
   echo 'release workflow contains an unpinned install/toolchain path' >&2
   exit 1
 fi
-grep -q 'RELEASE_RUN_TAG: \${{ github.event.workflow_run.head_branch }}' "$install_paths"
+grep -q 'RELEASE_RUN_SHA: \${{ github.event.workflow_run.head_sha }}' "$install_paths"
+grep -q 'git tag --points-at "$RELEASE_RUN_SHA"' "$install_paths"
+grep -q 'git rev-list -n 1 "$tag"' "$install_paths"
+grep -q 'release gate requires independently supplied EXPECTED_IMAGE_ID' homelabsetup/regression-homelab.sh
 grep -Fq '(\.[0-9A-Za-z-]+)*))?$ ]]' "$install_paths"
 grep -Fq "grep -Eo '(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)" "$install_paths"
 if grep -Fq "s/.*[^0-9]([0-9]+\\.[0-9]+\\.[0-9]+)" "$install_paths"; then
