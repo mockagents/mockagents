@@ -1,0 +1,25 @@
+package engine
+
+import (
+ "testing"
+ "github.com/mockagents/mockagents/internal/config"
+ "github.com/mockagents/mockagents/internal/engine/state"
+ "github.com/mockagents/mockagents/internal/types"
+)
+
+func TestReleaseAuditValidatedTemplateFailureRetainsHistory(t *testing.T) {
+ def:=fullAgent("audit","audit")
+ def.APIVersion=types.AgentAPIVersion
+ def.Kind=types.AgentKind
+ def.Spec.Protocol="openai-chat-completions"
+ def.Spec.Behavior.Scenarios=[]types.Scenario{{Name:"default",Response:types.ScenarioResponse{Content:`{{index .Message 999}}`}}}
+ if err:=(&config.Validator{}).Validate(def,"audit.yaml",nil);err!=nil {t.Fatal(err)}
+ eng:=newTestEngine(def)
+ eng.States.(*state.MemoryStore).SetLimits(10,2)
+ for i:=0;i<10;i++ {
+  _,err:=eng.ProcessRequest(&InboundRequest{AgentName:"audit",SessionID:"same",Messages:[]RequestMessage{{Role:"user",Content:"x"}}})
+  if err==nil {t.Fatal("expected rendering error")}
+ }
+ sess:=eng.States.Get(scopedSessionKey("","audit","same"))
+ if len(sess.Messages)>sess.MaxHistory {t.Errorf("validated runtime-failing template retained %d messages despite cap=%d",len(sess.Messages),sess.MaxHistory)}
+}

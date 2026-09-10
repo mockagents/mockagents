@@ -1,0 +1,14 @@
+package state
+
+import (
+ "errors"
+ "testing"
+ "time"
+)
+
+func TestReleaseAuditFailedTurnBound(t *testing.T) {
+ s:=NewSession("audit","agent",time.Hour)
+ s.MaxHistory=2
+ for i:=0;i<10;i++ { _=s.ApplyTurn("same request",func(int,map[string]any)(string,[]ToolCallMsg,error){return "",nil,errors.New("template failure")}) }
+ if len(s.Messages)>s.MaxHistory {t.Errorf("10 failures retain %d messages despite MaxHistory=2; turn=%d",len(s.Messages),s.TurnCount)}
+}

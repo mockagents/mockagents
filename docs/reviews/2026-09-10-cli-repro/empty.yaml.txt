@@ -1,0 +1,8 @@
+apiVersion: mockagents/v1
+kind: TestSuite
+metadata:
+  name: empty-suite
+spec:
+  target:
+    agent: echo-agent
+  cases: []

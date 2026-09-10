@@ -1,0 +1,15 @@
+apiVersion: mockagents/v1
+kind: TestSuite
+metadata:
+  name: counter-suite
+spec:
+  target:
+    agent: counter
+  cases:
+    - name: fresh
+      steps:
+        - role: user
+          content: hello
+      assertions:
+        - type: scenario_matched
+          value: first

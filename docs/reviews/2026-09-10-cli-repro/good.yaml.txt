@@ -1,0 +1,15 @@
+apiVersion: mockagents/v1
+kind: TestSuite
+metadata:
+  name: good-suite
+spec:
+  target:
+    agent: echo-agent
+  cases:
+    - name: echo
+      steps:
+        - role: user
+          content: hello
+      assertions:
+        - type: response_contains
+          value: received

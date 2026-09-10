@@ -1,0 +1,43 @@
+package adapter
+
+import (
+ "bytes"
+ "net/http"
+ "testing"
+ "github.com/mockagents/mockagents/internal/vector"
+)
+
+func TestReleaseAuditChromaDocuments(t *testing.T) {
+ s:=&vector.Store{}
+ if err:=s.CreateCollection("docs",2,vector.Cosine);err!=nil {t.Fatal(err)}
+ mux:=chromaMux(s)
+ base:="/api/v2/tenants/default_tenant/databases/default_database/collections/docs"
+ chromaRequest(t,mux,http.MethodPost,base+"/add",`{"ids":["a"],"embeddings":[[1,0]],"documents":["release evidence"]}`)
+ out:=chromaRequest(t,mux,http.MethodPost,base+"/query",`{"query_embeddings":[[1,0]],"n_results":1,"include":["documents"]}`)
+ if !bytes.Contains(out.Body.Bytes(),[]byte(`"documents":[["release evidence"]]`)) {t.Errorf("query documents lost: %s",out.Body.String())}
+}
+
+func TestReleaseAuditChromaMetric(t *testing.T) {
+ s:=&vector.Store{}
+ mux:=chromaMux(s)
+ out:=chromaRequest(t,mux,http.MethodPost,"/api/v2/tenants/default_tenant/databases/default_database/collections",`{"name":"docs","configuration":{"hnsw":{"space":"l2"}}}`)
+ cfg,err:=s.Collection("docs")
+ if err!=nil {t.Fatal(err)}
+ if cfg.Metric!=vector.Euclidean {t.Errorf("requested l2 but got %s: %s",cfg.Metric,out.Body.String())}
+}
+
+func TestReleaseAuditQdrantEuclidThreshold(t *testing.T) {
+ mux:=qdrantMux()
+ qdrantRequest(t,mux,http.MethodPut,"/collections/docs",`{"vectors":{"size":2,"distance":"Euclid"}}`)
+ qdrantRequest(t,mux,http.MethodPut,"/collections/docs/points",`{"points":[{"id":1,"vector":[3,4]}]}`)
+ out:=qdrantRequest(t,mux,http.MethodPost,"/collections/docs/points/search",`{"vector":[0,0],"limit":1,"score_threshold":6}`)
+ if !bytes.Contains(out.Body.Bytes(),[]byte(`"score":5`)) {t.Errorf("distance 5 should pass maximum distance 6: %s",out.Body.String())}
+}
+
+func TestReleaseAuditVectorOverflow(t *testing.T) {
+ mux:=qdrantMux()
+ qdrantRequest(t,mux,http.MethodPut,"/collections/docs",`{"vectors":{"size":1,"distance":"Dot"}}`)
+ qdrantRequest(t,mux,http.MethodPut,"/collections/docs/points",`{"points":[{"id":1,"vector":[1e308]}]}`)
+ out:=qdrantRequest(t,mux,http.MethodPost,"/collections/docs/points/search",`{"vector":[1e308],"limit":1}`)
+ if out.Code==200&&out.Body.Len()==0 {t.Errorf("finite vector operands overflow score; HTTP 200 with empty JSON body")}
+}

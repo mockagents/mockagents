@@ -1,0 +1,1 @@
+{"name":"c","protocol":"openai","tools":[{"name":"t","parameters":{"type":"object","additionalProperties":false}}]}

@@ -1,0 +1,16 @@
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: counter
+spec:
+  protocol: openai-chat-completions
+  behavior:
+    scenarios:
+      - name: first
+        match:
+          turn_number: 1
+        response:
+          content: first
+      - name: later
+        response:
+          content: later

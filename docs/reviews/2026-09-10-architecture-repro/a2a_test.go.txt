@@ -1,0 +1,31 @@
+package a2a
+
+import (
+ "encoding/json"
+ "testing"
+)
+
+func TestReleaseAuditTaskSnapshot(t *testing.T) {
+ s := NewServer(testDef())
+ task := sendMessage(t,s,"slow")
+ params,_ := json.Marshal(taskIDParams{ID:task.ID})
+ req := &rpcRequest{JSONRPC:"2.0",ID:json.RawMessage(`1`),Params:params}
+ snapshot := s.handleTasksGet(req).Result.(*Task)
+ s.handleTasksCancel(req)
+ if snapshot.Status.State != "working" { t.Errorf("previous tasks/get response changed after cancel: %s",snapshot.Status.State) }
+}
+
+func TestReleaseAuditTaskContinuation(t *testing.T) {
+ s := NewServer(testDef())
+ task := sendMessage(t,s,"slow")
+ response := call(t,s,"message/send",map[string]any{"message":map[string]any{"role":"user","messageId":"m2","taskId":task.ID,"contextId":task.ContextID,"parts":[]any{map[string]any{"kind":"text","text":"weather"}}}})
+ var continued Task
+ if err := json.Unmarshal(response.Result,&continued);err!=nil {t.Fatal(err)}
+ if continued.ID != task.ID {t.Errorf("continuation created task %s instead of updating %s",continued.ID,task.ID)}
+}
+
+func TestReleaseAuditTaskRetention(t *testing.T) {
+ s := NewServer(testDef())
+ for i:=0;i<300;i++ {sendMessage(t,s,"weather")}
+ t.Logf("300 completed sends retain %d tasks; server has no task deletion/TTL/cap",len(s.tasks))
+}
