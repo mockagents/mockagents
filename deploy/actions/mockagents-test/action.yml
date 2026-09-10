@@ -52,7 +52,7 @@ inputs:
   go-version:
     description: "Go version to install for building the CLI."
     required: false
-    default: "1.26"
+    default: "1.26.6"
 
   skip-validate:
     description: "Set to 'true' to skip the validate step."
@@ -107,9 +107,13 @@ runs:
         REPORT: ${{ inputs.junit-output }}
       run: |
         set -euo pipefail
+        if [[ "$REPORT" != /* ]]; then REPORT="$PWD/$REPORT"; fi
+        mkdir -p "$(dirname "$REPORT")"
+        # Export the path before the suite runs so a failing command cannot
+        # suppress the output needed by downstream `if: always()` reporters.
+        echo "report=$REPORT" >> "$GITHUB_OUTPUT"
         args=( "test" "--agents-dir" "$AGENTS_DIR" "--format" "junit" )
         if [[ -n "$SUITES" ]]; then
           args+=( "$SUITES" )
         fi
         mockagents "${args[@]}" > "$REPORT"
-        echo "report=$REPORT" >> "$GITHUB_OUTPUT"

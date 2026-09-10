@@ -30,7 +30,7 @@ jobs:
         # for pure-Go code already covered by the Linux+Windows legs. Run the
         # full matrix locally on macOS if you touch OS-specific paths.
         os: [ubuntu-latest, windows-latest]
-        go-version: ["1.26"]
+        go-version: ["1.26.6"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -95,7 +95,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.6"
       - name: Download dependencies
         run: go mod download
       - name: Store conformance against Postgres
@@ -157,7 +157,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.6"
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -205,7 +205,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.6"
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -235,7 +235,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.6"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -270,7 +270,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.6"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -333,7 +333,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.6"
 
       - name: Go vet
         run: go vet ./...
@@ -416,9 +416,13 @@ jobs:
       - name: Render (CI values)
         run: |
           helm template ci ./deploy/helm/mockagents --values ./deploy/helm/mockagents/ci/test-values.yaml > /tmp/ci.yaml
-          grep -q 'kind: PersistentVolumeClaim' /tmp/ci.yaml
+          if grep -q 'kind: PersistentVolumeClaim' /tmp/ci.yaml; then echo "::error::multi-replica CI values must not create a shared PVC"; exit 1; fi
           grep -q 'MOCKAGENTS_DATA_DIR' /tmp/ci.yaml
           grep -q 'secretRef' /tmp/ci.yaml
+          grep -q 'kind: HorizontalPodAutoscaler' /tmp/ci.yaml
+          grep -q 'kind: ServiceMonitor' /tmp/ci.yaml
+          grep -q 'name: "mockagents-metrics"' /tmp/ci.yaml
+          grep -q 'key: "token"' /tmp/ci.yaml
 
       - name: Render (defaults)
         run: |
@@ -427,14 +431,53 @@ jobs:
           grep -q 'MOCKAGENTS_DATA_DIR' /tmp/default.yaml
           if grep -q 'kind: PersistentVolumeClaim' /tmp/default.yaml; then echo "::error::defaults must not create a PVC"; exit 1; fi
 
-      - name: Replica guard refuses split-brain
+      - name: Render single-replica persistence
+        run: |
+          helm template persistence ./deploy/helm/mockagents --set persistence.enabled=true > /tmp/persistence.yaml
+          grep -q 'kind: PersistentVolumeClaim' /tmp/persistence.yaml
+          grep -q 'claimName:' /tmp/persistence.yaml
+
+      - name: Replica and HPA guards require explicit acknowledgement
         run: |
           if helm template guard ./deploy/helm/mockagents --set replicaCount=2 >/dev/null 2>/tmp/guard.err; then
-            echo "::error::replicaCount=2 rendered without a tenancy DSN or acknowledgement"; exit 1
+            echo "::error::replicaCount=2 rendered without acknowledgement"; exit 1
           fi
-          grep -q 'MOCKAGENTS_TENANCY_DSN' /tmp/guard.err
-          helm template guard ./deploy/helm/mockagents --set replicaCount=2 --set env.MOCKAGENTS_TENANCY_DSN=postgres://x >/dev/null
+          grep -q 'multiReplica.acknowledged' /tmp/guard.err
+          if helm template guard ./deploy/helm/mockagents --set replicaCount=2 --set env.MOCKAGENTS_TENANCY_DSN=postgres://x >/dev/null 2>/tmp/dsn.err; then
+            echo "::error::a tenancy DSN must not bypass explicit acknowledgement"; exit 1
+          fi
+          if helm template guard ./deploy/helm/mockagents --set replicaCount=2 --set-string env.MOCKAGENTS_TENANCY_DSN= >/dev/null 2>/tmp/empty-dsn.err; then
+            echo "::error::an empty tenancy DSN must not bypass explicit acknowledgement"; exit 1
+          fi
+          if helm template guard ./deploy/helm/mockagents --set autoscaling.enabled=true >/dev/null 2>/tmp/hpa.err; then
+            echo "::error::HPA rendered without acknowledgement"; exit 1
+          fi
+          if helm template guard ./deploy/helm/mockagents --set replicaCount=2 --set autoscaling.enabled=true --set autoscaling.minReplicas=1 --set autoscaling.maxReplicas=1 >/dev/null 2>/tmp/hpa-initial.err; then
+            echo "::error::HPA configuration bypassed acknowledgement through maxReplicas=1"; exit 1
+          fi
+          if helm template guard ./deploy/helm/mockagents --set autoscaling.enabled=true --set autoscaling.minReplicas=3 --set autoscaling.maxReplicas=2 --set multiReplica.acknowledged=true >/dev/null 2>/tmp/hpa-range.err; then
+            echo "::error::invalid HPA min/max range rendered"; exit 1
+          fi
+          grep -q 'minReplicas must not exceed' /tmp/hpa-range.err
+          if helm template guard ./deploy/helm/mockagents --set replicaCount=2 --set multiReplica.acknowledged=true --set persistence.enabled=true >/dev/null 2>/tmp/shared-pvc.err; then
+            echo "::error::multiple replicas rendered with one shared persistence claim"; exit 1
+          fi
+          grep -q 'persistence.enabled cannot be combined' /tmp/shared-pvc.err
           helm template guard ./deploy/helm/mockagents --set replicaCount=2 --set multiReplica.acknowledged=true >/dev/null
+
+      - name: ServiceMonitor authorization validation
+        run: |
+          if helm template monitor ./deploy/helm/mockagents --set serviceMonitor.enabled=true --set serviceMonitor.authorization.enabled=true >/dev/null 2>/tmp/monitor.err; then
+            echo "::error::authenticated ServiceMonitor rendered without a Secret name"; exit 1
+          fi
+          grep -q 'credentials.name is required' /tmp/monitor.err
+
+      - name: Values schema rejects invalid topology types
+        run: |
+          if helm template schema ./deploy/helm/mockagents --set-string replicaCount=two >/dev/null 2>/tmp/schema.err; then
+            echo "::error::invalid replicaCount type passed schema validation"; exit 1
+          fi
+          grep -q 'replicaCount' /tmp/schema.err
 
   # go.mod documents the toolchain pin as "govulncheck clean", but nothing in
   # CI re-checked that claim on later dependency bumps (readiness audit M-37).
@@ -447,10 +490,10 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.6"
 
       - name: govulncheck
         uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1
         with:
-          go-version-input: "1.26"
+          go-version-input: "1.26.6"
           go-package: ./...

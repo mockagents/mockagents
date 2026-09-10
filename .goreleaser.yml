@@ -70,7 +70,9 @@ homebrew_casks:
     directory: Casks
     homepage: "https://github.com/mockagents/mockagents"
     description: "Mock OpenAI, Anthropic, Gemini, MCP and A2A APIs — including their failure modes"
-    skip_upload: '{{ if eq .Env.HOMEBREW_TAP_TOKEN "" }}true{{ else }}false{{ end }}'
+    # Prereleases are installable from immutable GitHub assets but never update
+    # the stable Homebrew channel.
+    skip_upload: '{{ if or (eq .Env.HOMEBREW_TAP_TOKEN "") (eq .Env.PRERELEASE "true") }}true{{ else }}false{{ end }}'
 
 changelog:
   sort: asc

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Aggregate install-path check results and decide whether the run fails.
 #
-# Usage: install-paths-report.sh <results-file> <pending-file> [summary-file]
+# Usage: install-paths-report.sh <results> <pending> <required> <version> [summary]
 #
 # Results file: one "<id>|<ok|fail>|<description>" per line.
 # Pending file: ids that are known-unpublished, "#" comments and blanks ignored.
@@ -20,9 +20,11 @@
 
 set -uo pipefail
 
-results="${1:?usage: $0 <results-file> <pending-file> [summary-file]}"
-pending="${2:?usage: $0 <results-file> <pending-file> [summary-file]}"
-summary="${3:-/dev/null}"
+results="${1:?missing results file}"
+pending="${2:?missing pending file}"
+required="${3:?missing required-id file}"
+expected_version="${4:?missing expected version}"
+summary="${5:-/dev/null}"
 
 if [ ! -s "$results" ]; then
   echo "::error::No results produced — the check jobs did not run."
@@ -40,6 +42,7 @@ broken=()
 revived=()
 still_pending=()
 rows=0
+declare -A seen=()
 
 {
   echo "## Install-path check"
@@ -48,12 +51,23 @@ rows=0
   echo "|---|---|---|"
 } >> "$summary"
 
-while IFS='|' read -r id status desc; do
+while IFS='|' read -r id status observed desc extra; do
   [ -z "${id:-}" ] && continue
+  if [[ -n "${extra:-}" || ( "$status" != ok && "$status" != fail ) ]]; then
+    echo "::error::Invalid result row for $id"; exit 1
+  fi
+  if [[ -n "${seen[$id]:-}" ]]; then
+    echo "::error::Duplicate result for $id"; exit 1
+  fi
+  seen[$id]=1
   rows=$((rows + 1))
+  if [[ "$status" == ok && "$observed" != "$expected_version" ]]; then
+    status=fail
+    desc="$desc (expected $expected_version, observed $observed)"
+  fi
   if is_pending "$id"; then expected="pending"; else expected="working"; fi
   if [ "$status" = "ok" ]; then result="works"; else result="fails"; fi
-  echo "| \`$id\` — $desc | $expected | **$result** |" >> "$summary"
+  echo "| \`$id\` — $desc | $expected | **$result** ($observed) |" >> "$summary"
 
   if [ "$status" = "ok" ]; then
     if is_pending "$id"; then revived+=("$id — $desc"); fi
@@ -65,6 +79,16 @@ while IFS='|' read -r id status desc; do
     fi
   fi
 done < "$results"
+
+while IFS= read -r id; do
+  [[ "$id" =~ ^[[:space:]]*(#|$) ]] && continue
+  [[ -n "${seen[$id]:-}" ]] || { echo "::error::Missing result for $id"; exit 1; }
+done < "$required"
+for id in "${!seen[@]}"; do
+  grep -qxF "$id" <(grep -vE '^[[:space:]]*(#|$)' "$required") || {
+    echo "::error::Unexpected result id $id"; exit 1;
+  }
+done
 
 echo >> "$summary"
 

@@ -36,7 +36,7 @@ jobs:
 | `agents-dir`   | `./agents`             | Directory of `kind:Agent` YAML definitions.                             |
 | `suites`       | *(same as agents-dir)* | Path to a TestSuite file or a directory of TestSuites.                  |
 | `junit-output` | `mockagents-junit.xml` | Where the JUnit XML report is written.                                  |
-| `go-version`   | `1.26`                 | Go version used to install the CLI via `go install`.                    |
+| `go-version`   | `1.26.6`               | Go version used to install the CLI via `go install`.                    |
 | `skip-validate`| `false`                | Set to `true` to skip `mockagents validate` before running tests.       |
 
 ## Outputs

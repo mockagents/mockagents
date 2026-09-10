@@ -24,7 +24,8 @@ run() {
   : > "$tmp/summary.md"
 
   local out got
-  out=$(bash "$SCRIPT" "$tmp/results.txt" "$tmp/pending.txt" "$tmp/summary.md" 2>&1)
+  cut -d'|' -f1 "$tmp/results.txt" | sed '/^$/d' | sort -u > "$tmp/required.txt"
+  out=$(bash "$SCRIPT" "$tmp/results.txt" "$tmp/pending.txt" "$tmp/required.txt" 0.5.0 "$tmp/summary.md" 2>&1)
   got=$?
 
   local ok=1
@@ -44,30 +45,30 @@ run() {
 echo "install-paths-report.sh"
 
 run "all working, nothing pending" 0 \
-  'go|ok|go install
-binary|ok|prebuilt binary' \
+  'go|ok|0.5.0|go install
+binary|ok|0.5.0|prebuilt binary' \
   '# none pending'
 
 run "known-pending path fails -> green" 0 \
-  'go|ok|go install
-npx|fail|npx mockagents' \
+  'go|ok|0.5.0|go install
+npx|fail|none|npx mockagents' \
   'npx' \
   "Still unpublished"
 
 run "non-pending path fails -> red" 1 \
-  'go|fail|go install
-npx|fail|npx mockagents' \
+  'go|fail|none|go install
+npx|fail|none|npx mockagents' \
   'npx' \
   "Advertised install path broken"
 
 run "pending path starts working -> red" 1 \
-  'go|ok|go install
-npx|ok|npx mockagents' \
+  'go|ok|0.5.0|go install
+npx|ok|0.5.0|npx mockagents' \
   'npx' \
   "now works"
 
 run "comments and blanks ignored in pending file" 0 \
-  'npx|fail|npx mockagents' \
+  'npx|fail|none|npx mockagents' \
   '# a comment
 
   # indented comment
@@ -79,17 +80,38 @@ run "empty results -> red" 1 \
   "No results produced"
 
 run "everything pending and failing -> green" 0 \
-  'npx|fail|npx
-pypi|fail|pip install' \
+  'npx|fail|none|npx
+pypi|fail|none|pip install' \
   'npx
 pypi'
 
 run "mixed: one regression, one revival, one known" 1 \
-  'go|fail|go install
-npx|ok|npx
-pypi|fail|pip install' \
+  'go|fail|none|go install
+npx|ok|0.5.0|npx
+pypi|fail|none|pip install' \
   'npx
 pypi'
+
+run "stale successful result -> red" 1 \
+  'go|ok|0.4.0|go install' \
+  '# none' \
+  "expected 0.5.0"
+
+# Validate completeness, duplicates and status vocabulary against an explicit set.
+printf 'go\nbinary\n' > "$tmp/required.txt"
+printf 'go|ok|0.5.0|go install\n' > "$tmp/results.txt"
+if bash "$SCRIPT" "$tmp/results.txt" "$tmp/pending.txt" "$tmp/required.txt" 0.5.0 >/dev/null 2>&1; then
+  echo "  FAIL missing required result"; fail=$((fail + 1))
+else echo "  ok   missing required result"; pass=$((pass + 1)); fi
+printf 'go|ok|0.5.0|one\ngo|ok|0.5.0|two\n' > "$tmp/results.txt"
+printf 'go\n' > "$tmp/required.txt"
+if bash "$SCRIPT" "$tmp/results.txt" "$tmp/pending.txt" "$tmp/required.txt" 0.5.0 >/dev/null 2>&1; then
+  echo "  FAIL duplicate result"; fail=$((fail + 1))
+else echo "  ok   duplicate result"; pass=$((pass + 1)); fi
+printf 'go|maybe|0.5.0|bad status\n' > "$tmp/results.txt"
+if bash "$SCRIPT" "$tmp/results.txt" "$tmp/pending.txt" "$tmp/required.txt" 0.5.0 >/dev/null 2>&1; then
+  echo "  FAIL invalid status"; fail=$((fail + 1))
+else echo "  ok   invalid status"; pass=$((pass + 1)); fi
 
 # The real pending file must parse and cover the ids the workflow emits.
 echo

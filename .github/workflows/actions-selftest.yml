@@ -79,8 +79,51 @@ jobs:
 
       - name: Upload JUnit report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mockagents-junit
           path: mockagents-junit.xml
           if-no-files-found: ignore
+
+  mockagents-test-failure:
+    name: mockagents-test (failing JUnit is retained)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Create an intentionally failing suite
+        run: |
+          cat > "$RUNNER_TEMP/failing-suite.yaml" <<'YAML'
+          apiVersion: mockagents/v1
+          kind: TestSuite
+          metadata:
+            name: intentional-failure
+          spec:
+            target:
+              agent: tool-router
+            cases:
+              - name: must-fail
+                steps:
+                  - role: user
+                    content: "hi there"
+                assertions:
+                  - type: response_contains
+                    value: "THIS VALUE CANNOT OCCUR"
+          YAML
+      - name: Run failing suite
+        id: failing
+        continue-on-error: true
+        uses: ./deploy/actions/mockagents-test
+        with:
+          source-path: ${{ github.workspace }}
+          agents-dir: ./examples
+          suites: ${{ runner.temp }}/failing-suite.yaml
+          junit-output: ${{ runner.temp }}/failing-junit.xml
+      - name: Assert failure and usable report
+        if: always()
+        run: |
+          set -euo pipefail
+          test "${{ steps.failing.outcome }}" = failure
+          report="${{ steps.failing.outputs.junit-report }}"
+          test -n "$report" && test -s "$report"
+          grep -q '<testsuites' "$report"
+          grep -Eq 'failures="[1-9][0-9]*"' "$report"

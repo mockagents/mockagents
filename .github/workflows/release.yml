@@ -11,26 +11,86 @@ on:
 permissions:
   contents: read
 
+# A retry of one tag resumes the same release; a second run cannot publish the
+# same immutable versions concurrently.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
-  test:
-    name: Pre-release Tests
+  verify:
+    uses: ./.github/workflows/verify.yml
+
+  preflight:
+    name: Release preflight
+    needs: verify
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      stable: ${{ steps.version.outputs.stable }}
+      npm-channel: ${{ steps.version.outputs.npm-channel }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          go-version: "1.26"
+          node-version: "22"
 
-      - name: Run tests
-        run: go test ./... -count=1 -race -timeout 5m
+      - name: Validate tag, package versions, peers and channel
+        id: version
+        run: bash scripts/release-preflight.sh "$GITHUB_REF_NAME"
+
+      - name: Record immutable candidate identity
+        run: |
+          printf '%s\n' \
+            "tag=${{ steps.version.outputs.tag }}" \
+            "version=${{ steps.version.outputs.version }}" \
+            "commit=${GITHUB_SHA}" \
+            "stable=${{ steps.version.outputs.stable }}" \
+            "go_toolchain=$(sed -n 's/^toolchain //p' go.mod)" > candidate-manifest.txt
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-manifest-${{ github.sha }}
+          path: candidate-manifest.txt
+          if-no-files-found: error
+
+  prepare-artifacts:
+    name: Prepare and inspect all artifacts
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: "~> v2"
+          args: check
+      - run: python -m pip install --disable-pip-version-check build twine
+      - run: python -m build sdk/python && python -m twine check sdk/python/dist/*
+      - working-directory: sdk/typescript
+        run: npm ci --no-audit --no-fund && npm run build && npm pack --dry-run
+      - working-directory: sdk/vitest
+        run: npm ci --no-audit --no-fund && npm run build && npm pack --dry-run
+      - working-directory: sdk/npx
+        run: npm ci --no-audit --no-fund && npm test && npm pack --dry-run
+      - run: docker build --tag mockagents-candidate:${{ github.sha }} .
 
   release-binaries:
     name: Release Binaries
-    needs: test
+    needs: [preflight, prepare-artifacts]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -42,7 +102,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version-file: go.mod
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
@@ -57,10 +117,11 @@ jobs:
           # value is empty and the Homebrew cask upload auto-skips (see
           # .goreleaser.yml).
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          PRERELEASE: ${{ needs.preflight.outputs.stable == 'false' }}
 
   release-docker:
     name: Release Docker Image
-    needs: test
+    needs: [preflight, prepare-artifacts]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -76,13 +137,10 @@ jobs:
             mockagents/mockagents
             ghcr.io/${{ github.repository }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            # This workflow only runs on v* tags, where is_default_branch is
-            # never true, so :latest was never pushed and the README's
-            # `docker run mockagents/mockagents` 404'd (readiness audit M-37).
-            type=raw,value=latest
+            type=raw,value=${{ needs.preflight.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ needs.preflight.outputs.stable }}
+            type=semver,pattern={{major}},enable=${{ needs.preflight.outputs.stable }}
+            type=raw,value=latest,enable=${{ needs.preflight.outputs.stable }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
@@ -116,7 +174,7 @@ jobs:
 
   release-python:
     name: Release Python SDK
-    needs: test
+    needs: [preflight, prepare-artifacts, release-binaries]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -128,22 +186,6 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-
-      # The PyPI wheel bootstraps the GitHub release binary whose version equals
-      # the package version, so both pyproject.toml and the package __version__
-      # must match the tag (mirrors the release-npm guard).
-      - name: Verify package version matches the tag
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          PYPROJECT=$(grep -m1 '^version' sdk/python/pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
-          INIT=$(grep -m1 '__version__' sdk/python/mockagents/__init__.py | sed -E 's/.*"([^"]+)".*/\1/')
-          for v in "$PYPROJECT" "$INIT"; do
-            if [ "$v" != "$TAG" ]; then
-              echo "::error::sdk/python version $v does not match release tag $TAG"
-              exit 1
-            fi
-          done
-          echo "sdk/python versions == $TAG"
 
       - name: Install build tools
         run: pip install build
@@ -159,7 +201,7 @@ jobs:
 
   release-npm:
     name: Release npm packages
-    needs: test
+    needs: [preflight, prepare-artifacts, release-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -170,29 +212,13 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      # The npx launcher and the SDK wrappers download the GitHub release binary
-      # whose version equals their own package.json version, so a mismatch
-      # between the tag and a package version would publish a wrapper that 404s.
-      # Guard every publish on tag == package version.
-      - name: Verify package versions match the tag
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          for pkg in sdk/npx sdk/typescript sdk/vitest; do
-            ver=$(node -p "require('./$pkg/package.json').version")
-            if [ "$ver" != "$TAG" ]; then
-              echo "::error::$pkg version $ver does not match release tag $TAG"
-              exit 1
-            fi
-          done
-          echo "all package versions == $TAG"
-
       # @mockagents/sdk (TypeScript SDK) — build then publish (scoped → public).
       - name: Publish @mockagents/sdk
         working-directory: sdk/typescript
         run: |
-          npm install --no-audit --no-fund
+          npm ci --no-audit --no-fund
           npm run build
-          npm publish --access public
+          npm publish --access public --tag "${{ needs.preflight.outputs.npm-channel }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -201,16 +227,16 @@ jobs:
       - name: Publish @mockagents/vitest
         working-directory: sdk/vitest
         run: |
-          npm install --no-audit --no-fund
+          npm ci --no-audit --no-fund
           npm run build
-          npm publish --access public
+          npm publish --access public --tag "${{ needs.preflight.outputs.npm-channel }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # mockagents (npx launcher) — no build step; ships bin/lib only.
       - name: Publish mockagents (npx launcher)
         working-directory: sdk/npx
-        run: npm publish
+        run: npm publish --tag "${{ needs.preflight.outputs.npm-channel }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

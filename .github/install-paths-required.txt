@@ -1,0 +1,12 @@
+# Every advertised/public release path must emit exactly one result row.
+go
+binary
+go-sdk
+docker-hub
+ghcr
+npx
+npm-sdk
+npm-vitest
+pipx
+pypi
+homebrew

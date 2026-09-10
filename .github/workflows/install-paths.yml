@@ -22,6 +22,10 @@ on:
   schedule:
     - cron: "17 6 * * *"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact release tag to verify (for example v0.5.0)"
+        required: false
   workflow_run:
     workflows: ["Release"]
     types: [completed]
@@ -33,23 +37,48 @@ env:
   REPO: mockagents/mockagents
 
 jobs:
+  target:
+    name: Resolve target
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.target.outputs.tag }}
+      version: ${{ steps.target.outputs.version }}
+    steps:
+      - name: Resolve one immutable release
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.version }}
+          RELEASE_RUN_TAG: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          tag="$REQUESTED"
+          if [[ -z "$tag" && "${{ github.event_name }}" == workflow_run ]]; then tag="$RELEASE_RUN_TAG"; fi
+          if [[ -z "$tag" ]]; then
+            tag=$(gh release list --repo "${{ github.repository }}" --exclude-pre-releases --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName')
+          fi
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid stable release tag: $tag"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
   linux:
     name: Check (Linux)
+    needs: target
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: false
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "20"
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -58,21 +87,25 @@ jobs:
       - name: Run checks
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET_TAG: ${{ needs.target.outputs.tag }}
+          TARGET_VERSION: ${{ needs.target.outputs.version }}
         run: |
           set -uo pipefail
           out=results-linux.txt
           : > "$out"
 
-          record() { printf '%s|%s|%s\n' "$1" "$2" "$3" >> "$out"; }
+          record() { printf '%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" >> "$out"; }
 
           check() {   # check <id> <description> <command...>
             local id="$1" desc="$2"; shift 2
             echo "::group::$id — $desc"
-            if timeout 300 "$@" > /tmp/"$id".log 2>&1; then
-              record "$id" ok "$desc"
+            if observed=$(timeout 300 "$@" 2>/tmp/"$id".log); then
+              observed=$(printf '%s\n' "$observed" | tail -1 | sed -E 's/^v//; s/.*[^0-9]([0-9]+\.[0-9]+\.[0-9]+)([^0-9].*)?$/\1/')
+              if [[ "$observed" == "$TARGET_VERSION" ]]; then status=ok; else status=fail; fi
+              record "$id" "$status" "${observed:-none}" "$desc"
               echo "OK"
             else
-              record "$id" fail "$desc"
+              record "$id" fail none "$desc"
               echo "FAILED (exit $?)"
               tail -n 20 /tmp/"$id".log || true
             fi
@@ -81,50 +114,52 @@ jobs:
 
           # --- paths that must always work -------------------------------
           check go "go install from module proxy" \
-            bash -c 'go install github.com/mockagents/mockagents/cmd/mockagents@latest \
+            bash -c 'go install github.com/mockagents/mockagents/cmd/mockagents@"$TARGET_TAG" \
                      && "$(go env GOPATH)"/bin/mockagents --version'
 
           check binary "prebuilt binary from GitHub Releases" \
             bash -c 'rm -rf /tmp/relbin && mkdir -p /tmp/relbin \
-                     && gh release download --repo "$REPO" --pattern "*linux_amd64.tar.gz" --dir /tmp/relbin \
+                     && gh release download "$TARGET_TAG" --repo "$REPO" --pattern "*linux_amd64.tar.gz" --dir /tmp/relbin \
                      && tar -xzf /tmp/relbin/*linux_amd64.tar.gz -C /tmp/relbin \
                      && /tmp/relbin/mockagents --version'
 
           check go-sdk "go get the Go SDK" \
             bash -c 'cd "$(mktemp -d)" && go mod init probe >/dev/null \
-                     && go get github.com/mockagents/mockagents/sdk/go/mockagents'
+                     && go get github.com/mockagents/mockagents/sdk/go/mockagents@"$TARGET_TAG" >/dev/null \
+                     && go list -m -f "{{.Version}}" github.com/mockagents/mockagents'
 
           # --- paths pending publication ---------------------------------
           check docker-hub "docker run from Docker Hub" \
-            docker run --rm mockagents/mockagents --version
+            docker run --rm "mockagents/mockagents:$TARGET_VERSION" --version
 
           check ghcr "docker run from GHCR" \
-            docker run --rm ghcr.io/mockagents/mockagents --version
+            docker run --rm "ghcr.io/mockagents/mockagents:$TARGET_VERSION" --version
 
           check npx "npx mockagents" \
-            npx -y mockagents@latest --version
+            npx -y "mockagents@$TARGET_VERSION" --version
 
           check npm-sdk "npm @mockagents/sdk" \
-            npm view @mockagents/sdk version
+            bash -c 'cd "$(mktemp -d)" && npm init -y >/dev/null && npm install --silent "@mockagents/sdk@$TARGET_VERSION" && node --input-type=module -e "await import(\"@mockagents/sdk\")" && printf "%s\n" "$TARGET_VERSION"'
 
           check npm-vitest "npm @mockagents/vitest" \
-            npm view @mockagents/vitest version
+            bash -c 'cd "$(mktemp -d)" && npm init -y >/dev/null && npm install --silent "@mockagents/sdk@$TARGET_VERSION" "@mockagents/vitest@$TARGET_VERSION" vitest@2 && node --input-type=module -e "await import(\"@mockagents/vitest\"); await import(\"@mockagents/vitest/jest\")" && printf "%s\n" "$TARGET_VERSION"'
 
           check pipx "pipx run mockagents" \
-            bash -c 'pip install --quiet pipx && pipx run mockagents --version'
+            bash -c 'pip install --quiet pipx && pipx run "mockagents==$TARGET_VERSION" --version'
 
           check pypi "pip install mockagents" \
-            bash -c 'python -m venv /tmp/probe-venv && /tmp/probe-venv/bin/pip install --quiet mockagents'
+            bash -c 'python -m venv /tmp/probe-venv && /tmp/probe-venv/bin/pip install --quiet "mockagents==$TARGET_VERSION" && /tmp/probe-venv/bin/python -c "import mockagents; print(mockagents.__version__)"'
 
           echo "--- results ---"; cat "$out"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: results-linux
           path: results-linux.txt
 
   macos:
     name: Check (macOS)
+    needs: target
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -133,26 +168,27 @@ jobs:
           set -uo pipefail
           if timeout 600 brew install mockagents/tap/mockagents > /tmp/brew.log 2>&1 \
              && mockagents --version >> /tmp/brew.log 2>&1; then
-            printf 'homebrew|ok|brew install from tap\n' > results-macos.txt
+            observed=$(mockagents --version | tail -1 | sed -E 's/^v//; s/.*[^0-9]([0-9]+\.[0-9]+\.[0-9]+)([^0-9].*)?$/\1/')
+            printf 'homebrew|ok|%s|brew install from tap\n' "$observed" > results-macos.txt
           else
-            printf 'homebrew|fail|brew install from tap\n' > results-macos.txt
+            printf 'homebrew|fail|none|brew install from tap\n' > results-macos.txt
             tail -n 20 /tmp/brew.log || true
           fi
           cat results-macos.txt
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: results-macos
           path: results-macos.txt
 
   report:
     name: Report
-    needs: [linux, macos]
+    needs: [target, linux, macos]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v8.0.0
         with:
           path: artifacts
           merge-multiple: true
@@ -160,9 +196,18 @@ jobs:
       # `cat ... || true` is safe here only because the script treats a missing
       # or row-less results file as a hard failure — see its `rows` guard.
       - name: Summarise and gate
+        env:
+          LINUX_RESULT: ${{ needs.linux.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
         run: |
+          [[ "$LINUX_RESULT" == success && "$MACOS_RESULT" == success ]] || {
+            echo "::error::Install check prerequisite failed: linux=$LINUX_RESULT macos=$MACOS_RESULT"
+            exit 1
+          }
           cat artifacts/results-*.txt > all.txt 2>/dev/null || true
           bash scripts/install-paths-report.sh \
             all.txt \
             .github/install-paths-pending.txt \
+            .github/install-paths-required.txt \
+            "${{ needs.target.outputs.version }}" \
             "$GITHUB_STEP_SUMMARY"
