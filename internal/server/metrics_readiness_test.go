@@ -325,7 +325,7 @@ func TestReadinessOpenInMultiTenantMode(t *testing.T) {
 }
 
 func TestMetricsRequiresPlatformCredentialsInMultiTenantMode(t *testing.T) {
-	srv, addr, tenantKey := setupTenantServer(t, testFullAgent("mt-metrics", "gpt-mt-metrics"))
+	srv, addr, adminKey := setupTenantServer(t, testFullAgent("mt-metrics", "gpt-mt-metrics"))
 
 	resp, err := http.Get(addr + "/metrics")
 	require.NoError(t, err)
@@ -333,21 +333,33 @@ func TestMetricsRequiresPlatformCredentialsInMultiTenantMode(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode,
 		"agent and scenario names are metric labels — an unauthenticated scrape would leak them")
 
-	req, err := http.NewRequest(http.MethodGet, addr+"/metrics", nil)
-	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer "+tenantKey)
-	resp, err = http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	_ = resp.Body.Close()
-	assert.Equal(t, http.StatusForbidden, resp.StatusCode,
-		"tenant-scoped credentials must not read process-wide metrics")
-
 	tenants, err := srv.config.TenancyStore.ListTenants(t.Context())
 	require.NoError(t, err)
 	require.Len(t, tenants, 1)
+	viewerKey, err := srv.config.TenancyStore.CreateAPIKey(t.Context(), tenants[0].ID, "viewer", tenancy.RoleViewer)
+	require.NoError(t, err)
+	editorKey, err := srv.config.TenancyStore.CreateAPIKey(t.Context(), tenants[0].ID, "editor", tenancy.RoleEditor)
+	require.NoError(t, err)
+	for role, key := range map[string]string{
+		"viewer": viewerKey.Plaintext,
+		"editor": editorKey.Plaintext,
+		"admin":  adminKey,
+	} {
+		t.Run(role, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, addr+"/metrics", nil)
+			require.NoError(t, err)
+			req.Header.Set("Authorization", "Bearer "+key)
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			_ = resp.Body.Close()
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode,
+				"tenant-scoped credentials must not read process-wide metrics")
+		})
+	}
+
 	platformKey, err := srv.config.TenancyStore.CreateAPIKey(t.Context(), tenants[0].ID, "prometheus", tenancy.RolePlatform)
 	require.NoError(t, err)
-	req, err = http.NewRequest(http.MethodGet, addr+"/metrics", nil)
+	req, err := http.NewRequest(http.MethodGet, addr+"/metrics", nil)
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer "+platformKey.Plaintext)
 	resp, err = http.DefaultClient.Do(req)

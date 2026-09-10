@@ -1,6 +1,7 @@
 # Exercised by `helm template` / `helm lint` to validate every template
-# path: ingress enabled, inline agents, chart-managed PVC, env vars,
-# envFrom, extraArgs, and the acknowledged multi-replica path.
+# path: ingress enabled, inline agents, env vars, envFrom, extraArgs, and the
+# acknowledged multi-replica path. PVC rendering is tested separately because
+# one chart-managed claim cannot safely back multiple MockAgents pods.
 image:
   repository: mockagents/mockagents
   tag: "0.5.0"
@@ -40,7 +41,7 @@ agents:
                 content: "hello from helm"
 
 persistence:
-  enabled: true
+  enabled: false
   size: 2Gi
   storageClass: standard
 

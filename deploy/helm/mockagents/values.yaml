@@ -262,8 +262,8 @@ networkPolicy:
   allowDNS: true
 
 # -- Prometheus Operator ServiceMonitor. Requires the Prometheus
-# -- Operator CRDs to be installed; the chart silently skips this
-# -- template otherwise.
+# -- Operator CRDs to be installed before applying the rendered manifest.
+# -- Helm cannot detect whether those CRDs are installed.
 # --
 # -- /metrics serves the Prometheus text exposition format with these
 # -- families: mockagents_requests_total{protocol,agent,status},

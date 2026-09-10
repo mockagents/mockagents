@@ -154,3 +154,8 @@ key, and the readiness body carries no agent, tenant, or configuration data.
   spend ledger only. Registry edits, sessions, interaction and audit logs, and
   rate state remain per pod; use sticky routing where session continuity is
   required and accept that write/read results can differ by pod.
+- Chart-managed persistence cannot be combined with multiple replicas. A
+  Deployment would mount the same claim in every pod, but the SQLite registry,
+  interaction and audit stores are not shared multi-writer databases. Use one
+  replica when persistence is enabled, or keep per-pod ephemeral storage after
+  explicitly acknowledging the multi-replica limitations.

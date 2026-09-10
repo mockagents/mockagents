@@ -10,12 +10,18 @@ documented routing and consistency limitations. A shared tenancy backend
 (env.MOCKAGENTS_TENANCY_DSN) does not make the other stores shared and never
 bypasses the acknowledgement.
 */ -}}
-{{- $replicas := int .Values.replicaCount -}}
+{{- $multiReplica := gt (int .Values.replicaCount) 1 -}}
 {{- if .Values.autoscaling.enabled -}}
-{{- $replicas = int .Values.autoscaling.maxReplicas -}}
+{{- if gt (int .Values.autoscaling.minReplicas) (int .Values.autoscaling.maxReplicas) -}}
+{{- fail "autoscaling.minReplicas must not exceed autoscaling.maxReplicas" -}}
 {{- end -}}
-{{- if and (gt $replicas 1) (not .Values.multiReplica.acknowledged) -}}
-{{- fail (printf "replicaCount/autoscaling.maxReplicas is %d but MockAgents keeps registry edits, sessions, interaction logs, audit logs and rate state per pod. A tenancy DSN shares credentials only and is not sufficient. Read the multi-replica limitations and set multiReplica.acknowledged=true to accept them explicitly." $replicas) -}}
+{{- $multiReplica = or $multiReplica (gt (int .Values.autoscaling.minReplicas) 1) (gt (int .Values.autoscaling.maxReplicas) 1) -}}
+{{- end -}}
+{{- if and $multiReplica (not .Values.multiReplica.acknowledged) -}}
+{{- fail "replicaCount or the autoscaling range requests multiple pods, but MockAgents keeps registry edits, sessions, interaction logs, audit logs and rate state per pod. A tenancy DSN shares credentials only and is not sufficient. Read the multi-replica limitations and set multiReplica.acknowledged=true to accept them explicitly." -}}
+{{- end -}}
+{{- if and $multiReplica .Values.persistence.enabled -}}
+{{- fail "persistence.enabled cannot be combined with multiple replicas: this Deployment mounts one claim in every pod, while MockAgents SQLite state is not a shared multi-writer store. Use one replica or disable chart-managed persistence." -}}
 {{- end -}}
 apiVersion: apps/v1
 kind: Deployment
