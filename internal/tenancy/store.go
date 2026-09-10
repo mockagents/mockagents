@@ -188,6 +188,10 @@ CREATE TABLE IF NOT EXISTS tenant_spend (
 type SQLiteStore struct {
 	db    *sql.DB
 	cache *authCache
+	// testBeforeRotationTx lets same-package tests deterministically mutate a
+	// target after the optimistic read/hash phase and before the transaction.
+	// Production stores leave it nil.
+	testBeforeRotationTx func()
 }
 
 // NewSQLiteStore opens or creates the tenancy database at the given path.
@@ -525,6 +529,9 @@ func (s *SQLiteStore) RotateAPIKey(ctx context.Context, callerTenantID, id strin
 	if err != nil {
 		return nil, "", fmt.Errorf("bcrypt hash: %w", err)
 	}
+	if s.testBeforeRotationTx != nil {
+		s.testBeforeRotationTx()
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -681,6 +688,9 @@ func (s *SQLiteStore) BulkRotateTenantKeys(ctx context.Context, tenantID string,
 			return nil, nil, fmt.Errorf("bcrypt hash: %w", hashErr)
 		}
 		rotations = append(rotations, rotation{e: e, newPrefix: newPrefix, plaintext: plaintext, hash: hash})
+	}
+	if s.testBeforeRotationTx != nil {
+		s.testBeforeRotationTx()
 	}
 
 	// Now open the write transaction and apply only the UPDATEs — N cheap row

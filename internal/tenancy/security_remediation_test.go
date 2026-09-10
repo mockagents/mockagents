@@ -3,6 +3,7 @@ package tenancy
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -115,5 +116,149 @@ func TestCachedResolveFailsClosedWhenAuthorityUnavailable(t *testing.T) {
 	}
 	if p, err := s.Resolve(ctx, key.Plaintext); err == nil || p != nil {
 		t.Fatalf("authority outage failed open: p=%#v err=%v", p, err)
+	}
+}
+
+func TestRotateRejectsRoleDriftBeforeTransaction(t *testing.T) {
+	ctx := context.Background()
+	s, err := NewSQLiteStore(filepath.Join(t.TempDir(), "rotate-drift.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	tenant, _ := s.CreateTenant(ctx, "drift")
+	admin := mustKey(t, s, tenant.ID, "actor", RoleAdmin)
+	target := mustKey(t, s, tenant.ID, "target", RoleAdmin)
+	actorCtx := WithMutationActor(ctx, &Principal{TenantID: tenant.ID, KeyID: admin.Key.ID, Role: RoleAdmin})
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	s.testBeforeRotationTx = func() {
+		s.testBeforeRotationTx = nil
+		close(reached)
+		<-release
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		_, _, err := s.RotateAPIKey(actorCtx, tenant.ID, target.Key.ID)
+		errCh <- err
+	}()
+	<-reached
+	if _, err := s.db.ExecContext(ctx, `UPDATE api_keys SET role = ? WHERE id = ?`, RolePlatform, target.Key.ID); err != nil {
+		t.Fatalf("inject role drift: %v", err)
+	}
+	close(release)
+	if err := <-errCh; !errors.Is(err, ErrForbidden) {
+		t.Fatalf("rotation after promotion = %v, want ErrForbidden", err)
+	}
+	if _, err := s.Resolve(ctx, target.Plaintext); err != nil {
+		t.Fatalf("rejected rotation changed original credential: %v", err)
+	}
+}
+
+func TestBulkRotateRoleDriftRollsBackEveryTarget(t *testing.T) {
+	ctx := context.Background()
+	s, err := NewSQLiteStore(filepath.Join(t.TempDir(), "bulk-drift.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	tenant, _ := s.CreateTenant(ctx, "bulk-drift")
+	actor := mustKey(t, s, tenant.ID, "actor", RoleAdmin)
+	first := mustKey(t, s, tenant.ID, "first", RoleViewer)
+	second := mustKey(t, s, tenant.ID, "second", RoleEditor)
+	actorCtx := WithMutationActor(ctx, &Principal{TenantID: tenant.ID, KeyID: actor.Key.ID, Role: RoleAdmin})
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	s.testBeforeRotationTx = func() {
+		s.testBeforeRotationTx = nil
+		close(reached)
+		<-release
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		_, _, err := s.BulkRotateTenantKeys(actorCtx, tenant.ID, actor.Key.ID)
+		errCh <- err
+	}()
+	<-reached
+	if _, err := s.db.ExecContext(ctx, `UPDATE api_keys SET role = ? WHERE id = ?`, RolePlatform, second.Key.ID); err != nil {
+		t.Fatalf("inject bulk role drift: %v", err)
+	}
+	close(release)
+	if err := <-errCh; !errors.Is(err, ErrForbidden) {
+		t.Fatalf("bulk rotation after promotion = %v, want ErrForbidden", err)
+	}
+	for _, key := range []*NewAPIKeyResult{first, second} {
+		if _, err := s.Resolve(ctx, key.Plaintext); err != nil {
+			t.Fatalf("bulk failure changed %s: %v", key.Key.Name, err)
+		}
+	}
+}
+
+func TestPostgresCachedResolveChecksSharedAuthority(t *testing.T) {
+	dsn := os.Getenv("MOCKAGENTS_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("MOCKAGENTS_TEST_PG_DSN is not set")
+	}
+	ctx := context.Background()
+	a, err := NewPostgresStore(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := NewPostgresStore(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	a.EnableAuthCache(time.Hour, 16)
+	b.EnableAuthCache(time.Hour, 16)
+	tenant, err := a.CreateTenant(ctx, "security-cache-"+time.Now().UTC().Format("20060102150405.000000000"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.DeleteTenant(context.Background(), tenant.ID) //nolint:errcheck
+
+	demoted := mustKey(t, a, tenant.ID, "demoted", RoleAdmin)
+	if _, err := b.Resolve(ctx, demoted.Plaintext); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.UpdateAPIKeyRole(ctx, tenant.ID, demoted.Key.ID, RoleViewer); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := b.Resolve(ctx, demoted.Plaintext); err != nil || p.Role != RoleViewer {
+		t.Fatalf("stale role accepted: p=%#v err=%v", p, err)
+	}
+
+	rotated := mustKey(t, a, tenant.ID, "rotated", RoleViewer)
+	if _, err := b.Resolve(ctx, rotated.Plaintext); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.RotateAPIKey(ctx, tenant.ID, rotated.Key.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Resolve(ctx, rotated.Plaintext); !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("rotated credential accepted: %v", err)
+	}
+
+	deleted := mustKey(t, a, tenant.ID, "deleted", RoleViewer)
+	if _, err := b.Resolve(ctx, deleted.Plaintext); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.DeleteAPIKey(ctx, tenant.ID, deleted.Key.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Resolve(ctx, deleted.Plaintext); !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("deleted credential accepted: %v", err)
+	}
+
+	outage := mustKey(t, a, tenant.ID, "outage", RoleViewer)
+	if _, err := b.Resolve(ctx, outage.Plaintext); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := b.Resolve(ctx, outage.Plaintext); err == nil || p != nil {
+		t.Fatalf("Postgres authority outage failed open: p=%#v err=%v", p, err)
 	}
 }
