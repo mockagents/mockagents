@@ -24,11 +24,11 @@ The default scope includes the Go server, multi-tenant control plane, record/rep
 | Monitoring/topology | Restrict global metrics to platform and render ServiceMonitor authorization; require explicit acknowledgment for multiple replicas. | A tenancy DSN does not make sessions, registry edits or logs shared. No transparent HA claim is introduced. |
 | Publication | One reusable candidate-verification workflow; preflight all manifests/artifacts before publication; publish binary assets before dependent launchers. | Verify exact versions and immutable digests; prereleases never update stable channels. |
 
-### Delivery sequence: 17 implementation PRs and one candidate-validation step
+### Delivery sequence: 17 work items and one candidate-validation step
 
 Each row is an independently reviewable change boundary. Dependencies describe what must be integrated before final validation of that row; unrelated rows can be authored concurrently by engineers with separate ownership. No extra tasks, branches or agents are created by this document.
 
-| Work item / proposed PR title | Findings | Owner | Primary files / concrete output | Depends on | Completion test |
+| Work item / change title | Findings | Owner | Primary files / concrete output | Depends on | Completion test |
 |---|---|---|---|---|---|
 | R01 — Use a patched compiler and isolate the source documentation scan | SR-05, CL-05 | Release + developer tooling | `go.mod`, `Dockerfile`, Go setup in workflows; `cmd/mockagents/config_docs_test.go`. Capture compiler and scanner versions; repair cache-directory traversal. | None | Full Go tests/vet run without the audit's excluded-test workaround; source/artifact vulnerability scan using selected compiler passes. |
 | R02 — Authorize key mutations against target privilege | SR-01 | Security | `internal/server/{route_authz,tenancy_handlers}.go`; tenancy Store interface and SQLite/Postgres implementations. Actor authority checked within mutation boundary. | R01 for validation | Admin cannot rotate/demote/delete a platform key, individually or in bulk; no forbidden mutation/secret; valid own-tenant operations pass. |

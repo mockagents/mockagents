@@ -67,7 +67,7 @@ drift:                          ## Check api-spec $refs + schema fields vs Go ty
 liquidcheck:                    ## Check docs/ for unterminated Liquid openers
 	$(GO) run ./tools/liquidcheck
 
-docs-check: drift liquidcheck   ## Check API/config drift and tracked Markdown links
+docs-check: drift liquidcheck   ## Check API/config drift and tracked Markdown local path targets
 	$(GO) run ./tools/doccheck
 
 fmt:                            ## Format Go code

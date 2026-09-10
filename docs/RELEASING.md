@@ -157,7 +157,7 @@ gh run rerun "$RUN" --failed --repo mockagents/mockagents
 gh run watch "$RUN" --exit-status --repo mockagents/mockagents
 ```
 
-`--failed` re-runs only the failed jobs (+ their dependents, e.g. `smoke-test`);
+`--failed` re-runs only the failed jobs and their dependents;
 the already-succeeded `release-binaries` is left intact, so the live GitHub Release
 is untouched.
 
@@ -190,9 +190,11 @@ Once the one-time setup is in place:
    git tag -a "v$VERSION" -m "MockAgents v$VERSION"
    git push origin "v$VERSION"
    ```
-5. **Watch the release workflow:** `gh run watch` (or the Actions tab). Jobs:
-   `test` → `release-binaries` / `release-docker` / `release-python` /
-   `release-npm` → `smoke-test`.
+5. **Watch the release workflow:** `gh run watch` (or the Actions tab). The
+   dependency chain is `verify` → `preflight` → `prepare-artifacts`, followed
+   by `release-binaries` / `release-docker`; the Python and npm publishers also
+   wait for `release-binaries`. Public-channel smoke verification runs through
+   `install-paths.yml` after the release workflow completes and on its schedule.
 
 ### Verify
 

@@ -178,6 +178,10 @@ mockagents a2a [flags]
 | `--port`, `-p` | `8083` | HTTP port |
 | `--server` | | Name of the `A2AServer` to serve (required when multiple are loaded) |
 | `--agents-dir` | `./agents` | Directory containing definitions (global flag) |
+| `--max-tasks` | `10000` | Maximum number of retained A2A tasks |
+| `--max-task-bytes` | `67108864` | Maximum bytes retained across A2A tasks |
+| `--max-task-history` | `256` | Maximum retained messages per task |
+| `--task-ttl` | `30m` | Retention time for terminal tasks |
 
 `GET /healthz` returns `ok`.
 

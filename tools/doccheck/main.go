@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -14,7 +15,11 @@ import (
 var markdownLink = regexp.MustCompile(`\[[^]]+\]\(([^)]+)\)`)
 
 func main() {
-	files := []string{"AGENTS.md", "CONTRIBUTING.md", "docs/RELEASING.md"}
+	files, err := trackedMarkdownFiles()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "doccheck: list tracked Markdown: %v\n", err)
+		os.Exit(1)
+	}
 	failed := false
 	for _, name := range files {
 		body, err := os.ReadFile(name)
@@ -28,6 +33,7 @@ func main() {
 			if target == "" || strings.Contains(target, "://") || strings.HasPrefix(target, "mailto:") {
 				continue
 			}
+			target = strings.Trim(target, "<>")
 			if _, err := os.Stat(filepath.Clean(filepath.Join(filepath.Dir(name), target))); err != nil {
 				fmt.Fprintf(os.Stderr, "doccheck: %s: broken local link %q\n", name, match[1])
 				failed = true
@@ -37,5 +43,17 @@ func main() {
 	if failed {
 		os.Exit(1)
 	}
-	fmt.Println("doccheck: authoritative repository-document links resolve")
+	fmt.Printf("doccheck: local path targets resolve in %d tracked Markdown files\n", len(files))
+}
+
+func trackedMarkdownFiles() ([]string, error) {
+	output, err := exec.Command("git", "ls-files", "-z", "--full-name", "--", ":(top,glob)**/*.md").Output()
+	if err != nil {
+		return nil, err
+	}
+	trimmed := strings.TrimSuffix(string(output), "\x00")
+	if trimmed == "" {
+		return nil, fmt.Errorf("repository contains no tracked Markdown files")
+	}
+	return strings.Split(trimmed, "\x00"), nil
 }
