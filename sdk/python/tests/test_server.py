@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from mockagents.server import MockAgentServer
-from mockagents.types import ConfigError
+from mockagents.types import ConfigError, ServerError
 
 DUMMY_BINARY = "nonexistent-binary-for-test"
 
@@ -273,3 +273,36 @@ def test_start_failure_reaps_child(monkeypatch):
 
     assert processes[0].poll() is not None
     assert server._process is None
+
+
+def test_stop_retains_handle_when_child_cannot_be_reaped():
+    class UnkillableProcess:
+        stdout = None
+        stderr = None
+
+        def send_signal(self, _signal):
+            return None
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+        def wait(self, timeout):
+            raise subprocess.TimeoutExpired("mockagents", timeout)
+
+        def poll(self):
+            return None
+
+    proc = UnkillableProcess()
+    server = MockAgentServer.__new__(MockAgentServer)
+    server._process = proc
+    server._log_threads = []
+    server._logs = []
+
+    with pytest.raises(ServerError, match="did not exit after kill"):
+        server.stop()
+
+    assert server._process is proc
+    assert server.is_running

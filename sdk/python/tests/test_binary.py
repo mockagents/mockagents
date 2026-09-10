@@ -259,10 +259,40 @@ def test_download_binary_windows_zip(tmp_path, monkeypatch):
         assert fh.read() == payload
 
 
+def test_interrupted_extraction_never_publishes_partial_binary(tmp_path, monkeypatch):
+    responses = pytest.importorskip("responses")
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    archive = _linux_targz(b"complete binary")
+    asset = "mockagents_0.1.0_linux_amd64.tar.gz"
+    base = "https://github.com/mockagents/mockagents/releases/download/v0.1.0"
+    sha = hashlib.sha256(archive).hexdigest()
+
+    def interrupted(_asset, _data, out):
+        out.write_bytes(b"partial")
+        raise OSError("interrupted")
+
+    monkeypatch.setattr(_binary, "_extract_binary", interrupted)
+    with responses.RequestsMock() as rsps:
+        rsps.add(responses.GET, f"{base}/{asset}", body=archive, status=200)
+        rsps.add(responses.GET, f"{base}/checksums.txt", body=f"{sha}  {asset}\n", status=200)
+        with pytest.raises(OSError, match="interrupted"):
+            _binary.download_binary("0.1.0", dest_dir=tmp_path)
+
+    assert not _binary.versioned_binary_path("0.1.0", tmp_path).exists()
+    assert not list((tmp_path / "0.1.0" / "linux-amd64").glob(".install-*"))
+
+
 def test_versioned_cache_does_not_reuse_another_release(tmp_path, monkeypatch):
     monkeypatch.setattr(platform, "system", lambda: "Linux")
     monkeypatch.setattr(platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(_binary, "cache_dir", lambda: tmp_path)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.delenv("MOCKAGENTS_BINARY", raising=False)
+    monkeypatch.delenv("MOCKAGENTS_BIN", raising=False)
     old = _binary.versioned_binary_path("0.4.0")
     old.parent.mkdir(parents=True)
     old.write_bytes(b"old release")

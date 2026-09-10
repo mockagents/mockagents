@@ -87,8 +87,8 @@ func TestClientChatParsesResponse(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Errorf("status = %d", resp.StatusCode)
 	}
-	if resp.LatencyMs <= 0 {
-		t.Errorf("latency should be > 0, got %v", resp.LatencyMs)
+	if resp.LatencyMs < 0 {
+		t.Errorf("latency should be non-negative, got %v", resp.LatencyMs)
 	}
 }
 

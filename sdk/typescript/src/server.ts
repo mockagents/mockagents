@@ -11,6 +11,8 @@ import { join } from "node:path";
 import { MockAgentClient } from "./client.js";
 import { ConfigError, ServerError } from "./types.js";
 
+const MAX_CAPTURED_LOG_BYTES = 8 * 1024 * 1024;
+
 export interface MockAgentServerOptions {
   agentsDir?: string;
   /** Port to listen on. 0 (default) auto-selects a free port. */
@@ -28,6 +30,7 @@ export class MockAgentServer {
   private process: ChildProcess | null = null;
   private stopPromise: Promise<void> | null = null;
   private logs: string[] = [];
+  private logBytes = 0;
 
   constructor(options: MockAgentServerOptions = {}) {
     this.agentsDir = options.agentsDir ?? "./agents";
@@ -61,6 +64,9 @@ export class MockAgentServer {
   async start(timeoutMs: number = 10_000): Promise<void> {
     if (this.isRunning) return;
 
+    this.logs = [];
+    this.logBytes = 0;
+
     if (this.port === 0) {
       this.port = await findFreePort();
     }
@@ -83,15 +89,15 @@ export class MockAgentServer {
     let spawnError: Error | null = null;
     const spawnFailure = new Promise<never>((_resolve, reject) => this.process?.once("error", (err) => {
       spawnError = err;
-      this.logs.push(`spawn error: ${err.message}`);
+      this.appendLog(`spawn error: ${err.message}`);
       healthAbort.abort();
       reject(err);
     }));
     this.process.stdout?.on("data", (chunk: Buffer) => {
-      this.logs.push(chunk.toString());
+      this.appendLog(chunk.toString());
     });
     this.process.stderr?.on("data", (chunk: Buffer) => {
-      this.logs.push(chunk.toString());
+      this.appendLog(chunk.toString());
     });
 
     try {
@@ -133,6 +139,24 @@ export class MockAgentServer {
       await this.stopPromise;
     } finally {
       this.stopPromise = null;
+    }
+  }
+
+  private appendLog(value: string): void {
+    let bytes = Buffer.byteLength(value);
+    if (bytes > MAX_CAPTURED_LOG_BYTES) {
+      value = Buffer.from(value).subarray(bytes - MAX_CAPTURED_LOG_BYTES).toString();
+      bytes = Buffer.byteLength(value);
+      while (bytes > MAX_CAPTURED_LOG_BYTES) {
+        value = value.slice(1);
+        bytes = Buffer.byteLength(value);
+      }
+    }
+    this.logs.push(value);
+    this.logBytes += bytes;
+    while (this.logBytes > MAX_CAPTURED_LOG_BYTES && this.logs.length > 1) {
+      const removed = this.logs.shift();
+      if (removed !== undefined) this.logBytes -= Buffer.byteLength(removed);
     }
   }
 }

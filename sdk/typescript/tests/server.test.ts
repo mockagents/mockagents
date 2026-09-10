@@ -53,6 +53,16 @@ class FakeChild extends EventEmitter {
 }
 
 describe("MockAgentServer process lifecycle", () => {
+  it("bounds retained subprocess logs to the most recent 8 MiB", () => {
+    const server = new MockAgentServer({ binaryPath: "unused" });
+    const appendLog = (server as unknown as { appendLog(value: string): void }).appendLog.bind(server);
+    appendLog("old-prefix");
+    appendLog("x".repeat(8 * 1024 * 1024));
+
+    expect(Buffer.byteLength(server.getLogs().join(""))).toBeLessThanOrEqual(8 * 1024 * 1024);
+    expect(server.getLogs().join("")).not.toContain("old-prefix");
+  });
+
   it("surfaces spawn errors without retaining a process handle", async () => {
     const server = new MockAgentServer({ binaryPath: "definitely-missing-mockagents-binary", port: 65530 });
     await expect(server.start(1_000)).rejects.toThrow(/did not become ready/);

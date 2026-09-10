@@ -180,15 +180,14 @@ class MockAgentServer:
         pytest session using the ``mockagents_server`` fixture hang at
         teardown, since the session-scoped fixture calls this on the way out.
 
-        ``communicate`` (rather than ``wait``) drains stdout *and* stderr, so a
-        chatty server filling a 64 KiB pipe buffer can't deadlock on exit
-        either.
+        Dedicated reader threads continuously drain stdout and stderr while the
+        process runs, so a chatty server cannot fill a pipe and deadlock either
+        startup or exit.
         """
         if self._process is None:
             return
 
         proc = self._process
-        self._process = None
 
         try:
             if sys.platform == "win32":
@@ -205,9 +204,14 @@ class MockAgentServer:
             try:
                 proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                pass  # unkillable child; do not hold the test session hostage
+                # Keep the handle so callers can observe and retry cleanup.
+                # Reporting success here would leak a live child while
+                # is_running falsely claimed the server had stopped.
+                raise ServerError("Server process did not exit after kill")
         except (OSError, ValueError):
             pass  # pipes already closed
+
+        self._process = None
 
         log_threads = getattr(self, "_log_threads", [])
         for thread in log_threads:
