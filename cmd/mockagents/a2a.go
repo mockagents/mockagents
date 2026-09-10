@@ -35,13 +35,21 @@ Examples:
 }
 
 var (
-	a2aPort       int
-	a2aServerName string
+	a2aPort         int
+	a2aServerName   string
+	a2aMaxTasks     int
+	a2aMaxTaskBytes int
+	a2aMaxHistory   int
+	a2aTaskTTL      time.Duration
 )
 
 func init() {
 	a2aCmd.Flags().IntVarP(&a2aPort, "port", "p", 8083, "HTTP port")
 	a2aCmd.Flags().StringVar(&a2aServerName, "server", "", "Name of the A2AServer to serve (required when multiple are loaded)")
+	a2aCmd.Flags().IntVar(&a2aMaxTasks, "max-tasks", a2a.DefaultMaxTasks, "Maximum retained A2A tasks")
+	a2aCmd.Flags().IntVar(&a2aMaxTaskBytes, "max-task-bytes", a2a.DefaultMaxTaskBytes, "Maximum bytes retained by A2A tasks")
+	a2aCmd.Flags().IntVar(&a2aMaxHistory, "max-task-history", a2a.DefaultMaxTaskHistory, "Maximum retained messages per A2A task")
+	a2aCmd.Flags().DurationVar(&a2aTaskTTL, "task-ttl", a2a.DefaultTaskTTL, "Retention time for terminal A2A tasks")
 	rootCmd.AddCommand(a2aCmd)
 }
 
@@ -56,7 +64,8 @@ func runA2A(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	return serveA2AHTTP(a2a.NewServer(def), def.Spec.Card.Name, a2aPort)
+	server := a2a.NewServerWithOptions(def, a2a.ServerOptions{MaxTasks: a2aMaxTasks, MaxTaskBytes: a2aMaxTaskBytes, MaxHistory: a2aMaxHistory, TaskTTL: a2aTaskTTL})
+	return serveA2AHTTP(server, def.Spec.Card.Name, a2aPort)
 }
 
 func selectA2AServer(docs *config.Documents, agentsDir string) (*types.A2AServerDefinition, error) {

@@ -85,7 +85,12 @@ func (h *ChromaHandler) CreateCollection(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	key := h.keyFor(r, q.Name)
-	e := h.Store.CreatePendingCollection(key, vector.Cosine)
+	metric, e := chromaMetric(q.Configuration, q.Metadata)
+	if e != nil {
+		h.err(w, e)
+		return
+	}
+	e = h.Store.CreatePendingCollection(key, metric)
 	if e != nil && q.GetOrCreate && errors.Is(e, vector.ErrCollectionExists) {
 		e = nil
 	}
@@ -209,6 +214,15 @@ func (h *ChromaHandler) Query(w http.ResponseWriter, r *http.Request) {
 	if q.NResults == 0 {
 		q.NResults = 10
 	}
+	include := q.Include
+	if include == nil {
+		include = []string{"documents", "metadatas", "distances"}
+	}
+	config, e := h.Store.Collection(h.key(r))
+	if e != nil {
+		h.err(w, e)
+		return
+	}
 	f, e := pineconeFilter(q.Where)
 	if e != nil {
 		h.err(w, e)
@@ -218,6 +232,8 @@ func (h *ChromaHandler) Query(w http.ResponseWriter, r *http.Request) {
 	dists := [][]float64{}
 	metas := [][]map[string]any{}
 	embeds := [][][]float64{}
+	docs := [][]any{}
+	uris := [][]any{}
 	for _, v := range q.QueryEmbeddings {
 		res, x := h.Store.QueryWithInfo(h.key(r), vectorChaosQuery(r, vector.Query{Vector: v, TopK: q.NResults, Filter: f}))
 		if x != nil {
@@ -229,21 +245,40 @@ func (h *ChromaHandler) Query(w http.ResponseWriter, r *http.Request) {
 		dd := []float64{}
 		mm := []map[string]any{}
 		ee := [][]float64{}
+		qqDocs := []any{}
+		qqURIs := []any{}
 		for _, m := range res.Matches {
 			ii = append(ii, fmt.Sprint(externalID(m.ID, m.ExternalID)))
-			dd = append(dd, 1-m.Score)
+			dd = append(dd, chromaDistance(config.Metric, m.Score))
 			mm = append(mm, chromaMetadata(m.Metadata))
-			p, _ := h.Store.Fetch(h.key(r), []string{m.ID})
-			if len(p) > 0 {
-				ee = append(ee, p[0].Vector)
-			}
+			ee = append(ee, m.Vector)
+			qqDocs = append(qqDocs, m.Metadata["__chroma_document"])
+			qqURIs = append(qqURIs, m.Metadata["__chroma_uri"])
 		}
 		ids = append(ids, ii)
 		dists = append(dists, dd)
 		metas = append(metas, mm)
 		embeds = append(embeds, ee)
+		docs = append(docs, qqDocs)
+		uris = append(uris, qqURIs)
 	}
-	writeJSON(w, 200, map[string]any{"ids": ids, "distances": dists, "metadatas": metas, "embeddings": embeds, "documents": nil, "uris": nil, "include": q.Include})
+	out := map[string]any{"ids": ids, "distances": nil, "metadatas": nil, "embeddings": nil, "documents": nil, "uris": nil, "include": include}
+	if includesChroma(include, "distances") {
+		out["distances"] = dists
+	}
+	if includesChroma(include, "metadatas") {
+		out["metadatas"] = metas
+	}
+	if includesChroma(include, "embeddings") {
+		out["embeddings"] = embeds
+	}
+	if includesChroma(include, "documents") {
+		out["documents"] = docs
+	}
+	if includesChroma(include, "uris") {
+		out["uris"] = uris
+	}
+	writeJSON(w, 200, out)
 }
 func (h *ChromaHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	h.stamp(r)
@@ -286,7 +321,55 @@ func (h *ChromaHandler) keyFor(r *http.Request, name string) string {
 	return base + "\x02" + r.PathValue("tenant") + "\x02" + r.PathValue("database")
 }
 func (h *ChromaHandler) collectionJSON(r *http.Request, c vector.CollectionConfig) map[string]any {
-	return map[string]any{"id": r.PathValue("collection"), "name": r.PathValue("collection"), "tenant": r.PathValue("tenant"), "database": r.PathValue("database"), "dimension": c.Dimension, "metadata": map[string]any{}, "version": 0, "log_position": 0, "configuration_json": map[string]any{"hnsw": map[string]any{"space": c.Metric}}}
+	return map[string]any{"id": r.PathValue("collection"), "name": r.PathValue("collection"), "tenant": r.PathValue("tenant"), "database": r.PathValue("database"), "dimension": c.Dimension, "metadata": map[string]any{}, "version": 0, "log_position": 0, "configuration_json": map[string]any{"hnsw": map[string]any{"space": chromaMetricName(c.Metric)}}}
+}
+
+func chromaMetric(configuration, metadata map[string]any) (vector.Metric, error) {
+	space := ""
+	if hnsw, ok := configuration["hnsw"].(map[string]any); ok {
+		space, _ = hnsw["space"].(string)
+	}
+	if space == "" {
+		space, _ = metadata["hnsw:space"].(string)
+	}
+	switch strings.ToLower(space) {
+	case "", "l2":
+		return vector.Euclidean, nil
+	case "cosine":
+		return vector.Cosine, nil
+	case "ip":
+		return vector.Dot, nil
+	default:
+		return "", fmt.Errorf("unsupported Chroma distance space %q", space)
+	}
+}
+
+func chromaMetricName(metric vector.Metric) string {
+	switch metric {
+	case vector.Euclidean:
+		return "l2"
+	case vector.Dot:
+		return "ip"
+	default:
+		return "cosine"
+	}
+}
+
+func chromaDistance(metric vector.Metric, score float64) float64 {
+	if metric == vector.Euclidean {
+		d := 1/score - 1
+		return d * d
+	}
+	return 1 - score
+}
+
+func includesChroma(include []string, field string) bool {
+	for _, value := range include {
+		if value == field {
+			return true
+		}
+	}
+	return false
 }
 func (h *ChromaHandler) collectionNames(r *http.Request) []string {
 	auth := engine.TenantIDFromContext(r.Context())

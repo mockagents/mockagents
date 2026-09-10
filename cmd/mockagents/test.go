@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -59,8 +60,8 @@ func runTest(cmd *cobra.Command, args []string) error {
 
 	agentsDir, _ := cmd.Flags().GetString("agents-dir")
 	docs, loadErrs := config.LoadAllDocuments(agentsDir)
-	for _, e := range loadErrs {
-		fmt.Fprintln(os.Stderr, "load error:", e)
+	if len(loadErrs) != 0 {
+		return fmt.Errorf("loading definitions: %w", errors.Join(loadErrs...))
 	}
 	if len(docs.Agents) == 0 {
 		return fmt.Errorf("no agents found in %q", agentsDir)
@@ -71,13 +72,24 @@ func runTest(cmd *cobra.Command, args []string) error {
 	for _, r := range docs.Agents {
 		config.ApplyDefaults(r.Definition)
 		if errList := validator.Validate(r.Definition, r.FilePath, r.Node); errList != nil {
-			fmt.Fprintln(os.Stderr, "skipping invalid agent:", errList.Error())
-			continue
+			return fmt.Errorf("validating agent: %w", errList)
 		}
-		agentReg.Register(r.Definition)
 	}
-	if agentReg.Count() == 0 {
-		return fmt.Errorf("no valid agents loaded from %q", agentsDir)
+	for _, r := range docs.Pipelines {
+		if errList := config.ValidatePipeline(r.Definition, r.FilePath, r.Node); errList != nil {
+			return fmt.Errorf("validating pipeline: %w", errList)
+		}
+	}
+	for _, r := range docs.TestSuites {
+		if errList := config.ValidateTestSuite(r.Definition, r.FilePath, r.Node); errList != nil {
+			return fmt.Errorf("validating test suite: %w", errList)
+		}
+	}
+	if errList := config.ValidateDocuments(docs); errList != nil {
+		return fmt.Errorf("validating document references: %w", errList)
+	}
+	for _, r := range docs.Agents {
+		agentReg.Register(r.Definition)
 	}
 
 	pipelineReg := engine.NewPipelineRegistry()
@@ -118,6 +130,18 @@ func runTest(cmd *cobra.Command, args []string) error {
 
 	if len(suites) == 0 {
 		return fmt.Errorf("no test suites found")
+	}
+	for _, s := range suites {
+		if errList := config.ValidateTestSuite(s.Definition, s.FilePath, s.Node); errList != nil {
+			return fmt.Errorf("validating test suite: %w", errList)
+		}
+	}
+	selectedDocs := &config.Documents{Agents: docs.Agents, Pipelines: docs.Pipelines, TestSuites: suites}
+	if errList := config.ValidateDocuments(selectedDocs); errList != nil {
+		return fmt.Errorf("validating selected test references: %w", errList)
+	}
+	if testFormat != "text" && testFormat != "json" && testFormat != "junit" {
+		return fmt.Errorf("unknown test output format %q (expected text, json, or junit)", testFormat)
 	}
 
 	var allResults []*runner.SuiteResult
@@ -184,8 +208,8 @@ func loadSuitesFrom(path string) ([]*config.TestSuiteLoadResult, error) {
 	}
 	if info.IsDir() {
 		docs, errs := config.LoadAllDocuments(abs)
-		for _, e := range errs {
-			fmt.Fprintln(os.Stderr, "load error:", e)
+		if len(errs) != 0 {
+			return nil, fmt.Errorf("loading suites: %w", errors.Join(errs...))
 		}
 		return docs.TestSuites, nil
 	}

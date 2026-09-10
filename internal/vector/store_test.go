@@ -2,7 +2,9 @@ package vector
 
 import (
 	"errors"
+	"math"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -214,5 +216,32 @@ func TestPartialResultsInheritGlobalChaosPolicy(t *testing.T) {
 	result, err := s.QueryWithInfo("docs", Query{Vector: []float64{1, 0}, TopK: 3, RequestKey: "req", Operation: "/query"})
 	if err != nil || !result.Partial || result.ChaosSource != "global-rate" {
 		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestQueryRejectsNonFiniteComputedDotScore(t *testing.T) {
+	s := &Store{}
+	if err := s.CreateCollection("overflow", 1, Dot); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Upsert("overflow", []Point{{ID: "a", Vector: []float64{1e308}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Query("overflow", Query{Vector: []float64{1e308}, TopK: 1}); err == nil || !strings.Contains(err.Error(), "not finite") {
+		t.Fatalf("overflow error=%v", err)
+	}
+}
+
+func TestCosineUsesStableScaledArithmetic(t *testing.T) {
+	s := &Store{}
+	if err := s.CreateCollection("large", 2, Cosine); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Upsert("large", []Point{{ID: "a", Vector: []float64{1e308, 1e308}}}); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := s.Query("large", Query{Vector: []float64{1e308, 1e308}, TopK: 1})
+	if err != nil || len(matches) != 1 || math.Abs(matches[0].Score-1) > 1e-12 {
+		t.Fatalf("matches=%+v err=%v", matches, err)
 	}
 }

@@ -50,18 +50,18 @@ func (s *Session) WithLocked(fn func()) {
 	fn()
 }
 
-// ApplyTurn appends the user message, invokes build with the new turn
-// number and live variables map, then appends the assistant message
-// returned by build. The whole turn is guarded by the session lock so
+// ApplyTurn builds a proposed turn against an isolated variables snapshot,
+// then commits the user message, assistant message, turn number, and variables
+// together. A failed build leaves the session exactly as it was, so retries
+// observe the same turn and cannot grow history through an error path.
+// The whole turn is guarded by the session lock so
 // concurrent requests for the same session cannot interleave history
 // updates or scenario matching.
 //
 // build runs while s.mu is held, which gives it two contracts:
-//   - Variables (F-SS-002): the map passed in is the session's *live*
-//     Variables, not a copy. build may read and mutate it freely, but
-//     ONLY from within this call — the session lock is the only thing
-//     serializing access, so stashing the map and touching it later races
-//     with the next turn. No accessor exposes Variables outside the lock.
+//   - Variables (F-SS-002): the map passed in is a recursive JSON-compatible
+//     clone. Mutations are committed only when build succeeds. build must not
+//     retain and mutate it after returning.
 //   - Re-entry (F-SS-001): build must not call back into a session method
 //     that locks s.mu (see WithLocked) — the mutex is non-reentrant.
 func (s *Session) ApplyTurn(
@@ -71,13 +71,45 @@ func (s *Session) ApplyTurn(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.appendUserMessage(userContent)
-	assistantContent, toolCalls, err := build(s.TurnCount, s.Variables)
+	variables := cloneVariables(s.Variables)
+	assistantContent, toolCalls, err := build(s.TurnCount+1, variables)
 	if err != nil {
 		return err
 	}
+	s.Variables = variables
+	s.appendUserMessage(userContent)
 	s.appendAssistantMessage(assistantContent, toolCalls)
 	return nil
+}
+
+func cloneVariables(in map[string]any) map[string]any {
+	if in == nil {
+		return make(map[string]any)
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = cloneVariableValue(v)
+	}
+	return out
+}
+
+func cloneVariableValue(v any) any {
+	switch value := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(value))
+		for k, child := range value {
+			out[k] = cloneVariableValue(child)
+		}
+		return out
+	case []any:
+		out := make([]any, len(value))
+		for i, child := range value {
+			out[i] = cloneVariableValue(child)
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 // initialMessageCap is the pre-allocated capacity for a new session's

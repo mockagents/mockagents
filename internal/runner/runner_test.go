@@ -503,6 +503,39 @@ func TestRunSuite_MultiTurnSessionTurnCount(t *testing.T) {
 	}
 }
 
+func TestRunSuiteRepeatedExecutionIsIsolated(t *testing.T) {
+	turn1 := 1
+	agent := &types.AgentDefinition{
+		APIVersion: types.AgentAPIVersion, Kind: types.AgentKind,
+		Metadata: types.Metadata{Name: "counter"},
+		Spec: types.AgentSpec{Protocol: "openai-chat-completions", Behavior: types.BehaviorConfig{Scenarios: []types.Scenario{{
+			Name: "first", Match: &types.MatchRule{TurnNumber: &turn1}, Response: types.ScenarioResponse{Content: "first"},
+		}}}},
+	}
+	r := New(newEngineWithAgent(t, agent), nil)
+	suite := &types.TestSuiteDefinition{Metadata: types.Metadata{Name: "same"}, Spec: types.TestSuiteSpec{
+		Target: types.TestTarget{Agent: "counter"}, Cases: []types.TestCase{{Name: "same", Steps: []types.TestStep{{Role: "user", Content: "ping"}}, Assertions: []types.TestAssertion{{Type: types.AssertScenarioMatched, Value: "first"}}}},
+	}}
+	for i := 0; i < 2; i++ {
+		res, err := r.RunSuite(suite)
+		if err != nil || res.Failed != 0 {
+			t.Fatalf("run %d was not isolated: result=%+v err=%v", i+1, res, err)
+		}
+	}
+}
+
+func TestRunSuiteRejectsEmptySuite(t *testing.T) {
+	r := New(newEngineWithAgent(t, sampleAgentForRunner()), nil)
+	_, err := r.RunSuite(&types.TestSuiteDefinition{Metadata: types.Metadata{Name: "empty"}, Spec: types.TestSuiteSpec{Target: types.TestTarget{Agent: "support"}}})
+	if err == nil {
+		t.Fatal("expected empty suite error")
+	}
+}
+
+func sampleAgentForRunner() *types.AgentDefinition {
+	return &types.AgentDefinition{APIVersion: types.AgentAPIVersion, Kind: types.AgentKind, Metadata: types.Metadata{Name: "support"}, Spec: types.AgentSpec{Protocol: "openai-chat-completions"}}
+}
+
 func TestEvaluateAssertion_ToolCallArgs(t *testing.T) {
 	resp := &engine.Response{
 		ToolCalls: []types.ToolCallSpec{{

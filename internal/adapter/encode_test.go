@@ -3,10 +3,23 @@ package adapter
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+func TestWriteJSONEncodingFailureIsValidNonSuccess(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeJSON(rec, http.StatusOK, map[string]any{"score": math.Inf(1)})
+	if rec.Code < 500 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid fallback JSON: %v", err)
+	}
+}
 
 type encPayload struct {
 	A int      `json:"a"`

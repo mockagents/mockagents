@@ -7,11 +7,59 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mockagents/mockagents/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestTaskContinuationPreservesIdentityAndHistory(t *testing.T) {
+	s := NewServer(testDef())
+	working := sendMessage(t, s, "slow")
+	r := call(t, s, "message/send", map[string]any{"message": map[string]any{"role": "user", "messageId": "m2", "taskId": working.ID, "contextId": working.ContextID, "parts": []any{map[string]any{"kind": "text", "text": "weather"}}}})
+	require.Nil(t, r.Error)
+	var continued Task
+	require.NoError(t, json.Unmarshal(r.Result, &continued))
+	assert.Equal(t, working.ID, continued.ID)
+	assert.Equal(t, "completed", continued.Status.State)
+	assert.Len(t, continued.History, 4)
+
+	terminal := call(t, s, "message/send", map[string]any{"message": map[string]any{"taskId": continued.ID, "parts": []any{map[string]any{"kind": "text", "text": "again"}}}})
+	require.NotNil(t, terminal.Error)
+	assert.Equal(t, errInvalidParams, terminal.Error.Code)
+	missing := call(t, s, "message/send", map[string]any{"message": map[string]any{"taskId": "missing", "parts": []any{map[string]any{"kind": "text", "text": "again"}}}})
+	require.NotNil(t, missing.Error)
+	assert.Equal(t, errTaskNotFound, missing.Error.Code)
+}
+
+func TestTaskSnapshotsDoNotAliasStoredState(t *testing.T) {
+	s := NewServer(testDef())
+	working := sendMessage(t, s, "slow")
+	p, _ := json.Marshal(map[string]any{"id": working.ID})
+	resp := s.handleTasksGet(&rpcRequest{JSONRPC: "2.0", ID: json.RawMessage(`1`), Params: p})
+	snapshot := resp.Result.(*Task)
+	canceled := call(t, s, "tasks/cancel", map[string]any{"id": working.ID})
+	require.Nil(t, canceled.Error)
+	assert.Equal(t, "working", snapshot.Status.State)
+}
+
+func TestTaskRetentionExpiresTerminalAndRejectsWhenLiveCapacityFull(t *testing.T) {
+	now := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+	s := NewServerWithOptions(testDef(), ServerOptions{MaxTasks: 1, MaxTaskBytes: 1 << 20, MaxHistory: 4, TaskTTL: time.Minute, Now: func() time.Time { return now }})
+	completed := sendMessage(t, s, "weather")
+	full := call(t, s, "message/send", map[string]any{"message": map[string]any{"parts": []any{map[string]any{"kind": "text", "text": "slow"}}}})
+	require.NotNil(t, full.Error)
+	assert.Contains(t, full.Error.Message, "capacity")
+	now = now.Add(2 * time.Minute)
+	working := sendMessage(t, s, "slow")
+	assert.NotEqual(t, completed.ID, working.ID)
+	expired := call(t, s, "tasks/get", map[string]any{"id": completed.ID})
+	require.NotNil(t, expired.Error)
+	assert.Equal(t, errTaskNotFound, expired.Error.Code)
+	stillFull := call(t, s, "message/send", map[string]any{"message": map[string]any{"parts": []any{map[string]any{"kind": "text", "text": "weather"}}}})
+	require.NotNil(t, stillFull.Error, "active task must not be evicted")
+}
 
 func testDef() *types.A2AServerDefinition {
 	return &types.A2AServerDefinition{

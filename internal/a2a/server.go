@@ -142,13 +142,55 @@ type Server struct {
 	def           *types.A2AServerDefinition
 	mu            sync.Mutex
 	tasks         map[string]*Task
+	taskExpiry    map[string]time.Time
+	taskBytes     map[string]int
+	retainedBytes int
+	maxTasks      int
+	maxTaskBytes  int
+	maxHistory    int
+	taskTTL       time.Duration
+	now           func() time.Time
 	seq           int
 	chaosSequence atomic.Uint64
 }
 
+const (
+	DefaultMaxTasks       = 10_000
+	DefaultMaxTaskBytes   = 64 << 20
+	DefaultMaxTaskHistory = 256
+	DefaultTaskTTL        = 30 * time.Minute
+)
+
+type ServerOptions struct {
+	MaxTasks     int
+	MaxTaskBytes int
+	MaxHistory   int
+	TaskTTL      time.Duration
+	Now          func() time.Time
+}
+
 // NewServer builds a Server for def.
 func NewServer(def *types.A2AServerDefinition) *Server {
-	return &Server{def: def, tasks: make(map[string]*Task)}
+	return NewServerWithOptions(def, ServerOptions{})
+}
+
+func NewServerWithOptions(def *types.A2AServerDefinition, options ServerOptions) *Server {
+	if options.MaxTasks <= 0 {
+		options.MaxTasks = DefaultMaxTasks
+	}
+	if options.MaxTaskBytes <= 0 {
+		options.MaxTaskBytes = DefaultMaxTaskBytes
+	}
+	if options.MaxHistory <= 0 {
+		options.MaxHistory = DefaultMaxTaskHistory
+	}
+	if options.TaskTTL <= 0 {
+		options.TaskTTL = DefaultTaskTTL
+	}
+	if options.Now == nil {
+		options.Now = time.Now
+	}
+	return &Server{def: def, tasks: make(map[string]*Task), taskExpiry: make(map[string]time.Time), taskBytes: make(map[string]int), maxTasks: options.MaxTasks, maxTaskBytes: options.MaxTaskBytes, maxHistory: options.MaxHistory, taskTTL: options.TaskTTL, now: options.Now}
 }
 
 // Card returns the public Agent Card, filling url/protocolVersion/capabilities
@@ -260,29 +302,17 @@ func (s *Server) handleMessageSend(req *rpcRequest) *rpcResponse {
 
 	// A2A result is Task|Message: a response flagged as_message returns a bare
 	// agent Message (no task is created/stored), modeling a quick stateless reply.
-	if asMessage {
+	if asMessage && p.Message.TaskID == "" {
 		return newResult(req.ID, Message{
 			Role: "agent", Parts: parts, MessageID: s.nextID("msg"), Kind: "message", ContextID: contextID,
 		})
 	}
 
-	taskID := s.nextID("task")
-	now := time.Now().UTC().Format(time.RFC3339)
-	userMsg := Message{
-		Role: "user", Parts: p.Message.Parts, MessageID: orDefault(p.Message.MessageID, s.nextID("msg")),
-		Kind: "message", TaskID: taskID, ContextID: contextID,
+	task, errResp := s.transitionLocked(req.ID, p, parts, state, contextID)
+	if errResp != nil {
+		return errResp
 	}
-	agentMsg := Message{
-		Role: "agent", Parts: parts, MessageID: s.nextID("msg"), Kind: "message", TaskID: taskID, ContextID: contextID,
-	}
-	task := &Task{
-		ID: taskID, ContextID: contextID, Kind: "task",
-		Status:    TaskStatus{State: state, Message: &agentMsg, Timestamp: now},
-		Artifacts: []Artifact{{ArtifactID: s.nextID("artifact"), Name: "response", Parts: parts}},
-		History:   []Message{userMsg, agentMsg},
-	}
-	s.tasks[taskID] = task
-	return newResult(req.ID, task)
+	return newResult(req.ID, cloneTask(task))
 }
 
 // replyFor resolves the canned reply for an incoming user text: the agent's
@@ -330,28 +360,24 @@ func (s *Server) StreamResults(req *rpcRequest) ([]any, *rpcResponse) {
 	if contextID == "" {
 		contextID = s.nextID("ctx")
 	}
-	taskID := s.nextID("task")
-	now := time.Now().UTC().Format(time.RFC3339)
+	task, errResp := s.transitionLocked(req.ID, p, parts, state, contextID)
+	if errResp != nil {
+		return nil, errResp
+	}
+	taskID := task.ID
+	now := s.now().UTC().Format(time.RFC3339)
 	userMsg := Message{
 		Role: "user", Parts: p.Message.Parts, MessageID: orDefault(p.Message.MessageID, s.nextID("msg")),
 		Kind: "message", TaskID: taskID, ContextID: contextID,
 	}
-	agentMsg := Message{
-		Role: "agent", Parts: parts, MessageID: s.nextID("msg"), Kind: "message", TaskID: taskID, ContextID: contextID,
-	}
-	artifact := Artifact{ArtifactID: s.nextID("artifact"), Name: "response", Parts: parts}
+	agentMsg := *task.Status.Message
+	artifact := task.Artifacts[len(task.Artifacts)-1]
 
 	working := Task{
 		ID: taskID, ContextID: contextID, Kind: "task",
 		Status: TaskStatus{State: "working", Timestamp: now}, History: []Message{userMsg},
 	}
 	finalStatus := TaskStatus{State: state, Message: &agentMsg, Timestamp: now}
-
-	// Persist the terminal task for a follow-up tasks/get.
-	s.tasks[taskID] = &Task{
-		ID: taskID, ContextID: contextID, Kind: "task",
-		Status: finalStatus, Artifacts: []Artifact{artifact}, History: []Message{userMsg, agentMsg},
-	}
 
 	return []any{
 		working,
@@ -374,12 +400,15 @@ func (s *Server) handleTasksGet(req *rpcRequest) *rpcResponse {
 		return newError(req.ID, errInvalidParams, "invalid params for tasks/get", err.Error())
 	}
 	s.mu.Lock()
+	s.pruneExpiredLocked()
 	task, ok := s.tasks[p.ID]
-	s.mu.Unlock()
 	if !ok {
+		s.mu.Unlock()
 		return newError(req.ID, errTaskNotFound, fmt.Sprintf("task %q not found", p.ID), nil)
 	}
-	return newResult(req.ID, task)
+	snapshot := cloneTask(task)
+	s.mu.Unlock()
+	return newResult(req.ID, snapshot)
 }
 
 func (s *Server) handleTasksCancel(req *rpcRequest) *rpcResponse {
@@ -398,8 +427,89 @@ func (s *Server) handleTasksCancel(req *rpcRequest) *rpcResponse {
 			fmt.Sprintf("task %q is in terminal state %q and cannot be canceled", p.ID, task.Status.State), nil)
 	}
 	task.Status.State = "canceled"
-	task.Status.Timestamp = time.Now().UTC().Format(time.RFC3339)
-	return newResult(req.ID, task)
+	task.Status.Timestamp = s.now().UTC().Format(time.RFC3339)
+	s.taskExpiry[p.ID] = s.now().Add(s.taskTTL)
+	s.replaceAccountingLocked(task)
+	return newResult(req.ID, cloneTask(task))
+}
+
+func (s *Server) transitionLocked(id json.RawMessage, p messageSendParams, parts []Part, state, contextID string) (*Task, *rpcResponse) {
+	s.pruneExpiredLocked()
+	taskID := p.Message.TaskID
+	var history []Message
+	var artifacts []Artifact
+	if taskID != "" {
+		prior, ok := s.tasks[taskID]
+		if !ok {
+			return nil, newError(id, errTaskNotFound, "task not found", nil)
+		}
+		if isTerminal(prior.Status.State) {
+			return nil, newError(id, errInvalidParams, "terminal task cannot be continued", nil)
+		}
+		if p.Message.ContextID != "" && p.Message.ContextID != prior.ContextID {
+			return nil, newError(id, errInvalidParams, "contextId does not match task", nil)
+		}
+		contextID = prior.ContextID
+		history = append(history, prior.History...)
+		artifacts = append(artifacts, prior.Artifacts...)
+	} else {
+		taskID = s.nextID("task")
+	}
+	now := s.now().UTC().Format(time.RFC3339)
+	userMsg := Message{Role: "user", Parts: p.Message.Parts, MessageID: orDefault(p.Message.MessageID, s.nextID("msg")), Kind: "message", TaskID: taskID, ContextID: contextID}
+	agentMsg := Message{Role: "agent", Parts: parts, MessageID: s.nextID("msg"), Kind: "message", TaskID: taskID, ContextID: contextID}
+	history = append(history, userMsg, agentMsg)
+	if len(history) > s.maxHistory {
+		history = append([]Message(nil), history[len(history)-s.maxHistory:]...)
+	}
+	artifacts = append(artifacts, Artifact{ArtifactID: s.nextID("artifact"), Name: "response", Parts: parts})
+	task := &Task{ID: taskID, ContextID: contextID, Kind: "task", Status: TaskStatus{State: state, Message: &agentMsg, Timestamp: now}, Artifacts: artifacts, History: history}
+	encoded, _ := json.Marshal(task)
+	oldBytes := s.taskBytes[taskID]
+	newCount := len(s.tasks)
+	if _, exists := s.tasks[taskID]; !exists {
+		newCount++
+	}
+	if newCount > s.maxTasks || s.retainedBytes-oldBytes+len(encoded) > s.maxTaskBytes {
+		return nil, newError(id, errInternal, "mock task capacity exceeded", nil)
+	}
+	s.tasks[taskID] = task
+	s.taskBytes[taskID] = len(encoded)
+	s.retainedBytes = s.retainedBytes - oldBytes + len(encoded)
+	if isTerminal(state) {
+		s.taskExpiry[taskID] = s.now().Add(s.taskTTL)
+	} else {
+		delete(s.taskExpiry, taskID)
+	}
+	return task, nil
+}
+
+func (s *Server) pruneExpiredLocked() {
+	now := s.now()
+	for id, expiry := range s.taskExpiry {
+		if !expiry.After(now) {
+			s.retainedBytes -= s.taskBytes[id]
+			delete(s.tasks, id)
+			delete(s.taskBytes, id)
+			delete(s.taskExpiry, id)
+		}
+	}
+}
+
+func (s *Server) replaceAccountingLocked(task *Task) {
+	encoded, _ := json.Marshal(task)
+	s.retainedBytes += len(encoded) - s.taskBytes[task.ID]
+	s.taskBytes[task.ID] = len(encoded)
+}
+
+func cloneTask(task *Task) *Task {
+	if task == nil {
+		return nil
+	}
+	data, _ := json.Marshal(task)
+	var snapshot Task
+	_ = json.Unmarshal(data, &snapshot)
+	return &snapshot
 }
 
 // matchResponse picks the first response whose Match is a substring of text,

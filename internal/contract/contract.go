@@ -229,7 +229,32 @@ func diffTool(name string, old, new ToolContract) []Change {
 			})
 		}
 	}
+	oldConstraints := schemaConstraints(old.Parameters)
+	newConstraints := schemaConstraints(new.Parameters)
+	if !reflect.DeepEqual(oldConstraints, newConstraints) {
+		changes = append(changes, Change{
+			Severity: SeverityBreaking,
+			Path:     "tools." + name + ".parameters",
+			Message:  "parameter schema constraints changed",
+		})
+	}
 	return changes
+}
+
+// schemaConstraints retains every root-level validation keyword except keys
+// that receive detailed diagnostics above and standard annotations. Unknown
+// keywords are retained deliberately: changed constraints must never disappear.
+func schemaConstraints(schema map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{})
+	for key, value := range schema {
+		switch key {
+		case "required", "properties", "title", "description", "$comment", "examples", "default", "deprecated", "readOnly", "writeOnly":
+			continue
+		default:
+			out[key] = value
+		}
+	}
+	return out
 }
 
 func diffScenarios(old, new []string) []Change {

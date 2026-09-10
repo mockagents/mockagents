@@ -2,12 +2,57 @@ package adapter
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/mockagents/mockagents/internal/vector"
 )
+
+func TestChromaQueryProjectsDocumentsURIsAndRequestedFields(t *testing.T) {
+	m := chromaMux(&vector.Store{})
+	root := "/api/v2/tenants/default_tenant/databases/default_database"
+	if r := chromaRequest(t, m, http.MethodPost, root+"/collections", `{"name":"docs","configuration":{"hnsw":{"space":"cosine"}}}`); r.Code != 200 {
+		t.Fatal(r.Body.String())
+	}
+	base := root + "/collections/docs"
+	if r := chromaRequest(t, m, http.MethodPost, base+"/upsert", `{"ids":["a"],"embeddings":[[1,0]],"documents":["release evidence"],"uris":["file:///evidence"]}`); r.Code != 200 {
+		t.Fatal(r.Body.String())
+	}
+	r := chromaRequest(t, m, http.MethodPost, base+"/query", `{"query_embeddings":[[1,0]],"n_results":1,"include":["documents","uris"]}`)
+	var body map[string]any
+	if err := json.Unmarshal(r.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if got := body["documents"].([]any)[0].([]any)[0]; got != "release evidence" {
+		t.Fatalf("document=%v", got)
+	}
+	if got := body["uris"].([]any)[0].([]any)[0]; got != "file:///evidence" {
+		t.Fatalf("uri=%v", got)
+	}
+	if body["embeddings"] != nil || body["metadatas"] != nil || body["distances"] != nil {
+		t.Fatalf("unrequested fields leaked: %s", r.Body.String())
+	}
+}
+
+func TestChromaMetricDefaultsAndKnownL2Distance(t *testing.T) {
+	m := chromaMux(&vector.Store{})
+	root := "/api/v2/tenants/default_tenant/databases/default_database"
+	r := chromaRequest(t, m, http.MethodPost, root+"/collections", `{"name":"l2-default"}`)
+	if !bytes.Contains(r.Body.Bytes(), []byte(`"space":"l2"`)) {
+		t.Fatalf("default metric: %s", r.Body.String())
+	}
+	base := root + "/collections/l2-default"
+	chromaRequest(t, m, http.MethodPost, base+"/upsert", `{"ids":["a"],"embeddings":[[3,4]]}`)
+	r = chromaRequest(t, m, http.MethodPost, base+"/query", `{"query_embeddings":[[0,0]],"n_results":1,"include":["distances"]}`)
+	if !bytes.Contains(r.Body.Bytes(), []byte(`"distances":[[25]]`)) {
+		t.Fatalf("l2 distance: %s", r.Body.String())
+	}
+	if bad := chromaRequest(t, m, http.MethodPost, root+"/collections", `{"name":"bad","configuration":{"hnsw":{"space":"manhattan"}}}`); bad.Code != 400 {
+		t.Fatalf("invalid metric status=%d", bad.Code)
+	}
+}
 
 func chromaMux(store *vector.Store) *http.ServeMux {
 	h := NewChromaHandler(store)

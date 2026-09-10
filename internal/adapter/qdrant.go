@@ -188,8 +188,22 @@ func (h *QdrantHandler) SearchPoints(w http.ResponseWriter, r *http.Request) {
 		writeQdrantError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	config, err := h.Store.Collection(qdrantCollectionKey(r))
+	if err != nil {
+		h.writeStoreError(w, err)
+		return
+	}
+	minScore := req.ScoreThreshold
+	if config.Metric == vector.Euclidean && req.ScoreThreshold != nil {
+		if *req.ScoreThreshold < 0 {
+			writeQdrantError(w, http.StatusBadRequest, "score_threshold must be non-negative for Euclid distance")
+			return
+		}
+		converted := 1 / (1 + *req.ScoreThreshold)
+		minScore = &converted
+	}
 	queryResult, err := h.Store.QueryWithInfo(qdrantCollectionKey(r), vectorChaosQuery(r, vector.Query{
-		Vector: req.Vector, TopK: req.Limit, Filter: filter, MinScore: req.ScoreThreshold,
+		Vector: req.Vector, TopK: req.Limit, Filter: filter, MinScore: minScore,
 	}))
 	if err != nil {
 		h.writeStoreError(w, err)
@@ -200,7 +214,11 @@ func (h *QdrantHandler) SearchPoints(w http.ResponseWriter, r *http.Request) {
 	withPayload := req.WithPayload == nil || *req.WithPayload
 	result := make([]map[string]any, len(matches))
 	for i, match := range matches {
-		result[i] = map[string]any{"id": externalID(match.ID, match.ExternalID), "score": match.Score, "version": 0}
+		score := match.Score
+		if config.Metric == vector.Euclidean {
+			score = 1/match.Score - 1
+		}
+		result[i] = map[string]any{"id": externalID(match.ID, match.ExternalID), "score": score, "version": 0}
 		if withPayload {
 			result[i]["payload"] = match.Metadata
 		}

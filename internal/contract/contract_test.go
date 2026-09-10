@@ -142,6 +142,41 @@ func TestDiffBreakingPropertyTypeChange(t *testing.T) {
 	}
 }
 
+func TestDiffBreakingRootSchemaConstraints(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		old  any
+		new  any
+	}{
+		{"additional properties", "additionalProperties", true, false},
+		{"root type", "type", "object", "array"},
+		{"enum", "enum", []any{"a", "b"}, []any{"a"}},
+		{"combinator", "oneOf", []any{map[string]any{"type": "string"}}, []any{map[string]any{"type": "number"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldC := Extract(sampleAgent())
+			newC := Extract(sampleAgent())
+			oldC.Tools[0].Parameters[tt.key] = tt.old
+			newC.Tools[0].Parameters[tt.key] = tt.new
+			if changes := Diff(oldC, newC); !HasBreaking(changes) {
+				t.Fatalf("constraint change was not breaking: %+v", changes)
+			}
+		})
+	}
+}
+
+func TestDiffIgnoresSchemaAnnotations(t *testing.T) {
+	oldC := Extract(sampleAgent())
+	newC := Extract(sampleAgent())
+	oldC.Tools[0].Parameters["title"] = "old"
+	newC.Tools[0].Parameters["title"] = "new"
+	if changes := Diff(oldC, newC); HasBreaking(changes) {
+		t.Fatalf("annotation change should not be breaking: %+v", changes)
+	}
+}
+
 func TestDiffBreakingProtocolChange(t *testing.T) {
 	oldC := Extract(sampleAgent())
 	newDef := sampleAgent()

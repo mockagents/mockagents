@@ -37,9 +37,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 			respEncPool.Put(re)
 		}
 	}()
-	// These response shapes always marshal; the error is ignored exactly as the
-	// previous json.NewEncoder(w).Encode(v) did.
-	_ = re.enc.Encode(v)
+	if err := re.enc.Encode(v); err != nil {
+		re.buf.Reset()
+		_, _ = re.buf.WriteString("{\"error\":{\"message\":\"response encoding failed\"}}\n")
+		status = http.StatusInternalServerError
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(re.buf.Bytes())

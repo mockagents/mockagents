@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,6 +12,36 @@ import (
 	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/vector"
 )
+
+func TestQdrantEuclidWireDistanceAndThreshold(t *testing.T) {
+	mux := qdrantMux()
+	qdrantRequest(t, mux, http.MethodPut, "/collections/docs", `{"vectors":{"size":2,"distance":"Euclid"}}`)
+	qdrantRequest(t, mux, http.MethodPut, "/collections/docs/points", `{"points":[{"id":1,"vector":[3,4]},{"id":2,"vector":[6,8]}]}`)
+	for _, tc := range []struct {
+		threshold float64
+		count     int
+	}{{4.9, 0}, {5, 1}, {6, 1}, {10, 2}} {
+		rec := qdrantRequest(t, mux, http.MethodPost, "/collections/docs/points/search", fmt.Sprintf(`{"vector":[0,0],"limit":2,"score_threshold":%g}`, tc.threshold))
+		var response struct {
+			Result []struct {
+				Score float64 `json:"score"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if len(response.Result) != tc.count {
+			t.Fatalf("threshold %g count=%d body=%s", tc.threshold, len(response.Result), rec.Body.String())
+		}
+		if tc.count > 0 && response.Result[0].Score != 5 {
+			t.Fatalf("wire distance=%v", response.Result[0].Score)
+		}
+	}
+	bad := qdrantRequest(t, mux, http.MethodPost, "/collections/docs/points/search", `{"vector":[0,0],"limit":1,"score_threshold":-1}`)
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("negative threshold status=%d", bad.Code)
+	}
+}
 
 func qdrantMux() *http.ServeMux {
 	h := NewQdrantHandler(&vector.Store{})

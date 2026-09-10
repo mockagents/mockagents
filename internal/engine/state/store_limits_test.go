@@ -1,10 +1,37 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 )
+
+func TestApplyTurnFailureRollsBackHistoryTurnAndNestedVariables(t *testing.T) {
+	s := NewSession("s", "a", time.Hour)
+	s.MaxHistory = 2
+	s.Variables["nested"] = map[string]any{"items": []any{"original"}}
+	wantErr := errors.New("render failed")
+	for i := 0; i < 1000; i++ {
+		err := s.ApplyTurn("request", func(turn int, variables map[string]any) (string, []ToolCallMsg, error) {
+			if turn != 1 {
+				t.Fatalf("failed retry got turn %d, want 1", turn)
+			}
+			variables["nested"].(map[string]any)["items"].([]any)[0] = "leaked"
+			return "", nil, wantErr
+		})
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("ApplyTurn error = %v, want %v", err, wantErr)
+		}
+	}
+	if s.TurnCount != 0 || len(s.Messages) != 0 {
+		t.Fatalf("failed turns committed state: turn=%d messages=%d", s.TurnCount, len(s.Messages))
+	}
+	got := s.Variables["nested"].(map[string]any)["items"].([]any)[0]
+	if got != "original" {
+		t.Fatalf("failed turn leaked nested mutation: %v", got)
+	}
+}
 
 // TestMemoryStore_MaxSessionsEvictsLRU is the audit H-06 guard for the
 // session count: past the cap the least-recently-used sessions go, and the

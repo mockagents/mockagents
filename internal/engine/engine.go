@@ -525,6 +525,16 @@ func scopedSessionKey(tenantID, agentName, sessionID string) string {
 	return tenantID + "\x00" + agentName + "\x00" + sessionID
 }
 
+// DeleteSession removes one explicitly addressed conversation. Test runners
+// use this after an execution so isolated verification sessions do not remain
+// resident until the normal TTL expires.
+func (e *Engine) DeleteSession(tenantID, agentName, sessionID string) {
+	if e == nil || e.States == nil || sessionID == "" {
+		return
+	}
+	e.States.Delete(scopedSessionKey(tenantID, agentName, sessionID))
+}
+
 // latestUserIsToolResult reports whether the latest user-role message carries
 // a tool result (Anthropic tool_result / Gemini functionResponse turns
 // flatten into user messages) — those may legitimately be empty (R9-8).

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/mockagents/mockagents/internal/engine"
@@ -22,10 +23,14 @@ type PipelineRegistry interface {
 
 // Runner executes test suites.
 type Runner struct {
-	Engine    *engine.Engine
-	Pipelines PipelineRegistry
-	Executor  *engine.PipelineExecutor
+	Engine      *engine.Engine
+	Pipelines   PipelineRegistry
+	Executor    *engine.PipelineExecutor
+	executionID uint64
+	namespace   uint64
 }
+
+var runnerNamespace atomic.Uint64
 
 // New creates a Runner. The pipelines registry may be nil if the caller
 // only runs agent-targeted suites.
@@ -34,6 +39,7 @@ func New(eng *engine.Engine, pipelines PipelineRegistry) *Runner {
 		Engine:    eng,
 		Pipelines: pipelines,
 		Executor:  engine.NewPipelineExecutor(eng),
+		namespace: runnerNamespace.Add(1),
 	}
 }
 
@@ -69,6 +75,10 @@ func (r *Runner) RunSuite(suite *types.TestSuiteDefinition) (*SuiteResult, error
 	if target.Agent != "" && target.Pipeline != "" {
 		return nil, fmt.Errorf("suite %q: only one of target.agent or target.pipeline may be set", suite.Metadata.Name)
 	}
+	if len(suite.Spec.Cases) == 0 {
+		return nil, fmt.Errorf("suite %q: at least one case is required", suite.Metadata.Name)
+	}
+	runID := atomic.AddUint64(&r.executionID, 1)
 
 	result := &SuiteResult{
 		SuiteName: suite.Metadata.Name,
@@ -76,7 +86,9 @@ func (r *Runner) RunSuite(suite *types.TestSuiteDefinition) (*SuiteResult, error
 	}
 	start := time.Now()
 	for i := range suite.Spec.Cases {
-		cr := r.runCase(suite, &suite.Spec.Cases[i])
+		sessionID := fmt.Sprintf("test::%d::%d::%d", r.namespace, runID, i)
+		cr := r.runCase(suite, &suite.Spec.Cases[i], sessionID)
+		r.cleanupCaseSessions(suite, sessionID)
 		result.Cases = append(result.Cases, cr)
 		if cr.Passed {
 			result.Passed++
@@ -86,6 +98,25 @@ func (r *Runner) RunSuite(suite *types.TestSuiteDefinition) (*SuiteResult, error
 	}
 	result.Latency = time.Since(start)
 	return result, nil
+}
+
+func (r *Runner) cleanupCaseSessions(suite *types.TestSuiteDefinition, sessionID string) {
+	target := suite.Spec.Target
+	if target.Agent != "" {
+		r.Engine.DeleteSession("", target.Agent, sessionID)
+		return
+	}
+	if r.Pipelines == nil {
+		return
+	}
+	pipeline := r.Pipelines.GetPipeline(target.Pipeline)
+	if pipeline == nil {
+		return
+	}
+	for _, node := range pipeline.Spec.Agents {
+		nodeSession := fmt.Sprintf("%s::%s::%s", sessionID, pipeline.Metadata.Name, node.ID)
+		r.Engine.DeleteSession("", node.Ref, nodeSession)
+	}
 }
 
 // evalContext is the accumulated outcome of running a case's steps that the
@@ -113,7 +144,7 @@ type evalContext struct {
 	finalToolResults []engine.ToolCallResult
 }
 
-func (r *Runner) runCase(suite *types.TestSuiteDefinition, tc *types.TestCase) *CaseResult {
+func (r *Runner) runCase(suite *types.TestSuiteDefinition, tc *types.TestCase, sessionID string) *CaseResult {
 	cr := &CaseResult{Name: tc.Name}
 	if len(tc.Steps) == 0 {
 		cr.Passed = false
@@ -127,7 +158,6 @@ func (r *Runner) runCase(suite *types.TestSuiteDefinition, tc *types.TestCase) *
 		return cr
 	}
 
-	sessionID := fmt.Sprintf("test::%s::%s", suite.Metadata.Name, tc.Name)
 	target := suite.Spec.Target
 
 	ec := &evalContext{}

@@ -57,6 +57,9 @@ type Match struct {
 	ExternalID any            `json:"-"`
 	Score      float64        `json:"score"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
+	// Vector is an aligned snapshot of the matched point. Adapters that expose
+	// embeddings can project it without a second, racy store lookup.
+	Vector []float64 `json:"-"`
 }
 
 type Query struct {
@@ -408,7 +411,8 @@ func (s *Store) QueryWithInfo(name string, query Query) (QueryResult, error) {
 		match Match
 		// meta is the point's live map, owned by the store. It is cloned
 		// before it leaves this function, and never handed out as-is.
-		meta map[string]any
+		meta   map[string]any
+		vector []float64
 	}
 	candidates := make([]candidate, 0, min(query.TopK, len(c.points)))
 	for _, point := range c.points {
@@ -416,12 +420,16 @@ func (s *Store) QueryWithInfo(name string, query Query) (QueryResult, error) {
 			continue
 		}
 		score := similarity(c.metric, query.Vector, point.Vector)
+		if math.IsNaN(score) || math.IsInf(score, 0) {
+			return QueryResult{}, errors.New("vector score is not finite")
+		}
 		if query.MinScore != nil && score < *query.MinScore {
 			continue
 		}
 		candidates = append(candidates, candidate{
-			match: Match{ID: point.ID, ExternalID: point.ExternalID, Score: score},
-			meta:  point.Metadata,
+			match:  Match{ID: point.ID, ExternalID: point.ExternalID, Score: score},
+			meta:   point.Metadata,
+			vector: point.Vector,
 		})
 	}
 	sort.Slice(candidates, func(i, j int) bool {
@@ -443,6 +451,7 @@ func (s *Store) QueryWithInfo(name string, query Query) (QueryResult, error) {
 	// must not depend on whether a fault fired.
 	for i := range matches {
 		matches[i].Metadata = cloneMap(candidates[i].meta)
+		matches[i].Vector = append([]float64(nil), candidates[i].vector...)
 	}
 	partial := false
 	policy := commonchaos.InheritGlobal(commonchaos.Policy{Seed: c.chaosSeed, Rate: c.chaosRate}, s.globalSeed, s.globalRate)
@@ -469,21 +478,26 @@ func similarity(metric Metric, a, b []float64) float64 {
 		}
 		return dot
 	case Euclidean:
-		var squared float64
+		var distance float64
 		for i := range a {
-			d := a[i] - b[i]
-			squared += d * d
+			distance = math.Hypot(distance, a[i]-b[i])
 		}
-		return 1 / (1 + math.Sqrt(squared))
+		return 1 / (1 + distance)
 	default:
+		var maxA, maxB float64
+		for i := range a {
+			maxA = math.Max(maxA, math.Abs(a[i]))
+			maxB = math.Max(maxB, math.Abs(b[i]))
+		}
+		if maxA == 0 || maxB == 0 {
+			return 0
+		}
 		var dot, aa, bb float64
 		for i := range a {
-			dot += a[i] * b[i]
-			aa += a[i] * a[i]
-			bb += b[i] * b[i]
-		}
-		if aa == 0 || bb == 0 {
-			return 0
+			sa, sb := a[i]/maxA, b[i]/maxB
+			dot += sa * sb
+			aa += sa * sa
+			bb += sb * sb
 		}
 		return dot / (math.Sqrt(aa) * math.Sqrt(bb))
 	}
