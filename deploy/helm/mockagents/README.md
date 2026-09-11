@@ -73,7 +73,7 @@ in the NOTES in that case.
 | `multiReplica.acknowledged`          | Explicitly accept per-pod registry, session, interaction-log, audit-log and rate-state behavior. |
 | `service.type`                       | `ClusterIP` (default), `NodePort`, or `LoadBalancer`.    |
 | `ingress.enabled` + `ingress.hosts`  | Put an Ingress in front of the service.                  |
-| `persistence.enabled`                | Create a PVC (size/accessModes/storageClass) for `/data`; off = emptyDir. `/data` is always mounted and `MOCKAGENTS_DATA_DIR` points at it, so the interaction log, audit log and tenancy DB survive container restarts; a PVC makes them survive rescheduling. |
+| `persistence.enabled`                | Create a PVC (size/accessModes/storageClass) for `/data`; off = emptyDir. `/data` is always mounted and `MOCKAGENTS_DATA_DIR` points at it. A PVC preserves data across pod replacement when its backing volume can attach to the target node. |
 | `persistence.existingClaim`          | Mount a pre-created PVC instead of the chart-managed one. |
 | `existingSecret`                     | Secret exposed via `envFrom` for `MOCKAGENTS_BOOTSTRAP_KEY`, `MOCKAGENTS_OIDC_CLIENT_SECRET`, a `MOCKAGENTS_TENANCY_DSN` with a password. `env` values render in clear text. |
 | `extraEnvFrom`                       | Additional `envFrom` entries (configMapRef / secretRef). |
@@ -88,6 +88,15 @@ in the NOTES in that case.
 | `serviceMonitor.authorization`       | Reference a platform-key Secret for authenticated multi-tenant scrapes. The Secret must exist in the ServiceMonitor namespace. |
 
 ## Verify before installing
+
+Persistence durability and scheduling depend on the provisioner. For example,
+k3s `local-path` keeps the data on one node: container and pod restarts on that
+node retain it, but draining or losing that node can leave the replacement pod
+Pending because the PV is node-affine. For cross-node rescheduling, set
+`persistence.storageClass` or `persistence.existingClaim` to storage backed by
+a shared/network volume and verify its access, reclaim, backup, and restore
+policy. The chart does not claim high availability for its single-replica
+SQLite topology.
 
 ```bash
 helm lint ./deploy/helm/mockagents

@@ -23,6 +23,7 @@
 #   --skip-build       Reuse the newest build-* tag already in the registry.
 #   --multi-tenant     Enable API-key auth + RBAC (MOCKAGENTS_MULTI_TENANT=1).
 #   --persist          Persist the SQLite interaction log on a PVC.
+#   --storage-class X  StorageClass for the chart-managed PVC (implies --persist).
 #   --skip-dns         Skip the /etc/hosts reminder.
 #   --teardown         helm uninstall the release (keeps the namespace/PVC).
 #   --teardown-all     Delete the whole namespace (DESTRUCTIVE).
@@ -44,6 +45,7 @@ check_command() { command -v "$1" >/dev/null 2>&1 || error "$1 is required but n
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "${REPO_ROOT}/homelabsetup/lib/platform-key.sh"
+source "${REPO_ROOT}/homelabsetup/lib/storage-class.sh"
 
 # --- config (kept in lockstep across the homelabsetup scripts) --------------
 NAMESPACE="mockagents"
@@ -61,19 +63,25 @@ AGENTS_CM="${RELEASE}-agents"
 CREDS_FILE="${REPO_ROOT}/homelabsetup/.homelab-credentials"
 
 SKIP_BUILD=false; PERSIST=false; SKIP_DNS=false; TEARDOWN=false; TEARDOWN_ALL=false
+PERSISTENCE_STORAGE_CLASS="${PERSISTENCE_STORAGE_CLASS:-}"
+[ -n "$PERSISTENCE_STORAGE_CLASS" ] && PERSIST=true
 MULTI_TENANT="${MULTI_TENANT:-0}"; [ "$MULTI_TENANT" = "1" ] && MULTI_TENANT=true || MULTI_TENANT=false
 
-for arg in "$@"; do
+while [ "$#" -gt 0 ]; do
+  arg="$1"
   case "$arg" in
     --skip-build)    SKIP_BUILD=true ;;
     --multi-tenant)  MULTI_TENANT=true ;;
     --persist)       PERSIST=true ;;
+    --storage-class=*) PERSISTENCE_STORAGE_CLASS="${arg#*=}"; [ -n "$PERSISTENCE_STORAGE_CLASS" ] && [[ "$PERSISTENCE_STORAGE_CLASS" != -* ]] || error "--storage-class requires a name"; PERSIST=true ;;
+    --storage-class) shift; [ "$#" -gt 0 ] && [[ "$1" != -* ]] || error "--storage-class requires a name"; PERSISTENCE_STORAGE_CLASS="$1"; PERSIST=true ;;
     --skip-dns)      SKIP_DNS=true ;;
     --teardown)      TEARDOWN=true ;;
     --teardown-all)  TEARDOWN_ALL=true ;;
     -h|--help)       sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)               error "Unknown flag: $arg (try --help)" ;;
   esac
+  shift
 done
 
 # --- teardown branches ------------------------------------------------------
@@ -140,6 +148,7 @@ log "ConfigMap ${AGENTS_CM} rendered from examples/ ($(ls "${REPO_ROOT}/examples
 
 # --- 4. helm upgrade --install ----------------------------------------------
 header "Step 4 — Helm deploy"
+$PERSIST && inspect_persistence_storage_class "$PERSISTENCE_STORAGE_CLASS"
 HELM_ARGS=(
   upgrade --install "$RELEASE" "$CHART"
   --namespace "$NAMESPACE"
@@ -154,6 +163,7 @@ HELM_ARGS=(
   --wait --timeout 300s
 )
 $PERSIST && HELM_ARGS+=( --set "persistence.enabled=true" --set "persistence.size=1Gi" )
+[ -n "$PERSISTENCE_STORAGE_CLASS" ] && HELM_ARGS+=( --set-string "persistence.storageClass=${PERSISTENCE_STORAGE_CLASS}" )
 if $MULTI_TENANT; then
   HELM_ARGS+=( --set "env.MOCKAGENTS_MULTI_TENANT=1" )
   warn "multi-tenant mode ON — a bootstrap platform key will be minted on first start"

@@ -119,6 +119,7 @@ jobs:
       - run: bash scripts/release-workflow.test.sh
       - run: bash scripts/candidate-artifacts.test.sh
       - run: bash homelabsetup/tests/platform-key.test.sh
+      - run: bash homelabsetup/tests/storage-class.test.sh
 
   vulnerability:
     runs-on: ubuntu-latest

@@ -166,8 +166,11 @@ probes:
 # -- (interaction log, audit log, tenancy) lives there. With enabled=false it
 # -- is an emptyDir: state survives container restarts but not pod
 # -- rescheduling. With enabled=true the chart creates a PersistentVolumeClaim
-# -- from size/accessModes/storageClass (or mounts existingClaim), so the
-# -- audit trail and, in multi-tenant mode, the tenants and API keys survive.
+# -- from size/accessModes/storageClass (or mounts existingClaim). Data survives
+# -- pod replacement when the backing volume can be reattached on the target
+# -- node. Node-local provisioners such as k3s local-path retain data on one
+# -- node and can leave the replacement pod Pending during a drain; use a
+# -- shared/network StorageClass when cross-node rescheduling is required.
 # -- Multi-tenant mode on SQLite without persistence regenerates the platform
 # -- key and orphans every issued key on each reschedule.
 persistence:

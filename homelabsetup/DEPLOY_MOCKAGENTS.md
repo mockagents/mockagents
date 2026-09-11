@@ -130,7 +130,7 @@ local file.
 | 1 | Build `mockagents:build-<UTC-timestamp>-<commit>` and push to the in-cluster registry (immutable tag, never `:latest`). `--skip-build` reuses the newest existing tag. |
 | 2 | Create the `mockagents` namespace. |
 | 3 | Render `examples/*.yaml` into the `mockagents-agents` ConfigMap (mounted read-only at `/agents`). |
-| 4 | `helm upgrade --install` with the registry image, the agents ConfigMap, and a Traefik ingress on `APP_HOST`. `--persist` adds a PVC for the SQLite log; `--multi-tenant` sets `MOCKAGENTS_MULTI_TENANT=1`. |
+| 4 | `helm upgrade --install` with the registry image, the agents ConfigMap, and a Traefik ingress on `APP_HOST`. `--persist` adds a PVC for the SQLite log and reports the selected provisioner; `--multi-tenant` sets `MOCKAGENTS_MULTI_TENANT=1`. |
 | 5 | In multi-tenant mode, reuse the local retained key or copy the newly generated **bootstrap platform key** from `/data/bootstrap-admin.key`. Atomically install the local owner-only credentials file, then delete the pod-side plaintext copy. Pod logs contain only its public prefix and path. |
 | 6 | Print the `/etc/hosts` line for `APP_HOST` → Traefik VIP. |
 | 7 | `curl -H "Host: APP_HOST" .../api/v1/health` through Traefik. |
@@ -143,6 +143,7 @@ so credentials from a deleted tenancy database cannot mask the next bootstrap.
 ```bash
 ./homelabsetup/deploy-homelab.sh --multi-tenant      # API-key auth + RBAC
 ./homelabsetup/deploy-homelab.sh --persist           # keep the SQLite log on a PVC
+./homelabsetup/deploy-homelab.sh --storage-class longhorn # shared class; implies --persist
 ./homelabsetup/deploy-homelab.sh --skip-build        # redeploy newest image, no rebuild
 ./homelabsetup/deploy-homelab.sh --teardown          # helm uninstall (keep ns/PVC)
 ./homelabsetup/deploy-homelab.sh --teardown-all      # delete namespace (DESTRUCTIVE)
@@ -164,6 +165,15 @@ curl -H "Host: mockagents.local" -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}' \
   "http://$TRAEFIK_IP/v1/chat/completions"
 ```
+
+The default k3s `local-path` StorageClass is node-local. It preserves `/data`
+across container and pod restarts on the bound node, but its PV has node
+affinity: after that node is drained or unavailable, the replacement pod can
+remain Pending. This is expected storage topology, not successful cross-node
+failover. Use `--storage-class NAME` (or set
+`PERSISTENCE_STORAGE_CLASS=NAME`) with a tested shared/network provisioner when
+the homelab gate requires cross-node rescheduling. Keep the chart at one
+replica with SQLite, and validate backup/restore independently.
 
 Run the release regression harness after deploying the exact candidate image:
 

@@ -42,6 +42,20 @@ MockAgents v{{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namesp
    enable multi-tenant mode before exposing it through an Ingress.
 {{- end }}
 
+{{- if .Values.persistence.enabled }}
+
+4. Persistence is enabled. Confirm that the selected StorageClass can attach
+   the volume wherever this pod may be scheduled:
+
+  kubectl get pvc {{ .Values.persistence.existingClaim | default (printf "%s-data" (include "mockagents.fullname" .)) }} --namespace {{ .Release.Namespace }} -o wide
+  kubectl get storageclass
+
+   Node-local provisioners (including k3s local-path) preserve data on their
+   bound node but may leave this single-replica workload Pending during a node
+   drain or outage. Use shared/network storage when cross-node rescheduling is
+   required, and test backup and restore separately.
+{{- end }}
+
 
 {{- if and (not .Values.agents.existingConfigMap) (not .Values.agents.inline) }}
 
