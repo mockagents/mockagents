@@ -13,8 +13,8 @@
 #   3. Render examples/*.yaml into the mockagents-agents ConfigMap.
 #   4. helm upgrade --install (image, ingress, agents, persistence, [tenancy]).
 #   5. Wait for the rollout; probe /api/v1/health through Traefik.
-#   6. If --multi-tenant: capture the bootstrap admin key from the pod log.
-#   7. Print URLs + a credentials banner (shown once).
+#   6. If --multi-tenant: copy the bootstrap admin key from its 0600 data file.
+#   7. Print URLs and the path to the local 0600 credentials file.
 #
 # Usage:
 #   ./homelabsetup/deploy-homelab.sh [flags]
@@ -43,6 +43,7 @@ header() { echo -e "\n${CYAN}━━━ $* ━━━${NC}\n"; }
 check_command() { command -v "$1" >/dev/null 2>&1 || error "$1 is required but not installed."; }
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "${REPO_ROOT}/homelabsetup/lib/platform-key.sh"
 
 # --- config (kept in lockstep across the homelabsetup scripts) --------------
 NAMESPACE="mockagents"
@@ -81,6 +82,7 @@ if $TEARDOWN_ALL; then
   read -rp "Type 'yes' to delete namespace ${NAMESPACE} and all data: " ans
   [ "$ans" = "yes" ] || error "aborted"
   kubectl delete namespace "$NAMESPACE" --ignore-not-found
+  rm -f "$CREDS_FILE"
   log "namespace ${NAMESPACE} deleted"; exit 0
 fi
 if $TEARDOWN; then
@@ -154,7 +156,7 @@ HELM_ARGS=(
 $PERSIST && HELM_ARGS+=( --set "persistence.enabled=true" --set "persistence.size=1Gi" )
 if $MULTI_TENANT; then
   HELM_ARGS+=( --set "env.MOCKAGENTS_MULTI_TENANT=1" )
-  warn "multi-tenant mode ON — a bootstrap admin key will be minted on first start"
+  warn "multi-tenant mode ON — a bootstrap platform key will be minted on first start"
 fi
 helm "${HELM_ARGS[@]}" || error "helm upgrade --install failed"
 kubectl -n "$NAMESPACE" rollout status "deployment/${RELEASE}" --timeout=240s
@@ -165,17 +167,18 @@ log "release ${RELEASE} rolled out at image tag ${BUILD_TAG}"
 
 # --- 5. multi-tenant bootstrap key ------------------------------------------
 BOOTSTRAP_KEY=""
+BOOTSTRAP_KEY_FROM_POD=false
+TRAEFIK_IP="$(kubectl -n kube-system get svc traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
 if $MULTI_TENANT; then
-  header "Step 5 — Bootstrap admin key"
-  for _ in $(seq 1 15); do
-    BOOTSTRAP_KEY="$(kubectl -n "$NAMESPACE" logs "deployment/${RELEASE}" 2>/dev/null | grep -oE 'mak_[A-Za-z0-9_]+' | head -1 || true)"
-    [ -n "$BOOTSTRAP_KEY" ] && break; sleep 2
-  done
-  [ -n "$BOOTSTRAP_KEY" ] && log "captured bootstrap admin key" || warn "could not find the bootstrap key in pod logs (check: kubectl -n ${NAMESPACE} logs deployment/${RELEASE})"
+  header "Step 5 — Bootstrap platform key"
+  POD_NAME="$(kubectl -n "$NAMESPACE" get pods -l "app.kubernetes.io/instance=${RELEASE}" \
+    -o jsonpath='{.items[0].metadata.name}')"
+  [ -n "$POD_NAME" ] || error "could not identify the running ${RELEASE} pod"
+  [ -n "$TRAEFIK_IP" ] || error "Traefik has no load-balancer IP; cannot validate a retained platform credential"
+  resolve_platform_key "$NAMESPACE" "$POD_NAME" "$CREDS_FILE" "http://${TRAEFIK_IP}" "$APP_HOST"
 fi
 
 # --- 6. DNS reminder --------------------------------------------------------
-TRAEFIK_IP="$(kubectl -n kube-system get svc traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
 if ! $SKIP_DNS; then
   header "Step 6 — DNS"
   if [ -n "$TRAEFIK_IP" ]; then
@@ -196,7 +199,10 @@ if [ -n "$TRAEFIK_IP" ]; then
   fi
 fi
 
-# --- credentials banner -----------------------------------------------------
+# --- credentials file -------------------------------------------------------
+CREDS_TMP="${CREDS_FILE}.tmp.$$"
+trap 'rm -f "$CREDS_TMP"' EXIT
+( umask 077
 {
   echo "# MockAgents homelab — generated $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "APP_URL=http://${APP_HOST}"
@@ -204,8 +210,15 @@ fi
   echo "IMAGE_ID=${DEPLOYED_IMAGE_ID}"
   echo "SOURCE_COMMIT=${SOURCE_COMMIT}"
   [ -n "$BOOTSTRAP_KEY" ] && echo "MOCKAGENTS_BOOTSTRAP_ADMIN_KEY=${BOOTSTRAP_KEY}"
-} > "$CREDS_FILE"
-chmod 600 "$CREDS_FILE" 2>/dev/null || true
+} > "$CREDS_TMP"
+)
+chmod 600 "$CREDS_TMP" 2>/dev/null || true
+mv -f "$CREDS_TMP" "$CREDS_FILE"
+trap - EXIT
+if $BOOTSTRAP_KEY_FROM_POD; then
+  remove_pod_platform_key "$NAMESPACE" "$POD_NAME"
+  log "platform key saved locally; pod-side plaintext copy removed"
+fi
 
 header "Deploy complete"
 cat <<EOF
@@ -218,12 +231,8 @@ ${GREEN}MockAgents is deployed.${NC}
 
 EOF
 if $MULTI_TENANT && [ -n "$BOOTSTRAP_KEY" ]; then
-  echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${YELLOW}║  SAVE THIS — SHOWN ONLY ONCE                                  ║${NC}"
-  echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════╝${NC}"
-  echo "  Bootstrap admin key : ${BOOTSTRAP_KEY}"
-  echo "  Use: Authorization: Bearer ${BOOTSTRAP_KEY}"
-  echo "  (also saved to homelabsetup/.homelab-credentials, gitignored)"
+  echo "  Bootstrap platform key saved to homelabsetup/.homelab-credentials (mode 0600; gitignored)."
+  echo "  Load it from that file when running the regression harness."
   echo
 fi
 cat <<EOF

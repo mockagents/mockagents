@@ -111,8 +111,14 @@ export KUBECONFIG="$HOME/.kube/config-mockagents-homelab"
 | `restart-homelab.sh` | Start K3s and scale back to the pre-shutdown replica count. |
 | `cleanup-homelab.sh` | Uninstall the release / delete the namespace; `--all` also tears down the registry. |
 
-`.homelab-credentials` is **generated at deploy time** (gitignored) and holds
-the app URL, image tag, and — in multi-tenant mode — the bootstrap admin key.
+`.homelab-credentials` is **generated at deploy time** with mode 0600
+(gitignored) and holds the app URL, image tag, and — in multi-tenant mode —
+the retained bootstrap platform key. The deploy script never prints that key.
+After the local file is atomically installed, the script removes the temporary
+plaintext copy from `/data`; later deploys reuse the local retained copy only
+after the running server accepts it on the platform-only tenant collection
+endpoint. A new pod-side bootstrap file is always authoritative over an older
+local file.
 
 ---
 
@@ -125,9 +131,12 @@ the app URL, image tag, and — in multi-tenant mode — the bootstrap admin key
 | 2 | Create the `mockagents` namespace. |
 | 3 | Render `examples/*.yaml` into the `mockagents-agents` ConfigMap (mounted read-only at `/agents`). |
 | 4 | `helm upgrade --install` with the registry image, the agents ConfigMap, and a Traefik ingress on `APP_HOST`. `--persist` adds a PVC for the SQLite log; `--multi-tenant` sets `MOCKAGENTS_MULTI_TENANT=1`. |
-| 5 | In multi-tenant mode, scrape the **bootstrap admin key** from the pod log. |
+| 5 | In multi-tenant mode, reuse the local retained key or copy the newly generated **bootstrap platform key** from `/data/bootstrap-admin.key`. Atomically install the local owner-only credentials file, then delete the pod-side plaintext copy. Pod logs contain only its public prefix and path. |
 | 6 | Print the `/etc/hosts` line for `APP_HOST` → Traefik VIP. |
 | 7 | `curl -H "Host: APP_HOST" .../api/v1/health` through Traefik. |
+
+`--teardown-all` removes the namespace and the retained local credentials file,
+so credentials from a deleted tenancy database cannot mask the next bootstrap.
 
 ### Common flags
 
@@ -252,6 +261,14 @@ a VIP. Ensure bootstrap ran **without** `--skip-prereqs`, then
 MetalLB range. Add that IP to your hosts file. (ICMP `ping` to a MetalLB VIP
 often fails even when HTTP works — test with `curl`, not `ping`.)
 
-**Where's the multi-tenant admin key?** Printed once at deploy time and saved
-to `homelabsetup/.homelab-credentials`. To re-read it from a running pod:
-`kubectl -n mockagents logs deployment/mockagents | grep mak_`.
+**Where's the multi-tenant platform key?** It is saved only in
+`homelabsetup/.homelab-credentials` (mode 0600, gitignored). On first boot the
+server writes the generated value to `/data/bootstrap-admin.key`; the deploy
+script atomically saves it locally and then deletes that pod-side plaintext
+copy (with verified retries). On a normal redeploy, the local copy is accepted
+only after the platform-only `GET /api/v1/tenants` endpoint accepts it. Pod
+logs deliberately show only the public prefix and path. If the local file is
+lost, the original plaintext
+cannot be recovered from its bcrypt hash.
+Use another surviving platform credential to rotate it, or follow the recovery
+options in `docs/guides/multi-tenant.md`.

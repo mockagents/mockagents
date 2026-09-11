@@ -113,7 +113,11 @@ expect_status 200 health GET /api/v1/health
 expect_status 200 readiness GET /api/v1/ready
 expect_status 200 'OpenAI chat' POST /v1/chat/completions '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}' "$PLATFORM_KEY"
 expect_status 200 'OpenAI embeddings' POST /v1/embeddings '{"model":"text-embedding-3-small","input":"homelab regression"}' "$PLATFORM_KEY"
-expect_status 200 'Anthropic messages' POST /v1/messages '{"model":"claude-3-5-sonnet-20241022","max_tokens":32,"messages":[{"role":"user","content":"hello"}]}' "$PLATFORM_KEY"
+# examples/rag-agent.yaml is the explicitly model-addressable Anthropic fixture
+# mounted by deploy-homelab.sh. Keep this request tied to that declared model:
+# when multiple Anthropic agents are loaded, an unknown model correctly returns
+# 404 rather than selecting an ambiguous fallback.
+expect_status 200 'Anthropic messages' POST /v1/messages '{"model":"claude-3-opus","max_tokens":32,"messages":[{"role":"user","content":"hello"}]}' "$PLATFORM_KEY"
 
 # Exercise vector creation, projection and deletion with a collision-free name.
 chroma_body="{\"name\":\"${RUN_ID}\",\"metadata\":{\"hnsw:space\":\"cosine\"}}"
@@ -170,8 +174,11 @@ else
       rotated="$(jq -r '.plaintext // empty' "${TMP_DIR}/response.json")"
       if [ -n "$rotated" ]; then
         ok 'rotate disposable viewer key'
-        expect_status 401 'rotated credential rejected immediately' POST /v1/chat/completions '{"model":"gpt-4o","messages":[{"role":"user","content":"old-key"}]}' "$VIEWER_KEY"
-        expect_status 200 'new credential accepted' POST /v1/chat/completions '{"model":"gpt-4o","messages":[{"role":"user","content":"new-key"}]}' "$rotated"
+        # Provider routes deliberately accept anonymous clients, so an invalid
+        # credential there still reaches the mock. Verify revocation against a
+        # protected management endpoint where authentication is mandatory.
+        expect_status 401 'rotated credential rejected immediately' GET /api/v1/identity '' "$VIEWER_KEY"
+        expect_status 200 'new credential accepted' GET /api/v1/identity '' "$rotated"
       else
         bad 'rotate response lacks plaintext credential'
       fi

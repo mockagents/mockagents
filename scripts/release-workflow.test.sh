@@ -57,6 +57,8 @@ grep -q 'RELEASE_RUN_SHA: \${{ github.event.workflow_run.head_sha }}' "$install_
 grep -q 'git tag --points-at "$RELEASE_RUN_SHA"' "$install_paths"
 grep -q 'git rev-list -n 1 "$tag"' "$install_paths"
 grep -q 'release gate requires independently supplied EXPECTED_IMAGE_ID' homelabsetup/regression-homelab.sh
+grep -q '"model":"claude-3-opus"' homelabsetup/regression-homelab.sh
+grep -q '^  model: claude-3-opus$' examples/rag-agent.yaml
 grep -Fq '(\.[0-9A-Za-z-]+)*))?$ ]]' "$install_paths"
 grep -Fq "grep -Eo '(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)" "$install_paths"
 if grep -Fq "s/.*[^0-9]([0-9]+\\.[0-9]+\\.[0-9]+)" "$install_paths"; then
