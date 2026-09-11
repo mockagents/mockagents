@@ -59,9 +59,11 @@ func (s *Session) WithLocked(fn func()) {
 // updates or scenario matching.
 //
 // build runs while s.mu is held, which gives it two contracts:
-//   - Variables (F-SS-002): the map passed in is a recursive JSON-compatible
-//     clone. Mutations are committed only when build succeeds. build must not
-//     retain and mutate it after returning.
+//   - Variables (F-SS-002): non-empty state is passed as a recursive
+//     JSON-compatible clone. An existing empty map is reused and cleared on
+//     failure to avoid a per-turn allocation. Mutations are committed only
+//     when build succeeds. build must not retain and mutate the map after
+//     returning.
 //   - Re-entry (F-SS-001): build must not call back into a session method
 //     that locks s.mu (see WithLocked) — the mutex is non-reentrant.
 func (s *Session) ApplyTurn(
@@ -71,9 +73,19 @@ func (s *Session) ApplyTurn(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	variables := cloneVariables(s.Variables)
+	variables := s.Variables
+	reusedEmptyVariables := len(variables) == 0 && variables != nil
+	if !reusedEmptyVariables {
+		variables = cloneVariables(variables)
+	}
 	assistantContent, toolCalls, err := build(s.TurnCount+1, variables)
 	if err != nil {
+		// Reusing an existing empty map avoids allocating on the common path.
+		// Restore that map to its pre-turn state if build added anything before
+		// failing. Non-empty state still uses the recursive snapshot above.
+		if reusedEmptyVariables {
+			clear(variables)
+		}
 		return err
 	}
 	s.Variables = variables

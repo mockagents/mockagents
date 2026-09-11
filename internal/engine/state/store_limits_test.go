@@ -33,6 +33,22 @@ func TestApplyTurnFailureRollsBackHistoryTurnAndNestedVariables(t *testing.T) {
 	}
 }
 
+func TestApplyTurnFailureRollsBackInitiallyEmptyVariables(t *testing.T) {
+	s := NewSession("s", "a", time.Hour)
+	wantErr := errors.New("render failed")
+
+	err := s.ApplyTurn("request", func(_ int, variables map[string]any) (string, []ToolCallMsg, error) {
+		variables["new"] = map[string]any{"items": []any{"uncommitted"}}
+		return "", nil, wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("ApplyTurn error = %v, want %v", err, wantErr)
+	}
+	if s.TurnCount != 0 || len(s.Messages) != 0 || len(s.Variables) != 0 {
+		t.Fatalf("failed turn committed state: turn=%d messages=%d variables=%v", s.TurnCount, len(s.Messages), s.Variables)
+	}
+}
+
 // TestMemoryStore_MaxSessionsEvictsLRU is the audit H-06 guard for the
 // session count: past the cap the least-recently-used sessions go, and the
 // store never exceeds it.
