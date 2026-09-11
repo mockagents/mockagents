@@ -46,6 +46,11 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      # A Service named "mockagents" would otherwise inject
+      # MOCKAGENTS_PORT=tcp://<cluster-ip>:<port>. That name is also the
+      # application's integer port setting, so service-link injection makes
+      # strict configuration validation reject an otherwise valid pod.
+      enableServiceLinks: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

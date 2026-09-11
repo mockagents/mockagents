@@ -103,8 +103,10 @@ jobs:
           set -euo pipefail
           helm lint deploy/helm/mockagents
           helm lint deploy/helm/mockagents --values deploy/helm/mockagents/ci/test-values.yaml
-          helm template verify deploy/helm/mockagents >/dev/null
+          helm template verify deploy/helm/mockagents > /tmp/helm-defaults.yaml
+          grep -q '^      enableServiceLinks: false$' /tmp/helm-defaults.yaml
           helm template verify deploy/helm/mockagents --values deploy/helm/mockagents/ci/test-values.yaml > /tmp/helm-ci.yaml
+          grep -q '^      enableServiceLinks: false$' /tmp/helm-ci.yaml
           grep -q 'kind: ServiceMonitor' /tmp/helm-ci.yaml
           grep -q 'name: "mockagents-metrics"' /tmp/helm-ci.yaml
           grep -q 'key: "token"' /tmp/helm-ci.yaml

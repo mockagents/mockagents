@@ -3,9 +3,12 @@
 Deploy [MockAgents](https://github.com/mockagents/mockagents) on
 Kubernetes. The chart runs the existing Docker image as a non-root
 Deployment, exposes it via a Service, and mounts agent definitions from
-a ConfigMap. v0.2 adds opt-in HPA, PDB, NetworkPolicy, and a
-Prometheus Operator ServiceMonitor — all off by default so the
-upgrade from v0.1 → v0.2 is a no-op for existing users.
+a ConfigMap. The pod disables Kubernetes service-link environment variables so
+the generated `MOCKAGENTS_PORT=tcp://...` variable from a Service named
+`mockagents` cannot collide with the application's integer
+`MOCKAGENTS_PORT` setting. v0.2 adds opt-in HPA, PDB, NetworkPolicy, and a
+Prometheus Operator ServiceMonitor. Those optional resources remain off by
+default; the service-link safeguard applies to every pod.
 
 ## Install
 
