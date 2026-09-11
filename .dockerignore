@@ -2,6 +2,14 @@
 .github
 .idea
 .claude
+.tools
+.gocache*
+.tmp*
+.uv-cache*
+**/node_modules
+**/.next
+**/.venv
+**/dist
 *.exe
 *.db
 docs/
