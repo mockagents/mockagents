@@ -1,5 +1,7 @@
 # Per-file documentation analysis
 
+Historical baseline report. The subsequent six application/coverage fixes and their verification are recorded in [application action closure](2026-09-18-application-actions.md).
+
 Date: 2026-09-18. Application baseline: `5d5b5172dfd3c19854bcfb1db7d5215af711165e`. This is the first pass of the documentation re-review. Local observations were followed through their implementation and tests in the [second-pass matrix](2026-09-18-documentation-integration-checks.md).
 
 | File | Responsibility | Local review result / action | Backing evidence or remaining limit |

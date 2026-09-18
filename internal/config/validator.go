@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"slices"
 	"strings"
@@ -370,6 +371,9 @@ func (v *Validator) validateChaos(ctx *validationContext, def *types.AgentDefini
 }
 
 func (v *Validator) validateMatchRule(ctx *validationContext, rule *types.MatchRule, field string) {
+	if rule.TurnNumber != nil && *rule.TurnNumber < 1 {
+		ctx.addError(field+".turn_number", "turn_number must be >= 1", "Conversation turns start at 1.")
+	}
 	if rule.ContentContains != "" && rule.ContentRegex != "" {
 		ctx.addError(field,
 			"content_contains and content_regex are mutually exclusive",
@@ -407,6 +411,9 @@ func (v *Validator) validateTools(ctx *validationContext, def *types.AgentDefini
 		names[tool.Name] = true
 
 		v.validateJSONSchema(ctx, tool.Parameters, field+".parameters")
+		if math.IsNaN(tool.ErrorRate) || math.IsInf(tool.ErrorRate, 0) || tool.ErrorRate < 0 || tool.ErrorRate > 1 {
+			ctx.addError(field+".error_rate", "error_rate must be finite and in [0.0, 1.0]", "")
+		}
 	}
 }
 

@@ -13,6 +13,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/prometheus/common v0.71.0
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.46.0

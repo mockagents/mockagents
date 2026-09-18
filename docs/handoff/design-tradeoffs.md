@@ -31,6 +31,6 @@ Keep provider DTOs out of engine logic, tenant identity out of client-controlled
 
 ## Evolution and proposed improvements
 
-Highest-value documentation work is completing machine-readable route/schema coverage and reconciling stale source comments. Broader design changes should begin with an explicit need: bounded template caches for high fixture churn; shared session/catalog state for multi-replica operation; join/retry semantics for richer pipelines; and stronger capability/fidelity matrices for provider SDK versions. Each changes observable behavior and needs targeted acceptance tests, migration notes, and a compatibility decision.
+Machine-readable core route/schema coverage and source-comment corrections are checked by the documentation tools; explicit compatibility-profile exclusions are listed in [contract scope](../api-contracts.md). Broader design changes should begin with an explicit need: bounded template caches for high fixture churn; shared session/catalog state for multi-replica operation; join/retry semantics for richer pipelines; and stronger capability/fidelity matrices for provider SDK versions. Each changes observable behavior and needs targeted acceptance tests, migration notes, and a compatibility decision.
 
 Historical epics and design documents are useful context, but this suite does not treat unfinished proposals as shipped behavior. The [action register](../reviews/2026-09-18-action-register.md) records confirmed handoff gaps separately from these optional architectural directions.

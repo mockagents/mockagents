@@ -3,9 +3,11 @@ package adapter
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mockagents/mockagents/internal/engine"
@@ -343,12 +345,78 @@ func TestResponses_StoreEvictionBounded(t *testing.T) {
 	// is evicted (returns not-found) while the newest is retained.
 	s := newResponseStore()
 	first := "resp_first"
-	s.put(first, []engine.RequestMessage{{Role: "user", Content: "x"}})
+	s.put("tenant-a", first, []engine.RequestMessage{{Role: "user", Content: "x"}})
 	for i := 0; i < maxStoredResponses; i++ {
-		s.put("resp_fill_"+strings.Repeat("a", i%5)+"_"+itoa(i), nil)
+		s.put("tenant-b", "resp_fill_"+strings.Repeat("a", i%5)+"_"+itoa(i), nil)
 	}
-	_, ok := s.get(first)
+	_, ok := s.get("tenant-a", first)
 	assert.False(t, ok, "oldest entry should have been evicted")
+}
+
+func TestResponses_TenantRetention(t *testing.T) {
+	for _, owner := range []string{"tenant-a", ""} {
+		for _, setting := range []string{"", `,"store":true`, `,"store":false`} {
+			for _, stream := range []bool{false, true} {
+				t.Run(owner+setting+"/stream="+fmt.Sprint(stream), func(t *testing.T) {
+					h := NewResponsesHandler(testEngine(responsesAgent()), nil)
+					call := func(tenant, body string) *httptest.ResponseRecorder {
+						r := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+						r = r.WithContext(engine.WithTenantID(r.Context(), tenant))
+						w := httptest.NewRecorder()
+						h.HandleResponses(w, r)
+						return w
+					}
+					first := call(owner, `{"model":"gpt-4o","input":"hello","stream":`+fmt.Sprint(stream)+setting+`}`)
+					require.Equal(t, 200, first.Code, first.Body.String())
+					body := first.Body.Bytes()
+					if stream {
+						for _, line := range strings.Split(first.Body.String(), "\n") {
+							if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"type":"response.completed"`) {
+								var event struct {
+									Response json.RawMessage `json:"response"`
+								}
+								require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event))
+								body = event.Response
+							}
+						}
+					}
+					var response ResponsesResponse
+					require.NoError(t, json.Unmarshal(body, &response))
+					require.NotEmpty(t, response.ID)
+					for _, caller := range []string{"tenant-a", "tenant-b", ""} {
+						want := 404
+						if caller == owner && setting != `,"store":false` {
+							want = 200
+						}
+						got := call(caller, `{"model":"gpt-4o","input":"next","previous_response_id":"`+response.ID+`"}`)
+						assert.Equal(t, want, got.Code, "caller=%q: %s", caller, got.Body.String())
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestResponseStore_ConcurrentTenantKeys(t *testing.T) {
+	s := newResponseStore()
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			tenant := fmt.Sprint(i)
+			for j := 0; j < 100; j++ {
+				id := fmt.Sprint(j)
+				s.put(tenant, id, []engine.RequestMessage{{Content: tenant}})
+				if msgs, ok := s.get(tenant, id); ok && msgs[0].Content != tenant {
+					t.Errorf("wrong tenant history")
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	assert.Len(t, s.m, maxStoredResponses)
+	assert.Len(t, s.order, maxStoredResponses)
 }
 
 // itoa avoids importing strconv just for the eviction test.

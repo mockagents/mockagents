@@ -103,7 +103,7 @@ func (h *CostsHandlers) ListCosts(w http.ResponseWriter, r *http.Request) {
 	resp.Window.Until = filter.Until
 
 	for _, row := range rows {
-		usage := pricing.ExtractUsage([]byte(row.ResponseBody))
+		usage := pricing.ExtractUsageForPath([]byte(row.ResponseBody), row.RequestPath)
 		cost := 0.0
 		if h.Prices != nil {
 			cost = h.Prices.Estimate(usage.Model, usage.PromptTokens, usage.CompletionTokens)

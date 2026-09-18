@@ -68,6 +68,8 @@ liquidcheck:                    ## Check docs/ for unterminated Liquid openers
 	$(GO) run ./tools/liquidcheck
 
 docs-check: drift liquidcheck   ## Check API/config drift and tracked Markdown local path targets
+	$(GO) run ./tools/contractcheck
+	$(GO) run ./tools/handoffcatalog -check
 	$(GO) run ./tools/doccheck
 
 fmt:                            ## Format Go code

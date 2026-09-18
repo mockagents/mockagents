@@ -35,11 +35,9 @@ type ValidateReport struct {
 // GUI editor and other tools exercise the same validation path
 // without having to land the document on disk first.
 //
-// Supported kinds: Agent, Pipeline, TestSuite, MCPServer. Unknown
-// kinds return a single "unknown kind" error so typos surface clearly.
-// For kinds other than Agent the validator is parse-only (the typed
-// decode catches structural problems); the Agent path additionally
-// runs the full Validator.Validate rule set with line-number context.
+// Supported kinds: Agent, Pipeline, TestSuite, MCPServer, A2AServer,
+// VectorCollection, and SearchService. Each runs its kind-specific validator;
+// Agent also returns lint warnings. Unknown kinds return an error.
 func ValidateBytes(data []byte) *ValidateReport {
 	report := &ValidateReport{}
 	if len(strings.TrimSpace(string(data))) == 0 {

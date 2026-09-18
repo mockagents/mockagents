@@ -1206,7 +1206,7 @@ Source: [internal/adapter/responses.go](../../../internal/adapter/responses.go#L
 | `MaxOutputTokens` | `*int` | `max_output_tokens,omitempty` | `` |  |
 | `Metadata` | `map[string]any` | `metadata,omitempty` | `` |  |
 | `Store` | `*bool` | `store,omitempty` | `` |  |
-| `Conversation` | `json.RawMessage` | `conversation,omitempty` | `` | Conversation references an OpenAI Conversation (NF-02): a string id or an object {"id": "..."}. Its stored Items are replayed as prior turns, and (when store != false) this turn's input + output are appended to it. It is mutually exclusive with previous_response_id. |
+| `Conversation` | `json.RawMessage` | `conversation,omitempty` | `` | Conversation references an OpenAI Conversation (NF-02): a string id or an object {"id": "..."}. Its stored Items are replayed as prior turns, and this turn's input + output are appended regardless of store. It is mutually exclusive with previous_response_id. |
 | `ParallelToolCalls` | `*bool` | `parallel_tool_calls,omitempty` | `` |  |
 | `Text` | `json.RawMessage` | `text,omitempty` | `` |  |
 | `Reasoning` | `json.RawMessage` | `reasoning,omitempty` | `` |  |
@@ -1403,7 +1403,7 @@ Source: [internal/config/validate_bytes.go](../../../internal/config/validate_by
 
 ## internal/config.ValidationError
 
-Source: [internal/config/validator.go](../../../internal/config/validator.go#L20).
+Source: [internal/config/validator.go](../../../internal/config/validator.go#L21).
 
 | Go field | Go type | JSON tag | YAML tag | Source field note |
 | --- | --- | --- | --- | --- |
@@ -1924,7 +1924,7 @@ Source: [internal/mcp/server.go](../../../internal/mcp/server.go#L846).
 
 ## internal/pricing.Usage
 
-Source: [internal/pricing/extract.go](../../../internal/pricing/extract.go#L10).
+Source: [internal/pricing/extract.go](../../../internal/pricing/extract.go#L11).
 
 | Go field | Go type | JSON tag | YAML tag | Source field note |
 | --- | --- | --- | --- | --- |
@@ -1953,7 +1953,7 @@ Source: [internal/pricing/pricing.go](../../../internal/pricing/pricing.go#L133)
 
 ## internal/quota.Config
 
-Source: [internal/quota/quota.go](../../../internal/quota/quota.go#L45).
+Source: [internal/quota/quota.go](../../../internal/quota/quota.go#L44).
 
 | Go field | Go type | JSON tag | YAML tag | Source field note |
 | --- | --- | --- | --- | --- |
@@ -1963,12 +1963,12 @@ Source: [internal/quota/quota.go](../../../internal/quota/quota.go#L45).
 
 ## internal/quota.Usage
 
-Source: [internal/quota/quota.go](../../../internal/quota/quota.go#L56).
+Source: [internal/quota/quota.go](../../../internal/quota/quota.go#L55).
 
 | Go field | Go type | JSON tag | YAML tag | Source field note |
 | --- | --- | --- | --- | --- |
 | `Month` | `string` | `month` | `` | "2006-01" (UTC) |
-| `SpendUSD` | `float64` | `spend_usd` | `` | accrued spend this month (this process) |
+| `SpendUSD` | `float64` | `spend_usd` | `` | accrued spend this month (shared when backend is configured) |
 
 ## internal/realtime.ClientEvent
 
@@ -2379,7 +2379,7 @@ Source: [internal/server/pipeline_recorder.go](../../../internal/server/pipeline
 
 ## internal/server.ProviderQuotaError
 
-Source: [internal/server/quota_middleware.go](../../../internal/server/quota_middleware.go#L102).
+Source: [internal/server/quota_middleware.go](../../../internal/server/quota_middleware.go#L111).
 
 | Go field | Go type | JSON tag | YAML tag | Source field note |
 | --- | --- | --- | --- | --- |
@@ -2387,7 +2387,7 @@ Source: [internal/server/quota_middleware.go](../../../internal/server/quota_mid
 
 ## internal/server.providerError
 
-Source: [internal/server/quota_middleware.go](../../../internal/server/quota_middleware.go#L106).
+Source: [internal/server/quota_middleware.go](../../../internal/server/quota_middleware.go#L115).
 
 | Go field | Go type | JSON tag | YAML tag | Source field note |
 | --- | --- | --- | --- | --- |
@@ -2733,7 +2733,7 @@ Source: [internal/streaming/openai.go](../../../internal/streaming/openai.go#L64
 
 ## internal/tenancy.Tenant
 
-Source: [internal/tenancy/types.go](../../../internal/tenancy/types.go#L76).
+Source: [internal/tenancy/types.go](../../../internal/tenancy/types.go#L75).
 
 | Go field | Go type | JSON tag | YAML tag | Source field note |
 | --- | --- | --- | --- | --- |
@@ -2743,7 +2743,7 @@ Source: [internal/tenancy/types.go](../../../internal/tenancy/types.go#L76).
 
 ## internal/tenancy.APIKey
 
-Source: [internal/tenancy/types.go](../../../internal/tenancy/types.go#L85).
+Source: [internal/tenancy/types.go](../../../internal/tenancy/types.go#L84).
 
 | Go field | Go type | JSON tag | YAML tag | Source field note |
 | --- | --- | --- | --- | --- |
@@ -2757,7 +2757,7 @@ Source: [internal/tenancy/types.go](../../../internal/tenancy/types.go#L85).
 
 ## internal/tenancy.NewAPIKeyResult
 
-Source: [internal/tenancy/types.go](../../../internal/tenancy/types.go#L102).
+Source: [internal/tenancy/types.go](../../../internal/tenancy/types.go#L101).
 
 | Go field | Go type | JSON tag | YAML tag | Source field note |
 | --- | --- | --- | --- | --- |
@@ -2766,7 +2766,7 @@ Source: [internal/tenancy/types.go](../../../internal/tenancy/types.go#L102).
 
 ## internal/tenancy.Principal
 
-Source: [internal/tenancy/types.go](../../../internal/tenancy/types.go#L131).
+Source: [internal/tenancy/types.go](../../../internal/tenancy/types.go#L130).
 
 | Go field | Go type | JSON tag | YAML tag | Source field note |
 | --- | --- | --- | --- | --- |
@@ -2777,7 +2777,7 @@ Source: [internal/tenancy/types.go](../../../internal/tenancy/types.go#L131).
 
 ## internal/tenancy.User
 
-Source: [internal/tenancy/types.go](../../../internal/tenancy/types.go#L198).
+Source: [internal/tenancy/types.go](../../../internal/tenancy/types.go#L197).
 
 | Go field | Go type | JSON tag | YAML tag | Source field note |
 | --- | --- | --- | --- | --- |
@@ -2789,7 +2789,7 @@ Source: [internal/tenancy/types.go](../../../internal/tenancy/types.go#L198).
 
 ## internal/tenancy.Session
 
-Source: [internal/tenancy/types.go](../../../internal/tenancy/types.go#L209).
+Source: [internal/tenancy/types.go](../../../internal/tenancy/types.go#L208).
 
 | Go field | Go type | JSON tag | YAML tag | Source field note |
 | --- | --- | --- | --- | --- |
@@ -2905,7 +2905,7 @@ Source: [internal/types/agent.go](../../../internal/types/agent.go#L10).
 
 ## internal/types.Metadata
 
-Source: [internal/types/agent.go](../../../internal/types/agent.go#L26).
+Source: [internal/types/agent.go](../../../internal/types/agent.go#L24).
 
 | Go field | Go type | JSON tag | YAML tag | Source field note |
 | --- | --- | --- | --- | --- |
@@ -2916,7 +2916,7 @@ Source: [internal/types/agent.go](../../../internal/types/agent.go#L26).
 
 ## internal/types.AgentSpec
 
-Source: [internal/types/agent.go](../../../internal/types/agent.go#L34).
+Source: [internal/types/agent.go](../../../internal/types/agent.go#L32).
 
 | Go field | Go type | JSON tag | YAML tag | Source field note |
 | --- | --- | --- | --- | --- |
@@ -3669,3 +3669,14 @@ Source: [tools/benchreport/main.go](../../../tools/benchreport/main.go#L46).
 | `GOARCH` | `string` | `goarch` | `` |  |
 | `Package` | `string` | `package` | `` |  |
 | `Results` | `[]Result` | `results` | `` |  |
+
+## tools/handoffcatalog.exclusion
+
+Source: [tools/handoffcatalog/coverage.go](../../../tools/handoffcatalog/coverage.go#L12).
+
+| Go field | Go type | JSON tag | YAML tag | Source field note |
+| --- | --- | --- | --- | --- |
+| `Pattern` | `string` | `pattern` | `` |  |
+| `Source` | `string` | `source` | `` |  |
+| `Reason` | `string` | `reason` | `` |  |
+| `Contract` | `string` | `contract` | `` |  |

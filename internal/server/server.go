@@ -288,14 +288,14 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 	if s.logWorker != nil {
 		// When quotas + pricing are configured, accrue each response's cost
 		// against the tenant's monthly spend as it's captured.
-		var spendHook func(tenantID, respBody string)
+		var spendHook func(tenantID, path, respBody string)
 		if cfg.QuotaEnforcer != nil && cfg.Prices != nil {
 			enf, prices := cfg.QuotaEnforcer, cfg.Prices
-			spendHook = func(tenantID, respBody string) {
+			spendHook = func(tenantID, path, respBody string) {
 				if tenantID == "" || respBody == "" {
 					return
 				}
-				usage := pricingpkg.ExtractUsage([]byte(respBody))
+				usage := pricingpkg.ExtractUsageForPath([]byte(respBody), path)
 				if cost := prices.Estimate(usage.Model, usage.PromptTokens, usage.CompletionTokens); cost > 0 {
 					enf.AddSpend(tenantID, cost)
 				}

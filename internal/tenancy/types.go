@@ -5,10 +5,9 @@
 // dev tool. When enabled, every control-plane request must carry a valid
 // API key and the tenant + role attached to that key gates access.
 //
-// This slice intentionally scopes only the management API surface
-// (/api/v1/*). Tenant-scoped data isolation for the existing
-// /v1/chat/completions and /v1/messages endpoints is a deliberate
-// follow-up — that rewires the engine and deserves its own session.
+// Management routes enforce declared role floors. Provider routes permit
+// anonymous SDK traffic; valid credentials attach tenant scope used by the
+// engine and state stores. Identity comes from the authenticated principal.
 package tenancy
 
 import (

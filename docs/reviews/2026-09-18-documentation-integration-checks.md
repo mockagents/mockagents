@@ -1,5 +1,7 @@
 # Cross-component documentation verification
 
+Historical baseline report. The subsequent six application/coverage fixes and their verification are recorded in [application action closure](2026-09-18-application-actions.md).
+
 Date: 2026-09-18. Baseline application SHA: `5d5b5172dfd3c19854bcfb1db7d5215af711165e`. Second pass: claims were followed across producers, consumers, runtime behavior and tests rather than verified by repeating comments.
 
 | Claim / flow | Producer → consumer and backing facts | Verification | Outcome |

@@ -244,8 +244,8 @@
         },
         "turn_number": {
           "type": "integer",
-          "minimum": 0,
-          "description": "Conversation turn number to match."
+          "minimum": 1,
+          "description": "Conversation turn number to match, starting at 1."
         },
         "has_image": {
           "type": "boolean",

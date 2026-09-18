@@ -1,0 +1,369 @@
+{
+  "$defs": {
+    "types.A2AAgentCard": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "$ref": "#/$defs/types.A2ACapabilities"
+        },
+        "defaultInputModes": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "defaultOutputModes": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "preferredTransport": {
+          "type": "string"
+        },
+        "protocolVersion": {
+          "type": "string"
+        },
+        "skills": {
+          "items": {
+            "$ref": "#/$defs/types.A2ASkill"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "url": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.A2AAgentCard"
+    },
+    "types.A2ACapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "pushNotifications": {
+          "type": "boolean"
+        },
+        "streaming": {
+          "type": "boolean"
+        }
+      },
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.A2ACapabilities"
+    },
+    "types.A2AFaults": {
+      "additionalProperties": false,
+      "properties": {
+        "disconnect": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "boolean"
+        },
+        "fixture_rates": {
+          "additionalProperties": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "propertyNames": {
+            "pattern": "^.+$"
+          },
+          "type": "object"
+        },
+        "latency_ms": {
+          "maximum": 60000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "malformed": {
+          "type": "boolean"
+        },
+        "malformed_schema": {
+          "type": "boolean"
+        },
+        "operation_rates": {
+          "additionalProperties": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "propertyNames": {
+            "pattern": "^.+$"
+          },
+          "type": "object"
+        },
+        "rate": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reset": {
+          "type": "boolean"
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "sequence_rates": {
+          "additionalProperties": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "propertyNames": {
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "type": "object"
+        },
+        "status_code": {
+          "anyOf": [
+            {
+              "const": 0
+            },
+            {
+              "maximum": 599,
+              "minimum": 400,
+              "type": "integer"
+            }
+          ]
+        },
+        "timeout_ms": {
+          "maximum": 60000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "truncate_after_bytes": {
+          "maximum": 1048576,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.A2AFaults"
+    },
+    "types.A2AMessageResponse": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "default": {
+              "const": false
+            },
+            "match": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "match"
+          ]
+        },
+        {
+          "properties": {
+            "default": {
+              "const": true
+            },
+            "match": {
+              "const": ""
+            }
+          },
+          "required": [
+            "default"
+          ]
+        }
+      ],
+      "properties": {
+        "as_message": {
+          "type": "boolean"
+        },
+        "data": {},
+        "default": {
+          "type": "boolean"
+        },
+        "match": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "",
+            "submitted",
+            "working",
+            "input-required",
+            "completed",
+            "canceled",
+            "failed",
+            "rejected"
+          ]
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.A2AMessageResponse"
+    },
+    "types.A2AServerDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "apiVersion": {
+          "const": "mockagents/v1"
+        },
+        "kind": {
+          "const": "A2AServer"
+        },
+        "metadata": {
+          "$ref": "#/$defs/types.Metadata"
+        },
+        "spec": {
+          "$ref": "#/$defs/types.A2AServerSpec"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.A2AServerDefinition"
+    },
+    "types.A2AServerSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "card": {
+          "$ref": "#/$defs/types.A2AAgentCard"
+        },
+        "faults": {
+          "$ref": "#/$defs/types.A2AFaults"
+        },
+        "responses": {
+          "contains": {
+            "properties": {
+              "default": {
+                "const": true
+              }
+            },
+            "required": [
+              "default"
+            ],
+            "type": "object"
+          },
+          "items": {
+            "$ref": "#/$defs/types.A2AMessageResponse"
+          },
+          "maxContains": 1,
+          "minContains": 0,
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "card"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.A2AServerSpec"
+    },
+    "types.A2ASkill": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "examples": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.A2ASkill"
+    },
+    "types.Metadata": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "tenant_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.Metadata"
+    }
+  },
+  "$id": "https://mockagents.dev/schema/v1/a2aserver.json",
+  "$ref": "#/$defs/types.A2AServerDefinition",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MockAgents A2AServer Definition"
+}

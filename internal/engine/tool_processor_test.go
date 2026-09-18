@@ -291,6 +291,16 @@ func TestResolveToolResponse_DefaultOnly(t *testing.T) {
 	assert.Equal(t, "default value", resp)
 }
 
+func TestResolveToolResponse_LastDefaultWins(t *testing.T) {
+	rules := []types.ToolResponseRule{
+		{IsDefault: true, Response: "first"},
+		{IsDefault: true, Response: "last"},
+	}
+	resp, toolErr := resolveToolResponse(rules, nil)
+	assert.Nil(t, toolErr)
+	assert.Equal(t, "last", resp)
+}
+
 func TestResolveToolResponse_DefaultWithError(t *testing.T) {
 	rules := []types.ToolResponseRule{
 		{IsDefault: true, Error: &types.ToolError{Code: "ERR", Message: "default error"}},

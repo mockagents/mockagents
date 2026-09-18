@@ -27,11 +27,11 @@ go build ./cmd/mockagents
 go run ./cmd/mockagents validate examples/
 ```
 
-`make docs-check` runs drift, Liquid and local Markdown-path checks. `doccheck` examines tracked Markdown only and validates file targets, not URL availability or heading anchors. New untracked pages need a supplementary link check before staging; this handoff's [review evidence](../reviews/2026-09-18-review-summary.md) records that check. `driftcheck` verifies selected type/schema relationships and OpenAPI references; it does not prove all mounted routes have an OpenAPI operation.
+`make docs-check` runs drift, Liquid and local Markdown-path checks. `doccheck` examines tracked Markdown only and validates file targets, not URL availability or heading anchors. New untracked pages need a supplementary link check before staging; this handoff's [review evidence](../reviews/2026-09-18-review-summary.md) records that check. `driftcheck` verifies selected type/schema relationships and OpenAPI references; the additional handoffcatalog coverage check requires every mount to have an operation or an exact documented exclusion. contractcheck verifies generated schemas, examples, and live provider response shapes.
 
 `go run ./tools/handoffcatalog` refreshes the handoff appendices from tracked source. Compare the generated output with route/type changes. Generation is an inventory, not semantic validation.
 
-The [documentation re-review](../reviews/2026-09-18-documentation-review-summary.md) adds direct HTTP probes and a runtime registry comparison. Those probes exposed behavior despite a green full Go suite: Responses history is not tenant-keyed, `store: false` still retains it, and Go validation accepts some values the authoring schema rejects. Passing tests establish the covered assertions; they do not establish every documented isolation, retention or validation guarantee.
+The [documentation re-review](../reviews/2026-09-18-documentation-review-summary.md) reproduced historical Responses ownership/retention and validation gaps. [Application closure evidence](../reviews/2026-09-18-application-actions.md) records the fixes and new regressions. Passing tests establish their covered assertions; they do not prove every upstream compatibility guarantee.
 
 ## Additional gates
 

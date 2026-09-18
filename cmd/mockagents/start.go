@@ -757,10 +757,9 @@ func quotaDefaultsFromEnv() (quota.Config, error) {
 	return cfg, nil
 }
 
-// buildSSO constructs the OIDC SSO handlers from the environment, or returns
-// (nil, nil) when SSO is not configured. A configured-but-broken setup (missing
-// domain map, bad role, unreachable issuer) returns an error so startup fails
-// loudly rather than silently disabling login.
+// buildSSO constructs OIDC handlers only when issuer, client ID, client secret,
+// and redirect URL are all set. Missing any disables SSO without error. Once
+// all four are present, domain-map, role, and discovery errors fail startup.
 func buildSSO(ctx context.Context, store tenancy.Store, logger *slog.Logger) (*server.SSOHandlers, error) {
 	issuer := os.Getenv("MOCKAGENTS_OIDC_ISSUER")
 	clientID := os.Getenv("MOCKAGENTS_OIDC_CLIENT_ID")

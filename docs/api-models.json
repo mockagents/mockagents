@@ -1,0 +1,2017 @@
+{
+  "$defs": {
+    "AuthenticationError": {
+      "properties": {
+        "error": {
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "type": "object"
+    },
+    "CohereRequest": {
+      "properties": {
+        "documents": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1000,
+          "minItems": 1,
+          "type": "array"
+        },
+        "model": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "query": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "top_n": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model",
+        "query",
+        "documents"
+      ],
+      "type": "object"
+    },
+    "CohereResponse": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "meta": {
+          "properties": {
+            "api_version": {
+              "properties": {
+                "is_experimental": {
+                  "type": "boolean"
+                },
+                "version": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "version",
+                "is_experimental"
+              ],
+              "type": "object"
+            },
+            "billed_units": {
+              "properties": {
+                "search_units": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "search_units"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "api_version",
+            "billed_units"
+          ],
+          "type": "object"
+        },
+        "results": {
+          "items": {
+            "properties": {
+              "index": {
+                "type": "integer"
+              },
+              "relevance_score": {
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              }
+            },
+            "required": [
+              "index",
+              "relevance_score"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "results",
+        "meta"
+      ],
+      "type": "object"
+    },
+    "PipelineRunError": {
+      "properties": {
+        "code": {
+          "enum": [
+            "missing_dependency",
+            "invalid_pipeline",
+            "node_failed"
+          ]
+        },
+        "error": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/engine.PipelineResult"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "type": "object"
+    },
+    "QuotaResult": {
+      "properties": {
+        "limits": {
+          "properties": {
+            "monthly_spend_usd": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "rate_burst": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rate_per_sec": {
+              "minimum": 0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "rate_per_sec",
+            "rate_burst",
+            "monthly_spend_usd"
+          ],
+          "type": "object"
+        },
+        "tenant_id": {
+          "type": "string"
+        },
+        "usage": {
+          "properties": {
+            "month": {
+              "type": "string"
+            },
+            "spend_usd": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "month",
+            "spend_usd"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "limits",
+        "usage"
+      ],
+      "type": "object"
+    },
+    "QuotaUpdateResult": {
+      "properties": {
+        "limits": {
+          "properties": {
+            "monthly_spend_usd": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "rate_burst": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rate_per_sec": {
+              "minimum": 0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "rate_per_sec",
+            "rate_burst",
+            "monthly_spend_usd"
+          ],
+          "type": "object"
+        },
+        "tenant_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "limits"
+      ],
+      "type": "object"
+    },
+    "TavilyRequest": {
+      "properties": {
+        "end_date": {
+          "type": "string"
+        },
+        "exclude_domains": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 150,
+          "type": "array"
+        },
+        "include_answer": {},
+        "include_domains": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 300,
+          "type": "array"
+        },
+        "include_raw_content": {},
+        "max_results": {
+          "description": "0 or omitted selects 5.",
+          "maximum": 20,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "query": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "search_depth": {
+          "enum": [
+            "",
+            "basic",
+            "advanced",
+            "fast",
+            "ultra-fast"
+          ]
+        },
+        "start_date": {
+          "type": "string"
+        },
+        "time_range": {
+          "enum": [
+            "",
+            "day",
+            "d",
+            "week",
+            "w",
+            "month",
+            "m",
+            "year",
+            "y"
+          ]
+        },
+        "topic": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "TavilyResponse": {
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "images": {
+          "items": {},
+          "type": "array"
+        },
+        "query": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "response_time": {
+          "type": "number"
+        },
+        "results": {
+          "items": {
+            "$ref": "#/$defs/types.SearchResult"
+          },
+          "type": "array"
+        },
+        "usage": {
+          "properties": {
+            "credits": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "credits"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "query",
+        "answer",
+        "images",
+        "results",
+        "response_time",
+        "usage",
+        "request_id"
+      ],
+      "type": "object"
+    },
+    "adapter.BedrockContentBlock": {
+      "properties": {
+        "image": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/adapter.BedrockImageBlock"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "toolResult": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/adapter.BedrockToolResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "toolUse": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/adapter.BedrockToolUse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.BedrockContentBlock"
+    },
+    "adapter.BedrockConverseRequest": {
+      "properties": {
+        "messages": {
+          "items": {
+            "$ref": "#/$defs/adapter.BedrockMessage"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "system": {
+          "items": {
+            "$ref": "#/$defs/adapter.BedrockContentBlock"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "toolConfig": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/adapter.BedrockToolConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "messages"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.BedrockConverseRequest"
+    },
+    "adapter.BedrockConverseResponse": {
+      "properties": {
+        "metrics": {
+          "$ref": "#/$defs/adapter.BedrockMetrics"
+        },
+        "output": {
+          "$ref": "#/$defs/adapter.BedrockOutput"
+        },
+        "stopReason": {
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/adapter.BedrockUsage"
+        }
+      },
+      "required": [
+        "output",
+        "stopReason",
+        "usage",
+        "metrics"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.BedrockConverseResponse"
+    },
+    "adapter.BedrockImageBlock": {
+      "properties": {
+        "format": {
+          "type": "string"
+        },
+        "source": {
+          "additionalProperties": {},
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "format",
+        "source"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.BedrockImageBlock"
+    },
+    "adapter.BedrockInputSchema": {
+      "properties": {
+        "json": {
+          "additionalProperties": {},
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "json"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.BedrockInputSchema"
+    },
+    "adapter.BedrockMessage": {
+      "properties": {
+        "content": {
+          "items": {
+            "$ref": "#/$defs/adapter.BedrockContentBlock"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "role": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.BedrockMessage"
+    },
+    "adapter.BedrockMetrics": {
+      "properties": {
+        "latencyMs": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "latencyMs"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.BedrockMetrics"
+    },
+    "adapter.BedrockOutput": {
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/adapter.BedrockMessage"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.BedrockOutput"
+    },
+    "adapter.BedrockTool": {
+      "properties": {
+        "toolSpec": {
+          "$ref": "#/$defs/adapter.BedrockToolSpec"
+        }
+      },
+      "required": [
+        "toolSpec"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.BedrockTool"
+    },
+    "adapter.BedrockToolConfig": {
+      "properties": {
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/adapter.BedrockTool"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "tools"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.BedrockToolConfig"
+    },
+    "adapter.BedrockToolResult": {
+      "properties": {
+        "content": {
+          "items": {
+            "$ref": "#/$defs/adapter.BedrockContentBlock"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "toolUseId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "toolUseId",
+        "content"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.BedrockToolResult"
+    },
+    "adapter.BedrockToolSpec": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "inputSchema": {
+          "$ref": "#/$defs/adapter.BedrockInputSchema"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "inputSchema"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.BedrockToolSpec"
+    },
+    "adapter.BedrockToolUse": {
+      "properties": {
+        "input": {
+          "additionalProperties": {},
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "toolUseId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "toolUseId",
+        "name",
+        "input"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.BedrockToolUse"
+    },
+    "adapter.BedrockUsage": {
+      "properties": {
+        "inputTokens": {
+          "type": "integer"
+        },
+        "outputTokens": {
+          "type": "integer"
+        },
+        "totalTokens": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "inputTokens",
+        "outputTokens",
+        "totalTokens"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.BedrockUsage"
+    },
+    "adapter.EmbeddingData": {
+      "properties": {
+        "embedding": {},
+        "index": {
+          "type": "integer"
+        },
+        "object": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "object",
+        "index",
+        "embedding"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.EmbeddingData"
+    },
+    "adapter.EmbeddingsRequest": {
+      "properties": {
+        "dimensions": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "encoding_format": {
+          "enum": [
+            "",
+            "float",
+            "base64"
+          ],
+          "type": "string"
+        },
+        "input": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "items": {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            }
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "user": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "input"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.EmbeddingsRequest"
+    },
+    "adapter.EmbeddingsResponse": {
+      "properties": {
+        "data": {
+          "items": {
+            "$ref": "#/$defs/adapter.EmbeddingData"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "object": {
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/adapter.EmbeddingsUsage"
+        }
+      },
+      "required": [
+        "object",
+        "data",
+        "model",
+        "usage"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.EmbeddingsResponse"
+    },
+    "adapter.EmbeddingsUsage": {
+      "properties": {
+        "prompt_tokens": {
+          "type": "integer"
+        },
+        "total_tokens": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "prompt_tokens",
+        "total_tokens"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.EmbeddingsUsage"
+    },
+    "adapter.GeminiCandidate": {
+      "properties": {
+        "content": {
+          "$ref": "#/$defs/adapter.GeminiContent"
+        },
+        "finishReason": {
+          "type": "string"
+        },
+        "index": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "content",
+        "finishReason",
+        "index"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.GeminiCandidate"
+    },
+    "adapter.GeminiContent": {
+      "properties": {
+        "parts": {
+          "items": {
+            "$ref": "#/$defs/adapter.GeminiPart"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "role": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "parts"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.GeminiContent"
+    },
+    "adapter.GeminiFileData": {
+      "properties": {
+        "fileUri": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.GeminiFileData"
+    },
+    "adapter.GeminiFunctionCall": {
+      "properties": {
+        "args": {
+          "additionalProperties": {},
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "args"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.GeminiFunctionCall"
+    },
+    "adapter.GeminiFunctionCallingConfig": {
+      "properties": {
+        "allowedFunctionNames": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "mode": {
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.GeminiFunctionCallingConfig"
+    },
+    "adapter.GeminiFunctionDecl": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {},
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.GeminiFunctionDecl"
+    },
+    "adapter.GeminiFunctionResponse": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "response": {
+          "additionalProperties": {},
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.GeminiFunctionResponse"
+    },
+    "adapter.GeminiInlineData": {
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.GeminiInlineData"
+    },
+    "adapter.GeminiPart": {
+      "properties": {
+        "fileData": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/adapter.GeminiFileData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "functionCall": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/adapter.GeminiFunctionCall"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "functionResponse": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/adapter.GeminiFunctionResponse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inlineData": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/adapter.GeminiInlineData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.GeminiPart"
+    },
+    "adapter.GeminiRequest": {
+      "properties": {
+        "contents": {
+          "items": {
+            "$ref": "#/$defs/adapter.GeminiContent"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "generationConfig": {
+          "additionalProperties": {},
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "systemInstruction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/adapter.GeminiContent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "toolConfig": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/adapter.GeminiToolConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/adapter.GeminiToolDeclaration"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "contents"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.GeminiRequest"
+    },
+    "adapter.GeminiResponse": {
+      "properties": {
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/adapter.GeminiCandidate"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "modelVersion": {
+          "type": "string"
+        },
+        "usageMetadata": {
+          "$ref": "#/$defs/adapter.GeminiUsageMetadata"
+        }
+      },
+      "required": [
+        "candidates",
+        "usageMetadata"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.GeminiResponse"
+    },
+    "adapter.GeminiToolConfig": {
+      "properties": {
+        "functionCallingConfig": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/adapter.GeminiFunctionCallingConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.GeminiToolConfig"
+    },
+    "adapter.GeminiToolDeclaration": {
+      "properties": {
+        "functionDeclarations": {
+          "items": {
+            "$ref": "#/$defs/adapter.GeminiFunctionDecl"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.GeminiToolDeclaration"
+    },
+    "adapter.GeminiUsageMetadata": {
+      "properties": {
+        "candidatesTokenCount": {
+          "type": "integer"
+        },
+        "promptTokenCount": {
+          "type": "integer"
+        },
+        "totalTokenCount": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "promptTokenCount",
+        "candidatesTokenCount",
+        "totalTokenCount"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.GeminiUsageMetadata"
+    },
+    "adapter.ModerationResult": {
+      "properties": {
+        "categories": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "category_applied_input_types": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "category_scores": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "flagged": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "flagged",
+        "categories",
+        "category_scores",
+        "category_applied_input_types"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.ModerationResult"
+    },
+    "adapter.ModerationsRequest": {
+      "properties": {
+        "input": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            }
+          ]
+        },
+        "model": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "input"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.ModerationsRequest"
+    },
+    "adapter.ModerationsResponse": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "results": {
+          "items": {
+            "$ref": "#/$defs/adapter.ModerationResult"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "model",
+        "results"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.ModerationsResponse"
+    },
+    "adapter.OllamaChatRequest": {
+      "properties": {
+        "messages": {
+          "items": {
+            "$ref": "#/$defs/adapter.OllamaMessage"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "stream": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Defaults true; false selects a single JSON response."
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/adapter.OpenAITool"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "model",
+        "messages"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.OllamaChatRequest"
+    },
+    "adapter.OllamaChatResponse": {
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "done": {
+          "type": "boolean"
+        },
+        "done_reason": {
+          "type": "string"
+        },
+        "eval_count": {
+          "type": "integer"
+        },
+        "eval_duration": {
+          "type": "integer"
+        },
+        "load_duration": {
+          "type": "integer"
+        },
+        "message": {
+          "$ref": "#/$defs/adapter.OllamaMessage"
+        },
+        "model": {
+          "type": "string"
+        },
+        "prompt_eval_count": {
+          "type": "integer"
+        },
+        "prompt_eval_duration": {
+          "type": "integer"
+        },
+        "total_duration": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model",
+        "created_at",
+        "message",
+        "done"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.OllamaChatResponse"
+    },
+    "adapter.OllamaFunctionCall": {
+      "properties": {
+        "arguments": {
+          "additionalProperties": {},
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "arguments"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.OllamaFunctionCall"
+    },
+    "adapter.OllamaMessage": {
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "images": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "role": {
+          "type": "string"
+        },
+        "thinking": {
+          "type": "string"
+        },
+        "tool_calls": {
+          "items": {
+            "$ref": "#/$defs/adapter.OllamaToolCall"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.OllamaMessage"
+    },
+    "adapter.OllamaToolCall": {
+      "properties": {
+        "function": {
+          "$ref": "#/$defs/adapter.OllamaFunctionCall"
+        }
+      },
+      "required": [
+        "function"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.OllamaToolCall"
+    },
+    "adapter.OpenAIFunction": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {},
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "strict": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.OpenAIFunction"
+    },
+    "adapter.OpenAITool": {
+      "properties": {
+        "function": {
+          "$ref": "#/$defs/adapter.OpenAIFunction"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "function"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.OpenAITool"
+    },
+    "adapter.ResponsesRequest": {
+      "properties": {
+        "conversation": {
+          "description": "Mutually exclusive with previous_response_id. Conversation items persist even when store is false.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "input": {
+          "description": "String or typed message/function_call_output/function_call items; parsed by parseResponsesInput.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            }
+          ]
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_output_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metadata": {
+          "additionalProperties": {},
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "model": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "parallel_tool_calls": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "previous_response_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasoning": {},
+        "store": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Defaults true; false disables standalone history retention. Previous response IDs are tenant-scoped and globally FIFO bounded to 1024 entries."
+        },
+        "stream": {
+          "type": "boolean"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {},
+        "tool_choice": {},
+        "tools": {
+          "items": {},
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "user": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "model",
+        "input"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.ResponsesRequest"
+    },
+    "adapter.ResponsesResponse": {
+      "properties": {
+        "conversation": {},
+        "created_at": {
+          "type": "integer"
+        },
+        "error": {},
+        "id": {
+          "type": "string"
+        },
+        "incomplete_details": {},
+        "instructions": {},
+        "max_output_tokens": {},
+        "metadata": {
+          "additionalProperties": {},
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "object": {
+          "type": "string"
+        },
+        "output": {
+          "items": {},
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "parallel_tool_calls": {
+          "type": "boolean"
+        },
+        "previous_response_id": {},
+        "reasoning": {},
+        "status": {
+          "type": "string"
+        },
+        "store": {
+          "type": "boolean"
+        },
+        "temperature": {
+          "type": "number"
+        },
+        "text": {},
+        "tool_choice": {},
+        "tools": {
+          "items": {},
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "top_p": {
+          "type": "number"
+        },
+        "truncation": {
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/adapter.ResponsesUsage"
+        },
+        "user": {}
+      },
+      "required": [
+        "id",
+        "object",
+        "created_at",
+        "status",
+        "error",
+        "incomplete_details",
+        "instructions",
+        "max_output_tokens",
+        "model",
+        "output",
+        "parallel_tool_calls",
+        "previous_response_id",
+        "reasoning",
+        "store",
+        "conversation",
+        "temperature",
+        "text",
+        "tool_choice",
+        "tools",
+        "top_p",
+        "truncation",
+        "usage",
+        "user",
+        "metadata"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.ResponsesResponse"
+    },
+    "adapter.ResponsesUsage": {
+      "properties": {
+        "input_tokens": {
+          "type": "integer"
+        },
+        "input_tokens_details": {
+          "$ref": "#/$defs/adapter.responsesInputTokenDetail"
+        },
+        "output_tokens": {
+          "type": "integer"
+        },
+        "output_tokens_details": {
+          "$ref": "#/$defs/adapter.responsesOutputTokenDetail"
+        },
+        "total_tokens": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "input_tokens_details",
+        "output_tokens",
+        "output_tokens_details",
+        "total_tokens"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.ResponsesUsage"
+    },
+    "adapter.responsesInputTokenDetail": {
+      "properties": {
+        "cached_tokens": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cached_tokens"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.responsesInputTokenDetail"
+    },
+    "adapter.responsesOutputTokenDetail": {
+      "properties": {
+        "reasoning_tokens": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reasoning_tokens"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/adapter.responsesOutputTokenDetail"
+    },
+    "config.ValidationError": {
+      "properties": {
+        "column": {
+          "type": "integer"
+        },
+        "field": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer"
+        },
+        "message": {
+          "type": "string"
+        },
+        "suggestion": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "field",
+        "message"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/config.ValidationError"
+    },
+    "engine.NodeResult": {
+      "properties": {
+        "agent_name": {
+          "type": "string"
+        },
+        "latency": {
+          "type": "integer"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "response": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/engine.Response"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "node_id",
+        "agent_name",
+        "response",
+        "latency"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/engine.NodeResult"
+    },
+    "engine.PipelineResult": {
+      "properties": {
+        "latency": {
+          "type": "integer"
+        },
+        "nodes": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/engine.NodeResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "pipeline_name": {
+          "type": "string"
+        },
+        "topology": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pipeline_name",
+        "topology",
+        "nodes",
+        "latency"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/engine.PipelineResult"
+    },
+    "engine.Response": {
+      "properties": {
+        "agent_name": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "finish_reason": {
+          "type": "string"
+        },
+        "hallucination": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/types.HallucinationSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metadata": {
+          "additionalProperties": {},
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "refusal": {
+          "type": "string"
+        },
+        "scenario_name": {
+          "type": "string"
+        },
+        "strict_warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "system_prompt": {
+          "type": "string"
+        },
+        "tool_calls": {
+          "items": {
+            "$ref": "#/$defs/types.ToolCallSpec"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "tool_results": {
+          "items": {
+            "$ref": "#/$defs/engine.ToolCallResult"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "agent_name",
+        "model",
+        "content",
+        "scenario_name"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/engine.Response"
+    },
+    "engine.ToolCallResult": {
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/types.ToolError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "is_error": {
+          "type": "boolean"
+        },
+        "response": {},
+        "tool_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "tool_name",
+        "is_error"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/engine.ToolCallResult"
+    },
+    "server.PipelineRunRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "input"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/server.PipelineRunRequest"
+    },
+    "types.HallucinationSpec": {
+      "properties": {
+        "ground_truth": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.HallucinationSpec"
+    },
+    "types.SearchResult": {
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "favicon": {
+          "type": "string"
+        },
+        "published_date": {
+          "type": "string"
+        },
+        "raw_content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "score": {
+          "type": "number"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "url",
+        "content",
+        "score"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.SearchResult"
+    },
+    "types.ToolCallSpec": {
+      "properties": {
+        "arguments": {
+          "additionalProperties": {},
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "raw_arguments": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.ToolCallSpec"
+    },
+    "types.ToolError": {
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.ToolError"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Generated by go run ./tools/contractcheck -write. Go tags define shape; explicit overlays define validation. Free-form polymorphic fields retain provider extensions; handler semantics remain documented in OpenAPI.",
+  "title": "MockAgents supplemental wire contracts"
+}

@@ -50,8 +50,8 @@ func (r *Registry) Adapters() []Adapter {
 	return r.adapters
 }
 
-// DefaultRegistry returns the built-in protocol adapters (OpenAI +
-// Anthropic) bound to eng. This is the single registration point for
+// DefaultRegistry returns all built-in model, resource, vector, and search
+// protocol adapters bound to eng. This is the single registration point for
 // wire protocols: a new provider is added here and implements Adapter —
 // the server mounts whatever the registry returns, so no route wiring in
 // the server package changes (REF-05).

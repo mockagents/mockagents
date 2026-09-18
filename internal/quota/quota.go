@@ -1,13 +1,12 @@
 // Package quota enforces per-tenant request-rate and monthly-spend caps
 // (REF-08 slice C). It is enforcement-only — no payment provider, no invoices.
 //
-// The Enforcer holds, per tenant, a token bucket for the rate limit and a
-// running spend counter for the current UTC month. Both are in-memory and
-// single-process: counters reset on restart and are not shared across replicas.
-// Accurate cross-restart / multi-replica accounting is a documented follow-on
-// that backs the counters with Postgres atomic increments (see the REF-08
-// design). Per-tenant config overrides are likewise in-memory for now; the
-// persistent tenant_quotas table is the same follow-on.
+// Rate buckets and live config overrides are process-local. Startup loads
+// persisted overrides; updating one replica does not refresh other live maps.
+// A configured SpendBackend persists monthly spend in SQLite/Postgres with
+// atomic increments and a five-second read cache. Without a backend, or on
+// backend failure, accounting falls back to local counters. Spend is accrued
+// after responses, so concurrent requests can exceed a cap.
 //
 // A tenant id of "" (single-tenant / anonymous traffic) is never rate- or
 // spend-limited, so single-tenant deployments are unaffected.
@@ -55,7 +54,7 @@ type Config struct {
 // Usage is a tenant's current consumption, returned by the quota endpoint.
 type Usage struct {
 	Month    string  `json:"month"`     // "2006-01" (UTC)
-	SpendUSD float64 `json:"spend_usd"` // accrued spend this month (this process)
+	SpendUSD float64 `json:"spend_usd"` // accrued spend this month (shared when backend is configured)
 }
 
 type bucket struct {

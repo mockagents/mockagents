@@ -8,7 +8,7 @@ There are three distinct tool surfaces: scenario-declared provider tool calls, M
 
 For each call, the processor resolves its exact tool name, optionally validates arguments, evaluates random error injection, then finds a response rule. Every key in a rule's `match` must be present and equal; extra incoming argument keys are ignored. Numeric representations compare tolerantly, but a numeric string is not automatically a number. The first matching non-default rule wins. A default rule is used after all match rules; if multiple defaults are authored, the processor retains the last. The Go authoring validator does not reject duplicate tool defaults. A rule with no match and no default is skipped. With no result, the fallback is `{"status":"ok"}`.
 
-The JSON Schema bounds tool `error_rate` to 0–1, but the Go validator currently does not enforce that bound. Use the documented range even when CLI/API validation accepts an out-of-range number. This differs from chaos error-rate validation. See [validator](../../internal/config/validator.go) and [Agent schema](../../schema/mockagents-v1-agent.json).
+The JSON Schema and Go validator bound tool error_rate to 0–1; Go also rejects nonfinite values. CLI loading, validation preview, and agent PUT share the validator. See [validator](../../internal/config/validator.go), [Agent schema](../../schema/mockagents-v1-agent.json), and [HTTP boundary regressions](../../internal/server/agent_bounds_test.go).
 
 | Failure | Internal tool result | Whole engine turn |
 | --- | --- | --- |

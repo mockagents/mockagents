@@ -51,7 +51,7 @@ func annotate(row storage.InteractionLog, table *pricing.Table) LogWithCost {
 	if table == nil {
 		return out
 	}
-	usage := pricing.ExtractUsage([]byte(row.ResponseBody))
+	usage := pricing.ExtractUsageForPath([]byte(row.ResponseBody), row.RequestPath)
 	out.PromptTokens = usage.PromptTokens
 	out.CompletionTokens = usage.CompletionTokens
 	out.Model = usage.Model
@@ -363,10 +363,10 @@ func applyLogBodyMode(mode LogBodyMode, body string) string {
 // The optional spendHook is called once per captured interaction with the
 // caller's tenant id and the raw response body, so per-tenant spend accounting
 // (REF-08 slice C) can compute the response's cost and accrue it. It receives
-// the raw body (not the privacy-masked one) because it reads only the usage
-// numbers, never content. nil disables it.
-func InteractionCapture(worker *LogWorker, bodyMode LogBodyMode, spendHook ...func(tenantID, respBody string)) func(http.Handler) http.Handler {
-	var hook func(tenantID, respBody string)
+// the request path and raw body (not the privacy-masked one) to resolve model
+// identity and usage, never content. nil disables it.
+func InteractionCapture(worker *LogWorker, bodyMode LogBodyMode, spendHook ...func(tenantID, path, respBody string)) func(http.Handler) http.Handler {
+	var hook func(tenantID, path, respBody string)
 	if len(spendHook) > 0 {
 		hook = spendHook[0]
 	}
@@ -428,8 +428,8 @@ func InteractionCapture(worker *LogWorker, bodyMode LogBodyMode, spendHook ...fu
 			// captureWriter is released and reused right after this block, so
 			// the worker must not alias its pooled buffer.
 			respBody := cw.bodyString()
-			// cw.streaming was set by the writer the moment it sniffed an
-			// SSE Content-Type; for streams capture was disabled so respBody
+			// cw.streaming was set by the writer the moment it sniffed a
+			// stream Content-Type; for streams capture was disabled so respBody
 			// is empty by design (F-LH-001 / X-SSE-001).
 			streaming := cw.streaming
 			agentName := meta.AgentName
@@ -491,7 +491,7 @@ func InteractionCapture(worker *LogWorker, bodyMode LogBodyMode, spendHook ...fu
 			// streaming responses have no captured body, so their spend isn't
 			// counted (a documented soft-margin limitation).
 			if hook != nil {
-				hook(entry.TenantID, respBody)
+				hook(entry.TenantID, path, respBody)
 			}
 			// Submit is non-blocking and drops on a full queue. The drop is
 			// already metered (worker.Metrics().Dropped); surface it at debug
@@ -614,7 +614,7 @@ type captureWriter struct {
 	body       []byte
 	truncated  bool
 	// streaming is set once the final Content-Type is sniffed and turns
-	// out to be an SSE stream; capture is disabled in that case so the
+	// out to be SSE, NDJSON, or AWS eventstream; capture is disabled in that case so the
 	// stream's chunks are never buffered/pinned (F-LH-001). sniffed guards
 	// the one-shot detection so it runs at most once per request.
 	streaming bool
@@ -709,7 +709,7 @@ func (w *captureWriter) bodyString() string {
 }
 
 // detectStreaming inspects the final Content-Type exactly once. When the
-// response is an SSE stream it records that fact and disables body capture
+// response is SSE, NDJSON, or AWS eventstream it records that fact and disables body capture
 // so the stream's chunks are neither buffered nor pinned in memory
 // (F-LH-001 / X-SSE-001). Matching tolerates a charset (or any) parameter
 // via mime.ParseMediaType (F-LH-004).
@@ -724,8 +724,8 @@ func (w *captureWriter) detectStreaming() {
 	}
 }
 
-// isEventStream reports whether a Content-Type header value denotes an SSE
-// stream, ignoring any media-type parameters (e.g.
+// isEventStream reports whether a Content-Type header value denotes an SSE, NDJSON, or AWS
+// eventstream, ignoring any media-type parameters (e.g.
 // "text/event-stream; charset=utf-8"). Falls back to a prefix check when
 // the header is malformed enough that mime.ParseMediaType rejects it.
 func isEventStream(contentType string) bool {
@@ -733,9 +733,9 @@ func isEventStream(contentType string) bool {
 		return false
 	}
 	if mediaType, _, err := mime.ParseMediaType(contentType); err == nil {
-		return mediaType == "text/event-stream"
+		return mediaType == "text/event-stream" || mediaType == "application/x-ndjson" || mediaType == "application/vnd.amazon.eventstream"
 	}
-	return strings.HasPrefix(contentType, "text/event-stream")
+	return strings.HasPrefix(contentType, "text/event-stream") || strings.HasPrefix(contentType, "application/x-ndjson") || strings.HasPrefix(contentType, "application/vnd.amazon.eventstream")
 }
 
 func (w *captureWriter) Flush() {

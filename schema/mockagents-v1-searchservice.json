@@ -1,0 +1,349 @@
+{
+  "$defs": {
+    "types.Metadata": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "tenant_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.Metadata"
+    },
+    "types.SearchFaults": {
+      "additionalProperties": false,
+      "properties": {
+        "disconnect": {
+          "type": "boolean"
+        },
+        "latency_ms": {
+          "maximum": 60000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "malformed_json": {
+          "type": "boolean"
+        },
+        "operation_rates": {
+          "additionalProperties": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "propertyNames": {
+            "pattern": "^/"
+          },
+          "type": "object"
+        },
+        "partial_results": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/types.SearchPartialResultsFault"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rate": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "status_code": {
+          "anyOf": [
+            {
+              "const": 0
+            },
+            {
+              "maximum": 599,
+              "minimum": 400,
+              "type": "integer"
+            }
+          ]
+        }
+      },
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.SearchFaults"
+    },
+    "types.SearchMatch": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "default": {
+              "const": false
+            },
+            "query_contains": {
+              "minLength": 1
+            },
+            "query_regex": {
+              "const": ""
+            }
+          },
+          "required": [
+            "query_contains"
+          ]
+        },
+        {
+          "properties": {
+            "default": {
+              "const": false
+            },
+            "query_contains": {
+              "const": ""
+            },
+            "query_regex": {
+              "minLength": 1
+            }
+          },
+          "required": [
+            "query_regex"
+          ]
+        },
+        {
+          "properties": {
+            "default": {
+              "const": true
+            },
+            "query_contains": {
+              "const": ""
+            },
+            "query_regex": {
+              "const": ""
+            }
+          },
+          "required": [
+            "default"
+          ]
+        }
+      ],
+      "properties": {
+        "default": {
+          "type": "boolean"
+        },
+        "query_contains": {
+          "type": "string"
+        },
+        "query_regex": {
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.SearchMatch"
+    },
+    "types.SearchPartialResultsFault": {
+      "additionalProperties": false,
+      "properties": {
+        "max_results": {
+          "maximum": 20,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.SearchPartialResultsFault"
+    },
+    "types.SearchResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "results": {
+          "items": {
+            "$ref": "#/$defs/types.SearchResult"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.SearchResponse"
+    },
+    "types.SearchResult": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "favicon": {
+          "type": "string"
+        },
+        "published_date": {
+          "pattern": "^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+          "type": "string"
+        },
+        "raw_content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "score": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "title": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "url": {
+          "pattern": "^https?://[^/]+",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "url"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.SearchResult"
+    },
+    "types.SearchScenario": {
+      "additionalProperties": false,
+      "properties": {
+        "match": {
+          "$ref": "#/$defs/types.SearchMatch"
+        },
+        "name": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "response": {
+          "$ref": "#/$defs/types.SearchResponse"
+        }
+      },
+      "required": [
+        "name",
+        "match"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.SearchScenario"
+    },
+    "types.SearchServiceDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "apiVersion": {
+          "const": "mockagents/v1"
+        },
+        "kind": {
+          "const": "SearchService"
+        },
+        "metadata": {
+          "$ref": "#/$defs/types.Metadata"
+        },
+        "spec": {
+          "$ref": "#/$defs/types.SearchServiceSpec"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.SearchServiceDefinition"
+    },
+    "types.SearchServiceSpec": {
+      "additionalProperties": false,
+      "else": {
+        "properties": {
+          "scenarios": {
+            "maxItems": 0
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "provider": {
+            "pattern": "^[tT][aA][vV][iI][lL][yY]$"
+          }
+        }
+      },
+      "properties": {
+        "faults": {
+          "$ref": "#/$defs/types.SearchFaults"
+        },
+        "provider": {
+          "pattern": "^(?:[tT][aA][vV][iI][lL][yY]|[cC][oO][hH][eE][rR][eE]-[rR][eE][rR][aA][nN][kK]|[oO][pP][eE][nN][aA][iI]-[mM][oO][dD][eE][rR][aA][tT][iI][oO][nN][sS])$",
+          "type": "string"
+        },
+        "scenarios": {
+          "contains": {
+            "properties": {
+              "match": {
+                "properties": {
+                  "default": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "default"
+                ]
+              }
+            },
+            "required": [
+              "match"
+            ]
+          },
+          "items": {
+            "$ref": "#/$defs/types.SearchScenario"
+          },
+          "maxContains": 1,
+          "minContains": 0,
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "provider"
+      ],
+      "type": "object",
+      "x-go-type": "github.com/mockagents/mockagents/internal/types.SearchServiceSpec"
+    }
+  },
+  "$id": "https://mockagents.dev/schema/v1/searchservice.json",
+  "$ref": "#/$defs/types.SearchServiceDefinition",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MockAgents SearchService Definition"
+}

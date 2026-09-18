@@ -39,6 +39,7 @@ Generated from non-test Go imports. These are direct package dependencies, not r
 | `tools/benchguard` |  |
 | `tools/benchreport` |  |
 | `tools/coheredriftscrub` |  |
+| `tools/contractcheck` | `internal/adapter`, `internal/config`, `internal/engine`, `internal/server`, `internal/types` |
 | `tools/doccheck` |  |
 | `tools/driftcheck` | `internal/adapter`, `internal/audit`, `internal/quota`, `internal/server`, `internal/storage`, `internal/streaming`, `internal/tenancy`, `internal/types` |
 | `tools/handoffcatalog` |  |

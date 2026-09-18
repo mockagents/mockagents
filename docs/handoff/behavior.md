@@ -13,8 +13,8 @@ This reference distinguishes an intentional mock behavior from an operational fa
 | Tool result error | Individual internal result carries error | Does not automatically mean an HTTP error |
 | Auth failure on managed route | `401`; insufficient role `403`; auth-store failure fails closed | Do not infer identity from UI cookies or list contents |
 | Invalid credential on provider route | Auth-exempt route can continue anonymously | Use managed endpoints to verify credentials; provider success is not an auth test |
-| Known Responses `previous_response_id` from another tenant | History lookup accepts the ID without ownership checking | Do not claim tenant isolation for this history store; application fix remains open |
-| Responses `store: false` | Flag is echoed but history is still retained/addressable | Do not use the flag as a retention guarantee in this mock |
+| Known Responses `previous_response_id` from another tenant | 404; lookup requires the authenticated tenant | Anonymous and other tenants cannot continue this history |
+| Responses `store: false` | Standalone history is not retained/addressable | Conversation-owned items still append independently |
 | Named-tenant quota exceeded | `429` rate / `402` spend where enforced | Anonymous traffic has no tenant quota |
 | Pipeline node fails | `422`, classification code and partial trajectory | Assert what ran before failure |
 | Live log queue/backpressure | Bounded asynchronous evidence can be dropped/delayed | Do not assume immediate complete audit-grade interaction history |

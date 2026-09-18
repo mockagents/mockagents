@@ -16,13 +16,11 @@ type AgentDefinition struct {
 
 // Metadata contains identifying information for an agent.
 //
-// TenantID is an optional ownership marker for multi-tenant
-// deployments. When set, the agent is only visible to admins of the
-// matching tenant via the control-plane endpoints, and to LLM calls
-// that pass `X-Mockagents-Tenant: <id>`. When empty (the v0.1
-// default) the agent is "global" — visible to every tenant. This
-// keeps single-tenant deployments unchanged while letting
-// multi-tenant operators carve up the catalog.
+// TenantID optionally owns an agent within one tenant. Visibility and writes
+// use the authenticated principal tenant from request context, never a
+// client-selected tenant header. Empty ownership makes the agent global;
+// tenant-owned agents shadow global agents with the same name or model.
+// Other document registries define their own use of shared Metadata.
 type Metadata struct {
 	Name        string   `yaml:"name" json:"name"`
 	Description string   `yaml:"description,omitempty" json:"description,omitempty"`

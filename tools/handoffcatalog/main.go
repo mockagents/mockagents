@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -22,7 +23,11 @@ const outDir = "docs/handoff/reference"
 
 type route struct{ pattern, handler, file, surface string }
 
+var checkOnly bool
+
 func main() {
+	flag.BoolVar(&checkOnly, "check", false, "verify API route coverage without writing catalogs")
+	flag.Parse()
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -236,6 +241,12 @@ func run() error {
 			handler = "inline handler"
 		}
 		fmt.Fprintf(&api, "| `%s` | `%s` | `%s` | [%s](../../../%s) |\n", clean(r.pattern), floor, clean(handler), r.file, r.file)
+	}
+	if err := checkCoverage(routes); err != nil {
+		return err
+	}
+	if checkOnly {
+		return nil
 	}
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		return err

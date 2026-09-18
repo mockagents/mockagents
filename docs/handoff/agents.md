@@ -24,7 +24,7 @@ Scenarios are inspected in declaration order. Every supplied field within a runt
 | `turn_number` | Exact proposed session turn number; first successful turn is 1 |
 | `has_image` | Presence/absence of parsed image parts on the latest user turn |
 
-Turns begin at 1 in normal engine execution. The Go validator does not reject zero/negative `turn_number` values; zero is even allowed by the current JSON Schema. Such a rule cannot match a normal proposed turn. Author positive values and do not treat validation success as proof that the rule is reachable. Evidence: [matcher](../../internal/engine/scenario_matcher.go), [validator](../../internal/config/validator.go), [session transaction](../../internal/engine/state/session.go).
+Turns begin at 1 in normal engine execution. Both the Go validator and Agent JSON Schema reject zero or negative turn_number values. Omit the field to match any turn. Evidence: [matcher](../../internal/engine/scenario_matcher.go), [validator](../../internal/config/validator.go), [boundary regressions](../../internal/config/agent_bounds_test.go).
 
 The first matching explicit rule wins. A scenario without `match` is a default; the matcher remembers the first default and uses it only if no explicit rule matches. An empty match object has no failing conditions and therefore matches immediately. If there is no matching rule or default, the engine emits `_fallback` with `Mock response from <agent-name>` and records a fallback metric. This is a successful fixture fallback, not a routing error.
 

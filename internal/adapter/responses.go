@@ -43,7 +43,7 @@ type ResponsesRequest struct {
 	Store              *bool             `json:"store,omitempty"`
 	// Conversation references an OpenAI Conversation (NF-02): a string id or an
 	// object {"id": "..."}. Its stored Items are replayed as prior turns, and
-	// (when store != false) this turn's input + output are appended to it. It is
+	// this turn's input + output are appended regardless of store. It is
 	// mutually exclusive with previous_response_id.
 	Conversation      json.RawMessage `json:"conversation,omitempty"`
 	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
@@ -165,35 +165,39 @@ type responseFunctionCallItem struct {
 // mock cannot grow without limit.
 type responseStore struct {
 	mu    sync.Mutex
-	m     map[string][]engine.RequestMessage
-	order []string
+	m     map[responseKey][]engine.RequestMessage
+	order []responseKey
 }
+
+// The empty tenant is the anonymous namespace, never a wildcard.
+type responseKey struct{ tenant, id string }
 
 const maxStoredResponses = 1024
 
 func newResponseStore() *responseStore {
-	return &responseStore{m: make(map[string][]engine.RequestMessage)}
+	return &responseStore{m: make(map[responseKey][]engine.RequestMessage)}
 }
 
-func (s *responseStore) get(id string) ([]engine.RequestMessage, bool) {
+func (s *responseStore) get(tenant, id string) ([]engine.RequestMessage, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	msgs, ok := s.m[id]
+	msgs, ok := s.m[responseKey{tenant, id}]
 	return msgs, ok
 }
 
-func (s *responseStore) put(id string, msgs []engine.RequestMessage) {
+func (s *responseStore) put(tenant, id string, msgs []engine.RequestMessage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.m[id]; !exists {
-		s.order = append(s.order, id)
+	key := responseKey{tenant, id}
+	if _, exists := s.m[key]; !exists {
+		s.order = append(s.order, key)
 		for len(s.order) > maxStoredResponses {
 			oldest := s.order[0]
 			s.order = s.order[1:]
 			delete(s.m, oldest)
 		}
 	}
-	s.m[id] = msgs
+	s.m[key] = msgs
 }
 
 // --- Handler ---
@@ -302,7 +306,7 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 		}
 		messages = append(messages, prior...)
 	case req.PreviousResponseID != nil && *req.PreviousResponseID != "":
-		prior, ok := h.store.get(*req.PreviousResponseID)
+		prior, ok := h.store.get(tenant, *req.PreviousResponseID)
 		if !ok {
 			writeError(w, http.StatusNotFound, "invalid_request_error",
 				fmt.Sprintf("Previous response with id '%s' not found.", *req.PreviousResponseID))
@@ -395,7 +399,9 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 		}
 		stored = append(stored, engine.RequestMessage{Role: "assistant", ToolCalls: echoed})
 	}
-	h.store.put(respID, stored)
+	if boolOr(req.Store, true) {
+		h.store.put(tenant, respID, stored)
+	}
 
 	// When this turn referenced a conversation, append the new input + the
 	// assistant output to it so the next turn replays them (the thread-replacement

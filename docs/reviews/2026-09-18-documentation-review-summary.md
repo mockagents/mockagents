@@ -1,5 +1,7 @@
 # Multi-pass documentation re-review
 
+Historical baseline report. The subsequent six application/coverage fixes and their verification are recorded in [application action closure](2026-09-18-application-actions.md).
+
 Date: 2026-09-18. Baseline application SHA: `5d5b5172dfd3c19854bcfb1db7d5215af711165e`. Scope: the uncommitted handoff documentation, its generators/exporter, and the shared references it directs readers to. No runtime behavior was changed and nothing was published.
 
 ## Result

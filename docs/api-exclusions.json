@@ -1,0 +1,392 @@
+[
+  {
+    "pattern": "/healthz",
+    "source": "cmd/mockagents/mcp.go",
+    "reason": "Standalone MCP JSON-RPC/SSE/streamable transport on its own listener; not part of the main REST API or its authentication middleware.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "/mcp",
+    "source": "cmd/mockagents/mcp.go",
+    "reason": "Standalone MCP JSON-RPC/SSE/streamable transport on its own listener; not part of the main REST API or its authentication middleware.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "/mcp/events",
+    "source": "cmd/mockagents/mcp.go",
+    "reason": "Standalone MCP JSON-RPC/SSE/streamable transport on its own listener; not part of the main REST API or its authentication middleware.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "/mcp/notify",
+    "source": "cmd/mockagents/mcp.go",
+    "reason": "Standalone MCP JSON-RPC/SSE/streamable transport on its own listener; not part of the main REST API or its authentication middleware.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "/mcp/response",
+    "source": "cmd/mockagents/mcp.go",
+    "reason": "Standalone MCP JSON-RPC/SSE/streamable transport on its own listener; not part of the main REST API or its authentication middleware.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "/mcp/roots",
+    "source": "cmd/mockagents/mcp.go",
+    "reason": "Standalone MCP JSON-RPC/SSE/streamable transport on its own listener; not part of the main REST API or its authentication middleware.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "/mcp/rpc",
+    "source": "cmd/mockagents/mcp.go",
+    "reason": "Standalone MCP JSON-RPC/SSE/streamable transport on its own listener; not part of the main REST API or its authentication middleware.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "/mcp/sample",
+    "source": "cmd/mockagents/mcp.go",
+    "reason": "Standalone MCP JSON-RPC/SSE/streamable transport on its own listener; not part of the main REST API or its authentication middleware.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /.well-known/agent-card.json",
+    "source": "cmd/mockagents/a2a.go",
+    "reason": "Standalone A2A discovery/JSON-RPC transport on its own listener; not part of the main REST API or its authentication middleware.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /.well-known/agent.json",
+    "source": "cmd/mockagents/a2a.go",
+    "reason": "Standalone A2A discovery/JSON-RPC transport on its own listener; not part of the main REST API or its authentication middleware.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /healthz",
+    "source": "cmd/mockagents/a2a.go",
+    "reason": "Standalone A2A discovery/JSON-RPC transport on its own listener; not part of the main REST API or its authentication middleware.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /",
+    "source": "cmd/mockagents/a2a.go",
+    "reason": "Standalone A2A discovery/JSON-RPC transport on its own listener; not part of the main REST API or its authentication middleware.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /v1/engines/process",
+    "source": "internal/server/server.go",
+    "reason": "Optional internal engine diagnostic endpoint, disabled by default, accepts the engine-native request type; excluded from the public provider contract.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /api/v1/logs/stream",
+    "source": "internal/server/server.go",
+    "reason": "Optional internal engine diagnostic endpoint, disabled by default, accepts the engine-native request type; excluded from the public provider contract.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "DELETE /api/v2/tenants/{tenant}/databases/{database}/collections/{collection}",
+    "source": "internal/adapter/chroma.go",
+    "reason": "Chroma SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines collection mutations and SDK-specific filter limits.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "DELETE /collections/{collection}",
+    "source": "internal/adapter/qdrant.go",
+    "reason": "Qdrant SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines named-vector and filter limitations.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "DELETE /v1/conversations/{id}",
+    "source": "internal/adapter/conversations.go",
+    "reason": "Stateful compatibility profile (items are a polymorphic union); the SDK fixture profile and tests are authoritative. Excluded from this core OpenAPI contract, not from route coverage.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "DELETE /v1/conversations/{id}/items/{item_id}",
+    "source": "internal/adapter/conversations.go",
+    "reason": "Stateful compatibility profile (items are a polymorphic union); the SDK fixture profile and tests are authoritative. Excluded from this core OpenAPI contract, not from route coverage.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "DELETE /v1/files/{id}",
+    "source": "internal/adapter/files.go",
+    "reason": "Multipart uploads and opaque JSONL file downloads have a separate SDK fixture profile, not a JSON REST model. Excluded from the core OpenAPI contract.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "DELETE /v1/messages/batches/{id}",
+    "source": "internal/adapter/anthropic_batches.go",
+    "reason": "Provider batch lifecycle and JSONL result stream use the compatibility fixture profile; excluded from the core synchronous OpenAPI contract.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /api/v2/heartbeat",
+    "source": "internal/adapter/chroma.go",
+    "reason": "Chroma SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines collection mutations and SDK-specific filter limits.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /api/v2/tenants/{tenant}/databases/{database}/collections",
+    "source": "internal/adapter/chroma.go",
+    "reason": "Chroma SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines collection mutations and SDK-specific filter limits.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /api/v2/tenants/{tenant}/databases/{database}/collections/{collection}",
+    "source": "internal/adapter/chroma.go",
+    "reason": "Chroma SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines collection mutations and SDK-specific filter limits.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /api/v2/tenants/{tenant}/databases/{database}/collections/{collection}/count",
+    "source": "internal/adapter/chroma.go",
+    "reason": "Chroma SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines collection mutations and SDK-specific filter limits.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /api/v2/tenants/{tenant}/databases/{database}/collections_count",
+    "source": "internal/adapter/chroma.go",
+    "reason": "Chroma SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines collection mutations and SDK-specific filter limits.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /collections/{collection}",
+    "source": "internal/adapter/qdrant.go",
+    "reason": "Qdrant SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines named-vector and filter limitations.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /pinecone/{index}/vectors/fetch",
+    "source": "internal/adapter/pinecone.go",
+    "reason": "Pinecone SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines namespace and metadata behavior.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /v1/batches",
+    "source": "internal/adapter/batches.go",
+    "reason": "Synchronous mock of an asynchronous provider job API; job lifecycle and JSONL record contracts are specified by the compatibility profile and conformance tests.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /v1/batches/{id}",
+    "source": "internal/adapter/batches.go",
+    "reason": "Synchronous mock of an asynchronous provider job API; job lifecycle and JSONL record contracts are specified by the compatibility profile and conformance tests.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /v1/conversations/{id}",
+    "source": "internal/adapter/conversations.go",
+    "reason": "Stateful compatibility profile (items are a polymorphic union); the SDK fixture profile and tests are authoritative. Excluded from this core OpenAPI contract, not from route coverage.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /v1/conversations/{id}/items",
+    "source": "internal/adapter/conversations.go",
+    "reason": "Stateful compatibility profile (items are a polymorphic union); the SDK fixture profile and tests are authoritative. Excluded from this core OpenAPI contract, not from route coverage.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /v1/conversations/{id}/items/{item_id}",
+    "source": "internal/adapter/conversations.go",
+    "reason": "Stateful compatibility profile (items are a polymorphic union); the SDK fixture profile and tests are authoritative. Excluded from this core OpenAPI contract, not from route coverage.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /v1/files",
+    "source": "internal/adapter/files.go",
+    "reason": "Multipart uploads and opaque JSONL file downloads have a separate SDK fixture profile, not a JSON REST model. Excluded from the core OpenAPI contract.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /v1/files/{id}",
+    "source": "internal/adapter/files.go",
+    "reason": "Multipart uploads and opaque JSONL file downloads have a separate SDK fixture profile, not a JSON REST model. Excluded from the core OpenAPI contract.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /v1/files/{id}/content",
+    "source": "internal/adapter/files.go",
+    "reason": "Multipart uploads and opaque JSONL file downloads have a separate SDK fixture profile, not a JSON REST model. Excluded from the core OpenAPI contract.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /v1/messages/batches",
+    "source": "internal/adapter/anthropic_batches.go",
+    "reason": "Provider batch lifecycle and JSONL result stream use the compatibility fixture profile; excluded from the core synchronous OpenAPI contract.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /v1/messages/batches/{id}",
+    "source": "internal/adapter/anthropic_batches.go",
+    "reason": "Provider batch lifecycle and JSONL result stream use the compatibility fixture profile; excluded from the core synchronous OpenAPI contract.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /v1/messages/batches/{id}/results",
+    "source": "internal/adapter/anthropic_batches.go",
+    "reason": "Provider batch lifecycle and JSONL result stream use the compatibility fixture profile; excluded from the core synchronous OpenAPI contract.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "GET /v1/realtime",
+    "source": "internal/adapter/realtime.go",
+    "reason": "WebSocket session/event protocol and bootstrap compatibility profile are specified separately; HTTP OpenAPI alone cannot describe the event lifecycle.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /api/v2/tenants/{tenant}/databases/{database}/collections",
+    "source": "internal/adapter/chroma.go",
+    "reason": "Chroma SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines collection mutations and SDK-specific filter limits.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /api/v2/tenants/{tenant}/databases/{database}/collections/{collection}/add",
+    "source": "internal/adapter/chroma.go",
+    "reason": "Chroma SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines collection mutations and SDK-specific filter limits.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /api/v2/tenants/{tenant}/databases/{database}/collections/{collection}/delete",
+    "source": "internal/adapter/chroma.go",
+    "reason": "Chroma SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines collection mutations and SDK-specific filter limits.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /api/v2/tenants/{tenant}/databases/{database}/collections/{collection}/get",
+    "source": "internal/adapter/chroma.go",
+    "reason": "Chroma SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines collection mutations and SDK-specific filter limits.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /api/v2/tenants/{tenant}/databases/{database}/collections/{collection}/query",
+    "source": "internal/adapter/chroma.go",
+    "reason": "Chroma SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines collection mutations and SDK-specific filter limits.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /api/v2/tenants/{tenant}/databases/{database}/collections/{collection}/upsert",
+    "source": "internal/adapter/chroma.go",
+    "reason": "Chroma SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines collection mutations and SDK-specific filter limits.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /collections/{collection}/points",
+    "source": "internal/adapter/qdrant.go",
+    "reason": "Qdrant SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines named-vector and filter limitations.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /collections/{collection}/points/delete",
+    "source": "internal/adapter/qdrant.go",
+    "reason": "Qdrant SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines named-vector and filter limitations.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /collections/{collection}/points/search",
+    "source": "internal/adapter/qdrant.go",
+    "reason": "Qdrant SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines named-vector and filter limitations.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /pinecone/{index}/describe_index_stats",
+    "source": "internal/adapter/pinecone.go",
+    "reason": "Pinecone SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines namespace and metadata behavior.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /pinecone/{index}/query",
+    "source": "internal/adapter/pinecone.go",
+    "reason": "Pinecone SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines namespace and metadata behavior.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /pinecone/{index}/vectors/delete",
+    "source": "internal/adapter/pinecone.go",
+    "reason": "Pinecone SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines namespace and metadata behavior.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /pinecone/{index}/vectors/upsert",
+    "source": "internal/adapter/pinecone.go",
+    "reason": "Pinecone SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines namespace and metadata behavior.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /v1/batches",
+    "source": "internal/adapter/batches.go",
+    "reason": "Synchronous mock of an asynchronous provider job API; job lifecycle and JSONL record contracts are specified by the compatibility profile and conformance tests.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /v1/batches/{id}/cancel",
+    "source": "internal/adapter/batches.go",
+    "reason": "Synchronous mock of an asynchronous provider job API; job lifecycle and JSONL record contracts are specified by the compatibility profile and conformance tests.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /v1/conversations",
+    "source": "internal/adapter/conversations.go",
+    "reason": "Stateful compatibility profile (items are a polymorphic union); the SDK fixture profile and tests are authoritative. Excluded from this core OpenAPI contract, not from route coverage.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /v1/conversations/{id}",
+    "source": "internal/adapter/conversations.go",
+    "reason": "Stateful compatibility profile (items are a polymorphic union); the SDK fixture profile and tests are authoritative. Excluded from this core OpenAPI contract, not from route coverage.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /v1/conversations/{id}/items",
+    "source": "internal/adapter/conversations.go",
+    "reason": "Stateful compatibility profile (items are a polymorphic union); the SDK fixture profile and tests are authoritative. Excluded from this core OpenAPI contract, not from route coverage.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /v1/files",
+    "source": "internal/adapter/files.go",
+    "reason": "Multipart uploads and opaque JSONL file downloads have a separate SDK fixture profile, not a JSON REST model. Excluded from the core OpenAPI contract.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /v1/messages/batches",
+    "source": "internal/adapter/anthropic_batches.go",
+    "reason": "Provider batch lifecycle and JSONL result stream use the compatibility fixture profile; excluded from the core synchronous OpenAPI contract.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /v1/messages/batches/{id}/cancel",
+    "source": "internal/adapter/anthropic_batches.go",
+    "reason": "Provider batch lifecycle and JSONL result stream use the compatibility fixture profile; excluded from the core synchronous OpenAPI contract.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /v1/messages/count_tokens",
+    "source": "internal/adapter/anthropic.go",
+    "reason": "Free token-counting compatibility helper is outside the generated core inference contract; its implementation and compatibility tests define estimation behavior.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /v1/realtime/client_secrets",
+    "source": "internal/adapter/realtime.go",
+    "reason": "WebSocket session/event protocol and bootstrap compatibility profile are specified separately; HTTP OpenAPI alone cannot describe the event lifecycle.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "POST /v1/realtime/sessions",
+    "source": "internal/adapter/realtime.go",
+    "reason": "WebSocket session/event protocol and bootstrap compatibility profile are specified separately; HTTP OpenAPI alone cannot describe the event lifecycle.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "PUT /collections/{collection}",
+    "source": "internal/adapter/qdrant.go",
+    "reason": "Qdrant SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines named-vector and filter limitations.",
+    "contract": "docs/api-contracts.md"
+  },
+  {
+    "pattern": "PUT /collections/{collection}/points",
+    "source": "internal/adapter/qdrant.go",
+    "reason": "Qdrant SDK compatibility fixture surface shares an in-memory vector store; its independent profile defines named-vector and filter limitations.",
+    "contract": "docs/api-contracts.md"
+  }
+]

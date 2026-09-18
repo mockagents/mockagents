@@ -22,8 +22,9 @@ info:
     the management API is open. Provider adapter routes allow anonymous access
     for SDK compatibility. A valid MockAgents key or supported session credential
     attaches a principal and scopes the request; an absent or invalid provider
-    credential can proceed anonymously. This file covers selected operations;
-    docs/handoff/reference/routes.md inventories the complete built-in HTTP surface.
+    credential can proceed anonymously. Operation coverage and explicit exclusions are checked against source mounts.
+    See docs/api-exclusions.json and docs/api-contracts.md for scope; generated
+    supplemental schemas live in docs/api-models.json.
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -756,7 +757,11 @@ paths:
       summary: Validate a YAML document
       description: >
         Runs the same validator as `mockagents validate` against an in-memory
-        document (Agent / Pipeline / TestSuite / MCPServer). Requires `editor`
+        document (Agent, Pipeline, TestSuite, MCPServer, A2AServer, VectorCollection, or SearchService).
+        Maximum request body is 1 MiB. JSON may be a raw definition or a wrapper
+        with a nonempty yaml string. Validation failures return 200 and ok=false;
+        malformed wrappers return 400, oversized bodies return 413. Lint warnings
+        from ValidateBytes are not included in this HTTP response. Requires `editor`
         in multi-tenant mode.
       tags: [Config]
       requestBody:
@@ -766,18 +771,31 @@ paths:
             schema: { type: string }
           text/plain:
             schema: { type: string }
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [yaml]
+                  properties:
+                    yaml: { type: string, minLength: 1 }
+                - type: object
+                  required: [apiVersion, kind, metadata, spec]
+                  not: { required: [yaml] }
       responses:
         "200":
           description: Validation result (ok or structured errors).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ValidateResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "413": { description: Body exceeds 1 MiB. }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
   /auth/login:
     get:
       operationId: ssoLogin
+      security: []
       summary: Begin SSO login (OIDC)
       description: >
         Starts the OpenID Connect authorization-code flow (REF-08 slice D):
@@ -791,6 +809,7 @@ paths:
   /auth/callback:
     get:
       operationId: ssoCallback
+      security: []
       summary: Complete SSO login (OIDC callback)
       description: >
         The IdP redirect target. Validates state (CSRF) + PKCE, exchanges the
@@ -813,6 +832,7 @@ paths:
   /auth/logout:
     post:
       operationId: ssoLogout
+      security: []
       summary: Revoke the current SSO session
       description: Revokes the session behind the cookie and clears it.
       tags: [Auth]
@@ -835,16 +855,7 @@ paths:
           description: Effective limits and current-month usage.
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  tenant_id: { type: string }
-                  limits: { $ref: "#/components/schemas/QuotaConfig" }
-                  usage:
-                    type: object
-                    properties:
-                      month: { type: string, example: "2026-06" }
-                      spend_usd: { type: number }
+              schema: { $ref: "./api-models.json#/$defs/QuotaResult" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
@@ -866,7 +877,10 @@ paths:
             schema: { $ref: "#/components/schemas/QuotaConfig" }
       responses:
         "200":
-          description: Override applied (persisted to the tenancy store, so it survives restarts).
+          description: Persisted and applied to this process. Other live replicas refresh on restart.
+          content:
+            application/json:
+              schema: { $ref: "./api-models.json#/$defs/QuotaUpdateResult" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -1233,6 +1247,649 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /v1/responses:
+    post:
+      operationId: "createResponse"
+      summary: "createResponse"
+      description: "Creates a tenant-scoped response. History is process-local with global FIFO capacity 1024; store defaults true. store:false disables standalone history, not Conversation item storage. Unknown or foreign previous_response_id returns 404. Streaming emits named SSE events; terminal response.completed/response.incomplete/response.failed events carry the final response. No GET Responses endpoint. Provider access is anonymous by default; a valid MockAgents credential scopes the tenant. Request bodies are subject to the main server body limit."
+      security: []
+      requestBody:
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "./api-models.json#/$defs/adapter.ResponsesRequest"
+            "example":
+              "model": "gpt-4o"
+              "input": "hello"
+      responses:
+        "200":
+          "description": "Successful provider response."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "./api-models.json#/$defs/adapter.ResponsesResponse"
+            "text/event-stream":
+              "schema":
+                "type": "string"
+                "description": "Provider-specific SSE events."
+        "400":
+          "description": "Malformed JSON, unsupported input, or invalid request fields; provider-specific error envelope."
+        "402":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "404":
+          "description": "Model, session history, or method not found."
+        "413":
+          "description": "Request exceeds the configured body limit."
+        "429":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "default":
+          "description": "Provider error or injected chaos response; configured faults may deliberately violate the success schema."
+  /api/chat:
+    post:
+      operationId: "ollamaChat"
+      summary: "ollamaChat"
+      description: "Ollama chat. Stream defaults true and returns newline-delimited JSON; stream:false returns one JSON object. Provider access is anonymous by default; a valid MockAgents credential scopes the tenant. Request bodies are subject to the main server body limit."
+      security: []
+      requestBody:
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "./api-models.json#/$defs/adapter.OllamaChatRequest"
+            "example":
+              "model": "gpt-4o"
+              "messages":
+                - "role": "user"
+                  "content": "hello"
+              "stream": false
+      responses:
+        "200":
+          "description": "Successful provider response."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "./api-models.json#/$defs/adapter.OllamaChatResponse"
+            "application/x-ndjson":
+              "schema":
+                "type": "string"
+                "description": "OllamaChatResponse objects separated by newline."
+        "400":
+          "description": "Malformed JSON, unsupported input, or invalid request fields; provider-specific error envelope."
+        "402":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "404":
+          "description": "Model, session history, or method not found."
+        "413":
+          "description": "Request exceeds the configured body limit."
+        "429":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "default":
+          "description": "Provider error or injected chaos response; configured faults may deliberately violate the success schema."
+  /model/{modelId}/converse:
+    post:
+      operationId: "bedrockConverse"
+      summary: "bedrockConverse"
+      description: "Bedrock Converse. Model identity comes from modelId in the path. No AWS signature validation is performed. Provider access is anonymous by default; a valid MockAgents credential scopes the tenant. Request bodies are subject to the main server body limit."
+      security: []
+      parameters:
+        - "name": "modelId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "minLength": 1
+      requestBody:
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "./api-models.json#/$defs/adapter.BedrockConverseRequest"
+            "example":
+              "messages":
+                - "role": "user"
+                  "content":
+                    - "text": "hello"
+      responses:
+        "200":
+          "description": "Successful provider response."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "./api-models.json#/$defs/adapter.BedrockConverseResponse"
+        "400":
+          "description": "Malformed JSON, unsupported input, or invalid request fields; provider-specific error envelope."
+        "402":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "404":
+          "description": "Model, session history, or method not found."
+        "413":
+          "description": "Request exceeds the configured body limit."
+        "429":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "default":
+          "description": "Provider error or injected chaos response; configured faults may deliberately violate the success schema."
+  /model/{modelId}/converse-stream:
+    post:
+      operationId: "bedrockConverseStream"
+      summary: "bedrockConverseStream"
+      description: "Bedrock Converse streaming. Success is AWS binary eventstream framing, not SSE. Metadata events carry usage. JSON response schema below describes pre-stream errors only; message and content-block events carry deltas. Provider access is anonymous by default; a valid MockAgents credential scopes the tenant. Request bodies are subject to the main server body limit."
+      security: []
+      parameters:
+        - "name": "modelId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "minLength": 1
+      requestBody:
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "./api-models.json#/$defs/adapter.BedrockConverseRequest"
+            "example":
+              "messages":
+                - "role": "user"
+                  "content":
+                    - "text": "hello"
+      responses:
+        "200":
+          "description": "Successful provider response."
+          "content":
+            "application/vnd.amazon.eventstream":
+              "schema":
+                "type": "string"
+                "description": "Binary AWS eventstream frames."
+        "400":
+          "description": "Malformed JSON, unsupported input, or invalid request fields; provider-specific error envelope."
+        "402":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "404":
+          "description": "Model, session history, or method not found."
+        "413":
+          "description": "Request exceeds the configured body limit."
+        "429":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "default":
+          "description": "Provider error or injected chaos response; configured faults may deliberately violate the success schema."
+  /v1/embeddings:
+    post:
+      operationId: "createEmbeddings"
+      summary: "createEmbeddings"
+      description: "Deterministic engine-free embeddings. Input accepts text, text arrays, token ID arrays, or arrays of token arrays. Encoding is float (default) or base64. Default dimensions follow the model; explicit dimensions must be positive, require a v3 model, and are capped to its native width. Provider access is anonymous by default; a valid MockAgents credential scopes the tenant. Request bodies are subject to the main server body limit."
+      security: []
+      requestBody:
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "./api-models.json#/$defs/adapter.EmbeddingsRequest"
+            "example":
+              "model": "text-embedding-3-small"
+              "input": "hello"
+      responses:
+        "200":
+          "description": "Successful provider response."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "./api-models.json#/$defs/adapter.EmbeddingsResponse"
+        "400":
+          "description": "Malformed JSON, unsupported input, or invalid request fields; provider-specific error envelope."
+        "402":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "404":
+          "description": "Model, session history, or method not found."
+        "413":
+          "description": "Request exceeds the configured body limit."
+        "429":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "default":
+          "description": "Provider error or injected chaos response; configured faults may deliberately violate the success schema."
+  /v1beta/models/{modelmethod}:
+    post:
+      operationId: "geminiGenerate"
+      summary: "geminiGenerate"
+      description: "modelmethod combines model and :generateContent or :streamGenerateContent. Streaming with alt=sse emits SSE; otherwise returns a JSON array of responses. Other method suffixes return 404. Provider access is anonymous by default; a valid MockAgents credential scopes the tenant. Request bodies are subject to the main server body limit."
+      security: []
+      parameters:
+        - "name": "modelmethod"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "minLength": 1
+        - "name": "alt"
+          "in": "query"
+          "schema":
+            "type": "string"
+            "enum":
+              - "sse"
+      requestBody:
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "./api-models.json#/$defs/adapter.GeminiRequest"
+            "example":
+              "contents":
+                - "role": "user"
+                  "parts":
+                    - "text": "hello"
+      responses:
+        "200":
+          "description": "Successful provider response."
+          "content":
+            "application/json":
+              "schema":
+                "oneOf":
+                  - "$ref": "./api-models.json#/$defs/adapter.GeminiResponse"
+                  - "type": "array"
+                    "items":
+                      "$ref": "./api-models.json#/$defs/adapter.GeminiResponse"
+            "text/event-stream":
+              "schema":
+                "type": "string"
+                "description": "Provider-specific SSE events."
+        "400":
+          "description": "Malformed JSON, unsupported input, or invalid request fields; provider-specific error envelope."
+        "402":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "404":
+          "description": "Model, session history, or method not found."
+        "413":
+          "description": "Request exceeds the configured body limit."
+        "429":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "default":
+          "description": "Provider error or injected chaos response; configured faults may deliberately violate the success schema."
+  /search:
+    post:
+      operationId: "tavilySearch"
+      summary: "tavilySearch"
+      description: "Deterministic Tavily fixtures. Defaults max_results=5 and search_depth=basic. Date bounds use YYYY-MM-DD; time_range cannot be combined with explicit dates. include_answer/include_raw_content/topic are accepted but do not change the canned response. Faults may return configured errors, malformed data, disconnects, or partial results. Provider access is anonymous by default; a valid MockAgents credential scopes the tenant. Request bodies are subject to the main server body limit."
+      security: []
+      requestBody:
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "./api-models.json#/$defs/TavilyRequest"
+            "example":
+              "query": "example"
+      responses:
+        "200":
+          "description": "Successful provider response."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "./api-models.json#/$defs/TavilyResponse"
+        "400":
+          "description": "Malformed JSON, unsupported input, or invalid request fields; provider-specific error envelope."
+        "413":
+          "description": "Request exceeds the configured body limit."
+        "default":
+          "description": "Provider error or injected chaos response; configured faults may deliberately violate the success schema."
+  /v2/rerank:
+    post:
+      operationId: "cohereRerank"
+      summary: "cohereRerank"
+      description: "Deterministic token-overlap reranking. 1..1000 string documents. top_n must be positive; values above document count are capped. Configured service faults can alter responses. Provider access is anonymous by default; a valid MockAgents credential scopes the tenant. Request bodies are subject to the main server body limit."
+      security: []
+      requestBody:
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "./api-models.json#/$defs/CohereRequest"
+            "example":
+              "model": "rerank-v3.5"
+              "query": "hello"
+              "documents":
+                - "hello world"
+                - "other"
+      responses:
+        "200":
+          "description": "Successful provider response."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "./api-models.json#/$defs/CohereResponse"
+        "400":
+          "description": "Malformed JSON, unsupported input, or invalid request fields; provider-specific error envelope."
+        "413":
+          "description": "Request exceeds the configured body limit."
+        "default":
+          "description": "Provider error or injected chaos response; configured faults may deliberately violate the success schema."
+  /v1/moderations:
+    post:
+      operationId: "createModerations"
+      summary: "createModerations"
+      description: "Deterministic keyword moderation fixtures, not a safety classifier. Logs and metrics are captured; this free endpoint is excluded from LLM request/spend quotas. Provider access is anonymous by default; a valid MockAgents credential scopes the tenant. Request bodies are subject to the main server body limit."
+      security: []
+      requestBody:
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "./api-models.json#/$defs/adapter.ModerationsRequest"
+            "example":
+              "input": "hello"
+      responses:
+        "200":
+          "description": "Successful provider response."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "./api-models.json#/$defs/adapter.ModerationsResponse"
+        "400":
+          "description": "Malformed JSON, unsupported input, or invalid request fields; provider-specific error envelope."
+        "413":
+          "description": "Request exceeds the configured body limit."
+        "default":
+          "description": "Provider error or injected chaos response; configured faults may deliberately violate the success schema."
+  /openai/v1/chat/completions:
+    post:
+      operationId: "azureUnifiedChat"
+      summary: "azureUnifiedChat"
+      description: "Azure-compatible alias. Deployment paths take model identity from deployment; unified paths use the JSON model. api-version is accepted and ignored. Delegates to the standard OpenAI handler; tenant quota, auth, and logging policies are shared."
+      security: []
+      requestBody:
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/OpenAIChatCompletionRequest"
+            "example":
+              "model": "gpt-4o"
+              "messages":
+                - "role": "user"
+                  "content": "hello"
+      responses:
+        "200":
+          "description": "OpenAI-compatible result."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/OpenAIChatCompletionResponse"
+            "text/event-stream":
+              "schema":
+                "type": "string"
+        "400":
+          "description": "Malformed JSON, unsupported input, or invalid request fields; provider-specific error envelope."
+        "402":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "404":
+          "description": "Model, session history, or method not found."
+        "413":
+          "description": "Request exceeds the configured body limit."
+        "429":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "default":
+          "description": "Provider error or injected chaos response; configured faults may deliberately violate the success schema."
+      parameters:
+        - "name": "api-version"
+          "in": "query"
+          "schema":
+            "type": "string"
+  /openai/deployments/{deployment}/chat/completions:
+    post:
+      operationId: "azureDeploymentChat"
+      summary: "azureDeploymentChat"
+      description: "Azure-compatible alias. Deployment paths take model identity from deployment; unified paths use the JSON model. api-version is accepted and ignored. Delegates to the standard OpenAI handler; tenant quota, auth, and logging policies are shared."
+      security: []
+      requestBody:
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/OpenAIChatCompletionRequest"
+            "example":
+              "model": "gpt-4o"
+              "messages":
+                - "role": "user"
+                  "content": "hello"
+      responses:
+        "200":
+          "description": "OpenAI-compatible result."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/OpenAIChatCompletionResponse"
+            "text/event-stream":
+              "schema":
+                "type": "string"
+        "400":
+          "description": "Malformed JSON, unsupported input, or invalid request fields; provider-specific error envelope."
+        "402":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "404":
+          "description": "Model, session history, or method not found."
+        "413":
+          "description": "Request exceeds the configured body limit."
+        "429":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "default":
+          "description": "Provider error or injected chaos response; configured faults may deliberately violate the success schema."
+      parameters:
+        - "name": "deployment"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+        - "name": "api-version"
+          "in": "query"
+          "schema":
+            "type": "string"
+  /openai/v1/embeddings:
+    post:
+      operationId: "azureUnifiedEmbeddings"
+      summary: "azureUnifiedEmbeddings"
+      description: "Azure-compatible alias. Deployment paths take model identity from deployment; unified paths use the JSON model. api-version is accepted and ignored. Delegates to the standard OpenAI handler; tenant quota, auth, and logging policies are shared."
+      security: []
+      requestBody:
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "./api-models.json#/$defs/adapter.EmbeddingsRequest"
+            "example":
+              "model": "text-embedding-3-small"
+              "input": "hello"
+      responses:
+        "200":
+          "description": "OpenAI-compatible result."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "./api-models.json#/$defs/adapter.EmbeddingsResponse"
+        "400":
+          "description": "Malformed JSON, unsupported input, or invalid request fields; provider-specific error envelope."
+        "402":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "404":
+          "description": "Model, session history, or method not found."
+        "413":
+          "description": "Request exceeds the configured body limit."
+        "429":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "default":
+          "description": "Provider error or injected chaos response; configured faults may deliberately violate the success schema."
+      parameters:
+        - "name": "api-version"
+          "in": "query"
+          "schema":
+            "type": "string"
+  /openai/deployments/{deployment}/embeddings:
+    post:
+      operationId: "azureDeploymentEmbeddings"
+      summary: "azureDeploymentEmbeddings"
+      description: "Azure-compatible alias. Deployment paths take model identity from deployment; unified paths use the JSON model. api-version is accepted and ignored. Delegates to the standard OpenAI handler; tenant quota, auth, and logging policies are shared."
+      security: []
+      requestBody:
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "./api-models.json#/$defs/adapter.EmbeddingsRequest"
+            "example":
+              "model": "text-embedding-3-small"
+              "input": "hello"
+      responses:
+        "200":
+          "description": "OpenAI-compatible result."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "./api-models.json#/$defs/adapter.EmbeddingsResponse"
+        "400":
+          "description": "Malformed JSON, unsupported input, or invalid request fields; provider-specific error envelope."
+        "402":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "404":
+          "description": "Model, session history, or method not found."
+        "413":
+          "description": "Request exceeds the configured body limit."
+        "429":
+          "description": "Tenant spend or request-rate quota exceeded (anonymous traffic bypasses quotas)."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ProviderQuotaError"
+        "default":
+          "description": "Provider error or injected chaos response; configured faults may deliberately violate the success schema."
+      parameters:
+        - "name": "deployment"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+        - "name": "api-version"
+          "in": "query"
+          "schema":
+            "type": "string"
+  /api/v1/pipelines/{name}/run:
+    post:
+      operationId: "runPipeline"
+      summary: "Execute a registered pipeline"
+      description: "Viewer role in multi-tenant mode. Resolves agents in the authenticated tenant. Maximum JSON body 1 MiB; unknown fields and trailing JSON are rejected. Omitted session_id generates isolated run state. Latencies in the result are integer nanoseconds. Failure returns completed node results when available."
+      parameters:
+        - "name": "name"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+      requestBody:
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "./api-models.json#/$defs/server.PipelineRunRequest"
+            "example":
+              "input": "Research a topic"
+      responses:
+        "200":
+          "description": "Completed trajectory."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "./api-models.json#/$defs/engine.PipelineResult"
+        "400":
+          "$ref": "#/components/responses/BadRequest"
+        "401":
+          "$ref": "#/components/responses/Unauthorized"
+        "403":
+          "$ref": "#/components/responses/Forbidden"
+        "404":
+          "$ref": "#/components/responses/NotFound"
+        "413":
+          "description": "Body exceeds 1 MiB."
+        "422":
+          "description": "Execution failed; partial trajectory retained."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "./api-models.json#/$defs/PipelineRunError"
+        "503":
+          "description": "Execution is not configured."
+
 # =============================================================================
 # Components
 # =============================================================================
@@ -1295,7 +1952,7 @@ components:
           description: >
             Sorted, dot-separated action names derived from the route table,
             e.g. `agents.write`. `pipelines.run.write` (viewer) is distinct
-            from `pipelines.write` (editor).
+            from `pipelines.write` (platform).
           items:
             type: string
           example: [agents.read, agents.write, logs.read, pipelines.run.write]
@@ -2282,14 +2939,8 @@ components:
         ok: { type: boolean }
         kind: { type: string, example: Agent }
         errors:
-          type: array
-          items:
-            type: object
-            properties:
-              field: { type: string }
-              message: { type: string }
-              line: { type: integer }
-              suggestion: { type: string }
+          type: [array, "null"]
+          items: { $ref: "./api-models.json#/$defs/config.ValidationError" }
 
   # ---------------------------------------------------------------------------
   # Reusable Responses
@@ -2336,7 +2987,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/Error"
+            $ref: "./api-models.json#/$defs/AuthenticationError"
           example:
             error:
               message: missing Authorization bearer token or X-Api-Key header
@@ -2347,7 +2998,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/Error"
+            $ref: "./api-models.json#/$defs/AuthenticationError"
 
     Conflict:
       description: The resource already exists (e.g. duplicate tenant name).
@@ -2373,7 +3024,7 @@ components:
       description: "Alternative to `Authorization: Bearer` for the same API key."
 
 # Applies to the management API in multi-tenant mode. Protocol endpoints
-# (/v1/*) are always unauthenticated and override this with `security: []`.
+# allow anonymous access and optionally attach credential scope; security: [] records that.
 security:
   - BearerAuth: []
   - ApiKeyAuth: []

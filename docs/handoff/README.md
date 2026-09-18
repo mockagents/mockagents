@@ -2,7 +2,7 @@
 
 This suite describes the local repository at baseline commit `5d5b5172dfd3c19854bcfb1db7d5215af711165e`, analyzed on 2026-09-18. It is a source-based handoff, not a certification of a deployed service, published package, or provider's current API. [Verification evidence and review scope](../reviews/2026-09-18-review-summary.md) distinguish inspected behavior from checks actually executed.
 
-The subsequent [multi-pass documentation review](../reviews/2026-09-18-documentation-review-summary.md) corrected operational and API claims and reproduced unresolved Responses ownership/retention behavior. Its [claim-to-evidence matrix](../reviews/2026-09-18-documentation-integration-checks.md) and [action register](../reviews/2026-09-18-documentation-action-register.md) are the current verification record. Route/model inventories do not establish complete wire-schema coverage or tenant isolation by themselves.
+The [multi-pass documentation review](../reviews/2026-09-18-documentation-review-summary.md) records the historical findings. [Application action closure](../reviews/2026-09-18-application-actions.md) records the subsequent fixes, tests, and remaining compatibility scope. API route coverage includes explicit exclusions; inventories alone do not prove a complete upstream wire contract.
 
 MockAgents runs configurable test doubles for AI provider and agent-integration protocols. An application sends normal SDK requests to local endpoints; fixtures select responses, tool calls, streams, and faults. Pipelines connect mock agent executions. Recording is a separate mode that can contact an upstream service.
 

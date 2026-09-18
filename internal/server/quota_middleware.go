@@ -14,7 +14,8 @@ import (
 // isLLMProviderPath reports whether a request path is a model-provider LLM
 // endpoint: OpenAI (/v1/chat/completions, /v1/responses, /v1/embeddings),
 // Anthropic (/v1/messages), Gemini (/v1beta/models/{model}:generateContent and
-// :streamGenerateContent), or the Azure OpenAI surface (the
+// :streamGenerateContent), Ollama /api/chat, Bedrock Converse/ConverseStream,
+// or the Azure OpenAI surface (the
 // /openai/deployments/{id}/{chat/completions,embeddings} classic paths and the
 // /openai/v1/... unified paths). It is the single source of truth for "this is
 // quota-able/billable LLM traffic", shared by the quota and interaction-logging
@@ -23,10 +24,18 @@ import (
 // (e.g. a future :countTokens is excluded).
 func isLLMProviderPath(path string) bool {
 	switch path {
-	case "/v1/chat/completions", "/v1/responses", "/v1/embeddings", "/v1/messages":
+	case "/v1/chat/completions", "/v1/responses", "/v1/embeddings", "/v1/messages", "/api/chat":
 		return true
 	case "/openai/v1/chat/completions", "/openai/v1/embeddings":
 		return true
+	}
+	if model, ok := strings.CutPrefix(path, "/model/"); ok {
+		cut := strings.LastIndexByte(model, '/')
+		if cut < 0 {
+			return false
+		}
+		id, action := model[:cut], model[cut+1:]
+		return id != "" && (action == "converse" || action == "converse-stream")
 	}
 	if strings.HasPrefix(path, "/v1beta/models/") {
 		return strings.HasSuffix(path, ":generateContent") ||

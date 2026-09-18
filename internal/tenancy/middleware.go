@@ -26,8 +26,8 @@ func WithPrincipal(ctx context.Context, p *Principal) context.Context {
 }
 
 // PrincipalFrom retrieves the authenticated caller from the request
-// context, or returns nil if the request is unauthenticated (which
-// only happens when multi-tenant mode is disabled).
+// context, or nil for unauthenticated requests, including auth-exempt provider
+// traffic in multi-tenant mode.
 func PrincipalFrom(ctx context.Context) *Principal {
 	p, _ := ctx.Value(principalContextKey).(*Principal)
 	return p
@@ -44,8 +44,8 @@ type denialFn = func(r *http.Request, status int, reason string)
 // denialHook holds the package-wide denial callback, accessed atomically so
 // SetDenialHook (called at server construction) cannot data-race the reads on
 // the hot request path in fireDenial (F-SV-007). This matters because the
-// codebase can't run `go test -race` (no cgo), so a plain-variable race here
-// would go undetected. A nil pointer is a cheap no-op.
+// supported Linux release gate runs go test -race with a C compiler.
+// A nil pointer is a cheap no-op.
 //
 // Semantics are last-writer-wins: there is a single process-wide hook.
 // Constructing two Servers in one process is race-free, but the second New()

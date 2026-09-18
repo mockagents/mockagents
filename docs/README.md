@@ -13,3 +13,5 @@ Start with the [developer handoff](handoff/README.md) for a connected explanatio
 | [RELEASING.md](RELEASING.md) | Release procedure and exact-candidate verification requirements |
 
 This structure preserves existing guides, epics, reports, and release material. Historical plans describe intent; current code and tests determine shipped behavior.
+
+The [application action closure](reviews/2026-09-18-application-actions.md) records fixes from the documentation review. [API contract scope](api-contracts.md) describes generated schemas, source coverage checks, and explicit compatibility exclusions.
