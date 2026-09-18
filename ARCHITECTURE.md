@@ -3,11 +3,18 @@
 A map of the MockAgents codebase for contributors. For *using* the tool, see
 the [README](README.md) and the [docs site](site/docs/index.md).
 
+The [2026-09-18 developer handoff](docs/handoff/README.md) supplements this
+walkthrough with the current provider/route inventory, data-model dictionary,
+pipeline semantics, deployment constraints, and verification evidence at
+`5d5b5172dfd3c19854bcfb1db7d5215af711165e`. Its
+[architecture overview](docs/handoff/architecture.md) and
+[diagrams](docs/handoff/diagrams.md) cover the broader current system.
+
 MockAgents is a Go server that impersonates several LLM-provider wire
 protocols — OpenAI Chat Completions, Responses, Conversations, Embeddings,
 Moderations, Files, Batches; Anthropic Messages (+ Batches); Gemini
 `generateContent`; OpenAI Realtime over WebSocket; MCP (Streamable HTTP +
-stdio); and A2A — in front of one protocol-neutral **engine** that matches a
+stdio); and A2A. Generation adapters use a protocol-neutral **engine** that matches a
 request to a scenario declared in YAML and returns a canned response,
 simulated tool call, or SSE stream. No network call ever reaches a real
 provider unless you're using record/replay against one on purpose.
@@ -15,15 +22,11 @@ provider unless you're using record/replay against one on purpose.
 This document has two parts: a set of diagrams (System Context → Containers →
 two full request sequences → a cross-cutting fault-injection view → a
 deployment view), and a narrative that explains the seams between packages.
-Every diagram and every claim below was checked against the code (most
-recently on `main` @ `aa049a8`, 2026-07-15 — adding record modes/importers/
-redaction, hallucination + semantic-error fixtures, vision matching,
-Anthropic depth, the MCP loopback-bind default, the vitest/npx packages, and
-the `/data` workdir + `MOCKAGENTS_DATA_DIR` state handling); where the
-codebase disagreed with an earlier version of this document, that's called
-out explicitly instead of silently fixed, in the
-[Corrections](#corrections-from-the-previous-version-of-this-document)
-section at the end.
+The longer walkthrough originated at `aa049a8` on 2026-07-15. The
+[2026-09-18 documentation re-review](docs/reviews/2026-09-18-documentation-review-summary.md)
+cross-checks it with the current handoff at `5d5b5172dfd3c19854bcfb1db7d5215af711165e`
+and corrects identified drift. The report states the verification scope and
+remaining gaps; this walkthrough is not a claim of exhaustive defect discovery.
 
 ## Contents
 
@@ -78,7 +81,7 @@ server.
 flowchart TB
     subgraph client["Clients"]
         SDKs["Client SDKs / frameworks<br/>(OpenAI/Anthropic/Google SDKs,<br/>MCP client, A2A client, WS client)"]
-        GUI["gui/ (Next.js 15)"]
+        GUI["gui/ (Next.js 16)"]
         CLI["cmd/mockagents (Cobra CLI)"]
     end
 
@@ -152,12 +155,11 @@ flowchart TB
     RT --> LOGWORK
     MCP --> REG
     MCP --> TSCHEMA
-    A2A -.->|own package, not in adapter.Registry| eng
     TEN -.->|allowed import direction| eng
 ```
 
-**Import-direction constraints** (enforced by convention + code review — a
-reverse import would be caught by the compiler as an import cycle, but there
+**Import-direction constraints** (enforced by convention + code review — the
+compiler rejects import cycles, but does not enforce this direction; there
 is no linter rule; see [Design rules](#design-rules-keep-these-intact)):
 
 - `tenancy` may import `engine`; `engine` never imports `tenancy`. The engine
@@ -167,14 +169,15 @@ is no linter rule; see [Design rules](#design-rules-keep-these-intact)):
 - `audit.Recorder` takes a principal-extraction **function**
   (`principalToActor` in `internal/server/server.go`) instead of importing
   `tenancy` directly, for the same reason.
-- `engine` never imports a wire-format package — `internal/adapter/*` and
-  `internal/streaming/*` are the only packages that know what OpenAI/
-  Anthropic/Gemini JSON looks like. `engine.Response` / `engine.InboundRequest`
-  are the neutral boundary type.
+- `engine` never imports a wire-format package. `internal/adapter/*` and
+  `internal/streaming/*` translate provider JSON/streams; standalone protocol
+  packages and Realtime own their own wire models. `engine.Response` /
+  `engine.InboundRequest` are the neutral engine boundary types.
 - `internal/a2a` and `internal/mcp` are **not** registered through
-  `adapter.DefaultRegistry` — they mount their own routes directly in
-  `cmd/mockagents` (A2A) or `internal/server` (MCP isn't wired into the main
-  HTTP server at all; it's its own listener started by `mockagents mcp`).
+  `adapter.DefaultRegistry`. Both mount their own routes in `cmd/mockagents`
+  and run separate listeners. A2A resolves its own canned task responses;
+  it does not invoke `engine.ProcessRequestContext`. A2A binds `:8083` on all
+  interfaces by default; MCP HTTP binds `127.0.0.1:8081`.
 
 ## Packages (`internal/`)
 
@@ -186,7 +189,7 @@ is no linter rule; see [Design rules](#design-rules-keep-these-intact)):
 | `server/` | `net/http` server, middleware, and route handlers for the LLM + management APIs. `route_authz.go` is the single role-floor table + `mountManaged` chokepoint for every `/api/v1` route — it panics at startup if a route has no floor entry. `log_worker.go`/`log_broadcaster.go` own async logging + SSE fan-out. `quota_middleware.go` enforces per-tenant rate/spend limits. `realtime_wiring.go` wires quota + logging hooks into the Realtime adapter (which never passes through the HTTP middleware chain — see the [Realtime section](#realtime-websocket-session-with-server-vad)). `oidc_handlers.go` serves `/auth/login`, `/auth/callback`, `/auth/logout`. `conformance_test.go` is the cross-adapter integration test suite. |
 | `tenancy/` | Multi-tenant store + bcrypt API keys + RBAC middleware. `Store` is an interface with two impls: `SQLiteStore` (default; single connection, so read-modify-write is serialized by SQLite itself) and `PostgresStore` (`postgres_store.go`; uses `SELECT ... FOR UPDATE` inside a transaction for the same read-modify-write operations, e.g. key rotation/role change), selected at startup by `MOCKAGENTS_TENANCY_DSN` (unset = SQLite `.mockagents-tenancy.db`). The store also holds SSO users + sessions (`identity_sqlite.go`/`identity_postgres.go`). `middleware.go`'s `AuthMiddleware` is dual-auth: it resolves an API key (`Authorization`/`X-Api-Key`/Azure `api-key`) OR a session cookie (`mockagents_session`) to the same `Principal{TenantID, KeyID, Role}`; a bearer value prefixed `mas_` is treated as a forwarded session token. `auth_cache.go` is a hash-keyed bounded TTL cache that skips bcrypt on repeat resolutions. RBAC roles are ordered `viewer < editor < admin < platform`; `Role.IsAssignableViaAPI()` excludes `platform`, so a per-tenant admin cannot self-escalate — platform keys are minted only by the bootstrap path in `cmd/mockagents`. |
 | `audit/` | Append-only audit log, SQLite-backed with WAL. Twelve event kinds (`internal/audit/types.go`): `tenant.created`, `tenant.deleted`, `api_key.created`, `api_key.deleted`, `api_key.role_changed`, `api_key.rotated`, `agent.reloaded`, `agent.created`, `agent.updated`, `agent.deleted`, `pipeline.saved`, `auth.denied`. `Recorder` takes a principal-extraction function so it never imports `tenancy`. |
-| `quota/` | Per-tenant rate + monthly-spend enforcement. `Enforcer.AllowRequest` is a token bucket (429 + `Retry-After` on empty); `CheckSpend` compares accrued spend against a monthly cap (402 on exceed). Spend is accrued through a `spendHook` wired in `server.New` (estimates cost from the response body via `pricing.ExtractUsage`/`Table.Estimate`, then `Enforcer.AddSpend`). The `tenant_spend` ledger is a shared row in the tenancy store (atomic upsert + `RETURNING` in both SQLite and Postgres impls) so the cap is accurate across replicas; the enforcer keeps a 5-second TTL cache of the shared total to avoid a store round trip per request. |
+| `quota/` | Per-tenant rate + monthly-spend enforcement. `Enforcer.AllowRequest` is a token bucket (429 + `Retry-After` on empty); `CheckSpend` compares accrued spend against a monthly cap (402 on exceed). Spend is accrued through a `spendHook` wired in `server.New` (estimates cost from the response body via `pricing.ExtractUsage`/`Table.Estimate`, then `Enforcer.AddSpend`). The `tenant_spend` ledger is a shared row in the tenancy store (atomic upsert + `RETURNING` in both SQLite and Postgres impls) so increments are shared across replicas; a 5-second total cache, post-response accrual and local fallback on backend errors prevent this from being a strict spend reservation. Quota-setting overrides reload at startup and otherwise change only on the process receiving the PUT. |
 | `oidcauth/` | OIDC relying-party seam for SSO login. `Authenticator` interface (`AuthCodeURL` with PKCE S256, `Exchange` → verified `Claims`) wraps `coreos/go-oidc` so `server/oidc_handlers.go` is unit-testable with a fake provider. Domain → tenant mapping via `MOCKAGENTS_OIDC_DOMAIN_MAP`; JIT-provisioned users get `MOCKAGENTS_OIDC_DEFAULT_ROLE` (validated to viewer/editor/admin — `platform` is rejected here too). |
 | `pricing/` | Per-model cost table + usage extractor. `MOCKAGENTS_PRICING` env var loads YAML overrides. Used by `costs_handler.go`, `log_handlers.go`, and the quota spend hook. |
 | `mcp/` | JSON-RPC 2.0 dispatch for `kind: MCPServer` documents, with three transports: Streamable HTTP (`streamable.go` — session-scoped, POST dispatch in JSON or SSE mode, one resumable GET stream per session), stdio (`stdio.go` — line-delimited frames, 10 MiB cap, no non-protocol stdout), and a bidirectional server-initiated channel (`bidirectional.go` + `sse.go` — `GET /mcp/events` streams server→client requests/notifications, `POST /mcp/response` delivers client replies, `Server.SendRequest`/`Sample`/`ListRoots` are the in-process primitives; `POST /mcp/sample` and `POST /mcp/roots` are test/admin triggers for these). See the [MCP sequence](#mcp-streamable-http-transport). |
@@ -196,7 +199,7 @@ is no linter rule; see [Design rules](#design-rules-keep-these-intact)):
 | `recording/` | Cassette format + record/replay handlers, including SSE streams (`Proxy.serveStreaming` / `Replay.serveStreaming`). Grew a full VCR-style feature set: **record modes** (`mode.go` — `none` replay-only default, `new_episodes` record-on-miss, `once`, `all` re-record/passthrough, via `--record-mode`); **configurable request matching** (`matcher.go` — `--match-ignore` drops volatile fields from the match key) with **structured miss diagnostics** (`diagnostics.go` — a replay 404 explains *which* field failed to match instead of a bare miss); **secret redaction before write** (`redact.go` — auth headers/keys masked in the cassette, not post-hoc); **sequenced playback** (repeat requests step through recorded responses in order); and **importers** for foreign formats (`import_vcr.go` vcrpy YAML, `import_openai.go` OpenAI stored-completions JSONL — surfaced as `mockagents import vcr\|openai-stored-completions`). |
 | `streaming/` | SSE chunking used when a chat/messages request sets `stream: true`. `pacing.go`'s `streamPacer` supports two modes: a deterministic fixed-seed model (TTFT + tokens-per-sec + jitter) and, when an agent sets `ttft_p50_ms`/`itl_p50_ms`, a per-stream-seeded lognormal "load-target" sampler. Also applies mid-stream fault injection (`truncateAfter`, `malformed`). This is a distinct mechanism from Realtime's `internal/realtime/pace.go`, which is a flat constant-interval drain, not this TTFT/ITL model — wiring the two together is a known, code-documented follow-on, not yet done. |
 | `storage/` | SQLite interaction logging (`modernc.org/sqlite`, pure-Go, no cgo). WAL + `synchronous=NORMAL` + `MaxOpenConns=8` for parallel readers/writers (deliberately different from the tenancy store's `MaxOpenConns=1`, which relies on single-connection serialization instead of row locks). Default DB file `.mockagents.db` in the working directory; `MOCKAGENTS_DATA_DIR` relocates it (and the audit + tenancy DBs) to any writable directory — the escape hatch for read-only workdirs, resolved by `dataPath` in `cmd/mockagents/start.go`. An unwritable path degrades to a WARN (with the path and a hint; SQLite misreports `SQLITE_CANTOPEN` as `out of memory (14)`) — never a crash. `MOCKAGENTS_LOG_BODIES`=`full`\|`sanitized`\|`none` controls response-body capture; `MOCKAGENTS_LOG_MAX_ROWS`=N bounds the table via a background pruner. |
-| `config/` | YAML/JSON loader + validator. `LoadAllDocuments` (`loader.go`) splits a directory's files by top-level `kind` into five buckets: `Agent` (default when `kind` is empty), `Pipeline`, `TestSuite`, `MCPServer`, `A2AServer`; an unrecognized kind is a load error. `chaos_presets.go` expands a named `chaos.preset` into a `ChaosConfig`, filling only the sections the author left nil (`server-down`, `rate-limited`, `access-denied`, `unauthorized`, `flaky`, `slow`, `connection-reset`). The schema lives at `schema/mockagents-v1-agent.json`. |
+| `config/` | YAML/JSON loader + validator. `LoadAllDocuments` (`loader.go`) splits a directory's files by top-level `kind` into seven buckets: `Agent` (default when `kind` is empty), `Pipeline`, `TestSuite`, `MCPServer`, `A2AServer`, `VectorCollection`, `SearchService`; an unrecognized kind is a load error. `chaos_presets.go` expands a named `chaos.preset` into a `ChaosConfig`, filling only the sections the author left nil (`server-down`, `rate-limited`, `access-denied`, `unauthorized`, `flaky`, `slow`, `connection-reset`). The schema lives at `schema/mockagents-v1-agent.json`. |
 | `cli/` | Shared CLI helpers: `scaffold.go` powers `mockagents init` templates, `color.go` handles terminal output. |
 | `build/` | Test-only package whose `build_test.go` compiles `./cmd/mockagents` to guard against a broken main package. |
 | `observability/` | OpenTelemetry tracer wiring. `IsEnabled()` lets hot-path callers skip span-attribute construction when no exporter is configured. |
@@ -224,9 +227,11 @@ Vitest test-runner helper that boots/points at a mock per suite) and the
 
 ## How a request becomes a response
 
-This is the real call order inside `engine.Engine.ProcessRequestContext`
-(`internal/engine/engine.go`), which every protocol adapter calls after
-translating its wire request into an `engine.InboundRequest`:
+This is the call order inside `engine.Engine.ProcessRequestContext`
+(`internal/engine/engine.go`), used by the generation adapters after
+translating their wire requests into an `engine.InboundRequest`. Embeddings,
+moderation, vector/search, resource operations and standalone MCP/A2A have
+separate service paths.
 
 1. Start a tracing span if `observability.IsEnabled()`.
 2. Resolve the agent for the caller's tenant (`engine.TenantIDFromContext` →
@@ -302,7 +307,7 @@ sequenceDiagram
     Log->>CORS: apply CORS headers
     CORS->>MaxBody: wrap body in http.MaxBytesReader
     MaxBody->>Auth: best-effort principal (route is in skipAuth)
-    Note over Auth: API key (Authorization/X-Api-Key/api-key)<br/>or mockagents_session cookie.<br/>Invalid/absent credential proceeds anonymously —<br/>this route never 401s.
+    Note over Auth: API key (Authorization/X-Api-Key/api-key)<br/>or mockagents_session cookie.<br/>Invalid/absent credential proceeds anonymously.<br/>A fixture can still inject a 401 downstream.
     Auth->>Scope: attach Principal.TenantID via engine.WithTenantID
     Scope->>Cap: wrap ResponseWriter to capture status+body
     Cap->>Met: reads Cap's engine.RequestMeta (protocol, agent)
@@ -334,8 +339,9 @@ Two things worth calling out because they contradict a plausible-sounding
 assumption:
 
 - **Management routes are gated differently than LLM routes.** `/api/v1/*`
-  routes go through `mountManaged` (`route_authz.go`), which requires a valid
-  credential (no `skipAuth` entry) and then a per-route role floor. The LLM
+  routes go through `mountManaged` (`route_authz.go`). In multi-tenant mode,
+  outer authentication requires a valid credential except for health/readiness
+  probes, then `mountManaged` enforces the declared role floor. The LLM
   routes (`/v1/chat/completions`, `/v1/messages`, `/v1/realtime`, etc., the
   exact list is `skipAuth` in `server.go`) are intentionally open even in
   multi-tenant mode — the middleware still resolves a principal if a valid
@@ -522,10 +528,10 @@ flowchart LR
     subgraph cfgload["internal/config"]
         PRESET["chaos_presets.go<br/>expands preset → ChaosConfig,<br/>only filling nil sections"]
     end
-    subgraph resolve["Knob resolution (both features)"]
-        R1["1. YAML value, if set"]
-        R2["2. Env var<br/>(MOCKAGENTS_STRICT_TOOLS for strict-tools;<br/>chaos has no env fallback)"]
-        R3["3. Off"]
+    subgraph resolve["Feature-specific policy resolution"]
+        R1["Agent YAML and preset defaults"]
+        R2["Strict tools: YAML > MOCKAGENTS_STRICT_TOOLS > off<br/>Chaos: request overrides, explicit triggers,<br/>then inherited CLI/env rate and seed"]
+        R3["Resolved settings; chaos-off is an inherited zero rate"]
     end
     subgraph engineg["internal/engine"]
         CB["ChaosInjector.Before<br/>rate-limit → error/timeout → connection fault"]
@@ -631,18 +637,18 @@ table. Nothing here requires cgo; the Dockerfile's `CGO_ENABLED=0` build and
 the pure-Go SQLite driver are what make the Alpine multi-stage image and
 cross-compilation in `goreleaser` simple.
 
-All three SQLite files resolve relative to the working directory —
+All three default SQLite paths resolve relative to the working directory —
 `WORKDIR /data` in the runtime image places them (and `mockagents init`
 scaffolds) inside the `/data` volume, so state survives container restarts.
-`MOCKAGENTS_DATA_DIR=<dir>` relocates them anywhere writable; if the
-resolved path is unwritable the server degrades to WARN-and-continue (no
-interaction/audit logging) rather than failing startup.
+`MOCKAGENTS_DATA_DIR=<dir>` relocates them anywhere writable. Failure to open
+interaction/audit stores disables those logs with a warning; failure to open
+the required tenancy store in multi-tenant mode fails startup.
 
 ## Design rules (keep these intact)
 
-- **No cgo.** SQLite is `modernc.org/sqlite` so cross-compilation and
-  goreleaser stay simple. (Side effect: `go test -race` is unavailable on
-  all platforms.)
+- **No cgo in the normal build.** SQLite is `modernc.org/sqlite` so
+  cross-compilation and goreleaser stay simple. Race tests separately require
+  `CGO_ENABLED=1` and a C compiler; the Linux verification job runs them.
 - **Import direction.** `tenancy` may import `engine`, never the reverse. The
   engine reads the tenant id from the context (`engine.WithTenantID` /
   `TenantIDFromContext`) instead of importing `tenancy`. The `audit` recorder
@@ -658,9 +664,10 @@ interaction/audit logging) rather than failing startup.
   mode (`skipAuth` in `server.go`) — see the [request-flow notes](#request-flow-sequence-post-v1chatcompletions).
   Don't assume adding a route here means adding it to `managementRouteFloors`
   too; those are two different gates for two different kinds of route.
-- **The agent YAML schema is authoritative** in
-  `schema/mockagents-v1-agent.json`. Run `make validate` after touching
-  config/types.
+- **Types, runtime validation and authoring schema must agree.** The runtime
+  executes Go validators, not `schema/mockagents-v1-agent.json`; schema-only
+  constraints are not automatically enforced. Run `make validate` after
+  touching config/types and check the [documented gaps](docs/handoff/data-models.md).
 - **Hot path is benchmarked.** `docs/benchmarks/latest.{json,md}` is checked
   in; rerun `make bench-report` for perf-affecting changes and don't regress
   it.
@@ -686,9 +693,8 @@ route wiring. To add provider `foo` (see `gemini.go` as the template):
 
 ## Testing
 
-- `make test`. Note: `go test -race` needs cgo, which this project
-  deliberately does not use (pure-Go SQLite), so the race detector is
-  unavailable on **all** platforms — see Design rules above.
+- `make test` for the normal pure-Go suite; `make test-race` with a C compiler
+  and `CGO_ENABLED=1` for race coverage. See CONTRIBUTING for supported setup.
 - Cross-adapter integration: `internal/server/conformance_test.go`.
 - Scenario-match semantics: `internal/engine/scenario_matcher_test.go`.
 - Store conformance runs against Postgres when `MOCKAGENTS_TEST_PG_DSN` is

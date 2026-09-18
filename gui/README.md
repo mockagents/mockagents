@@ -1,6 +1,6 @@
 # MockAgents Web Console
 
-A Next.js 15 GUI for inspecting and editing a running MockAgents server. Pages
+A Next.js 16 GUI for inspecting and editing a running MockAgents server. Pages
 are server components that fetch directly from the management API; interactive
 surfaces are small client islands. No global state store, no build-time data —
 every page is server-rendered on demand against the current running server.

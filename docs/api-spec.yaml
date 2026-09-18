@@ -16,12 +16,14 @@ info:
 
 
     **Authentication.** When the server runs with `MOCKAGENTS_MULTI_TENANT=1`,
-    every `/api/v1/*` management route requires an API key
+    management routes other than the health/readiness probes require a valid credential
     (`Authorization: Bearer <key>` or `X-Api-Key: <key>`) whose role meets the
     route's floor (`viewer < editor < admin < platform`). In single-tenant mode
-    the management API is open. The protocol endpoints (`/v1/*`) are always
-    unauthenticated — clients send their own provider key, which MockAgents
-    ignores.
+    the management API is open. Provider adapter routes allow anonymous access
+    for SDK compatibility. A valid MockAgents key or supported session credential
+    attaches a principal and scopes the request; an absent or invalid provider
+    credential can proceed anonymously. This file covers selected operations;
+    docs/handoff/reference/routes.md inventories the complete built-in HTTP surface.
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0

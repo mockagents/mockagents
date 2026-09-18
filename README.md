@@ -638,7 +638,7 @@ inspect the exact node trajectory:
 ```bash
 curl -H "Content-Type: application/json" \
   -d '{"input":"Research deterministic agent testing","session_id":"demo-1"}' \
-  http://localhost:8080/api/v1/pipelines/research/run
+  http://localhost:8080/api/v1/pipelines/research-pipeline/run
 ```
 
 The response includes `pipeline_name`, `topology`, ordered `nodes`, and the
@@ -719,7 +719,7 @@ See `deploy/helm/mockagents/README.md` for all values.
 
 ## Web Console
 
-A Next.js 15 web console lives under `gui/` (the "MockAgents Console" design
+A Next.js 16 web console lives under `gui/` (the "MockAgents Console" design
 system, light/dark): agent catalog + detail, pipeline DAG viewer, interaction
 logs with a real SSE live feed (`/logs?live=1`), a schema-validating `/editor`,
 cost estimates, audit log, and multi-tenant admin pages.
@@ -742,6 +742,13 @@ of it. **See the [Multi-Tenant & Control-Plane guide](docs/guides/multi-tenant.m
 
 ## Documentation
 
+- [Developer handoff suite](docs/handoff/README.md) — product and architecture,
+  agent/tool behavior, orchestration, data models, deployment, and onboarding.
+- [Complete built-in route catalog](docs/handoff/reference/routes.md) ·
+  [API guide](docs/handoff/api.md) · [Model field dictionary](docs/handoff/reference/model-fields.md)
+- [System diagrams](docs/handoff/diagrams.md) ·
+  [Design decisions and trade-offs](docs/handoff/design-tradeoffs.md) ·
+  [Wiki export](docs/handoff/wiki.md)
 - [Quickstart Guide](site/docs/getting-started/quickstart.md)
 - [Drop-in Recipes (OpenAI/Anthropic/Gemini SDKs, Vercel AI, LangChain, LlamaIndex)](site/docs/guides/drop-in-recipes.md)
 - [Testing AI Agents (tool-calls + MCP)](site/docs/guides/testing-agents.md)
@@ -759,7 +766,7 @@ of it. **See the [Multi-Tenant & Control-Plane guide](docs/guides/multi-tenant.m
 
 ## Contributing
 
-The whole toolchain is Go 1.26+. No C compiler, no database to install, nothing
+The Go toolchain is pinned in `go.mod`. No C compiler, no database to install, nothing
 running in the background — SQLite is pure Go:
 
 ```bash

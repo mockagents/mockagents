@@ -44,7 +44,7 @@ unauthenticated local-development tool.
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `MOCKAGENTS_MULTI_TENANT` | `0` | Turns on API keys, roles, tenants, quotas and the audit trail of denials. |
-| `MOCKAGENTS_TENANCY_DSN` | unset (SQLite) | Postgres connection string. Set it whenever more than one replica shares state. |
+| `MOCKAGENTS_TENANCY_DSN` | unset (SQLite) | Postgres connection string for shared tenancy records and spend. It does not share engine sessions, catalogs, provider resources, local logs or rate buckets. |
 | `MOCKAGENTS_BOOTSTRAP_KEY` | unset | Supplies the platform key's plaintext instead of having one generated, so it can come from a Secret. |
 | `MOCKAGENTS_BOOTSTRAP_KEY_FILE` | `<data dir>/bootstrap-admin.key` | Where a generated platform key is written on first boot. |
 | `MOCKAGENTS_AUTH_FAILURES_PER_MINUTE` | `30` | Failed authentications per client IP before `429`. `0` disables the limiter. |
@@ -59,14 +59,18 @@ unauthenticated local-development tool.
 | `MOCKAGENTS_DEFAULT_MONTHLY_SPEND_USD` | `0` (off) | Per-tenant monthly simulated spend cap; over it, requests get `402`. |
 
 Per-tenant overrides are set through `PUT /api/v1/tenants/{id}/quota` and
-persist in the tenancy store, so they survive restarts and apply across
-replicas.
+persist in the tenancy store. Each process loads them at startup; a PUT
+updates only the receiving process's live override map. Other running
+replicas do not automatically refresh their limits. Shared spend totals
+have a separate short cache and do not imply live propagation of settings.
 
 ## SSO (OIDC)
 
-Setting `MOCKAGENTS_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET` and
-`_REDIRECT_URL` together enables SSO. A partial or invalid configuration fails
-startup rather than silently disabling login.
+In multi-tenant mode, setting `MOCKAGENTS_OIDC_ISSUER`, `_CLIENT_ID`,
+`_CLIENT_SECRET` and `_REDIRECT_URL` together attempts to enable SSO. If any
+of these four is missing, startup continues with SSO disabled. Once all are
+present, the domain map and other settings are validated and provider
+initialization errors fail startup. Single-tenant startup does not initialize SSO.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
@@ -74,17 +78,17 @@ startup rather than silently disabling login.
 | `MOCKAGENTS_OIDC_CLIENT_ID` | unset | Relying-party client id. |
 | `MOCKAGENTS_OIDC_CLIENT_SECRET` | unset | Relying-party secret. |
 | `MOCKAGENTS_OIDC_REDIRECT_URL` | unset | Callback URL; must point at this server's `/auth/callback`. |
-| `MOCKAGENTS_OIDC_DOMAIN_MAP` | unset | `example.com=tenant-a,acme.io=tenant-b` — maps a verified email domain to a tenant. |
+| `MOCKAGENTS_OIDC_DOMAIN_MAP` | unset | Required when SSO is enabled; `example.com=tenant-a,acme.io=tenant-b` maps a verified email domain to a tenant. |
 | `MOCKAGENTS_OIDC_DEFAULT_ROLE` | `viewer` | Role for just-in-time provisioned users. `viewer`, `editor` or `admin`; the platform role is never assignable this way. |
 | `MOCKAGENTS_OIDC_SESSION_TTL` | `24h` | Session lifetime. Needs a unit: `24h`, not `24`. |
-| `MOCKAGENTS_OIDC_SECURE_COOKIES` | `0` | Marks the session cookie `Secure`. Turn it on for any deployment reached over HTTPS. |
+| `MOCKAGENTS_OIDC_SECURE_COOKIES` | `0` | Forces the session cookie `Secure`; an HTTPS redirect URL also enables Secure automatically. |
 | `MOCKAGENTS_OIDC_ALLOW_UNVERIFIED_EMAIL` | `0` | Accepts an ID token whose `email_verified` is false. Leave it off unless your provider genuinely cannot set the claim. |
 
 ## Engine behavior
 
 | Variable | Flag | Default | Effect |
 | --- | --- | --- | --- |
-| `MOCKAGENTS_CHAOS_OFF` | `--chaos-off` | `0` | Disables every configured chaos block, fleet-wide. |
+| `MOCKAGENTS_CHAOS_OFF` | `--chaos-off` | `0` | Sets the inherited server-wide chaos rate to zero. Explicit agent/service triggers and request overrides can still apply; see the [chaos precedence guide](../guides/chaos.md). |
 | `MOCKAGENTS_CHAOS_RATE` | `--chaos-rate` | unset | Lowest-precedence server-wide chaos rate, `0.0`–`1.0`. |
 | `MOCKAGENTS_CHAOS_SEED` | `--chaos-seed` | unset | Fixed seed, so injected faults repeat run to run. |
 | `MOCKAGENTS_STRICT_TOOLS` | — | `off` | Fleet default for strict tool validation: `off`, `warn`, `strict`. Per-agent `spec.behavior.strict_tools` overrides it. |
