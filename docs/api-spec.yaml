@@ -1251,7 +1251,7 @@ paths:
     post:
       operationId: "createResponse"
       summary: "createResponse"
-      description: "Creates a tenant-scoped response. History is process-local with global FIFO capacity 1024; store defaults true. store:false disables standalone history, not Conversation item storage. Unknown or foreign previous_response_id returns 404. Streaming emits named SSE events; terminal response.completed/response.incomplete/response.failed events carry the final response. No GET Responses endpoint. Provider access is anonymous by default; a valid MockAgents credential scopes the tenant. Request bodies are subject to the main server body limit."
+      description: "Creates a tenant-scoped response. History is process-local with global FIFO capacity 1024; store defaults true. store:false disables standalone history, not Conversation item storage. Unknown or foreign previous_response_id returns 404. Streaming emits named SSE events; terminal response.completed/response.incomplete events carry the final response. No GET Responses endpoint. Provider access is anonymous by default; a valid MockAgents credential scopes the tenant. Request bodies are subject to the main server body limit."
       security: []
       requestBody:
         "required": true

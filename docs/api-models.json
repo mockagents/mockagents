@@ -1421,7 +1421,7 @@
           ]
         },
         "input": {
-          "description": "String or typed message/function_call_output/function_call items; parsed by parseResponsesInput.",
+          "description": "String or typed message/function_call_output/function_call items. Input may be omitted when prior history supplies messages; an empty resolved conversation is rejected.",
           "oneOf": [
             {
               "type": "string"
@@ -1431,6 +1431,9 @@
                 "type": "object"
               },
               "type": "array"
+            },
+            {
+              "type": "null"
             }
           ]
         },
@@ -1541,8 +1544,7 @@
         }
       },
       "required": [
-        "model",
-        "input"
+        "model"
       ],
       "type": "object",
       "x-go-type": "github.com/mockagents/mockagents/internal/adapter.ResponsesRequest"

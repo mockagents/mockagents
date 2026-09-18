@@ -163,6 +163,14 @@ func TestOpenAPIExamplesAndLiveProviderResponses(t *testing.T) {
 			responseSchema, err := c.Compile(pointer + "/responses/200/content/application~1json/schema")
 			require.NoError(t, err, path)
 			require.NoError(t, responseSchema.Validate(response), path)
+			if path == "/v1/responses" {
+				follow := map[string]any{"model": "gpt-4o", "previous_response_id": response.(map[string]any)["id"]}
+				require.NoError(t, requestSchema.Validate(follow))
+				encoded, _ := json.Marshal(follow)
+				w = httptest.NewRecorder()
+				mux.ServeHTTP(w, httptest.NewRequest("POST", path, bytes.NewReader(encoded)))
+				require.Equal(t, 200, w.Code, w.Body.String())
+			}
 			live++
 		}
 	}

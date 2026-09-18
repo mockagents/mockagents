@@ -120,8 +120,8 @@ func generated() map[string][]byte {
 		b.shape(reflect.TypeOf(v))
 	}
 	// Decode-time requiredness is independent of Go's output serialization tags.
-	b.def("adapter.ResponsesRequest")["required"] = []string{"model", "input"}
-	b.set("adapter.ResponsesRequest", "input", schema{"oneOf": []any{str(), array(schema{"type": "object"})}, "description": "String or typed message/function_call_output/function_call items; parsed by parseResponsesInput."})
+	b.def("adapter.ResponsesRequest")["required"] = []string{"model"}
+	b.set("adapter.ResponsesRequest", "input", schema{"oneOf": []any{str(), array(schema{"type": "object"}), schema{"type": "null"}}, "description": "String or typed message/function_call_output/function_call items. Input may be omitted when prior history supplies messages; an empty resolved conversation is rejected."})
 	b.set("adapter.ResponsesRequest", "conversation", schema{"oneOf": []any{str(), obj(schema{"id": str()}, "id"), schema{"type": "null"}}, "description": "Mutually exclusive with previous_response_id. Conversation items persist even when store is false."})
 	b.prop("adapter.ResponsesRequest", "store")["description"] = "Defaults true; false disables standalone history retention. Previous response IDs are tenant-scoped and globally FIFO bounded to 1024 entries."
 	b.prop("adapter.ResponsesRequest", "model")["minLength"] = 1
