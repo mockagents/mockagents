@@ -16,6 +16,40 @@ import { crossSiteForbidden } from "@/lib/guard";
 
 export const dynamic = "force-dynamic";
 
+/** HEAD is the live feed's credential probe (LogsConsole calls it after an
+ * EventSource error, because EventSource hides the status code).
+ *
+ * Without this export Next.js answers HEAD by running GET and discarding the
+ * body — which opened a real upstream SSE subscription for every probe, the
+ * opposite of cheap. Instead this asks the upstream's plain log listing for a
+ * single metadata-only row. Both routes sit behind the same authorization
+ * floor (route_authz.go: GET /api/v1/logs and GET /api/v1/logs/stream are both
+ * open to any authenticated caller), so the status is the answer the stream
+ * would have given, and no subscriber is ever created. */
+export async function HEAD(req: NextRequest) {
+  const blocked = crossSiteForbidden(req);
+  if (blocked) return new Response(null, { status: blocked.status });
+
+  const key = await getAuthKey();
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (key) headers.Authorization = `Bearer ${key}`;
+  let res: Response;
+  try {
+    res = await fetch(`${getBaseUrl()}/api/v1/logs?limit=1&fields=meta`, {
+      headers,
+      signal: AbortSignal.timeout(5_000),
+      cache: "no-store",
+    });
+  } catch (err) {
+    console.error("logs/stream probe: upstream unreachable:", err);
+    return new Response(null, { status: 502 });
+  }
+  // Drain without reading the row into anything.
+  await res.body?.cancel().catch(() => {});
+  if (res.status === 401 || res.status === 403) return new Response(null, { status: res.status });
+  return new Response(null, { status: res.ok ? 204 : 502 });
+}
+
 export async function GET(req: NextRequest) {
   // This route attaches the operator's cookie-derived key upstream; refuse
   // cross-site callers so it can't be used as a confused deputy (GUI-03).
@@ -59,7 +93,34 @@ export async function GET(req: NextRequest) {
     return new Response("upstream request failed", { status: 502 });
   }
 
-  return new Response(upstreamResp.body, {
+  // Next.js does not send the response headers until the first body chunk,
+  // and the upstream sends nothing until a log event happens — so on a quiet
+  // server the browser's EventSource never saw "open" and the console sat on
+  // "reconnecting". An SSE comment line (ignored by EventSource) goes first.
+  const reader = upstreamResp.body.getReader();
+  let preambleSent = false;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (!preambleSent) {
+        preambleSent = true;
+        controller.enqueue(new TextEncoder().encode(": connected\n\n"));
+        return;
+      }
+      try {
+        const { done, value } = await reader.read();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      } catch (err) {
+        controller.error(err);
+      }
+    },
+    // The browser went away: release the upstream subscription too.
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+
+  return new Response(body, {
     status: 200,
     headers: {
       "Content-Type": "text/event-stream",
