@@ -2,8 +2,8 @@
 'use strict';
 // `npx mockagents <args>` — resolve/download the Go binary and run it.
 
-const { spawnSync } = require('child_process');
 const { ensureBinary, INSTALL_HINT } = require('../lib/binary');
+const { runBinary, mirrorExit } = require('../lib/run');
 const pkg = require('../package.json');
 
 (async () => {
@@ -15,10 +15,14 @@ const pkg = require('../package.json');
     if (!String(e.message).includes('brew install')) console.error(INSTALL_HINT);
     process.exit(1);
   }
-  const res = spawnSync(binary, process.argv.slice(2), { stdio: 'inherit' });
-  if (res.error) {
-    console.error(`mockagents: failed to run ${binary}: ${res.error.message}`);
+  // Async spawn with signal forwarding: a SIGTERM to this launcher must stop
+  // the server too, not orphan it on its port.
+  let result;
+  try {
+    result = await runBinary(binary, process.argv.slice(2));
+  } catch (e) {
+    console.error(`mockagents: failed to run ${binary}: ${e.message}`);
     process.exit(1);
   }
-  process.exit(res.status == null ? 1 : res.status);
+  mirrorExit(result);
 })();
