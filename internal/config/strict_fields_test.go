@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mockagents/mockagents/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -209,4 +210,119 @@ func TestLoadFile_JSONWithBOM(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "bom", res.Definition.Metadata.Name)
 	assert.Empty(t, ValidateBytes(append([]byte{0xEF, 0xBB, 0xBF}, body...)).Errors)
+}
+
+func agentWith(behaviorExtra, scenario, tools string) string {
+	return `apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: bounds
+spec:
+  protocol: openai-chat-completions
+  model: m
+` + tools + `  behavior:
+` + behaviorExtra + `    scenarios:
+` + scenario
+}
+
+const plainScenario = `      - name: d
+        response:
+          content: "hi"
+`
+
+func errorFields(report *ValidateReport) []string {
+	var fields []string
+	for _, e := range report.Errors {
+		fields = append(fields, e.Field)
+	}
+	return fields
+}
+
+// Streaming timing is bounded like chaos and negatives are rejected (C-08).
+func TestValidate_StreamingBounds(t *testing.T) {
+	doc := agentWith(`    streaming:
+      enabled: true
+      ttft_ms: 3600000
+      jitter_ms: -5
+      chunk_size: -3
+      tokens_per_sec: -1
+      truncate_after_chunks: -1
+`, plainScenario, "")
+	fields := errorFields(ValidateBytes([]byte(doc)))
+	for _, want := range []string{
+		"spec.behavior.streaming.ttft_ms", "spec.behavior.streaming.jitter_ms",
+		"spec.behavior.streaming.chunk_size", "spec.behavior.streaming.tokens_per_sec",
+		"spec.behavior.streaming.truncate_after_chunks",
+	} {
+		assert.Contains(t, fields, want)
+	}
+}
+
+// NaN rates are rejected (C-19): "rate < 0 || rate > 1" let NaN through.
+func TestValidate_NaNRates(t *testing.T) {
+	doc := agentWith(`    chaos:
+      errors:
+        rate: .nan
+      connection:
+        mode: reset
+        rate: .nan
+`, plainScenario, "")
+	fields := errorFields(ValidateBytes([]byte(doc)))
+	assert.Contains(t, fields, "spec.behavior.chaos.errors.rate")
+	assert.Contains(t, fields, "spec.behavior.chaos.connection.rate")
+}
+
+// A malformed template or an unknown template function is a validation
+// error, not a 500 on every request (C-09).
+func TestValidate_ResponseTemplatesAreParsed(t *testing.T) {
+	for name, content := range map[string]string{
+		"unclosed action":  `Hello {{ uuid `,
+		"unknown function": `Hello {{ not_a_function }}`,
+	} {
+		doc := agentWith("", "      - name: d\n        response:\n          content: \""+content+"\"\n", "")
+		fields := errorFields(ValidateBytes([]byte(doc)))
+		assert.Contains(t, fields, "spec.behavior.scenarios.0.response.content", name)
+	}
+	ok := agentWith("", "      - name: d\n        response:\n          content: \"Hi {{ fake_name }} {{ .TurnNumber }} {{ .Timestamp }}\"\n", "")
+	assert.Empty(t, ValidateBytes([]byte(ok)).Errors)
+}
+
+// Tool response rules must return something, errors need code and message,
+// and tool names are capped at 64 characters (C-19).
+func TestValidate_ToolResponseRulesAndNameLength(t *testing.T) {
+	tools := `  tools:
+    - name: ` + strings.Repeat("a", 65) + `
+    - name: lookup
+      responses:
+        - match: {id: "1"}
+        - default: true
+          error: {code: NOT_FOUND}
+        - default: true
+          response: {ok: true}
+          error: {code: E, message: m}
+`
+	fields := errorFields(ValidateBytes([]byte(agentWith("", plainScenario, tools))))
+	for _, want := range []string{
+		"spec.tools.0.name", "spec.tools.1.responses.0", "spec.tools.1.responses.1.error", "spec.tools.1.responses.2",
+	} {
+		assert.Contains(t, fields, want)
+	}
+}
+
+// validate warns when two agents in a tenant claim one model (C-13): only the
+// lexicographically smallest name answers requests for it.
+func TestLintDocuments_SharedModel(t *testing.T) {
+	mk := func(name, tenant, model string) *LoadResult {
+		return &LoadResult{FilePath: name + ".yaml", Definition: &types.AgentDefinition{
+			Metadata: types.Metadata{Name: name, TenantID: tenant},
+			Spec:     types.AgentSpec{Model: model},
+		}}
+	}
+	warnings := LintDocuments(&Documents{Agents: []*LoadResult{
+		mk("zeta", "", "gpt-4o"), mk("alpha", "", "gpt-4o"),
+		mk("solo", "", "other"), mk("beta", "ten_x", "gpt-4o"),
+	}})
+	require.Len(t, warnings, 1)
+	assert.Equal(t, "zeta.yaml", warnings[0].File)
+	assert.Contains(t, warnings[0].Message, `agent "alpha"`)
 }

@@ -443,3 +443,23 @@ func TestOutOfBandItemsNotRetrievable(t *testing.T) {
 		t.Errorf("after OOB response, previous_item_id = %v, want item_u", added["previous_item_id"])
 	}
 }
+
+// One socket cannot grow session memory without bound (audit M-32, review
+// P-07): past the caps the oldest items and history entries are dropped.
+func TestSessionMemoryIsBounded(t *testing.T) {
+	s := NewSession("bounded", "", fakeGen("ok"))
+	ctx := context.Background()
+	for i := 0; i < maxSessionItems+500; i++ {
+		s.Handle(ctx, &ClientEvent{Type: "conversation.item.create", Item: []byte(
+			`{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}`)})
+	}
+	if len(s.items) > maxSessionItems || len(s.itemOrder) > maxSessionItems {
+		t.Fatalf("items=%d itemOrder=%d, want <= %d", len(s.items), len(s.itemOrder), maxSessionItems)
+	}
+	if len(s.history) > maxSessionHistory {
+		t.Fatalf("history=%d, want <= %d", len(s.history), maxSessionHistory)
+	}
+	if s.lastItemID == "" {
+		t.Fatal("the conversation tail must survive trimming")
+	}
+}

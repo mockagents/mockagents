@@ -40,6 +40,18 @@ Fixes from the 2026-10-06 full-application quality review (see
   without `--yes` when not on a terminal; `--keep-file` unregisters only
   (`DELETE /api/v1/agents/{name}?keep_file=true`). The delete response reports
   `persisted: true` when a file was removed.
+- **Stricter validation of values.** Streaming timing (`ttft_ms`, `jitter_ms`,
+  `chunk_delay_ms`, the `*_p50/p95_ms` percentiles) must be 0-60000 ms like
+  chaos delays, and negative `chunk_size`, `tokens_per_sec` or
+  `truncate_after_chunks` are rejected (a `ttft_ms: 3600000` used to hold a
+  request open for an hour). Response templates are parsed at validation, so
+  an unclosed `{{` or an unknown function is an error instead of a 500 on every
+  request. Chaos rates of `NaN` are rejected. A tool response rule must return a
+  response or an error (not both), an error needs `code` and `message`, and tool
+  names are limited to 64 characters. `validate` warns when two agents in a
+  tenant claim the same `spec.model`.
+- The server's default write timeout is 90 s (was 60 s), so a chaos fault at the
+  60 s ceiling reaches the client.
 - `mockagents logs` reads the database `start` writes (honouring
   `MOCKAGENTS_DATA_DIR`) and reports a missing database instead of creating an
   empty one.
@@ -136,6 +148,41 @@ Fixes from the 2026-10-06 full-application quality review (see
   bounded to 1 KiB; oversized bodies on every Conversations route return 413;
   `{{ .Timestamp }}` renders the request time; pipeline runs without a session
   id no longer share engine sessions.
+- Recording: a failed cassette write no longer loses interactions (the next
+  write rebuilds the file from memory); replay never sends a stored
+  `Content-Encoding`/`Content-Length`, so imported gzip vcrpy cassettes replay;
+  the proxy stores decoded bodies even when the client accepts gzip; the request
+  hash covers the (credential-free) query string, so `?alt=sse` and plain
+  requests no longer share a recording — older path-only recordings still
+  replay; redaction no longer turns words like `risk-based` into `risk-***`.
+- MCP: server-initiated messages are delivered in order and never lost when a
+  new subscriber takes over the event stream; a request that timed out is not
+  delivered later; a lagging streamable-HTTP subscriber is disconnected (and
+  replays from `Last-Event-ID`) instead of silently missing events; at the
+  session cap a new session is refused with `503` rather than evicting a live
+  one; `id: null` and a missing method are `-32600`; malformed bodies get HTTP
+  `400`; `resources/subscribe` rejects undeclared URIs with `-32002`; a
+  panicking tool handler becomes an internal error.
+- A2A: idle non-terminal tasks expire after the task TTL instead of pinning
+  capacity forever; notifications are never answered and batches are
+  `-32600`; the card URL only takes `http`/`https` from `X-Forwarded-Proto`.
+- Realtime: G.711 (`audio/pcmu`, `audio/pcma`) durations and voice detection
+  use the right byte rate; session memory is bounded; the advertised
+  `expires_at` is enforced with a `session_expired` error.
+- Updating an agent loaded from a `.json` file writes JSON back, keeping the
+  file loadable. `tool_call` assertions compare numbers like
+  `tool_call_args` (`2` matches `2.0`). Audit write failures are logged.
+  Interaction-log and audit timestamps are stored fixed-width UTC so time
+  filters order rows correctly. The standalone `mcp` and `a2a` servers bound
+  request reads and idle connections.
+- The JSON schemas now declare every field the server accepts:
+  `metadata.tenant_id` (agent, pipeline, test suite, MCP server), the ten MCP
+  fault fields (`timeout_ms`, `status_code`, `disconnect`, `reset`,
+  `malformed`, `malformed_schema`, `truncate_after_bytes`, `operation_rates`,
+  `fixture_rates`, `sequence_rates`) and the vector `seed`, `rate` and
+  `operation_rates` faults, so editors no longer flag valid configuration. A
+  test now compares every schema with its Go type.
+- Chaos latency is clamped to 60 s for every distribution, not only `normal`.
 
 ---
 - Python SDK: the client's `api_key` was sent only by `run_pipeline`. Every other

@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 
 	"github.com/mockagents/mockagents/internal/clientip"
@@ -27,8 +28,10 @@ func NewRecorder(store Store, principalFn func(*http.Request) Actor) *Recorder {
 	return &Recorder{Store: store, PrincipalFrom: principalFn}
 }
 
-// Record appends an event synchronously. Errors are swallowed intentionally
-// — audit must never block the critical path. Control-plane mutations
+// Record appends an event synchronously. An append error never fails the
+// caller — audit must never block the critical path — but it is logged: a
+// silently missing audit row is indistinguishable from an event that never
+// happened (audit L-32). Control-plane mutations
 // (agent/key/tenant writes) use this path: they are rare and the caller
 // expects the event to be queryable immediately. High-volume events that an
 // unauthenticated client can trigger (auth denials) go through AsyncWriter
@@ -37,12 +40,14 @@ func (r *Recorder) Record(ctx context.Context, kind EventKind, actor Actor, targ
 	if r == nil || r.Store == nil {
 		return
 	}
-	_ = r.Store.Append(ctx, &Event{
+	if err := r.Store.Append(ctx, &Event{
 		Kind:    kind,
 		Actor:   actor,
 		Target:  target,
 		Details: details,
-	})
+	}); err != nil {
+		slog.Warn("audit event could not be recorded", "kind", kind, "target", target, "error", err)
+	}
 }
 
 // RecordHTTP is the variant handlers call. It extracts the actor

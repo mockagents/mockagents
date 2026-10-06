@@ -254,6 +254,7 @@ func validateDocuments(docs *config.Documents) ([]*config.ValidationError, []*co
 	// claim one name. Run even for an agents-only tree — a name collision
 	// needs no pipelines at all.
 	collect(config.ValidateDocuments(docs))
+	warnings = append(warnings, config.LintDocuments(docs)...)
 	return errs, warnings
 }
 

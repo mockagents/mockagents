@@ -186,6 +186,10 @@ func serveMCPHTTP(server *mcp.Server, bind string, port int) error {
 		Addr:              addr,
 		Handler:           newMCPMux(server),
 		ReadHeaderTimeout: 10 * time.Second,
+		// Bound the request read and idle keep-alives like record/replay
+		// (audit L-43). No WriteTimeout: the SSE streams are long-lived.
+		ReadTimeout: 30 * time.Second,
+		IdleTimeout: 120 * time.Second,
 	}
 
 	fmt.Printf("mockagents mcp listening on %s (server=%s)\n", addr, server.Definition().Metadata.Name)

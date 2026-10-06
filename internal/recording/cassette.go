@@ -16,10 +16,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -347,10 +349,11 @@ func (c *Cassette) flush(snapshot []*Interaction) error {
 				"path", c.Path, "method", it.Method, "request_path", it.Path, "error", err)
 		}
 	}
-	// Advance regardless: a dropped record is gone, and holding it back would
-	// make every later flush retry the same failure.
-	c.flushed = len(snapshot)
+	// An unencodable record is gone for good (holding it back would make every
+	// later flush retry the same failure), so an all-dropped batch still
+	// counts as flushed.
 	if buf.Len() == 0 {
+		c.flushed = len(snapshot)
 		return nil
 	}
 
@@ -358,11 +361,27 @@ func (c *Cassette) flush(snapshot []*Interaction) error {
 	// lifetime: one batch is a single open/write/close, and nothing keeps the
 	// file locked between recordings (on Windows an open handle blocks any
 	// rename or delete of the cassette).
-	f, err := os.OpenFile(c.Path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	//
+	// The flushed cursor only advances once the write succeeded. It used to
+	// advance first, so a transient open or write error (missing directory,
+	// ENOSPC) lost those interactions permanently, and a short write left a
+	// torn line mid-file that made Load reject the whole cassette (review
+	// P-04). Any failure now schedules an atomic rebuild from memory.
+	if err := appendCassette(c.Path, buf.Bytes()); err != nil {
+		c.rewrite = true
+		return err
+	}
+	c.flushed = len(snapshot)
+	return nil
+}
+
+// appendCassette appends data to the cassette file in one write.
+func appendCassette(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(buf.Bytes()); err != nil {
+	if _, err := f.Write(data); err != nil {
 		f.Close()
 		return err
 	}
@@ -409,6 +428,38 @@ func (c *Cassette) All() []*Interaction {
 // HashRequest produces a stable key for a request. The body is
 // canonicalized by re-encoding the JSON with sorted keys so semantically
 // equivalent requests with different whitespace or key order match.
+// HashPath is the path component the request hash covers: the URL path plus
+// its query, canonicalised (keys sorted) with credential parameters dropped,
+// or the bare path when no other parameter is present. The hash used to cover
+// the path only, so Gemini's :streamGenerateContent?alt=sse (an SSE stream)
+// and the same path without alt (a JSON array) shared one recording and a
+// caller could be replayed the wrong body (review P-15). Recordings made
+// before this carry path-only hashes; Replay falls back to those.
+func HashPath(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	q := u.Query()
+	for k := range q {
+		if credentialQueryParams[strings.ToLower(k)] {
+			q.Del(k)
+		}
+	}
+	if len(q) == 0 {
+		return u.Path
+	}
+	for _, vs := range q {
+		sort.Strings(vs)
+	}
+	return u.Path + "?" + q.Encode() // Encode sorts by key
+}
+
+// credentialQueryParams never take part in the hash: they differ between the
+// recording environment and the replaying client (and must not be compared).
+var credentialQueryParams = map[string]bool{
+	"key": true, "api_key": true, "apikey": true, "access_token": true, "token": true,
+}
+
 func HashRequest(method, path string, body []byte) string {
 	var canonical []byte
 	if len(body) > 0 {
@@ -484,9 +535,12 @@ func writeCassette(path string, interactions []*Interaction) error {
 	bw := bufio.NewWriter(tmp)
 	enc := json.NewEncoder(bw)
 	for _, it := range interactions {
+		// Encode marshals fully before writing, so a failure writes nothing:
+		// drop the record (as an append does, audit M-28) rather than failing
+		// a rebuild forever over one poisoned interaction.
 		if err := enc.Encode(it); err != nil {
-			tmp.Close()
-			return err
+			slog.Warn("cassette interaction could not be encoded; dropping it from the rebuilt file",
+				"path", path, "method", it.Method, "request_path", it.Path, "error", err)
 		}
 	}
 	if err := bw.Flush(); err != nil {

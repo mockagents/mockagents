@@ -448,3 +448,28 @@ func TestRealtime_ClientSecret(t *testing.T) {
 	audioOut := sess["audio"].(map[string]any)["output"].(map[string]any)
 	require.Equal(t, "verse", audioOut["voice"])
 }
+
+// The advertised expires_at is enforced: the session ends with the GA
+// session_expired error and a close (review P-07).
+func TestRealtime_SessionExpires(t *testing.T) {
+	orig := realtimeSessionTTL
+	realtimeSessionTTL = 300 * time.Millisecond
+	t.Cleanup(func() { realtimeSessionTTL = orig })
+
+	base, closeFn := realtimeServer(t)
+	defer closeFn()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/v1/realtime?model=gpt-4o",
+		&websocket.DialOptions{Subprotocols: []string{"realtime"}})
+	require.NoError(t, err)
+	defer c.CloseNow()
+
+	require.Equal(t, "session.created", wsRead(t, ctx, c)["type"])
+	require.Equal(t, "conversation.created", wsRead(t, ctx, c)["type"])
+	ev := wsRead(t, ctx, c)
+	require.Equal(t, "error", ev["type"])
+	require.Equal(t, "session_expired", ev["error"].(map[string]any)["code"])
+	_, _, err = c.Read(ctx)
+	require.Error(t, err, "the socket must be closed after expiry")
+}
