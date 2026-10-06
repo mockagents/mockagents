@@ -1,6 +1,11 @@
-// Lucide-style icon set (24x24, 1.75 stroke) ported from the MockAgents Console
-// design. Rendered as JSX elements (not dangerouslySetInnerHTML) so the GUI
-// keeps its no-raw-HTML posture. Only the icons the shell needs are included.
+// Icon set (24x24, 1.75 stroke) ported from the MockAgents Console design.
+// Rendered as JSX elements (not dangerouslySetInnerHTML) so the GUI keeps its
+// no-raw-HTML posture. Only the icons the shell needs are included.
+//
+// The icon geometry is derived from Lucide (https://lucide.dev), Copyright (c)
+// Lucide Icons and Contributors, under the ISC License; icons Lucide derives
+// from Feather are Copyright (c) Cole Bemis under the MIT License. The full
+// notice is in ./LUCIDE-LICENSE.
 import type { ReactNode } from "react";
 
 const PATHS: Record<string, ReactNode> = {

@@ -1,0 +1,41 @@
+# Code owners for mockagents/mockagents.
+#
+# GitHub requests a review from the owners of every path a pull request
+# touches. Today the project has one maintainer (see MAINTAINERS.md), so every
+# area maps to them; the sections below are the review areas new maintainers
+# and teams will take over. When a GitHub team exists, replace the handle on
+# its lines with the team (for example @mockagents/security-reviewers).
+#
+# Later lines win: keep the catch-all first.
+
+*                                   @anandtopu
+
+# Security boundary: authentication, authorization, tenancy, redaction.
+/internal/tenancy/                  @anandtopu
+/internal/oidcauth/                 @anandtopu
+/internal/server/route_authz.go     @anandtopu
+/internal/server/open_routes.go     @anandtopu
+/internal/recording/redact*.go      @anandtopu
+/SECURITY.md                        @anandtopu
+
+# Public contracts: schemas, types, validators, the OpenAPI spec.
+/schema/                            @anandtopu
+/internal/types/                    @anandtopu
+/internal/config/                   @anandtopu
+/docs/api-spec.yaml                 @anandtopu
+/docs/api-models.json               @anandtopu
+
+# Release and supply chain.
+/.github/                           @anandtopu
+/.goreleaser.yml                    @anandtopu
+/Dockerfile                         @anandtopu
+/deploy/                            @anandtopu
+/scripts/                           @anandtopu
+
+# Client packages.
+/sdk/                               @anandtopu
+/gui/                               @anandtopu
+
+# Documentation.
+/site/                              @anandtopu
+/docs/                              @anandtopu
