@@ -480,11 +480,51 @@ func SanitizeBody(body string) string {
 			for end < len(sanitized) && sanitized[end] != '"' && sanitized[end] != ' ' && sanitized[end] != ',' {
 				end++
 			}
+			// "sk-" and "key-" only start a credential at a word boundary and
+			// when a credential-shaped value follows. Matching them anywhere
+			// turned prose such as "risk-based" and "turkey-dinner" into
+			// "risk-***" and "turkey-***", silently altering logged and
+			// recorded content (review P-14). "Bearer " always precedes a token.
+			if pattern != "Bearer " && !looksLikeKey(sanitized, offset+idx, valStart, end) {
+				offset = valStart
+				continue
+			}
 			sanitized = sanitized[:valStart] + "***" + sanitized[end:]
 			offset = valStart + 3 // advance past the inserted "***"
 		}
 	}
 	return sanitized
+}
+
+// minKeyDashValueLen is the shortest value after "key-" treated as a key
+// (Mailgun-style keys are 32 hex characters); "key-value" in prose is not.
+const minKeyDashValueLen = 16
+
+// looksLikeKey reports whether the prefix at prefixStart begins a credential.
+// Both prefixes must start a word (the preceding byte is not a letter or
+// digit). "key-" is an ordinary English compound, so it additionally needs a
+// credential-shaped value (letters, digits, '_' or '-', at least
+// minKeyDashValueLen bytes); "sk-" at a word start is always treated as a key.
+func looksLikeKey(s string, prefixStart, valStart, end int) bool {
+	if prefixStart > 0 && isAlnum(s[prefixStart-1]) {
+		return false
+	}
+	if !strings.HasPrefix(s[prefixStart:], "key-") {
+		return true
+	}
+	if end-valStart < minKeyDashValueLen {
+		return false
+	}
+	for i := valStart; i < end; i++ {
+		if c := s[i]; !isAlnum(c) && c != '_' && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func isAlnum(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 // escapeLikePrefix makes a caller-supplied string safe as a LIKE prefix: the

@@ -604,3 +604,23 @@ func jsonToYAML(data []byte) ([]byte, error) {
 	}
 	return yaml.Marshal(raw)
 }
+
+// EncodeForPath returns the canonical YAML encoding of a definition in the
+// format the file at path is read back with: JSON for a .json path, YAML
+// otherwise. The write paths (agent write API, MCP management) overwrite an
+// agent's existing source file in place, and writing YAML into a .json source
+// made it unloadable on the next start or reload (review P-10).
+func EncodeForPath(path string, canonicalYAML []byte) ([]byte, error) {
+	if !isJSON(path) {
+		return canonicalYAML, nil
+	}
+	var doc any
+	if err := yaml.Unmarshal(canonicalYAML, &doc); err != nil {
+		return nil, err
+	}
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(out, '\n'), nil
+}

@@ -10,6 +10,7 @@
 package a2a
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -241,12 +242,26 @@ func (s *Server) Card(baseURL string) types.A2AAgentCard {
 // HandleBytes decodes a JSON-RPC request body, dispatches it, and returns the
 // marshaled response. A nil response (notification) yields nil bytes.
 func (s *Server) HandleBytes(body []byte) ([]byte, error) {
+	// A batch is well-formed JSON-RPC this mock does not serve: that is an
+	// Invalid Request (-32600), not a Parse error (audit L-39).
+	if trimmed := bytes.TrimSpace(body); len(trimmed) > 0 && trimmed[0] == '[' {
+		if !json.Valid(trimmed) {
+			return json.Marshal(newError(nil, errParse, "invalid JSON", nil))
+		}
+		return json.Marshal(newError(nil, errInvalidRequest, "batch requests are not supported", nil))
+	}
 	var req rpcRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		return json.Marshal(newError(nil, errParse, "invalid JSON", err.Error()))
 	}
 	resp := s.dispatch(&req)
-	if resp == nil {
+	// A valid notification (a well-formed 2.0 request with no id) is
+	// processed but never answered, whatever its method or outcome (JSON-RPC
+	// 2.0 §4.1); known methods used to reply with a full result carrying
+	// "id": null (audit L-39). A malformed request is not a notification and
+	// still gets its Invalid Request error with id null (§5.1).
+	isNotification := len(req.ID) == 0 && req.JSONRPC == "2.0" && req.Method != ""
+	if resp == nil || isNotification {
 		return nil, nil
 	}
 	return json.Marshal(resp)
@@ -476,11 +491,12 @@ func (s *Server) transitionLocked(id json.RawMessage, p messageSendParams, parts
 	s.tasks[taskID] = task
 	s.taskBytes[taskID] = len(encoded)
 	s.retainedBytes = s.retainedBytes - oldBytes + len(encoded)
-	if isTerminal(state) {
-		s.taskExpiry[taskID] = s.now().Add(s.taskTTL)
-	} else {
-		delete(s.taskExpiry, taskID)
-	}
+	// Every task expires taskTTL after it was last touched. Non-terminal
+	// tasks (input-required, working, auth-required) used to be kept forever,
+	// so abandoned multi-turn conversations filled MaxTasks and every later
+	// message/send failed until a restart (review P-09). A follow-up message
+	// refreshes the deadline, so an active conversation never expires.
+	s.taskExpiry[taskID] = s.now().Add(s.taskTTL)
 	return task, nil
 }
 
@@ -804,8 +820,14 @@ func requestBaseURL(r *http.Request) string {
 	if r.TLS != nil {
 		scheme = "https"
 	}
+	// Only the first hop's value, and only http or https: the header used to
+	// be copied verbatim, so any client could make the advertised card URL
+	// carry an arbitrary scheme such as javascript or file (audit L-36).
 	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
-		scheme = proto
+		first, _, _ := strings.Cut(proto, ",")
+		if p := strings.ToLower(strings.TrimSpace(first)); p == "http" || p == "https" {
+			scheme = p
+		}
 	}
 	return scheme + "://" + r.Host
 }

@@ -56,3 +56,17 @@ func TestSanitizeBody_TrailingSecretAfterStars(t *testing.T) {
 	// And the fix stays idempotent.
 	assert.Equal(t, out, SanitizeBody(out))
 }
+
+// Prose with hyphenated words is left alone; real keys are still masked
+// (review P-14).
+func TestSanitizeBody_DoesNotRedactOrdinaryWords(t *testing.T) {
+	prose := `a risk-based task-list for the turkey-dinner desk-lamp, a key-value store`
+	assert.Equal(t, prose, SanitizeBody(prose))
+
+	// Built by concatenation so secret scanners do not mistake the fixture
+	// for a leaked credential.
+	fakeKey := strings.Repeat("0f1e2d3c", 4)
+	out := SanitizeBody(`{"a":"sk-proj-abc123","b":"key-` + fakeKey + `"}`)
+	assert.NotContains(t, out, "abc123")
+	assert.NotContains(t, out, fakeKey)
+}
