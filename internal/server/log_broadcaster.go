@@ -202,6 +202,14 @@ type SubscriberSnapshot struct {
 // Safe to call with a nil receiver (returns a zero-value snapshot)
 // so handlers don't have to branch on "is broadcasting enabled".
 func (b *LogBroadcaster) Snapshot() BroadcasterSnapshot {
+	return b.SnapshotTenant("")
+}
+
+// SnapshotTenant is Snapshot restricted to the subscriptions of one tenant;
+// an empty tenantID covers every subscription. A per-tenant admin used to see
+// every tenant's subscriber count and backpressure here, the one /logs* route
+// that was not tenant-scoped (2026-10-06 review S-06).
+func (b *LogBroadcaster) SnapshotTenant(tenantID string) BroadcasterSnapshot {
 	if b == nil {
 		return BroadcasterSnapshot{}
 	}
@@ -209,10 +217,13 @@ func (b *LogBroadcaster) Snapshot() BroadcasterSnapshot {
 	defer b.mu.Unlock()
 
 	snap := BroadcasterSnapshot{
-		SubscriberCount: len(b.subscribers),
-		Subscribers:     make([]SubscriberSnapshot, 0, len(b.subscribers)),
+		Subscribers: make([]SubscriberSnapshot, 0, len(b.subscribers)),
 	}
 	for sub := range b.subscribers {
+		if tenantID != "" && sub.tenantID != tenantID {
+			continue
+		}
+		snap.SubscriberCount++
 		dropped := sub.dropped.Load()
 		snap.TotalDropped += dropped
 		if dropped > snap.MaxDropped {

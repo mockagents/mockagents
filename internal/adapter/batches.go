@@ -257,6 +257,13 @@ type BatchesHandler struct {
 	files     *fileStore
 	store     *batchStore
 	endpoints map[string]http.HandlerFunc
+	// SubrequestMiddleware, when set, wraps the endpoint handler for every
+	// batched sub-request. The server sets it to the same quota and spend
+	// metering a direct call passes through: sub-requests are dispatched in
+	// process, below the HTTP middleware chain, so without it a batch ran up to
+	// 50,000 engine calls that neither consumed a tenant's request quota nor
+	// accrued its monthly spend.
+	SubrequestMiddleware func(http.Handler) http.Handler
 }
 
 // NewBatchesHandler builds a BatchesHandler. endpoints maps a supported batch
@@ -546,7 +553,7 @@ func (h *BatchesHandler) dispatch(tenant, endpoint string, body json.RawMessage)
 	subReq, _ = engine.WithRequestMeta(subReq)
 
 	rec := &batchResponseRecorder{}
-	handler(rec, subReq)
+	serveSubrequest(h.SubrequestMiddleware, handler, rec, subReq)
 
 	status := rec.status
 	if status == 0 {
@@ -677,4 +684,14 @@ func parseBatchDelay(h string) (time.Duration, error) {
 // writeBatchNotFound writes the OpenAI 404 envelope for an unknown batch id.
 func writeBatchNotFound(w http.ResponseWriter, id string) {
 	writeError(w, http.StatusNotFound, "invalid_request_error", fmt.Sprintf("No such Batch object: %s", id))
+}
+
+// serveSubrequest runs one batched sub-request through handler, wrapped in mw
+// when one is configured.
+func serveSubrequest(mw func(http.Handler) http.Handler, handler http.HandlerFunc, w http.ResponseWriter, r *http.Request) {
+	if mw == nil {
+		handler(w, r)
+		return
+	}
+	mw(handler).ServeHTTP(w, r)
 }
