@@ -293,7 +293,7 @@ func (n *newlineNormalizer) Read(p []byte) (int, error) {
 
 // ChatStream opens an OpenAI Chat Completions stream and returns a
 // RawEventStream that yields the parsed delta payloads from each
-// ``data:`` line. Terminates on the ``[DONE]`` sentinel.
+// “data:“ line. Terminates on the “[DONE]“ sentinel.
 func (c *Client) ChatStream(ctx context.Context, messages []ChatMessage, opts ChatOptions) (*RawEventStream, error) {
 	model := opts.Model
 	if model == "" {
@@ -331,8 +331,8 @@ func (c *Client) ChatStream(ctx context.Context, messages []ChatMessage, opts Ch
 }
 
 // MessageStream opens an Anthropic Messages stream. Yields
-// ``message_start`` / ``content_block_*`` / ``message_delta`` /
-// ``message_stop`` events and terminates cleanly after ``message_stop``.
+// “message_start“ / “content_block_*“ / “message_delta“ /
+// “message_stop“ events and terminates cleanly after “message_stop“.
 func (c *Client) MessageStream(ctx context.Context, messages []ChatMessage, opts MessageOptions) (*RawEventStream, error) {
 	model := opts.Model
 	if model == "" {

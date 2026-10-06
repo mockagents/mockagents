@@ -54,7 +54,7 @@ func TestConcurrentAppend(t *testing.T) {
 	ctx := context.Background()
 
 	const (
-		goroutines  = 8
+		goroutines   = 8
 		perGoroutine = 25
 		total        = goroutines * perGoroutine
 	)

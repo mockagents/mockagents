@@ -57,7 +57,7 @@ func (e *McpEvent) IsNotification() bool {
 
 // Params returns the event's params as a generic map, or an empty
 // map when the server omitted the field. Always non-nil so handlers
-// can use ``params["x"]`` without first checking for nil.
+// can use “params["x"]“ without first checking for nil.
 func (e *McpEvent) Params() map[string]any {
 	if e == nil || e.Payload.Params == nil {
 		return map[string]any{}

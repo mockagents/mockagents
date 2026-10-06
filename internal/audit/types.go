@@ -20,11 +20,11 @@ import (
 type EventKind string
 
 const (
-	EventTenantCreated      EventKind = "tenant.created"
-	EventTenantDeleted      EventKind = "tenant.deleted"
-	EventAPIKeyCreated      EventKind = "api_key.created"
-	EventAPIKeyDeleted      EventKind = "api_key.deleted"
-	EventAPIKeyRoleChanged  EventKind = "api_key.role_changed"
+	EventTenantCreated     EventKind = "tenant.created"
+	EventTenantDeleted     EventKind = "tenant.deleted"
+	EventAPIKeyCreated     EventKind = "api_key.created"
+	EventAPIKeyDeleted     EventKind = "api_key.deleted"
+	EventAPIKeyRoleChanged EventKind = "api_key.role_changed"
 	// EventAPIKeyRotated fires when an operator regenerates an
 	// existing key's secret in place. The key id, name, role, and
 	// tenant stay the same; only the plaintext (and therefore the

@@ -22,9 +22,9 @@ func TestRoleOrderingAndValidity(t *testing.T) {
 		{RoleAdmin, RoleAdmin, true},
 		{RoleViewer, RoleAdmin, false},
 		{RoleAdmin, RoleViewer, true},
-		{"", RoleViewer, false},            // unknown caller never qualifies
-		{RoleAdmin, Role("bogus"), false},  // unknown required rejects everyone
-		{RolePlatform, Role(""), false},    // empty required rejects everyone
+		{"", RoleViewer, false},           // unknown caller never qualifies
+		{RoleAdmin, Role("bogus"), false}, // unknown required rejects everyone
+		{RolePlatform, Role(""), false},   // empty required rejects everyone
 	}
 	for _, c := range atLeast {
 		if got := c.r.AtLeast(c.req); got != c.want {

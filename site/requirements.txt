@@ -1,0 +1,6 @@
+# Documentation build dependencies, pinned so the docs workflow builds the
+# same site every time (review O-22). MkDocs 2.0 is a breaking release for
+# Material; stay on the 1.x line until the site is migrated. Dependabot keeps
+# these current.
+mkdocs==1.6.1
+mkdocs-material==9.7.6

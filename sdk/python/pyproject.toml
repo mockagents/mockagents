@@ -69,6 +69,11 @@ mockagents = ["py.typed"]
 target-version = "py310"
 line-length = 100
 
+[tool.ruff.lint]
+# Pinned explicitly: ruff 0.16 widened its default rule set, so an unpinned
+# selection changes what CI enforces whenever ruff is upgraded.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
