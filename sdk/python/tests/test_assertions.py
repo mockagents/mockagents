@@ -44,7 +44,7 @@ def test_to_have_response_containing_pass():
 
 def test_to_have_response_containing_fail():
     result = make_result(ChatResponse(content="Hello"))
-    with pytest.raises(AssertionError, match="Expected response containing"):
+    with pytest.raises(AssertionError, match="Expected the final response to contain"):
         expect(result).to_have_response_containing("goodbye")
 
 
@@ -103,7 +103,7 @@ def test_to_have_status_pass():
 
 def test_to_have_status_fail():
     result = make_result(ChatResponse(status_code=200))
-    with pytest.raises(AssertionError, match="Expected status code"):
+    with pytest.raises(AssertionError, match="Expected final status code"):
         expect(result).to_have_status(404)
 
 
@@ -116,7 +116,7 @@ def test_to_have_finish_reason_pass():
 
 def test_to_have_finish_reason_fail():
     result = make_result(ChatResponse(finish_reason="stop"))
-    with pytest.raises(AssertionError, match="Expected finish reason"):
+    with pytest.raises(AssertionError, match="Expected final finish reason"):
         expect(result).to_have_finish_reason("tool_calls")
 
 

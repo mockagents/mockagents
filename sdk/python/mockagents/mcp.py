@@ -104,6 +104,9 @@ class McpEventStream:
 
     def __init__(self, response: requests.Response) -> None:
         self._resp = response
+        # SSE is UTF-8 by definition; requests would otherwise decode a
+        # text/* body that names no charset as ISO-8859-1 (review K-05).
+        self._resp.encoding = "utf-8"
         self._closed = False
 
     def __enter__(self) -> "McpEventStream":
@@ -184,13 +187,17 @@ class McpClient:
 
     def __init__(
         self,
-        base_url: str = "http://localhost:8080",
+        base_url: str = "http://127.0.0.1:8080",
         *,
         timeout: Optional[float] = None,
+        api_key: Optional[str] = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self._session = requests.Session()
+        if api_key:
+            # Session-wide, so every call carries it (review K-01).
+            self._session.headers["Authorization"] = f"Bearer {api_key}"
 
     def close(self) -> None:
         """Close the underlying session. Idempotent."""
@@ -276,6 +283,11 @@ class McpClient:
             raise KeyError(event.method)
         try:
             result = handler(event.params)
+            if result is None:
+                # A handler with nothing to return still owes the server a
+                # reply; without one SendRequest blocks until it times out.
+                # Mirrors the Go SDK (review K-15).
+                result = {}
         except Exception as exc:
             self.send_response(
                 event.request_id,

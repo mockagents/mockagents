@@ -254,6 +254,7 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	setHallucinationHeader(w, resp)
+	setToolErrorsHeader(w, resp)
 	setStrictViolationHeader(w, resp)
 	setImageCountHeader(w, imageCount)
 
