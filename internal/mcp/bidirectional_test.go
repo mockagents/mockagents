@@ -396,3 +396,75 @@ func TestEventStreamCancelsOnClientDisconnect(t *testing.T) {
 		t.Error("subscription never cleared after client disconnect")
 	}
 }
+
+func recvMethods(t *testing.T, ch <-chan *OutboundMessage, n int) []string {
+	t.Helper()
+	var got []string
+	timeout := time.After(2 * time.Second)
+	for len(got) < n {
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				t.Fatalf("channel closed after %d of %d messages: %v", len(got), n, got)
+			}
+			got = append(got, msg.Notification.Method)
+		case <-timeout:
+			t.Fatalf("received %d of %d messages: %v", len(got), n, got)
+		}
+	}
+	return got
+}
+
+// A message queued for a subscriber that is then replaced is delivered to
+// the replacement, not lost with the old stream (audit M-27, review P-05).
+func TestSubscribeStealKeepsUndeliveredMessages(t *testing.T) {
+	s := newTestMCPServer()
+	_, _ = s.bi.Subscribe(4) // never reads
+	s.EmitNotification("m1", nil)
+	s.EmitNotification("m2", nil)
+	second, cancel := s.bi.Subscribe(4)
+	defer cancel()
+	if got := recvMethods(t, second, 2); got[0] != "m1" || got[1] != "m2" {
+		t.Fatalf("got %v, want [m1 m2]", got)
+	}
+}
+
+// A burst larger than any buffer arrives complete and in order while a
+// subscriber is attached (review P-06: it was [m1 m2 m5] with m3, m4 stranded).
+func TestBurstWhileSubscribedIsFIFO(t *testing.T) {
+	s := newTestMCPServer()
+	ch, cancel := s.bi.Subscribe(2)
+	defer cancel()
+	want := make([]string, 50)
+	for i := range want {
+		want[i] = "m" + string(rune('A'+i%26)) + string(rune('a'+i/26))
+		s.EmitNotification(want[i], nil)
+	}
+	got := recvMethods(t, ch, len(want))
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("position %d: got %q want %q (order broken)", i, got[i], want[i])
+		}
+	}
+}
+
+// A request whose SendRequest timed out is never delivered later.
+func TestTimedOutRequestIsNotDeliveredLater(t *testing.T) {
+	s := newTestMCPServer()
+	ctx, cancelCtx := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancelCtx()
+	if _, err := s.SendRequest(ctx, "roots/list", nil); err == nil {
+		t.Fatal("expected a timeout with no subscriber")
+	}
+	s.EmitNotification("after", nil)
+	ch, cancel := s.bi.Subscribe(4)
+	defer cancel()
+	select {
+	case msg := <-ch:
+		if msg.Kind != OutboundNotification || msg.Notification.Method != "after" {
+			t.Fatalf("got %+v, want only the later notification", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("nothing delivered")
+	}
+}

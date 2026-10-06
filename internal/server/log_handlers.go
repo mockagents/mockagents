@@ -17,6 +17,7 @@ import (
 	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/pricing"
 	"github.com/mockagents/mockagents/internal/storage"
+	"github.com/mockagents/mockagents/internal/tenancy"
 )
 
 // LogHandlers holds dependencies for log query API handlers.
@@ -317,6 +318,22 @@ const (
 	// annotation is unavailable for rows captured in this mode.
 	LogBodyNone LogBodyMode = "none"
 )
+
+// ParseLogBodyMode parses an operator-supplied capture mode strictly: blank
+// means full, the three names are case-insensitive, and anything else is an
+// error. MOCKAGENTS_LOG_BODIES is a privacy control, so a typo such as "NONE "
+// or "sanitised" must not fall back to capturing every body in full, which is
+// what NormalizeLogBodyMode does (2026-10-06 review C-05).
+func ParseLogBodyMode(s string) (LogBodyMode, error) {
+	switch mode := LogBodyMode(strings.ToLower(strings.TrimSpace(s))); mode {
+	case "", LogBodyFull:
+		return LogBodyFull, nil
+	case LogBodySanitized, LogBodyNone:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("MOCKAGENTS_LOG_BODIES=%q is not a capture mode (use full, sanitized or none)", s)
+	}
+}
 
 // NormalizeLogBodyMode maps a (possibly empty or unknown) mode string to a valid
 // LogBodyMode, defaulting to LogBodyFull so an unset/garbage value preserves the
@@ -774,8 +791,13 @@ func (h *LogHandlers) StreamMetrics(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "live feed disabled")
 		return
 	}
-	snap := h.Broadcaster.Snapshot()
-	writeJSON(w, http.StatusOK, snap)
+	// Platform operators and single-tenant mode see every subscription; a
+	// tenant admin sees only its own tenant's.
+	scope := ""
+	if p := tenancy.PrincipalFrom(r.Context()); p != nil && p.Role != tenancy.RolePlatform {
+		scope = p.TenantID
+	}
+	writeJSON(w, http.StatusOK, h.Broadcaster.SnapshotTenant(scope))
 }
 
 // heartbeatFrame is the SSE keepalive comment, kept as a package-level byte

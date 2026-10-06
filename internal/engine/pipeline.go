@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -25,6 +27,20 @@ type PipelineExecutor struct {
 	// Nil means runs are not recorded, which is what an embedding caller with
 	// no log store gets.
 	Recorder NodeRecorder
+	// Meter, when set, admits and charges every node like the direct provider
+	// call it stands in for. Nodes call the engine in process, below the HTTP
+	// quota middleware, so without it a run consumed neither request quota nor
+	// monthly spend however many agents it drove. Nil means unmetered.
+	Meter NodeMeter
+}
+
+// NodeMeter admits each pipeline node before it runs and charges it after.
+// AdmitNode returning an error stops the run before that node executes; the
+// error is returned from RunContext, wrapped, so the caller can render it.
+// ChargeNode must not block (it runs on the run's goroutine).
+type NodeMeter interface {
+	AdmitNode(ctx context.Context) error
+	ChargeNode(ctx context.Context, n NodeInteraction)
 }
 
 // NodeInteraction is one pipeline node execution, as reported to a recorder.
@@ -131,6 +147,13 @@ func (p *PipelineExecutor) RunContext(ctx context.Context, def *types.PipelineDe
 	}
 	if len(def.Spec.Agents) == 0 {
 		return nil, errors.New("pipeline has no agents")
+	}
+
+	// Every run gets its own session scope. An embedding caller that passed ""
+	// used to share one engine session per node across all runs, so
+	// turn_number scenarios advanced between unrelated runs (review E-23).
+	if sessionID == "" {
+		sessionID = newRunID()
 	}
 
 	start := time.Now()
@@ -357,6 +380,13 @@ func (p *PipelineExecutor) invokeNode(ctx context.Context, pipelineName string, 
 	}
 	// The session is scoped per pipeline node (above) so conversation state on
 	// one agent does not leak into another when the same engine is reused.
+	if p.Meter != nil {
+		if err := p.Meter.AdmitNode(ctx); err != nil {
+			err = fmt.Errorf("pipeline %q node %q: %w", pipelineName, node.ID, err)
+			p.record(ctx, pipelineName, node, scopedSession, input, nil, 0, err)
+			return &NodeResult{NodeID: node.ID, AgentName: node.Ref}, err
+		}
+	}
 	req := &InboundRequest{
 		AgentName: node.Ref,
 		SessionID: scopedSession,
@@ -374,6 +404,12 @@ func (p *PipelineExecutor) invokeNode(ctx context.Context, pipelineName string, 
 		err = fmt.Errorf("pipeline %q node %q: engine returned no response", pipelineName, node.ID)
 	}
 	p.record(ctx, pipelineName, node, scopedSession, input, resp, latency, err)
+	if p.Meter != nil && err == nil {
+		p.Meter.ChargeNode(ctx, NodeInteraction{
+			TenantID: TenantIDFromContext(ctx), PipelineName: pipelineName, NodeID: node.ID,
+			AgentName: node.Ref, SessionID: scopedSession, Input: input, Response: resp, Latency: latency,
+		})
+	}
 	return &NodeResult{
 		NodeID:    node.ID,
 		AgentName: node.Ref,
@@ -415,4 +451,11 @@ func (p *PipelineExecutor) record(
 		Latency:      latency,
 		Err:          err,
 	})
+}
+
+// newRunID returns a random id that scopes one pipeline run's sessions.
+func newRunID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return "run-" + hex.EncodeToString(b[:])
 }

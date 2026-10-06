@@ -31,7 +31,7 @@ this version.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `MOCKAGENTS_LOG_BODIES` | `full` | `full` stores request/response bodies verbatim, `sanitized` masks them, `none` drops them but keeps per-agent grouping. Anything else is treated as `full`. |
+| `MOCKAGENTS_LOG_BODIES` | `full` | `full` stores request/response bodies verbatim, `sanitized` masks them, `none` drops them but keeps per-agent grouping. Case-insensitive; any other value is a startup error. The effective mode is logged at startup. |
 | `MOCKAGENTS_LOG_MAX_ROWS` | `0` (unlimited) | Keeps only the newest N interaction rows; a background pruner enforces it. |
 | `MOCKAGENTS_AUDIT_MAX_ROWS` | `0` (unlimited) | Same retention bound for the audit log. |
 | `MOCKAGENTS_PRICING` | unset | Path to a YAML file of per-model prices that overrides the built-in cost table. |

@@ -274,6 +274,15 @@ Defaults come from `MOCKAGENTS_DEFAULT_RATE_PER_SEC`,
 `MOCKAGENTS_DEFAULT_RATE_BURST`, and `MOCKAGENTS_DEFAULT_MONTHLY_SPEND_USD`.
 Over-rate LLM requests get `429` (+ `Retry-After`); over-spend gets `402`.
 
+Work that reaches the engine without its own HTTP request is metered the same
+way: every request inside an OpenAI or Anthropic batch counts against the rate
+limit and accrues spend (a refused one appears in the batch results with the
+`429`/`402` body), and every pipeline node does too (a refused node fails the
+run with `429`/`402`). Spend is priced from the `MOCKAGENTS_PRICING` table; a
+model missing from it accrues at the table's `fallback` price ($0 unless you set
+one) and is logged once, so set a fallback if a spend cap must see every model.
+Gemini `:countTokens` is free, like the real API.
+
 ```bash
 # Mint a read-only CI key
 curl -H "Authorization: Bearer $ADMIN_KEY" -H "Content-Type: application/json" \

@@ -406,7 +406,7 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 		tenant = h.TenantForConnection(r)
 	}
 	sess := realtime.NewSession("sess_"+generateID(), r.URL.Query().Get("model"), h.generator(tenant))
-	sess.SetExpiry(time.Now().Add(time.Hour).Unix()) // reported as session.expires_at
+	sess.SetExpiry(time.Now().Add(realtimeSessionTTL).Unix()) // reported as session.expires_at
 	// ?intent=transcription connects an input-transcription-only session (a
 	// session.update {type:"transcription"} reaches the same state).
 	if r.URL.Query().Get("intent") == "transcription" {
@@ -461,6 +461,13 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 		}
 	}()
 
+	// The session's advertised expires_at is enforced: the session ends with
+	// the GA session_expired error and a normal close. It used to be
+	// reported but never applied, so one socket could live forever (review
+	// P-07).
+	expiry := time.NewTimer(realtimeSessionTTL)
+	defer expiry.Stop()
+
 	for {
 		var timerC <-chan time.Time
 		var timer *time.Timer
@@ -485,6 +492,15 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 			}
 		case now := <-timerC:
 			events = sess.Tick(ctx, now)
+		case <-expiry.C:
+			if timer != nil {
+				timer.Stop()
+			}
+			_ = writeEvent(ctx, c, realtime.Event{"type": "error", "event_id": "event_" + generateID(), "error": map[string]any{
+				"type": "invalid_request_error", "code": "session_expired",
+				"message": "Your session hit the maximum duration of 60 minutes.", "param": nil, "event_id": nil}})
+			_ = c.Close(websocket.StatusNormalClosure, "session expired")
+			return
 		case <-readErr:
 			if timer != nil {
 				timer.Stop()
@@ -506,6 +522,10 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 }
+
+// realtimeSessionTTL is the maximum session duration (GA: 60 minutes). A
+// variable so tests can shorten it.
+var realtimeSessionTTL = time.Hour
 
 // generator adapts the engine to the realtime.Generator signature, pinning the
 // connection's tenant onto each sub-request's context and running the server's

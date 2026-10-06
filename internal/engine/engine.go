@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"time"
 
 	"github.com/mockagents/mockagents/internal/engine/state"
 	"github.com/mockagents/mockagents/internal/metrics"
@@ -41,6 +42,19 @@ type InboundRequest struct {
 	// structured-outputs subset at request time; the schemas dimension of
 	// the strict-tools knob mirrors that (round-11 R9-16b).
 	StrictFunctions []StrictFunction `json:"strict_functions,omitempty"`
+	// WireProtocol is the API the request arrived on (an adapter Protocol*
+	// constant). Agents are routed by model on every surface, so it can
+	// differ from the agent's declared spec.protocol; wire-specific rules
+	// such as the forced-call finish_reason key on this, not the agent
+	// (2026-10-06 review E-07). Empty falls back to spec.protocol.
+	WireProtocol string `json:"wire_protocol,omitempty"`
+	// PriorTurns seeds turn numbering for a request that carries its own
+	// history but no session id (a Responses previous_response_id chain or a
+	// conversation): the throwaway session starts at this many completed
+	// turns, so turn_number scenarios advance across the chain without the
+	// engine storing a session per call (2026-10-06 review E-01). Ignored
+	// when SessionID is set — the stored session counts its own turns.
+	PriorTurns int `json:"prior_turns,omitempty"`
 }
 
 // StrictFunction is one strict:true function tool from the request: its
@@ -309,6 +323,9 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 	var session *state.Session
 	if req.SessionID == "" {
 		session = state.NewSession("", agent.Metadata.Name, state.DefaultSessionTTL)
+		if req.PriorTurns > 0 {
+			session.TurnCount = req.PriorTurns
+		}
 	} else {
 		session = e.States.GetOrCreate(scopedSessionKey(tenantID, agent.Metadata.Name, req.SessionID), agent.Metadata.Name)
 	}
@@ -361,6 +378,7 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 			TurnNumber: turnCount,
 			// The logical client id, not the tenant-namespaced store key.
 			SessionID: req.SessionID,
+			Now:       time.Now(),
 			Vars:      variables,
 			Match:     captures,
 		}
@@ -402,7 +420,7 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 		// records what strict would have changed. Runs BEFORE tool
 		// processing so synthesized calls get results too.
 		if strictModes.ToolChoice != StrictOff {
-			if tcw := applyStrictToolChoice(req.ToolChoice, strictModes.ToolChoice, resp, agent, req.RequestToolNames); len(tcw) > 0 {
+			if tcw := applyStrictToolChoice(req.ToolChoice, strictModes.ToolChoice, resp, agent, req.RequestToolNames, req.WireProtocol); len(tcw) > 0 {
 				strictWarnings = append(strictWarnings, tcw...)
 				for _, wmsg := range tcw {
 					e.Logger.Warn("strict-tools violation (warn mode)",

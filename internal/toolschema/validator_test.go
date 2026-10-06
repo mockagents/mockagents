@@ -402,3 +402,14 @@ func TestValidator_AdditionalPropertiesSchemaFormPermissive(t *testing.T) {
 	schema["additionalProperties"] = map[string]any{"type": "string"}
 	assert.Empty(t, v.ValidateParameters(schema, map[string]any{"name": "x", "extra": "ok"}))
 }
+
+// String lengths count characters, not bytes (review E-17).
+func TestValidator_StringLengthCountsCharacters(t *testing.T) {
+	v := NewValidator()
+	schema := objectSchema(map[string]any{
+		"word": map[string]any{"type": "string", "minLength": 3, "maxLength": 3},
+	}, nil)
+	assert.Empty(t, v.ValidateParameters(schema, map[string]any{"word": "äöü"}))
+	assert.Empty(t, v.ValidateParameters(schema, map[string]any{"word": "日本語"}))
+	assert.NotEmpty(t, v.ValidateParameters(schema, map[string]any{"word": "äöüß"}))
+}

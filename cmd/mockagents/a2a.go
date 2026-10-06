@@ -49,7 +49,7 @@ func init() {
 	a2aCmd.Flags().IntVar(&a2aMaxTasks, "max-tasks", a2a.DefaultMaxTasks, "Maximum retained A2A tasks")
 	a2aCmd.Flags().IntVar(&a2aMaxTaskBytes, "max-task-bytes", a2a.DefaultMaxTaskBytes, "Maximum bytes retained by A2A tasks")
 	a2aCmd.Flags().IntVar(&a2aMaxHistory, "max-task-history", a2a.DefaultMaxTaskHistory, "Maximum retained messages per A2A task")
-	a2aCmd.Flags().DurationVar(&a2aTaskTTL, "task-ttl", a2a.DefaultTaskTTL, "Retention time for terminal A2A tasks")
+	a2aCmd.Flags().DurationVar(&a2aTaskTTL, "task-ttl", a2a.DefaultTaskTTL, "Retention time for A2A tasks after their last update (terminal or idle)")
 	rootCmd.AddCommand(a2aCmd)
 }
 
@@ -116,6 +116,10 @@ func serveA2AHTTP(server *a2a.Server, cardName string, port int) error {
 		Addr:              fmt.Sprintf(":%d", port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		// Bound the request read and idle keep-alives like record/replay
+		// (audit L-43). No WriteTimeout: the SSE streams are long-lived.
+		ReadTimeout: 30 * time.Second,
+		IdleTimeout: 120 * time.Second,
 	}
 
 	fmt.Printf("mockagents a2a listening on :%d (agent=%s)\n", port, cardName)

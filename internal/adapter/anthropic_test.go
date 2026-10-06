@@ -332,3 +332,69 @@ func TestAnthropic_HallucinationHeader(t *testing.T) {
 	assert.Equal(t, "fabricated_fact", hit.Header().Get("X-Mockagents-Hallucination"))
 	assert.Empty(t, post("hi").Header().Get("X-Mockagents-Hallucination"))
 }
+
+// With nothing to say the Messages response carries "content": [], never
+// null — the official SDKs iterate it unconditionally (review E-03).
+func TestAnthropic_EmptyContentIsAnArrayNotNull(t *testing.T) {
+	agent := testAnthropicAgent()
+	agent.Spec.Behavior.Scenarios = append([]types.Scenario{{
+		Name:  "tools-only",
+		Match: &types.MatchRule{ContentContains: "toolsonly"},
+		Response: types.ScenarioResponse{ToolCalls: []types.ToolCallSpec{
+			{Name: "search", Arguments: map[string]any{"q": "x"}},
+		}},
+	}}, agent.Spec.Behavior.Scenarios...)
+	h := &AnthropicHandler{Engine: testEngine(agent)}
+	rec := doAnthropicRequest(t, h.HandleMessages, AnthropicRequest{
+		Model:      "claude-3-opus",
+		Messages:   []AnthropicMessage{{Role: "user", Content: "toolsonly please"}},
+		MaxTokens:  64,
+		ToolChoice: map[string]any{"type": "none"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `"content":[]`)
+	assert.NotContains(t, rec.Body.String(), `"content":null`)
+}
+
+// Strict tool_choice forcing keys the forced-call finish rule on the wire the
+// request arrived on, not the agent's declared protocol: an openai-protocol
+// agent answering /v1/messages must still report stop_reason "tool_use"
+// (review E-07).
+func TestAnthropic_StrictForcedCallStopReasonFollowsTheWire(t *testing.T) {
+	agent := testAnthropicAgent()
+	agent.Spec.Protocol = "openai-chat-completions"
+	agent.Spec.Behavior.StrictTools = &types.StrictToolsConfig{Level: "strict"}
+	h := &AnthropicHandler{Engine: testEngine(agent)}
+	rec := doAnthropicRequest(t, h.HandleMessages, AnthropicRequest{
+		Model:      "claude-3-opus",
+		Messages:   []AnthropicMessage{{Role: "user", Content: "hello"}},
+		MaxTokens:  64,
+		Tools:      []AnthropicTool{{Name: "search"}},
+		ToolChoice: map[string]any{"type": "any"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `"type":"tool_use"`)
+	assert.Contains(t, rec.Body.String(), `"stop_reason":"tool_use"`)
+}
+
+// An engine failure (here a broken response template) is a server error on
+// every wire, never invalid_request_error, so SDKs retry it (review E-14).
+func TestEngineFailure_ReportsAServerErrorType(t *testing.T) {
+	broken := func() *types.AgentDefinition {
+		a := testAnthropicAgent()
+		a.Spec.Behavior.Scenarios = []types.Scenario{{Name: "default", Response: types.ScenarioResponse{Content: "Hello {{ uuid "}}}
+		return a
+	}
+	ah := &AnthropicHandler{Engine: testEngine(broken())}
+	rec := doAnthropicRequest(t, ah.HandleMessages, AnthropicRequest{
+		Model: "claude-3-opus", MaxTokens: 16,
+		Messages: []AnthropicMessage{{Role: "user", Content: "hi"}},
+	})
+	require.Equal(t, http.StatusInternalServerError, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `"type":"api_error"`)
+
+	assert.Equal(t, "server_error", openAIEngineErrorType(http.StatusInternalServerError))
+	assert.Equal(t, "invalid_request_error", openAIEngineErrorType(http.StatusNotFound))
+	assert.Equal(t, "not_found_error", anthropicEngineErrorType(http.StatusNotFound))
+	assert.Equal(t, "invalid_request_error", anthropicEngineErrorType(http.StatusBadRequest))
+}

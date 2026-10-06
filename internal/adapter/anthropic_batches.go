@@ -290,6 +290,9 @@ func (s *anthropicBatchStore) list(tenant string) []*anthropicBatchState {
 type AnthropicBatchesHandler struct {
 	messages http.HandlerFunc
 	store    *anthropicBatchStore
+	// SubrequestMiddleware meters each batched request like a direct
+	// /v1/messages call (see BatchesHandler.SubrequestMiddleware).
+	SubrequestMiddleware func(http.Handler) http.Handler
 }
 
 // NewAnthropicBatchesHandler builds a handler that replays batched requests
@@ -530,7 +533,7 @@ func (h *AnthropicBatchesHandler) dispatch(tenant string, params json.RawMessage
 	subReq, _ = engine.WithRequestMeta(subReq)
 
 	rec := &batchResponseRecorder{}
-	h.messages(rec, subReq)
+	serveSubrequest(h.SubrequestMiddleware, h.messages, rec, subReq)
 
 	status := rec.status
 	if status == 0 {

@@ -360,22 +360,43 @@ func TestStreamable_UnsupportedMethod(t *testing.T) {
 	}
 }
 
-func TestStreamable_SessionEvictionFIFO(t *testing.T) {
+// At the session cap, initialize is refused with 503 rather than evicting a
+// live session (review P-16).
+func TestStreamable_SessionCapRefusesNewSessions(t *testing.T) {
 	m := newSessionManager(2)
 	s1 := m.create()
 	s2 := m.create()
-	s3 := m.create() // evicts s1
-	if _, ok := m.get(s1.id); ok {
-		t.Errorf("s1 should have been evicted")
+	if m.create() != nil {
+		t.Fatal("create past the cap must be refused")
 	}
-	if _, ok := m.get(s2.id); !ok {
-		t.Errorf("s2 should still be live")
+	for _, s := range []*streamSession{s1, s2} {
+		if _, ok := m.get(s.id); !ok || s.closed {
+			t.Errorf("live session %s was evicted or closed", s.id)
+		}
 	}
-	if _, ok := m.get(s3.id); !ok {
-		t.Errorf("s3 should be live")
+}
+
+// A subscriber that falls a full buffer behind has its stream ended, so the
+// client reconnects with Last-Event-ID instead of silently missing events
+// (review P-11).
+func TestStreamable_LaggingSubscriberStreamEnds(t *testing.T) {
+	s := newStreamSession("x")
+	_, ch, cancel, _ := s.subscribe(0)
+	defer cancel()
+	for i := 0; i < subscriberChanBuffer+5; i++ {
+		s.broadcastNotification(&Notification{Method: "m"})
 	}
-	if !s1.closed {
-		t.Errorf("evicted session should be closed")
+	n := 0
+	for range ch {
+		n++
+	}
+	if n != subscriberChanBuffer {
+		t.Fatalf("drained %d events, want %d buffered before the stream closed", n, subscriberChanBuffer)
+	}
+	if replay, _, cancel2, _ := s.subscribe(int64(n)); len(replay) != 5 {
+		t.Fatalf("reconnect replayed %d events, want the 5 missed", len(replay))
+	} else {
+		cancel2()
 	}
 }
 

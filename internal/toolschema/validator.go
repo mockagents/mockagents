@@ -3,6 +3,7 @@ package toolschema
 import (
 	"fmt"
 	"reflect"
+	"unicode/utf8"
 
 	"github.com/mockagents/mockagents/internal/types"
 )
@@ -139,16 +140,20 @@ func (v *Validator) validateValue(propDef map[string]any, val any, name string) 
 	switch propType {
 	case "string":
 		if str, ok := val.(string); ok {
+			// JSON Schema lengths count characters (code points), not bytes:
+			// "äöü" is 3 long, and measuring 6 rejected valid arguments
+			// (review E-17).
+			n := utf8.RuneCountInString(str)
 			if minLen, ok := propDef["minLength"]; ok {
-				if min, ok := toInt(minLen); ok && len(str) < min {
+				if min, ok := toInt(minLen); ok && n < min {
 					errs = append(errs, fmt.Sprintf(
-						"parameter %q length %d is less than minimum %d", name, len(str), min))
+						"parameter %q length %d is less than minimum %d", name, n, min))
 				}
 			}
 			if maxLen, ok := propDef["maxLength"]; ok {
-				if max, ok := toInt(maxLen); ok && len(str) > max {
+				if max, ok := toInt(maxLen); ok && n > max {
 					errs = append(errs, fmt.Sprintf(
-						"parameter %q length %d exceeds maximum %d", name, len(str), max))
+						"parameter %q length %d exceeds maximum %d", name, n, max))
 				}
 			}
 		}

@@ -209,3 +209,42 @@ func TestEnforcer_Override(t *testing.T) {
 		t.Errorf("ten_a should keep defaults, got %+v", got)
 	}
 }
+
+// flakyBackend fails AddSpend while down is set and otherwise delegates.
+type flakyBackend struct {
+	*fakeSpendBackend
+	down bool
+}
+
+func (f *flakyBackend) AddSpend(ctx context.Context, tenantID, month string, usd float64) (float64, error) {
+	if f.down {
+		return 0, errors.New("backend down")
+	}
+	return f.fakeSpendBackend.AddSpend(ctx, tenantID, month, usd)
+}
+
+// A charge made while the ledger is failing survives the next cache refresh
+// and is written through once the ledger recovers (audit L-28).
+func TestEnforcer_SpendDuringBackendOutageIsNotLost(t *testing.T) {
+	e, clock := newClocked(t, Config{MonthlySpendUSD: 100})
+	backend := &flakyBackend{fakeSpendBackend: newFakeBackend()}
+	e.SetSpendBackend(backend)
+
+	e.AddSpend("ten_a", 1)
+	backend.down = true
+	e.AddSpend("ten_a", 2) // lost before the fix
+	*clock = clock.Add(time.Hour)
+	if got := e.Usage("ten_a").SpendUSD; got != 3 {
+		t.Fatalf("after refresh spend = %v, want 3 (the outage charge must survive)", got)
+	}
+
+	backend.down = false
+	e.AddSpend("ten_a", 4)
+	if got := backend.totals["ten_a|"+e.monthKey()]; got != 7 {
+		t.Fatalf("ledger total = %v, want 7 (pending spend written through)", got)
+	}
+	*clock = clock.Add(time.Hour)
+	if got := e.Usage("ten_a").SpendUSD; got != 7 {
+		t.Fatalf("spend = %v, want 7 with nothing double counted", got)
+	}
+}

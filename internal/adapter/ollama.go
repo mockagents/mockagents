@@ -88,6 +88,7 @@ func (h *OllamaHandler) HandleChat(w http.ResponseWriter, r *http.Request) {
 
 	messages, images := convertOllamaMessages(req.Messages)
 	inbound := &engine.InboundRequest{
+		WireProtocol:     ProtocolOllamaChat,
 		Model:            req.Model,
 		SessionID:        extractSessionID(r),
 		Messages:         messages,

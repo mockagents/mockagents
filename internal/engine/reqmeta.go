@@ -53,8 +53,8 @@ type tenantKey struct{}
 // old one; TenantIDFromContext then reads back "", which the registry
 // treats as no tenant (global agents only). Used by adapter handlers
 // and the management-API handlers when a request can be associated
-// with a tenant (either via an authenticated principal or an opt-in
-// `X-Mockagents-Tenant` header).
+// with a tenant through its authenticated principal. (The old
+// `X-Mockagents-Tenant` header is inert: a caller cannot pick a tenant.)
 func WithTenantID(ctx context.Context, tenantID string) context.Context {
 	return context.WithValue(ctx, tenantKey{}, tenantID)
 }

@@ -40,6 +40,18 @@ Fixes from the 2026-10-06 full-application quality review (see
   without `--yes` when not on a terminal; `--keep-file` unregisters only
   (`DELETE /api/v1/agents/{name}?keep_file=true`). The delete response reports
   `persisted: true` when a file was removed.
+- **Stricter validation of values.** Streaming timing (`ttft_ms`, `jitter_ms`,
+  `chunk_delay_ms`, the `*_p50/p95_ms` percentiles) must be 0-60000 ms like
+  chaos delays, and negative `chunk_size`, `tokens_per_sec` or
+  `truncate_after_chunks` are rejected (a `ttft_ms: 3600000` used to hold a
+  request open for an hour). Response templates are parsed at validation, so
+  an unclosed `{{` or an unknown function is an error instead of a 500 on every
+  request. Chaos rates of `NaN` are rejected. A tool response rule must return a
+  response or an error (not both), an error needs `code` and `message`, and tool
+  names are limited to 64 characters. `validate` warns when two agents in a
+  tenant claim the same `spec.model`.
+- The server's default write timeout is 90 s (was 60 s), so a chaos fault at the
+  60 s ceiling reaches the client.
 - `mockagents logs` reads the database `start` writes (honouring
   `MOCKAGENTS_DATA_DIR`) and reports a missing database instead of creating an
   empty one.
@@ -66,6 +78,24 @@ Fixes from the 2026-10-06 full-application quality review (see
 - Python SDK: `MockAgentClient` and `McpClient` default to `http://127.0.0.1:8080`,
   the server's default bind address.
 - Provider SSE streams are sent as `text/event-stream; charset=utf-8`.
+- **Batches and pipelines are metered.** Every request inside an OpenAI or
+  Anthropic batch, and every pipeline node, now counts against the tenant's
+  request-rate limit and accrues monthly spend, exactly like a direct call. A
+  refused batch line carries the `429`/`402` body; a refused pipeline node fails
+  the run with `429`/`402`. Before, a rate-limited tenant could run a whole
+  batch or pipeline and none of it counted toward the spend cap.
+- `MOCKAGENTS_LOG_BODIES` is case-insensitive and any value other than `full`,
+  `sanitized` or `none` fails startup (a typo used to mean full capture). The
+  effective mode is always logged. `MOCKAGENTS_SESSION_MAX`, `_SESSION_HISTORY`,
+  `_AUDIT_MAX_ROWS` and `_AUTH_FAILURES_PER_MINUTE` fail startup on a bad value
+  instead of warning and keeping the default; float knobs and `--chaos-rate`
+  reject `NaN`/`Inf`; `--port` must be 1-65535.
+- A wildcard `--cors-origins '*'` no longer lets an SSO session cookie scope a
+  cross-origin realtime WebSocket to a tenant; list the console origin
+  explicitly.
+- Gemini `:countTokens` returns `{"totalTokens": N}` without running the agent;
+  other unsupported methods return `404 NOT_FOUND` instead of being served as
+  `generateContent`.
 
 ### Fixed
 
@@ -84,6 +114,75 @@ Fixes from the 2026-10-06 full-application quality review (see
   colour is off when stdout is not a terminal; `test` prints FAIL lines on
   stdout next to their failure details.
 - `.json` definitions with a UTF-8 byte-order mark load.
+- Gemini `contents` without a `role` are treated as user turns.
+- `/api/v1/logs/stream/metrics` shows a tenant admin only its own tenant's
+  subscriptions; the platform role reads the whole audit trail, including
+  `auth.denied` events.
+- Spend accrued while the shared spend ledger is failing is kept and written
+  through when it recovers, instead of being lost at the next cache refresh.
+  A model missing from the price table is logged once.
+- Streamed tool-call arguments are cut on character boundaries; a multi-byte
+  character (accent, CJK, emoji) used to be split across two deltas and
+  arrive as `U+FFFD` on OpenAI, Anthropic and Responses streams.
+- Anthropic responses always carry `"content": []` (never `null`) when there
+  is nothing to say, which the official SDKs require.
+- Responses API: a `previous_response_id` chain or a `conversation` advances
+  `turn_number` on every hop, and calls without `X-Session-Id` no longer store
+  an engine session each. `instructions` apply to the request that sends them
+  and are not replayed from earlier responses. Unmodelled input items
+  (`reasoning`, `item_reference`, …) are skipped instead of becoming an empty
+  user turn.
+- Strict `tool_choice` forcing reports the finish reason of the API the request
+  arrived on, not the agent's declared protocol (an OpenAI-protocol agent on
+  `/v1/messages` now ends a forced call with `stop_reason: "tool_use"`).
+- Engine failures (e.g. a broken response template) are reported as
+  `server_error` / `api_error`, so SDKs retry them, instead of
+  `invalid_request_error`.
+- Streaming Anthropic and Gemini responses include the refusal when a response
+  also has content, as the non-streaming responses do.
+- Bedrock ConverseStream delivers connection-layer chaos faults to the socket
+  instead of a 502 JSON body.
+- `/v1/models` lists each model once with a stable `created`; tool-argument
+  `minLength`/`maxLength` count characters; strict-schema 400 messages are
+  deterministic; the warn-mode `X-Mockagents-Strict-Violation` header is
+  bounded to 1 KiB; oversized bodies on every Conversations route return 413;
+  `{{ .Timestamp }}` renders the request time; pipeline runs without a session
+  id no longer share engine sessions.
+- Recording: a failed cassette write no longer loses interactions (the next
+  write rebuilds the file from memory); replay never sends a stored
+  `Content-Encoding`/`Content-Length`, so imported gzip vcrpy cassettes replay;
+  the proxy stores decoded bodies even when the client accepts gzip; the request
+  hash covers the (credential-free) query string, so `?alt=sse` and plain
+  requests no longer share a recording — older path-only recordings still
+  replay; redaction no longer turns words like `risk-based` into `risk-***`.
+- MCP: server-initiated messages are delivered in order and never lost when a
+  new subscriber takes over the event stream; a request that timed out is not
+  delivered later; a lagging streamable-HTTP subscriber is disconnected (and
+  replays from `Last-Event-ID`) instead of silently missing events; at the
+  session cap a new session is refused with `503` rather than evicting a live
+  one; `id: null` and a missing method are `-32600`; malformed bodies get HTTP
+  `400`; `resources/subscribe` rejects undeclared URIs with `-32002`; a
+  panicking tool handler becomes an internal error.
+- A2A: idle non-terminal tasks expire after the task TTL instead of pinning
+  capacity forever; notifications are never answered and batches are
+  `-32600`; the card URL only takes `http`/`https` from `X-Forwarded-Proto`.
+- Realtime: G.711 (`audio/pcmu`, `audio/pcma`) durations and voice detection
+  use the right byte rate; session memory is bounded; the advertised
+  `expires_at` is enforced with a `session_expired` error.
+- Updating an agent loaded from a `.json` file writes JSON back, keeping the
+  file loadable. `tool_call` assertions compare numbers like
+  `tool_call_args` (`2` matches `2.0`). Audit write failures are logged.
+  Interaction-log and audit timestamps are stored fixed-width UTC so time
+  filters order rows correctly. The standalone `mcp` and `a2a` servers bound
+  request reads and idle connections.
+- The JSON schemas now declare every field the server accepts:
+  `metadata.tenant_id` (agent, pipeline, test suite, MCP server), the ten MCP
+  fault fields (`timeout_ms`, `status_code`, `disconnect`, `reset`,
+  `malformed`, `malformed_schema`, `truncate_after_bytes`, `operation_rates`,
+  `fixture_rates`, `sequence_rates`) and the vector `seed`, `rate` and
+  `operation_rates` faults, so editors no longer flag valid configuration. A
+  test now compares every schema with its Go type.
+- Chaos latency is clamped to 60 s for every distribution, not only `normal`.
 
 ---
 - Python SDK: the client's `api_key` was sent only by `run_pipeline`. Every other

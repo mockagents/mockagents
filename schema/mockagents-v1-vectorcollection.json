@@ -29,6 +29,9 @@
         "faults": {
           "type": "object", "additionalProperties": false,
           "properties": {
+            "seed": { "type": "integer" },
+            "rate": { "type": "number", "minimum": 0, "maximum": 1 },
+            "operation_rates": { "type": "object", "propertyNames": { "pattern": "^/" }, "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }, "description": "Per-operation rates keyed by request path (must start with /)." },
             "partial_results": {
               "type": "object", "required": ["max_results"], "additionalProperties": false,
               "properties": { "max_results": { "type": "integer", "minimum": 0, "maximum": 1000 } }
