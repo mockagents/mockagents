@@ -15,7 +15,8 @@
       "properties": {
         "name": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$", "maxLength": 63 },
         "description": { "type": "string" },
-        "tags": { "type": "array", "items": { "type": "string" } }
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "tenant_id": { "type": "string", "description": "Owning tenant. Written by the server when a definition is saved through the multi-tenant API; never trusted from a request body. Omit it in hand-written files (empty means global)." }
       }
     },
     "spec": {

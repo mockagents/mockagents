@@ -40,6 +40,18 @@ Fixes from the 2026-10-06 full-application quality review (see
   without `--yes` when not on a terminal; `--keep-file` unregisters only
   (`DELETE /api/v1/agents/{name}?keep_file=true`). The delete response reports
   `persisted: true` when a file was removed.
+- **Stricter validation of values.** Streaming timing (`ttft_ms`, `jitter_ms`,
+  `chunk_delay_ms`, the `*_p50/p95_ms` percentiles) must be 0-60000 ms like
+  chaos delays, and negative `chunk_size`, `tokens_per_sec` or
+  `truncate_after_chunks` are rejected (a `ttft_ms: 3600000` used to hold a
+  request open for an hour). Response templates are parsed at validation, so
+  an unclosed `{{` or an unknown function is an error instead of a 500 on every
+  request. Chaos rates of `NaN` are rejected. A tool response rule must return a
+  response or an error (not both), an error needs `code` and `message`, and tool
+  names are limited to 64 characters. `validate` warns when two agents in a
+  tenant claim the same `spec.model`.
+- The server's default write timeout is 90 s (was 60 s), so a chaos fault at the
+  60 s ceiling reaches the client.
 - `mockagents logs` reads the database `start` writes (honouring
   `MOCKAGENTS_DATA_DIR`) and reports a missing database instead of creating an
   empty one.
@@ -140,6 +152,14 @@ Fixes from the 2026-10-06 full-application quality review (see
   Interaction-log and audit timestamps are stored fixed-width UTC so time
   filters order rows correctly. The standalone `mcp` and `a2a` servers bound
   request reads and idle connections.
+- The JSON schemas now declare every field the server accepts:
+  `metadata.tenant_id` (agent, pipeline, test suite, MCP server), the ten MCP
+  fault fields (`timeout_ms`, `status_code`, `disconnect`, `reset`,
+  `malformed`, `malformed_schema`, `truncate_after_bytes`, `operation_rates`,
+  `fixture_rates`, `sequence_rates`) and the vector `seed`, `rate` and
+  `operation_rates` faults, so editors no longer flag valid configuration. A
+  test now compares every schema with its Go type.
+- Chaos latency is clamped to 60 s for every distribution, not only `normal`.
 
 ---
 
