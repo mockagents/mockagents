@@ -43,7 +43,7 @@
   ],
   "license": "Apache-2.0",
   "devDependencies": {
-    "@types/node": "^26.4.1",
+    "@types/node": "^26.6.4",
     "rimraf": "^6.0.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.0"
