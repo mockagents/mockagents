@@ -270,6 +270,14 @@ func (s *Store) Upsert(name string, points []Point) error {
 	targetDimension := c.dimension
 	if targetDimension == 0 && len(points) > 0 {
 		targetDimension = len(points[0].Vector)
+		// A pending collection learns its dimension from the first vector,
+		// under the same bounds CreateCollection enforces. An empty vector
+		// would leave the dimension at 0, so the next upsert could learn a
+		// different one and Query would index past the short points.
+		if targetDimension == 0 || targetDimension > MaxDimensions {
+			return fmt.Errorf("point %q: %w: dimension must be between 1 and %d",
+				points[0].ID, ErrDimensionMismatch, MaxDimensions)
+		}
 	}
 	for i, point := range points {
 		if point.ID == "" {

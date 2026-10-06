@@ -142,15 +142,20 @@ func TestPendingCollectionEmptyUpsertDoesNotFixDimension(t *testing.T) {
 // would "learn" dimension 0 and later points with real vectors are accepted
 // alongside it. Query then indexes past the empty vector.
 func TestPendingCollectionRejectsZeroLengthFirstVector(t *testing.T) {
-	t.Skip("BUG: Store.Upsert on a pending collection accepts a zero-length first vector (dimension stays 0), " +
-		"a later upsert then learns a non-zero dimension and the collection holds mixed-length points; " +
-		"QueryWithInfo/similarity then panics with index out of range")
 	s := &Store{}
 	if err := s.CreatePendingCollection("p", Dot); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Upsert("p", []Point{{ID: "empty"}}); err == nil {
-		t.Fatal("zero-length vector should be rejected (CreateCollection requires dimension >= 1)")
+	if err := s.Upsert("p", []Point{{ID: "empty"}}); !errors.Is(err, ErrDimensionMismatch) {
+		t.Fatalf("zero-length first vector: err = %v, want ErrDimensionMismatch", err)
+	}
+	// The collection is still pending, so a real vector sets the dimension and
+	// queries work.
+	if err := s.Upsert("p", []Point{{ID: "a", Vector: []float64{1, 2}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Query("p", Query{Vector: []float64{1, 0}, TopK: 1}); err != nil {
+		t.Fatalf("query after a rejected empty vector: %v", err)
 	}
 }
 

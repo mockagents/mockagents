@@ -105,7 +105,9 @@ func run(args []string, stderr io.Writer, goTest goTestRunner, now func() time.T
 		return die("go test failed: %v", err)
 	}
 
-	results := parseBenchOutput(stdout)
+	// The child `go test` inherits this process's GOMAXPROCS (same machine,
+	// same environment), which is the -N suffix it appends to names.
+	results := parseBenchOutput(stdout, runtime.GOMAXPROCS(0))
 	if len(results) == 0 {
 		return die("no benchmark results parsed — check %q actually contains benchmarks", *pkg)
 	}
@@ -155,7 +157,9 @@ func goTestArgs(pkg, benchTime string, count int) []string {
 // Expected format:
 //
 //	BenchmarkName-8   	1234567	      123.4 ns/op	      45 B/op	       2 allocs/op
-func parseBenchOutput(out string) []Result {
+//
+// procs is the GOMAXPROCS the benchmarks ran with; see stripProcSuffix.
+func parseBenchOutput(out string, procs int) []Result {
 	var results []Result
 	scanner := bufio.NewScanner(strings.NewReader(out))
 	for scanner.Scan() {
@@ -167,7 +171,7 @@ func parseBenchOutput(out string) []Result {
 		if len(fields) < 4 {
 			continue
 		}
-		name := stripProcSuffix(fields[0])
+		name := stripProcSuffix(fields[0], procs)
 		iters, err := strconv.ParseInt(fields[1], 10, 64)
 		if err != nil {
 			continue
@@ -205,12 +209,17 @@ func parseBenchOutput(out string) []Result {
 }
 
 // stripProcSuffix turns "BenchmarkX-8" into "BenchmarkX" so the results
-// stay comparable across machines with different GOMAXPROCS.
-func stripProcSuffix(name string) string {
-	if i := strings.LastIndex(name, "-"); i > 0 {
-		if _, err := strconv.Atoi(name[i+1:]); err == nil {
-			return name[:i]
-		}
+// stay comparable across machines with different GOMAXPROCS. `go test`
+// appends "-<procs>" only when procs > 1, so only that exact suffix is
+// removed: a sub-benchmark whose own name ends in "-<digits>" (such as
+// "BenchmarkX/size-10" on a one-CPU runner) keeps its name.
+func stripProcSuffix(name string, procs int) string {
+	if procs <= 1 {
+		return name
+	}
+	suffix := "-" + strconv.Itoa(procs)
+	if len(name) > len(suffix) && strings.HasSuffix(name, suffix) {
+		return name[:len(name)-len(suffix)]
 	}
 	return name
 }

@@ -18,8 +18,8 @@ goarch: amd64
 pkg: github.com/mockagents/mockagents/internal/engine
 cpu: AMD EPYC 7763 64-Core Processor
 BenchmarkProcessRequest_StaticResponse-8   	  500000	      2345 ns/op	    1234 B/op	      10 allocs/op
-BenchmarkScenarioMatch/regex-16            	 1000000	        51.25 ns/op	       0 B/op	       0 allocs/op
-BenchmarkThroughput-4                      	   10000	    123456 ns/op	  81.00 MB/s	    4096 B/op	      12 allocs/op
+BenchmarkScenarioMatch/regex-8             	 1000000	        51.25 ns/op	       0 B/op	       0 allocs/op
+BenchmarkThroughput-8                      	   10000	    123456 ns/op	  81.00 MB/s	    4096 B/op	      12 allocs/op
 BenchmarkNoMem                             	     100	  10000000 ns/op
 BenchmarkCustomMetric-8                    	    1000	      1000 ns/op	         3.000 hits/op	      64 B/op	       1 allocs/op
 BenchmarkLogged
@@ -34,7 +34,7 @@ ok  	github.com/mockagents/mockagents/internal/engine	12.345s
 `
 
 func TestParseBenchOutput(t *testing.T) {
-	got := parseBenchOutput(sampleOutput)
+	got := parseBenchOutput(sampleOutput, 8)
 	want := []Result{
 		{Name: "BenchmarkProcessRequest_StaticResponse", Iterations: 500000, NsPerOp: 2345, BytesPerOp: 1234, AllocsPerOp: 10, OpsPerSecond: 1e9 / 2345},
 		{Name: "BenchmarkScenarioMatch/regex", Iterations: 1000000, NsPerOp: 51.25, OpsPerSecond: 1e9 / 51.25},
@@ -50,14 +50,14 @@ func TestParseBenchOutput(t *testing.T) {
 
 func TestParseBenchOutputEmptyAndNoise(t *testing.T) {
 	for _, in := range []string{"", "PASS\nok  \tpkg\t0.1s\n", "FAIL\nexit status 1\n", "--- FAIL: BenchmarkX\n"} {
-		if got := parseBenchOutput(in); len(got) != 0 {
+		if got := parseBenchOutput(in, 8); len(got) != 0 {
 			t.Errorf("parseBenchOutput(%q) = %+v, want none", in, got)
 		}
 	}
 }
 
 func TestParseBenchOutputHandlesCRLF(t *testing.T) {
-	got := parseBenchOutput("BenchmarkA-8\t10\t5 ns/op\t16 B/op\t1 allocs/op\r\n")
+	got := parseBenchOutput("BenchmarkA-8\t10\t5 ns/op\t16 B/op\t1 allocs/op\r\n", 8)
 	if len(got) != 1 || got[0].Name != "BenchmarkA" || got[0].AllocsPerOp != 1 || got[0].BytesPerOp != 16 {
 		t.Fatalf("got %+v", got)
 	}
@@ -65,38 +65,37 @@ func TestParseBenchOutputHandlesCRLF(t *testing.T) {
 
 func TestParseBenchOutputKeepsRepeatedRuns(t *testing.T) {
 	// -count N emits one line per run; each is kept, in order.
-	got := parseBenchOutput("BenchmarkA-8\t10\t5 ns/op\nBenchmarkA-8\t10\t7 ns/op\n")
+	got := parseBenchOutput("BenchmarkA-8\t10\t5 ns/op\nBenchmarkA-8\t10\t7 ns/op\n", 8)
 	if len(got) != 2 || got[0].NsPerOp != 5 || got[1].NsPerOp != 7 {
 		t.Fatalf("got %+v", got)
 	}
 }
 
 func TestStripProcSuffix(t *testing.T) {
-	cases := map[string]string{
-		"BenchmarkX-8":            "BenchmarkX",
-		"BenchmarkX-128":          "BenchmarkX",
-		"BenchmarkX":              "BenchmarkX",
-		"BenchmarkX/case-a-8":     "BenchmarkX/case-a",
-		"BenchmarkX/size-10-8":    "BenchmarkX/size-10",
-		"BenchmarkX-":             "BenchmarkX-",
-		"BenchmarkX-abc":          "BenchmarkX-abc",
-		"-8":                      "-8", // a leading dash is never treated as a suffix
-		"BenchmarkHyphen-name-16": "BenchmarkHyphen-name",
+	cases := []struct {
+		in    string
+		procs int
+		want  string
+	}{
+		{"BenchmarkX-8", 8, "BenchmarkX"},
+		{"BenchmarkX-128", 128, "BenchmarkX"},
+		{"BenchmarkX", 8, "BenchmarkX"},
+		{"BenchmarkX/case-a-8", 8, "BenchmarkX/case-a"},
+		{"BenchmarkX/size-10-8", 8, "BenchmarkX/size-10"},
+		{"BenchmarkX-", 8, "BenchmarkX-"},
+		{"BenchmarkX-abc", 8, "BenchmarkX-abc"},
+		{"-8", 8, "-8"}, // a bare suffix is never stripped to nothing
+		{"BenchmarkHyphen-name-16", 16, "BenchmarkHyphen-name"},
+		// With GOMAXPROCS=1 `go test` prints no suffix, so a sub-benchmark
+		// whose own name ends in -<digits> keeps it.
+		{"BenchmarkX/size-10", 1, "BenchmarkX/size-10"},
+		// A -<digits> ending that is not this run's procs is part of the name.
+		{"BenchmarkX/size-10", 8, "BenchmarkX/size-10"},
 	}
-	for in, want := range cases {
-		if got := stripProcSuffix(in); got != want {
-			t.Errorf("stripProcSuffix(%q) = %q, want %q", in, got, want)
+	for _, c := range cases {
+		if got := stripProcSuffix(c.in, c.procs); got != c.want {
+			t.Errorf("stripProcSuffix(%q, %d) = %q, want %q", c.in, c.procs, got, c.want)
 		}
-	}
-}
-
-// With GOMAXPROCS=1 `go test` prints no -N suffix at all, so a sub-benchmark
-// whose own name ends in -<digits> loses that part of its name.
-func TestStripProcSuffixWithoutProcSuffix(t *testing.T) {
-	t.Skip("BUG: stripProcSuffix cannot tell a -<GOMAXPROCS> suffix from a sub-benchmark name ending in -<digits>; " +
-		`with GOMAXPROCS=1 (no suffix emitted) "BenchmarkX/size-10" is reported as "BenchmarkX/size"`)
-	if got := stripProcSuffix("BenchmarkX/size-10"); got != "BenchmarkX/size-10" {
-		t.Fatalf("got %q", got)
 	}
 }
 
