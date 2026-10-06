@@ -221,6 +221,7 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	convertedMsgs, imageCount := convertGeminiContents(req.Contents, req.SystemInstruction)
 	inbound := &engine.InboundRequest{
+		WireProtocol:     ProtocolGoogleGemini,
 		Model:            model,
 		SessionID:        extractSessionID(r),
 		Messages:         convertedMsgs,
@@ -428,7 +429,7 @@ func joinGeminiParts(parts []GeminiPart) string {
 }
 
 func formatGeminiResponse(resp *engine.Response, model string, promptTokens, candidateTokens int) *GeminiResponse {
-	var parts []GeminiPart
+	parts := []GeminiPart{} // an array on the wire, never null (review E-03)
 	if resp.Content != "" {
 		parts = append(parts, GeminiPart{Text: resp.Content})
 	}

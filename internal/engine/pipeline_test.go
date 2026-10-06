@@ -393,3 +393,56 @@ func TestPipelineRunContext_HonorsCancellation(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
+
+// Two runs with no session id do not share engine sessions: each starts at
+// turn 1 (review E-23).
+func TestPipeline_EmptySessionIDIsolatesRuns(t *testing.T) {
+	reg := NewAgentRegistry()
+	one := 1
+	reg.Register(&types.AgentDefinition{
+		APIVersion: types.AgentAPIVersion, Kind: types.AgentKind,
+		Metadata: types.Metadata{Name: "turny"},
+		Spec: types.AgentSpec{Protocol: "openai-chat-completions", Model: "m", Behavior: types.BehaviorConfig{
+			Scenarios: []types.Scenario{
+				{Name: "first", Match: &types.MatchRule{TurnNumber: &one}, Response: types.ScenarioResponse{Content: "FIRST"}},
+				{Name: "later", Response: types.ScenarioResponse{Content: "LATER"}},
+			},
+		}},
+	})
+	eng := NewEngine(reg, state.NewMemoryStore(state.DefaultSessionTTL), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	exec := NewPipelineExecutor(eng)
+	def := &types.PipelineDefinition{
+		APIVersion: types.AgentAPIVersion, Kind: types.PipelineKind,
+		Metadata: types.Metadata{Name: "p"},
+		Spec:     types.PipelineSpec{Agents: []types.PipelineAgent{{ID: "n", Ref: "turny"}}},
+	}
+	for run := 0; run < 2; run++ {
+		res, err := exec.RunContext(context.Background(), def, "go", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := res.Nodes[0].Response.Content; got != "FIRST" {
+			t.Fatalf("run %d answered %q, want FIRST (runs must not share a session)", run, got)
+		}
+	}
+}
+
+// {{ .Timestamp }} renders the request time (audit L-13: it was never set).
+func TestTemplate_TimestampIsSet(t *testing.T) {
+	reg := NewAgentRegistry()
+	reg.Register(&types.AgentDefinition{
+		APIVersion: types.AgentAPIVersion, Kind: types.AgentKind,
+		Metadata: types.Metadata{Name: "clock"},
+		Spec: types.AgentSpec{Protocol: "openai-chat-completions", Model: "m", Behavior: types.BehaviorConfig{
+			Scenarios: []types.Scenario{{Name: "d", Response: types.ScenarioResponse{Content: "at={{ .Timestamp }}"}}},
+		}},
+	})
+	eng := NewEngine(reg, state.NewMemoryStore(state.DefaultSessionTTL), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	resp, err := eng.ProcessRequestContext(context.Background(), &InboundRequest{AgentName: "clock", Messages: []RequestMessage{{Role: "user", Content: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(resp.Content, "at=20") || !strings.HasSuffix(resp.Content, "Z") {
+		t.Fatalf("content = %q, want an RFC3339 UTC timestamp", resp.Content)
+	}
+}

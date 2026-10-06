@@ -152,12 +152,18 @@ func StreamAnthropic(
 	blockIndex := 0
 
 	// 2. Text content blocks (with stream-timing physics + fault injection).
-	// A refusal-only response (FB-03) streams its refusal text as the text block.
-	textBody := resp.Content
-	if textBody == "" {
-		textBody = resp.Refusal
+	// The content and the refusal (FB-03) each stream as their own text
+	// block, matching the non-streaming response, which carries both. Only
+	// the content used to stream when both were set, silently dropping the
+	// refusal (audit L-14).
+	var textBodies []string
+	for _, body := range []string{resp.Content, resp.Refusal} {
+		if body != "" {
+			textBodies = append(textBodies, body)
+		}
 	}
-	if textBody != "" {
+	chunkIdx := 0
+	for _, textBody := range textBodies {
 		// content_block_start
 		if err := sse.WriteEvent("content_block_start", anthropicContentBlockStart{
 			Type: "content_block_start", Index: blockIndex,
@@ -167,12 +173,12 @@ func StreamAnthropic(
 		}
 
 		// content_block_delta(s)
-		chunks := NewChunker(chunkSize).Chunk(textBody)
-		for i, chunk := range chunks {
+		for _, chunk := range NewChunker(chunkSize).Chunk(textBody) {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			truncate, err := pacer.beforeChunk(ctx, i, tokenLen(chunk))
+			truncate, err := pacer.beforeChunk(ctx, chunkIdx, tokenLen(chunk))
+			chunkIdx++
 			if err != nil {
 				return err
 			}

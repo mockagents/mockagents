@@ -4,8 +4,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/mockagents/mockagents/internal/types"
 )
 
 // faultServer stands up an httptest server whose handler performs a connection
@@ -109,5 +112,27 @@ func TestConnectionFault_NonHijackableReturnsFalse(t *testing.T) {
 	}
 	if rec.Body.Len() != 0 || rec.Code != 200 {
 		t.Errorf("connectionFault must not write anything itself on the fallback path; code=%d bodylen=%d", rec.Code, rec.Body.Len())
+	}
+}
+
+// A connection-layer fault on Bedrock ConverseStream reaches the client as a
+// transport error, not a 502 JSON body (review E-12): the stream handler
+// renders through an in-memory capture, which must hand the real socket on.
+func TestConnectionFault_BedrockConverseStream(t *testing.T) {
+	agent := testOpenAIAgent()
+	agent.Spec.Protocol = "bedrock-converse"
+	agent.Spec.Behavior.Chaos = &types.ChaosConfig{Connection: &types.ChaosConnectionConfig{Mode: "reset", Rate: 1}}
+	h := &BedrockHandler{Engine: testEngine(agent)}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /model/{modelId}/converse-stream", h.HandleConverseStream)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	body := `{"messages":[{"role":"user","content":[{"text":"hello"}]}]}`
+	resp, err := faultClient().Post(srv.URL+"/model/"+agent.Spec.Model+"/converse-stream", "application/json", strings.NewReader(body))
+	if err == nil {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("expected a transport error, got status %d body=%q", resp.StatusCode, b)
 	}
 }

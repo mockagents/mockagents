@@ -96,6 +96,23 @@ type conversationState struct {
 	createdAt int64
 	metadata  map[string]any
 	items     []conversationItem
+	// turns counts Responses hops that referenced this conversation, so
+	// turn_number scenarios advance across them (review E-01).
+	turns int
+}
+
+// turnCount returns how many Responses turns this conversation has taken.
+func (st *conversationState) turnCount() int {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.turns
+}
+
+// addTurn records one more Responses turn on this conversation.
+func (st *conversationState) addTurn() {
+	st.mu.Lock()
+	st.turns++
+	st.mu.Unlock()
 }
 
 func (st *conversationState) wire() Conversation {
@@ -315,7 +332,7 @@ func (h *ConversationsHandler) HandleUpdate(w http.ResponseWriter, r *http.Reque
 	}
 	var req updateConversationRequest
 	if err := decodeJSONBody(r, &req); err != nil && !isEmptyBodyDecodeErr(err) {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("invalid JSON: %s", err))
+		writeConversationDecodeError(w, err)
 		return
 	}
 	defer r.Body.Close()
@@ -377,7 +394,7 @@ func (h *ConversationsHandler) HandleCreateItems(w http.ResponseWriter, r *http.
 	}
 	var req createItemsRequest
 	if err := decodeJSONBody(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("invalid JSON: %s", err))
+		writeConversationDecodeError(w, err)
 		return
 	}
 	defer r.Body.Close()
@@ -513,7 +530,9 @@ func itemIDPrefix(itemType string) string {
 func conversationItemsToMessages(items []conversationItem) []engine.RequestMessage {
 	msgs := make([]engine.RequestMessage, 0, len(items))
 	for _, it := range items {
-		msgs = append(msgs, responsesItemToMessage(it.Type, it.Role, it.Content, it.Output, it.Name, it.Arguments, it.CallID))
+		if m, ok := responsesItemToMessage(it.Type, it.Role, it.Content, it.Output, it.Name, it.Arguments, it.CallID); ok {
+			msgs = append(msgs, m)
+		}
 	}
 	return msgs
 }
@@ -576,4 +595,16 @@ func resolveConversationID(raw json.RawMessage) (string, error) {
 // treat as "no fields supplied" rather than a malformed request.
 func isEmptyBodyDecodeErr(err error) bool {
 	return err != nil && err.Error() == "unexpected end of JSON input"
+}
+
+// writeConversationDecodeError reports a body decode failure: 413 for an
+// oversized body, as every other route does, else 400. The update and
+// create-items routes used to answer an oversized body with 400 (review E-21).
+func writeConversationDecodeError(w http.ResponseWriter, err error) {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		writeError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "request body too large")
+		return
+	}
+	writeError(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("invalid JSON: %s", err))
 }

@@ -2,6 +2,8 @@ package toolschema
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -42,7 +44,10 @@ func validateStrictAt(schema map[string]any, path []string, errs *[]string) {
 			}
 		}
 		if props, ok := schema["properties"].(map[string]any); ok {
-			for name, sub := range props {
+			// Sorted, so the first reported error — the one the 400 message
+			// quotes — is the same on every request (review E-18).
+			for _, name := range slices.Sorted(maps.Keys(props)) {
+				sub := props[name]
 				if !requiredSet[name] {
 					*errs = append(*errs, fmt.Sprintf("In context=%s, 'required' is required to be supplied and to be an array including every key in properties. Missing '%s'.", ctx, name))
 				}

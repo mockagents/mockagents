@@ -109,6 +109,33 @@ Fixes from the 2026-10-06 full-application quality review (see
 - Spend accrued while the shared spend ledger is failing is kept and written
   through when it recovers, instead of being lost at the next cache refresh.
   A model missing from the price table is logged once.
+- Streamed tool-call arguments are cut on character boundaries; a multi-byte
+  character (accent, CJK, emoji) used to be split across two deltas and
+  arrive as `U+FFFD` on OpenAI, Anthropic and Responses streams.
+- Anthropic responses always carry `"content": []` (never `null`) when there
+  is nothing to say, which the official SDKs require.
+- Responses API: a `previous_response_id` chain or a `conversation` advances
+  `turn_number` on every hop, and calls without `X-Session-Id` no longer store
+  an engine session each. `instructions` apply to the request that sends them
+  and are not replayed from earlier responses. Unmodelled input items
+  (`reasoning`, `item_reference`, …) are skipped instead of becoming an empty
+  user turn.
+- Strict `tool_choice` forcing reports the finish reason of the API the request
+  arrived on, not the agent's declared protocol (an OpenAI-protocol agent on
+  `/v1/messages` now ends a forced call with `stop_reason: "tool_use"`).
+- Engine failures (e.g. a broken response template) are reported as
+  `server_error` / `api_error`, so SDKs retry them, instead of
+  `invalid_request_error`.
+- Streaming Anthropic and Gemini responses include the refusal when a response
+  also has content, as the non-streaming responses do.
+- Bedrock ConverseStream delivers connection-layer chaos faults to the socket
+  instead of a 502 JSON body.
+- `/v1/models` lists each model once with a stable `created`; tool-argument
+  `minLength`/`maxLength` count characters; strict-schema 400 messages are
+  deterministic; the warn-mode `X-Mockagents-Strict-Violation` header is
+  bounded to 1 KiB; oversized bodies on every Conversations route return 413;
+  `{{ .Timestamp }}` renders the request time; pipeline runs without a session
+  id no longer share engine sessions.
 
 ---
 - Python SDK: the client's `api_key` was sent only by `run_pipeline`. Every other
