@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
@@ -198,7 +197,7 @@ func serveMCPHTTP(server *mcp.Server, bind string, port int) error {
 	go func() { errCh <- srv.ListenAndServe() }()
 
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	notifySignals(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	select {
 	case <-sigCh:

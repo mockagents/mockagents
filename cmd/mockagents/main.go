@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"runtime/debug"
 	"strings"
 
@@ -50,6 +51,14 @@ calling real LLMs or burning tokens.`,
 }
 
 var noColor bool
+
+// Process-level seams, replaced only by tests: notifySignals lets a test
+// deliver the shutdown signal the serve loops wait for, and osExit lets it
+// observe the exit code a command reports without ending the test binary.
+var (
+	notifySignals = signal.Notify
+	osExit        = os.Exit
+)
 
 func init() {
 	rootCmd.PersistentFlags().String("agents-dir", envOrDefault("MOCKAGENTS_AGENTS_DIR", "./agents"), "Directory containing agent definition files")

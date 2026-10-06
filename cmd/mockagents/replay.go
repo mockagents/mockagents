@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"strconv"
 	"syscall"
 	"time"
@@ -161,7 +160,7 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	go func() { errCh <- srv.ListenAndServe() }()
 
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	notifySignals(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	select {
 	case <-sigCh:

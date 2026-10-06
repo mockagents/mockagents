@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
 	"syscall"
 	"time"
 
@@ -101,7 +100,9 @@ func validA2AServer(r *config.A2AServerLoadResult) (*types.A2AServerDefinition, 
 	return r.Definition, nil
 }
 
-func serveA2AHTTP(server *a2a.Server, cardName string, port int) error {
+// newA2AMux builds the HTTP route set for `mockagents a2a`, extracted so
+// tests can exercise every route without binding a port.
+func newA2AMux(server *a2a.Server) *http.ServeMux {
 	mux := http.NewServeMux()
 	// Agent Card discovery: the current well-known path plus the older alias.
 	mux.HandleFunc("GET /.well-known/agent-card.json", server.CardHandler())
@@ -111,10 +112,13 @@ func serveA2AHTTP(server *a2a.Server, cardName string, port int) error {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
+	return mux
+}
 
+func serveA2AHTTP(server *a2a.Server, cardName string, port int) error {
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", port),
-		Handler:           mux,
+		Handler:           newA2AMux(server),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Bound the request read and idle keep-alives like record/replay
 		// (audit L-43). No WriteTimeout: the SSE streams are long-lived.
@@ -128,7 +132,7 @@ func serveA2AHTTP(server *a2a.Server, cardName string, port int) error {
 	go func() { errCh <- srv.ListenAndServe() }()
 
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	notifySignals(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	select {
 	case <-sigCh:

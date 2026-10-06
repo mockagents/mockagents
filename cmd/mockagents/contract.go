@@ -145,7 +145,7 @@ func runContractDiff(cmd *cobra.Command, args []string) error {
 
 	if contract.HasBreaking(changes) {
 		fmt.Fprintln(os.Stderr, "\nbreaking changes detected")
-		os.Exit(1)
+		osExit(1)
 	}
 	return nil
 }
