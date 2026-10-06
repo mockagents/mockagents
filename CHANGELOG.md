@@ -98,6 +98,13 @@ Fixes from the 2026-10-06 full-application quality review (see
   `generateContent`.
 - **GUI `npm run lint` works again.** `next lint` was removed in Next.js 16; the script now runs ESLint 9 with `eslint-config-next` (flat config `gui/eslint.config.mjs`), with the react-hooks rules as errors, and the CI GUI job runs it. Because the GUI compiles with TypeScript 7, which has no JavaScript compiler API, the config points typescript-eslint at `@typescript/typescript6` inside the ESLint process only (needs Node ≥ 22.15).
 - **GUI:** removed the dead `mockagents_role` legacy-cookie cleanup and the empty `experimental: {}` block in `next.config.ts` (its comment described behaviour it did not have).
+- `mockagents a2a` now binds `127.0.0.1` by default, like `mcp`, `record` and
+  `replay`; pass `--bind 0.0.0.0` to expose it. The startup line prints the
+  actual listening address.
+- `mockagents logs --output` and `mockagents contract diff --format` reject an
+  unknown value as a usage error (exit 2) naming the accepted values
+  (`table`/`json` and `text`/`json`); they used to fall back to the default
+  format silently.
 
 ### Fixed
 

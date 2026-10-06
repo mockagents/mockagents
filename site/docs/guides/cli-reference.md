@@ -248,7 +248,7 @@ mockagents logs [flags]
 | `--session` | | Filter by session ID |
 | `--since` | | Show logs from duration ago (e.g., `1h`, `30m`) |
 | `--limit` | `50` | Maximum results |
-| `--output` | `table` | Output format: table or json |
+| `--output` | `table` | Output format: `table` or `json`. Any other value is a usage error (exit 2) |
 | `--db` | `$MOCKAGENTS_DATA_DIR/.mockagents.db`, else `./.mockagents.db` | SQLite database path. A missing database is an error, never created |
 
 **Examples:**
@@ -455,7 +455,16 @@ mockagents a2a --agents-dir examples --server weather-a2a
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--port` | `-p` | `8083` | HTTP port |
+| `--bind` | | `127.0.0.1` | Interface to bind (`0.0.0.0` to expose) |
 | `--server` | | | A2AServer to serve (required when multiple are loaded) |
+| `--max-tasks` | | `10000` | Maximum retained A2A tasks |
+| `--max-task-bytes` | | `67108864` | Maximum bytes retained across A2A tasks |
+| `--max-task-history` | | `256` | Maximum retained messages per task |
+| `--task-ttl` | | `30m` | Retention time for terminal tasks |
+
+The server binds `127.0.0.1` by default, like `mcp`, `record` and `replay`.
+Pass `--bind 0.0.0.0` to expose it beyond the host — e.g. when running inside
+a container whose port is mapped out.
 
 Serves the Agent Card at `/.well-known/agent-card.json` (and the legacy
 `/.well-known/agent.json` alias) and JSON-RPC (`message/send`,
@@ -474,6 +483,17 @@ mockagents contract diff contracts/support.json agents/support.yaml
 
 `diff` exits non-zero on breaking changes (removed tool/scenario, tightened
 `required`, changed schema, disabled streaming).
+
+**Flags:**
+
+| Command | Flag | Default | Description |
+|---------|------|---------|-------------|
+| `extract` | `--output` / `-o` | stdout | Write the contract JSON to this file |
+| `diff` | `--format` | `text` | Output format: `text` or `json`. Any other value is a usage error (exit 2) |
+
+`diff` exits 0 when there are no breaking changes, 1 when there are, and 2 for
+a usage or load error (unknown `--format`, a missing file, an invalid
+definition).
 
 ---
 
