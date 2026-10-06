@@ -16,8 +16,6 @@ spec:
   behavior:
     scenarios:
       - name: default
-        match:
-          default: true
         response:
           content: "hi"
 `
@@ -40,8 +38,6 @@ spec:
   behavior:
     scenarios:
       - name: default
-        match:
-          default: true
         response:
           content: "hi"
 `
@@ -130,7 +126,7 @@ spec:
 }
 
 func TestValidateBytes_JSONInput(t *testing.T) {
-	body := `{"apiVersion":"mockagents/v1","kind":"Agent","metadata":{"name":"json-agent"},"spec":{"protocol":"openai-chat-completions","model":"gpt-4o","behavior":{"scenarios":[{"name":"default","match":{"default":true},"response":{"content":"hi"}}]}}}`
+	body := `{"apiVersion":"mockagents/v1","kind":"Agent","metadata":{"name":"json-agent"},"spec":{"protocol":"openai-chat-completions","model":"gpt-4o","behavior":{"scenarios":[{"name":"default","response":{"content":"hi"}}]}}}`
 	r := ValidateBytes([]byte(body))
 	if r.Kind != "Agent" {
 		t.Errorf("kind = %q", r.Kind)

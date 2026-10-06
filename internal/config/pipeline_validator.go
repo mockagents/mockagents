@@ -37,6 +37,7 @@ var validPipelineTopologies = []string{
 // step. Empty path simply renders as `:N:M` in text output.
 func ValidatePipeline(def *types.PipelineDefinition, filePath string, node *yaml.Node) *ValidationErrorList {
 	ctx := &validationContext{file: filePath, node: node}
+	ctx.errors = append(ctx.errors, unknownFieldErrors(filePath, node, def)...)
 
 	validatePipelineAPIVersion(ctx, def)
 	validatePipelineKind(ctx, def)

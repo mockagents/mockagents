@@ -15,6 +15,7 @@ const maxSearchLatencyMs = 60_000
 
 func ValidateSearchService(def *types.SearchServiceDefinition, filePath string, node *yaml.Node) *ValidationErrorList {
 	ctx := &validationContext{file: filePath, node: node}
+	ctx.errors = append(ctx.errors, unknownFieldErrors(filePath, node, def)...)
 	if def.APIVersion != types.AgentAPIVersion {
 		ctx.addError("apiVersion", fmt.Sprintf("unsupported version %q", def.APIVersion), "Use apiVersion: mockagents/v1")
 	}

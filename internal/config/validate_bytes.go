@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/mockagents/mockagents/internal/types"
-	"gopkg.in/yaml.v3"
 )
 
 // ValidateReport is the result of ValidateBytes — the detected
@@ -63,11 +62,12 @@ func ValidateBytes(data []byte) *ValidateReport {
 		data = converted
 	}
 
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	docPtr, err := parseSingleDocument(data)
+	if err != nil {
 		report.Errors = append(report.Errors, parseErrorAsValidationError(err))
 		return report
 	}
+	doc := *docPtr
 	report.Kind = peekKind(&doc)
 
 	switch report.Kind {

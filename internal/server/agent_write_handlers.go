@@ -239,11 +239,9 @@ func (h *Handlers) decodeAgent(w http.ResponseWriter, r *http.Request, wantName 
 		return nil, nil, false
 	}
 
-	// UX-03: a caller that opted into conditional writes also opts into strict
-	// field checking, so an unsupported field is refused rather than silently
-	// dropped on the way to disk. Unconditional callers keep the lenient
-	// behaviour they have always had.
-	if !checkStrictFields(w, r, body) {
+	// An unsupported field is refused rather than silently dropped on the way
+	// to disk (see agent_strict_fields.go).
+	if !checkStrictFields(w, body) {
 		return nil, nil, false
 	}
 

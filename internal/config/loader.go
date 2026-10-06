@@ -1,9 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -89,11 +91,63 @@ func readAndParse(path string) ([]byte, *yaml.Node, error) {
 			return nil, nil, fmt.Errorf("%s: invalid JSON: %w", path, err)
 		}
 	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	doc, err := parseSingleDocument(data)
+	if err != nil {
 		return nil, nil, &ParseError{File: path, Err: err}
 	}
-	return data, &doc, nil
+	return data, doc, nil
+}
+
+// errMultipleDocuments reports a file that holds more than one YAML document.
+// Only the first document used to be decoded, so everything after the first
+// `---` was silently never validated or served: `validate` passed a file whose
+// second agent was broken, and `start` never served it. Multi-document files
+// are rejected rather than supported because every write path (the agent
+// write API, MCP management, --watch reload) owns one source file per
+// definition and would destroy sibling documents on the next save.
+type errMultipleDocuments struct{ line int }
+
+func (e errMultipleDocuments) Error() string {
+	return fmt.Sprintf("line %d: a second YAML document starts here; put each definition in its own file", e.line)
+}
+
+// parseSingleDocument parses data into a yaml.Node tree and fails when the
+// input holds more than one non-empty document.
+func parseSingleDocument(data []byte) (*yaml.Node, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	var doc yaml.Node
+	if err := dec.Decode(&doc); err != nil {
+		if errors.Is(err, io.EOF) {
+			return &doc, nil
+		}
+		return nil, err
+	}
+	for {
+		var next yaml.Node
+		err := dec.Decode(&next)
+		if errors.Is(err, io.EOF) {
+			return &doc, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(next.Content) > 0 && next.Content[0].Kind != 0 &&
+			!(next.Content[0].Kind == yaml.ScalarNode && next.Content[0].Tag == "!!null") {
+			return nil, errMultipleDocuments{line: secondDocumentLine(data, next.Content[0].Line)}
+		}
+	}
+}
+
+// secondDocumentLine returns the line of the `---` separator that opens the
+// document whose first node is at contentLine, falling back to contentLine.
+func secondDocumentLine(data []byte, contentLine int) int {
+	lines := strings.Split(string(data), "\n")
+	for i := min(contentLine-1, len(lines)) - 1; i >= 0; i-- {
+		if strings.HasPrefix(strings.TrimRight(lines[i], "\r \t"), "---") {
+			return i + 1
+		}
+	}
+	return contentLine
 }
 
 // peekKind extracts the top-level `kind` field from a decoded yaml.Node.

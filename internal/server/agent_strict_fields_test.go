@@ -12,8 +12,7 @@ import (
 	"github.com/mockagents/mockagents/internal/config"
 )
 
-// UX-03: unknown fields are rejected only for callers that opted into
-// conditional writes.
+// Unknown fields are rejected on every agent write, conditional or not.
 
 const unknownFieldAgent = `apiVersion: mockagents/v1
 kind: Agent
@@ -30,20 +29,25 @@ spec:
           content: "hi"
 `
 
-// The legacy path must keep working exactly as before, unknown fields and all.
-// Breaking it is precisely what the additive contract exists to avoid.
-func TestStrictFields_UnconditionalWriteStaysLenient(t *testing.T) {
+// An unconditional write is strict too (2026-10-06 quality review, C-04):
+// before, the field was dropped and the write reported success.
+func TestStrictFields_UnconditionalWriteRejectsUnknownField(t *testing.T) {
 	e := newRevEnv(t)
 
 	rec := e.put(t, "rev-agent", unknownFieldAgent, nil)
-	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	require.Equal(t, http.StatusUnprocessableEntity, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "someFutureFieldTheGuiDoesNotKnow")
 
-	// Documenting the cost of that leniency: the field IS dropped. This is the
-	// behaviour the conditional path exists to protect an editor from.
-	data, err := os.ReadFile(filepath.Join(e.dir, "rev-agent.yaml"))
-	require.NoError(t, err)
-	require.NotContains(t, string(data), "keep-me-please",
-		"the lenient path drops unknown fields — that is why strict mode exists")
+	_, err := os.Stat(filepath.Join(e.dir, "rev-agent.yaml"))
+	require.True(t, os.IsNotExist(err), "a refused write must not persist anything")
+}
+
+// A second YAML document in the body is refused rather than silently dropped.
+func TestStrictFields_MultiDocumentBodyRejected(t *testing.T) {
+	body := revAgent("clean", "hi") + "---\nkind: Agent\nmetadata:\n  name: second\n"
+	rec := newRevEnv(t).put(t, "rev-agent", body, nil)
+	require.Equal(t, http.StatusUnprocessableEntity, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "second YAML document")
 }
 
 func TestStrictFields_ConditionalWriteRejectsUnknownField(t *testing.T) {
@@ -59,7 +63,7 @@ func TestStrictFields_ConditionalWriteRejectsUnknownField(t *testing.T) {
 		body := rec.Body.String()
 		require.Contains(t, body, "someFutureFieldTheGuiDoesNotKnow",
 			"the response must name the offending field")
-		require.Contains(t, body, "unsupported field")
+		require.Contains(t, body, "unknown field")
 		// Never leak Go type names at the API boundary.
 		require.NotContains(t, body, "types.AgentSpec")
 	}
@@ -95,13 +99,13 @@ func TestStrictFields_SyntaxErrorIsNotReportedAsUnknownField(t *testing.T) {
 	rec := e.put(t, "rev-agent", "{{ this is not: [valid yaml", map[string]string{"If-None-Match": "*"})
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	require.Contains(t, rec.Body.String(), "invalid agent document")
-	require.NotContains(t, rec.Body.String(), "unsupported field")
+	require.NotContains(t, rec.Body.String(), "unknown field")
 }
 
 func TestStrictFields_ErrorCarriesLineAndSuggestion(t *testing.T) {
-	_, errs := decodeAgentStrict([]byte(unknownFieldAgent))
+	errs := config.UnknownAgentFields([]byte(unknownFieldAgent))
 	require.Len(t, errs, 1)
-	require.Equal(t, "someFutureFieldTheGuiDoesNotKnow", errs[0].Field)
+	require.Equal(t, "spec.someFutureFieldTheGuiDoesNotKnow", errs[0].Field)
 	require.Positive(t, errs[0].Line, "the error should point at a line the editor can highlight")
 	require.NotEmpty(t, errs[0].Suggestion)
 }
@@ -128,7 +132,7 @@ func TestStrictFields_AcceptsEveryShippedExample(t *testing.T) {
 		checked++
 
 		t.Run(filepath.Base(path), func(t *testing.T) {
-			_, errs := decodeAgentStrict(data)
+			errs := config.UnknownAgentFields(data)
 			require.Empty(t, errs, "strict decoding rejected a shipped example: %s", errorSummary(errs))
 		})
 	}
