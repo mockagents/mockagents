@@ -1,0 +1,26 @@
+# Cross-SDK contract fixture: the TENANT-OWNED agent for the multi-tenant leg.
+#
+# Not loaded from disk at startup (it lives outside sdk/contract/agents on
+# purpose). The workflow POSTs it to /api/v1/agents with a tenant editor key,
+# so the server registers it as owned by that tenant. It shares its model with
+# the global contract-agent: a tenant-keyed request must reach this one, an
+# anonymous request must reach the global one. Keep the "tenant contract
+# agent" phrase in the reply — the auth cases assert on it.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: contract-agent
+  description: Tenant-owned twin of the global contract agent.
+  tags: [contract, sdk, tenant]
+
+spec:
+  protocol: openai-chat-completions
+  model: contract-main
+  behavior:
+    streaming:
+      chunk_size: 1
+      chunk_delay_ms: 0
+    scenarios:
+      - name: default
+        response:
+          content: "Hello from the tenant contract agent."

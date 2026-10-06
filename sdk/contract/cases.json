@@ -1,0 +1,326 @@
+{
+  "version": 1,
+  "description": "Cross-SDK contract cases. Every runner (sdk/python/tests/contract, sdk/typescript/tests/contract.test.ts, sdk/go/mockagents/contract_test.go) executes each case through its SDK's public client + assertion API against one real server and checks each assertion's verdict against `expect`. See sdk/contract/README.md for the field reference.",
+  "default_model": "contract-main",
+  "wrong_api_key": "mak_00000000_contract-suite-not-a-registered-key",
+  "assertion_kinds": {
+    "response_contains": "args {text}. FINAL turn content contains text. py to_have_response_containing / ts toHaveResponseContaining / go ToHaveContentContaining.",
+    "tool_call": "args {name, arguments?}. Some tool call in ANY turn has this name and (partial match) every given argument present with an equal value; an explicit null never matches an absent key. py to_have_tool_call / ts toHaveToolCall / go ToHaveToolCall.",
+    "tool_call_count": "args {count, name?}. Total tool calls across ALL turns (or calls to `name`). py to_have_tool_call_count / ts toHaveToolCallCount / go ToHaveToolCallCount, ToHaveToolCallCountByName.",
+    "tool_call_sequence": "args {names}. Exact ordered tool-call names across ALL turns (full equality, not a subsequence). py to_have_tool_call_sequence / ts toHaveToolCallSequence / go ToHaveToolCallSequence.",
+    "finish_reason": "args {reason}. FINAL turn finish/stop reason. py to_have_finish_reason / ts toHaveFinishReason / go ToHaveFinishReason.",
+    "status_code": "args {code}. FINAL turn HTTP status. py to_have_status / ts toHaveStatusCode / go ToHaveStatusCode. Non-streaming cases only.",
+    "stream_text_matches_nonstream": "args {}. Streaming cases only: the final turn's text, concatenated from the SDK's iter_stream/iterStream/IterStream chunks, equals the content the same steps produce without streaming. A runner-level check built on each SDK's public stream iterator (no SDK has a stream-vs-batch matcher)."
+  },
+  "cases": [
+    {
+      "name": "final-turn-vs-any-turn-openai",
+      "description": "Two-turn recovery: turn 1 mentions 'error', the final turn does not. Outcome assertions read the FINAL turn, so 'contains error' must FAIL in every SDK. (The any-turn matcher exists only in Python - to_have_any_response_containing - so it is not part of the shared contract.)",
+      "protocol": "openai",
+      "stream": false,
+      "steps": ["I have trouble loading the page", "please retry"],
+      "assertions": [
+        {"kind": "response_contains", "args": {"text": "error"}, "expect": "fail"},
+        {"kind": "response_contains", "args": {"text": "All good now"}, "expect": "pass"},
+        {"kind": "finish_reason", "args": {"reason": "stop"}, "expect": "pass"},
+        {"kind": "tool_call_count", "args": {"count": 0}, "expect": "pass"},
+        {"kind": "status_code", "args": {"code": 200}, "expect": "pass"},
+        {"kind": "status_code", "args": {"code": 201}, "expect": "fail"}
+      ]
+    },
+    {
+      "name": "final-turn-vs-any-turn-anthropic",
+      "description": "Same recovery conversation over the Anthropic Messages protocol.",
+      "protocol": "anthropic",
+      "stream": false,
+      "steps": ["I have trouble loading the page", "please retry"],
+      "assertions": [
+        {"kind": "response_contains", "args": {"text": "error"}, "expect": "fail"},
+        {"kind": "response_contains", "args": {"text": "All good now"}, "expect": "pass"},
+        {"kind": "finish_reason", "args": {"reason": "end_turn"}, "expect": "pass"},
+        {"kind": "status_code", "args": {"code": 200}, "expect": "pass"}
+      ]
+    },
+    {
+      "name": "tool-call-arguments-openai",
+      "description": "Integer argument limit: 5 must match in every SDK (Go compares JSON-normalised values); a string '5' must not. An explicit null argument matches an expected null; a MISSING key never matches an expected null.",
+      "protocol": "openai",
+      "stream": false,
+      "steps": ["please search the docs"],
+      "assertions": [
+        {"kind": "tool_call", "args": {"name": "search_docs"}, "expect": "pass"},
+        {"kind": "tool_call", "args": {"name": "search_docs", "arguments": {"limit": 5}}, "expect": "pass"},
+        {"kind": "tool_call", "args": {"name": "search_docs", "arguments": {"query": "pricing", "limit": 5}}, "expect": "pass"},
+        {"kind": "tool_call", "args": {"name": "search_docs", "arguments": {"limit": "5"}}, "expect": "fail"},
+        {"kind": "tool_call", "args": {"name": "search_docs", "arguments": {"limit": 6}}, "expect": "fail"},
+        {"kind": "tool_call", "args": {"name": "search_docs", "arguments": {"filter": null}}, "expect": "pass"},
+        {"kind": "tool_call", "args": {"name": "search_docs", "arguments": {"sort": null}}, "expect": "fail"},
+        {"kind": "tool_call", "args": {"name": "summarize"}, "expect": "fail"},
+        {"kind": "finish_reason", "args": {"reason": "tool_calls"}, "expect": "pass"},
+        {"kind": "response_contains", "args": {"text": "Searching the docs"}, "expect": "pass"}
+      ]
+    },
+    {
+      "name": "tool-call-arguments-anthropic",
+      "description": "Same tool-call argument contract over the Anthropic Messages protocol (tool_use input object).",
+      "protocol": "anthropic",
+      "stream": false,
+      "steps": ["please search the docs"],
+      "assertions": [
+        {"kind": "tool_call", "args": {"name": "search_docs", "arguments": {"limit": 5}}, "expect": "pass"},
+        {"kind": "tool_call", "args": {"name": "search_docs", "arguments": {"limit": "5"}}, "expect": "fail"},
+        {"kind": "tool_call", "args": {"name": "search_docs", "arguments": {"filter": null}}, "expect": "pass"},
+        {"kind": "tool_call", "args": {"name": "search_docs", "arguments": {"sort": null}}, "expect": "fail"},
+        {"kind": "finish_reason", "args": {"reason": "tool_use"}, "expect": "pass"}
+      ]
+    },
+    {
+      "name": "tool-trajectory-across-turns-openai",
+      "description": "Turn 1 calls search_docs, turn 2 calls summarize. Count and sequence read the aggregate of ALL turns; the sequence is exact (order and length).",
+      "protocol": "openai",
+      "stream": false,
+      "steps": ["please search the docs", "now summarize it"],
+      "assertions": [
+        {"kind": "tool_call_count", "args": {"count": 2}, "expect": "pass"},
+        {"kind": "tool_call_count", "args": {"count": 1}, "expect": "fail"},
+        {"kind": "tool_call_count", "args": {"count": 1, "name": "summarize"}, "expect": "pass"},
+        {"kind": "tool_call_count", "args": {"count": 2, "name": "summarize"}, "expect": "fail"},
+        {"kind": "tool_call_sequence", "args": {"names": ["search_docs", "summarize"]}, "expect": "pass"},
+        {"kind": "tool_call_sequence", "args": {"names": ["summarize", "search_docs"]}, "expect": "fail"},
+        {"kind": "tool_call_sequence", "args": {"names": ["search_docs"]}, "expect": "fail"},
+        {"kind": "tool_call_sequence", "args": {"names": []}, "expect": "fail"},
+        {"kind": "tool_call", "args": {"name": "search_docs", "arguments": {"limit": 5}}, "expect": "pass"},
+        {"kind": "response_contains", "args": {"text": "Summarizing"}, "expect": "pass"},
+        {"kind": "response_contains", "args": {"text": "Searching"}, "expect": "fail"}
+      ]
+    },
+    {
+      "name": "tool-trajectory-across-turns-anthropic",
+      "description": "Same cross-turn trajectory over the Anthropic Messages protocol.",
+      "protocol": "anthropic",
+      "stream": false,
+      "steps": ["please search the docs", "now summarize it"],
+      "assertions": [
+        {"kind": "tool_call_count", "args": {"count": 2}, "expect": "pass"},
+        {"kind": "tool_call_count", "args": {"count": 3}, "expect": "fail"},
+        {"kind": "tool_call_sequence", "args": {"names": ["search_docs", "summarize"]}, "expect": "pass"},
+        {"kind": "tool_call_sequence", "args": {"names": ["summarize", "search_docs"]}, "expect": "fail"}
+      ]
+    },
+    {
+      "name": "finish-reason-override-openai",
+      "description": "The scenario overrides finish_reason to 'length'.",
+      "protocol": "openai",
+      "stream": false,
+      "steps": ["give me the long answer"],
+      "assertions": [
+        {"kind": "finish_reason", "args": {"reason": "length"}, "expect": "pass"},
+        {"kind": "finish_reason", "args": {"reason": "stop"}, "expect": "fail"}
+      ]
+    },
+    {
+      "name": "finish-reason-override-anthropic",
+      "description": "The same override is mapped to Anthropic's 'max_tokens' stop reason.",
+      "protocol": "anthropic",
+      "stream": false,
+      "steps": ["give me the long answer"],
+      "assertions": [
+        {"kind": "finish_reason", "args": {"reason": "max_tokens"}, "expect": "pass"},
+        {"kind": "finish_reason", "args": {"reason": "length"}, "expect": "fail"}
+      ]
+    },
+    {
+      "name": "stream-utf8-openai",
+      "description": "Multi-byte UTF-8 split across SSE chunks: the iterated text must equal the non-streamed content exactly.",
+      "protocol": "openai",
+      "stream": true,
+      "steps": ["show me unicode"],
+      "assertions": [
+        {"kind": "stream_text_matches_nonstream", "args": {}, "expect": "pass"},
+        {"kind": "response_contains", "args": {"text": "café ☕ 日本"}, "expect": "pass"},
+        {"kind": "response_contains", "args": {"text": "cafe"}, "expect": "fail"},
+        {"kind": "finish_reason", "args": {"reason": "stop"}, "expect": "pass"}
+      ]
+    },
+    {
+      "name": "stream-utf8-anthropic",
+      "description": "Multi-byte UTF-8 over Anthropic Messages streaming.",
+      "protocol": "anthropic",
+      "stream": true,
+      "steps": ["show me unicode"],
+      "assertions": [
+        {"kind": "stream_text_matches_nonstream", "args": {}, "expect": "pass"},
+        {"kind": "response_contains", "args": {"text": "café ☕ 日本"}, "expect": "pass"},
+        {"kind": "finish_reason", "args": {"reason": "end_turn"}, "expect": "pass"}
+      ]
+    },
+    {
+      "name": "stream-final-turn-openai",
+      "description": "Two-turn recovery, streamed: final-turn semantics hold for streamed responses too.",
+      "protocol": "openai",
+      "stream": true,
+      "steps": ["I have trouble loading the page", "please retry"],
+      "assertions": [
+        {"kind": "response_contains", "args": {"text": "error"}, "expect": "fail"},
+        {"kind": "response_contains", "args": {"text": "All good now"}, "expect": "pass"},
+        {"kind": "stream_text_matches_nonstream", "args": {}, "expect": "pass"}
+      ]
+    },
+    {
+      "name": "stream-finish-reason-anthropic",
+      "description": "The overridden stop reason survives streaming (message_delta.stop_reason).",
+      "protocol": "anthropic",
+      "stream": true,
+      "steps": ["give me the long answer"],
+      "assertions": [
+        {"kind": "finish_reason", "args": {"reason": "max_tokens"}, "expect": "pass"},
+        {"kind": "finish_reason", "args": {"reason": "end_turn"}, "expect": "fail"},
+        {"kind": "stream_text_matches_nonstream", "args": {}, "expect": "pass"}
+      ]
+    },
+    {
+      "name": "server-error-raises-openai",
+      "description": "The agent always answers 503. The SDK must RAISE, so even a vacuous negative assertion (zero tool calls) cannot false-pass on an error body. Verdict 'error' = executing the case raised.",
+      "protocol": "openai",
+      "stream": false,
+      "model": "contract-down",
+      "steps": ["hello"],
+      "assertions": [
+        {"kind": "tool_call_count", "args": {"count": 0}, "expect": "error"},
+        {"kind": "tool_call_sequence", "args": {"names": []}, "expect": "error"},
+        {"kind": "response_contains", "args": {"text": ""}, "expect": "error"}
+      ]
+    },
+    {
+      "name": "server-error-raises-anthropic",
+      "description": "503 over the Anthropic Messages protocol must raise too.",
+      "protocol": "anthropic",
+      "stream": false,
+      "model": "contract-down",
+      "steps": ["hello"],
+      "assertions": [
+        {"kind": "tool_call_count", "args": {"count": 0}, "expect": "error"},
+        {"kind": "response_contains", "args": {"text": ""}, "expect": "error"}
+      ]
+    },
+    {
+      "name": "server-error-raises-stream-openai",
+      "description": "A 503 on a streaming request must raise, not read the error body as an empty stream.",
+      "protocol": "openai",
+      "stream": true,
+      "model": "contract-down",
+      "steps": ["hello"],
+      "assertions": [
+        {"kind": "response_contains", "args": {"text": ""}, "expect": "error"}
+      ]
+    },
+    {
+      "name": "server-error-raises-stream-anthropic",
+      "description": "A 503 on an Anthropic streaming request must raise.",
+      "protocol": "anthropic",
+      "stream": true,
+      "model": "contract-down",
+      "steps": ["hello"],
+      "assertions": [
+        {"kind": "response_contains", "args": {"text": ""}, "expect": "error"}
+      ]
+    },
+    {
+      "name": "mt-tenant-key-chat-openai",
+      "description": "Multi-tenant: the tenant key reaches the tenant-owned agent that shadows the global one (same model).",
+      "protocol": "openai",
+      "stream": false,
+      "auth": "tenant",
+      "steps": ["hello"],
+      "assertions": [
+        {"kind": "response_contains", "args": {"text": "tenant contract agent"}, "expect": "pass"},
+        {"kind": "response_contains", "args": {"text": "global contract agent"}, "expect": "fail"}
+      ]
+    },
+    {
+      "name": "mt-tenant-key-stream-openai",
+      "description": "Multi-tenant: the tenant key is sent on streams too (review K-01).",
+      "protocol": "openai",
+      "stream": true,
+      "auth": "tenant",
+      "steps": ["hello"],
+      "assertions": [
+        {"kind": "response_contains", "args": {"text": "tenant contract agent"}, "expect": "pass"},
+        {"kind": "response_contains", "args": {"text": "global contract agent"}, "expect": "fail"}
+      ]
+    },
+    {
+      "name": "mt-tenant-key-chat-anthropic",
+      "description": "Multi-tenant over Anthropic Messages: the key goes out as Authorization and X-Api-Key.",
+      "protocol": "anthropic",
+      "stream": false,
+      "auth": "tenant",
+      "steps": ["hello"],
+      "assertions": [
+        {"kind": "response_contains", "args": {"text": "tenant contract agent"}, "expect": "pass"},
+        {"kind": "response_contains", "args": {"text": "global contract agent"}, "expect": "fail"}
+      ]
+    },
+    {
+      "name": "mt-tenant-key-stream-anthropic",
+      "description": "Multi-tenant over Anthropic Messages streaming.",
+      "protocol": "anthropic",
+      "stream": true,
+      "auth": "tenant",
+      "steps": ["hello"],
+      "assertions": [
+        {"kind": "response_contains", "args": {"text": "tenant contract agent"}, "expect": "pass"},
+        {"kind": "response_contains", "args": {"text": "global contract agent"}, "expect": "fail"}
+      ]
+    },
+    {
+      "name": "mt-no-key-global-fallback-openai",
+      "description": "Multi-tenant: an anonymous caller reaches the GLOBAL agent, never the tenant's.",
+      "protocol": "openai",
+      "stream": false,
+      "auth": "none",
+      "steps": ["hello"],
+      "assertions": [
+        {"kind": "response_contains", "args": {"text": "global contract agent"}, "expect": "pass"},
+        {"kind": "response_contains", "args": {"text": "tenant contract agent"}, "expect": "fail"}
+      ]
+    },
+    {
+      "name": "mt-no-key-global-fallback-stream-anthropic",
+      "description": "Multi-tenant: anonymous Anthropic stream (placeholder X-Api-Key) reaches the global agent.",
+      "protocol": "anthropic",
+      "stream": true,
+      "auth": "none",
+      "steps": ["hello"],
+      "assertions": [
+        {"kind": "response_contains", "args": {"text": "global contract agent"}, "expect": "pass"},
+        {"kind": "response_contains", "args": {"text": "tenant contract agent"}, "expect": "fail"}
+      ]
+    },
+    {
+      "name": "mt-wrong-key-openai",
+      "description": "Multi-tenant, server-defined behaviour: the LLM endpoints are auth-exempt (clients send their own provider keys), so a presented-but-unregistered key is NOT a 401 - the request proceeds anonymously and reaches the global agent (tenancy.AuthMiddleware skip routes resolve credentials best-effort).",
+      "protocol": "openai",
+      "stream": false,
+      "auth": "wrong",
+      "steps": ["hello"],
+      "assertions": [
+        {"kind": "response_contains", "args": {"text": "global contract agent"}, "expect": "pass"},
+        {"kind": "response_contains", "args": {"text": "tenant contract agent"}, "expect": "fail"},
+        {"kind": "status_code", "args": {"code": 200}, "expect": "pass"}
+      ]
+    },
+    {
+      "name": "mt-wrong-key-stream-anthropic",
+      "description": "Multi-tenant: an unregistered key on an Anthropic stream also falls back to the global agent.",
+      "protocol": "anthropic",
+      "stream": true,
+      "auth": "wrong",
+      "steps": ["hello"],
+      "assertions": [
+        {"kind": "response_contains", "args": {"text": "global contract agent"}, "expect": "pass"},
+        {"kind": "response_contains", "args": {"text": "tenant contract agent"}, "expect": "fail"}
+      ]
+    }
+  ]
+}
