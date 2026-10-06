@@ -28,6 +28,9 @@ export default async function CostsPage({
 }) {
   const { window: windowParam } = await searchParams;
   const win = WINDOWS.find((w) => w.id === windowParam) ?? WINDOWS[1]; // default 7d
+  // A server component renders once per request, so reading the clock here is
+  // the point: the window is relative to when the page was asked for.
+  // eslint-disable-next-line react-hooks/purity
   const since = new Date(Date.now() - win.days * 86_400_000).toISOString();
 
   let costs: Awaited<ReturnType<typeof getCosts>> = null;

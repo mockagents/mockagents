@@ -294,7 +294,7 @@ function Chaos({ chaosOn, chaos }: { chaosOn: boolean; chaos: Dict }) {
               ? [
                   ["rate", errors.rate != null ? `${Number(errors.rate) * 100}%` : "—"],
                   ["status_codes", asArr(errors.status_codes).join(", ")],
-                  ["message", <span className="muted txt-xs">{asStr(errors.message)}</span>],
+                  ["message", <span key="message" className="muted txt-xs">{asStr(errors.message)}</span>],
                 ]
               : []
           }
