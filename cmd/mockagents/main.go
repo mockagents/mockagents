@@ -18,6 +18,17 @@ validating AI agent integrations. Define mock agents with configurable
 behaviors, tool responses, latency profiles, and failure modes — without
 calling real LLMs or burning tokens.`,
 	Version: version,
+	// Errors are printed once, by main. Without these cobra printed
+	// "Error: X", the full usage text, and then main printed X again for
+	// every runtime failure; usage is only useful for a usage mistake, which
+	// the flag-error hook below still reports with a pointer to --help.
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		if noColor {
+			cli.DisableColor()
+		}
+	},
 }
 
 var noColor bool
@@ -27,6 +38,10 @@ func init() {
 	rootCmd.PersistentFlags().String("log-level", envOrDefault("MOCKAGENTS_LOG_LEVEL", "info"), "Log level (debug, info, warn, error)")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 
+	rootCmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return fmt.Errorf("%w\nRun '%s --help' for usage.", err, cmd.CommandPath())
+	})
+
 	rootCmd.AddCommand(validateCmd)
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(initCmd)
@@ -35,7 +50,7 @@ func init() {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(2)
 	}
 }

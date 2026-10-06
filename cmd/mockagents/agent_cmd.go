@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -50,8 +52,12 @@ var rmCmd = &cobra.Command{
 	Use:   "rm <name>",
 	Short: "Delete an agent from a running server",
 	Long: `Delete an agent by name from a running MockAgents server (DELETE
-/api/v1/agents/{name}). The agent stops serving immediately and its persisted
-file (if any) is removed.`,
+/api/v1/agents/{name}). The agent stops serving immediately and the file it was
+loaded from is removed — including a hand-written one.
+
+Because that file may be your only copy, rm asks for confirmation on a
+terminal and refuses without --yes otherwise. --keep-file unregisters the
+agent but leaves the file on disk (no confirmation needed).`,
 	Args:          cobra.ExactArgs(1),
 	RunE:          runRm,
 	SilenceUsage:  true,
@@ -64,6 +70,8 @@ func init() {
 		c.Flags().StringVar(&agentAPIKey, "api-key", os.Getenv("MOCKAGENTS_API_KEY"), "API key (editor+) for multi-tenant servers")
 	}
 	addCmd.Flags().BoolVar(&agentReplace, "replace", false, "Replace an existing agent (PUT upsert) instead of failing on conflict")
+	rmCmd.Flags().BoolVarP(&rmYes, "yes", "y", false, "Delete the agent's source file without asking")
+	rmCmd.Flags().BoolVar(&rmKeepFile, "keep-file", false, "Unregister the agent but leave its source file on disk")
 
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(rmCmd)
@@ -105,10 +113,26 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	return serverRejectedErr(code, body)
 }
 
+var (
+	rmYes      bool
+	rmKeepFile bool
+)
+
 func runRm(cmd *cobra.Command, args []string) error {
 	name := args[0]
 	base := strings.TrimRight(agentServerURL, "/")
 	reqURL := base + "/api/v1/agents/" + url.PathEscape(name)
+	if rmKeepFile {
+		reqURL += "?keep_file=true"
+	} else if !rmYes {
+		ok, err := confirmRemoval(os.Stdin, os.Stderr, stdinIsTerminal(), name)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("not deleted")
+		}
+	}
 
 	code, body, err := mgmtRequest(http.MethodDelete, reqURL, agentAPIKey, "", nil)
 	if err != nil {
@@ -120,6 +144,26 @@ func runRm(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	return serverRejectedErr(code, body)
+}
+
+// confirmRemoval asks before rm deletes an agent's source file. Off a
+// terminal there is nobody to ask, so it refuses rather than guessing.
+func confirmRemoval(in io.Reader, out io.Writer, isTTY bool, name string) (bool, error) {
+	if !isTTY {
+		return false, fmt.Errorf("refusing to delete agent %q and its source file without --yes (use --keep-file to only unregister it)", name)
+	}
+	fmt.Fprintf(out, "Delete agent %q and the file it was loaded from? [y/N] ", name)
+	answer, _ := bufio.NewReader(in).ReadString('\n')
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	return answer == "y" || answer == "yes", nil
+}
+
+// stdinIsTerminal reports whether stdin is an interactive terminal. A plain
+// ModeCharDevice check is not enough: on Windows the NUL device (stdin under
+// CI runners and `go test`) is a character device too.
+func stdinIsTerminal() bool {
+	fd := os.Stdin.Fd()
+	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
 }
 
 // mgmtRequest performs a single management-API request and returns the status

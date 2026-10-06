@@ -222,6 +222,12 @@ func (m *Manager) apply(args map[string]any, allowReplace bool) (mcp.ToolResult,
 		return errorResult("definition too large (max %d bytes)", maxAgentBytes), nil
 	}
 
+	// Reject unknown keys on the body as sent: the typed decode below drops
+	// them, so validating the re-marshaled canonical form could never see a
+	// misspelled field (audit L-41).
+	if errs := config.UnknownAgentFields(body); len(errs) > 0 {
+		return validationResult(&config.ValidateReport{Kind: types.AgentKind, Errors: errs}), nil
+	}
 	var def types.AgentDefinition
 	if err := yaml.Unmarshal(body, &def); err != nil {
 		return errorResult("invalid agent document: %s", err), nil

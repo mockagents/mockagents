@@ -159,12 +159,16 @@ func (h *Handlers) DeleteAgent(w http.ResponseWriter, r *http.Request) {
 	// or may be a different agent's). If removal fails for any reason other than
 	// "already gone", do NOT unregister — keep the registry consistent with disk
 	// and report the failure, so a "deleted" response is never a lie (FB04-01/02).
+	//
+	// Only the tracked source is ever removed. There used to be a fallback to a
+	// guessed <tenant>.<name>.yaml path when no source was tracked, which could
+	// delete a file that belonged to nothing being deleted (audit L-06).
+	// keep_file=true unregisters without touching disk, so a hand-written file
+	// can be taken out of service without being destroyed.
 	var file string
 	target := h.Engine.Registry.Source(name, tenantID)
-	if target == "" {
-		if t, perr := h.agentFilePath(name, tenantID); perr == nil {
-			target = t
-		}
+	if r.URL.Query().Get("keep_file") == "true" {
+		target = ""
 	}
 	if target != "" {
 		if err := os.Remove(target); err == nil {
@@ -181,7 +185,7 @@ func (h *Handlers) DeleteAgent(w http.ResponseWriter, r *http.Request) {
 	h.recordAgentEvent(r, audit.EventAgentDeleted, name, file)
 	h.Logger.Info("agent deleted", "agent", name)
 
-	writeJSON(w, http.StatusOK, AgentWriteResponse{Status: "deleted", Agent: name, File: file})
+	writeJSON(w, http.StatusOK, AgentWriteResponse{Status: "deleted", Agent: name, Persisted: file != "", File: file})
 }
 
 // AgentWriteResponse is the JSON envelope returned by the agent write routes.
@@ -239,11 +243,9 @@ func (h *Handlers) decodeAgent(w http.ResponseWriter, r *http.Request, wantName 
 		return nil, nil, false
 	}
 
-	// UX-03: a caller that opted into conditional writes also opts into strict
-	// field checking, so an unsupported field is refused rather than silently
-	// dropped on the way to disk. Unconditional callers keep the lenient
-	// behaviour they have always had.
-	if !checkStrictFields(w, r, body) {
+	// An unsupported field is refused rather than silently dropped on the way
+	// to disk (see agent_strict_fields.go).
+	if !checkStrictFields(w, body) {
 		return nil, nil, false
 	}
 

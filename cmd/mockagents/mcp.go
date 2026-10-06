@@ -139,12 +139,12 @@ func selectMCPServer(docs *config.Documents, agentsDir string) (*types.MCPServer
 	case mcpServerName != "":
 		for _, r := range docs.MCPServers {
 			if r.Definition.Metadata.Name == mcpServerName {
-				return r.Definition, nil
+				return validMCPServer(r)
 			}
 		}
 		return nil, fmt.Errorf("mcp server %q not found in %q", mcpServerName, agentsDir)
 	case len(docs.MCPServers) == 1:
-		return docs.MCPServers[0].Definition, nil
+		return validMCPServer(docs.MCPServers[0])
 	default:
 		names := make([]string, 0, len(docs.MCPServers))
 		for _, r := range docs.MCPServers {
@@ -152,6 +152,15 @@ func selectMCPServer(docs *config.Documents, agentsDir string) (*types.MCPServer
 		}
 		return nil, fmt.Errorf("multiple MCPServer definitions loaded; pick one with --server (%v)", names)
 	}
+}
+
+// validMCPServer refuses to serve a definition its validator rejects (see
+// validA2AServer).
+func validMCPServer(r *config.MCPServerLoadResult) (*types.MCPServerDefinition, error) {
+	if errs := config.ValidateMCPServer(r.Definition, r.FilePath, r.Node); errs != nil {
+		return nil, fmt.Errorf("mcp server %q is invalid:\n%s", r.Definition.Metadata.Name, errs.Error())
+	}
+	return r.Definition, nil
 }
 
 // buildManageRegistry builds an agent registry from the loaded Agent documents,

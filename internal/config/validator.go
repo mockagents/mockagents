@@ -86,6 +86,7 @@ type Validator struct{}
 // Returns nil if valid.
 func (v *Validator) Validate(def *types.AgentDefinition, filePath string, node *yaml.Node) *ValidationErrorList {
 	ctx := &validationContext{file: filePath, node: node}
+	ctx.errors = append(ctx.errors, unknownFieldErrors(filePath, node, def)...)
 
 	v.validateAPIVersion(ctx, def)
 	v.validateKind(ctx, def)

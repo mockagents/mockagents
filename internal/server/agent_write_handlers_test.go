@@ -221,3 +221,31 @@ func TestCreateAgent_NoPersistenceWhenNoDir(t *testing.T) {
 		t.Error("in-memory agent not registered")
 	}
 }
+
+// keep_file=true takes an agent out of service without destroying the file it
+// was loaded from (2026-10-06 review C-07); a real delete reports persisted.
+func TestDeleteAgent_KeepFileAndPersistedFlag(t *testing.T) {
+	dir := t.TempDir()
+	srv, h := newAgentWriteServer(t, dir)
+	doReq(t, "POST", srv.URL+"/api/v1/agents", "application/yaml", agentYAML("keep-bot", "km"))
+	doReq(t, "POST", srv.URL+"/api/v1/agents", "application/yaml", agentYAML("gone-bot", "gm"))
+
+	code, body := doReq(t, "DELETE", srv.URL+"/api/v1/agents/keep-bot?keep_file=true", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("delete status = %d, want 200", code)
+	}
+	if h.Engine.Registry.GetForTenant("keep-bot", "") != nil {
+		t.Error("agent still registered after delete")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "keep-bot.yaml")); err != nil {
+		t.Errorf("keep_file=true must leave the file: %v", err)
+	}
+	if !strings.Contains(body, `"persisted":false`) {
+		t.Errorf("nothing reached disk, body=%s", body)
+	}
+
+	_, body = doReq(t, "DELETE", srv.URL+"/api/v1/agents/gone-bot", "", "")
+	if !strings.Contains(body, `"persisted":true`) {
+		t.Errorf("a removed file is a persisted change, body=%s", body)
+	}
+}

@@ -26,6 +26,7 @@ import (
 //     type, and valid max_ms (> 0) when type is latency_ms_lt
 func ValidateTestSuite(def *types.TestSuiteDefinition, filePath string, node *yaml.Node) *ValidationErrorList {
 	ctx := &validationContext{file: filePath, node: node}
+	ctx.errors = append(ctx.errors, unknownFieldErrors(filePath, node, def)...)
 
 	if def.APIVersion == "" {
 		ctx.addError("apiVersion", "required field missing",
@@ -123,6 +124,13 @@ func validateTestSuiteCases(ctx *validationContext, def *types.TestSuiteDefiniti
 						"Give the step a non-empty content string.")
 				}
 			}
+		}
+		// A case with no assertions can only pass: the runner reports PASS
+		// for any response, so a misplaced or misspelled assertions block
+		// turned a test into a green no-op. Require at least one.
+		if len(c.Assertions) == 0 {
+			ctx.addError(field+".assertions", "case has no assertions",
+				"Add at least one assertion (for example response_contains); a case without one passes no matter what the target returns.")
 		}
 		for j, a := range c.Assertions {
 			validateTestAssertion(ctx, fmt.Sprintf("%s.assertions[%d]", field, j), &a)
