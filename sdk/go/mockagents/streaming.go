@@ -228,24 +228,43 @@ func (c *Client) requestSSE(ctx context.Context, path string, headers map[string
 		cancel()
 		return nil, nil, nil, &HTTPError{Status: resp.StatusCode, Body: string(body)}
 	}
-	scanner := bufio.NewScanner(&newlineNormalizer{r: resp.Body})
+	return resp.Body, newSSEScanner(resp.Body), cancel, nil
+}
+
+// newSSEScanner returns a scanner over r that yields one SSE frame per Scan.
+// Line endings are normalised to LF first (newlineNormalizer), so the
+// splitter sees one kind of blank-line terminator however the body was
+// chunked.
+func newSSEScanner(r io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(&newlineNormalizer{r: r})
 	// Raise the frame cap — default 64 KiB is fine for typical SSE but
 	// pathological chunks can exceed it. 1 MiB matches the adapter
 	// body-size ceiling on the server side.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	scanner.Split(splitSSEFrames)
-	return resp.Body, scanner, cancel, nil
+	return scanner
 }
 
 // splitSSEFrames is a bufio.SplitFunc that yields one SSE frame (all the
-// lines up to a blank-line terminator) at a time. EOF drains the tail. It
-// expects LF line endings: wrap the body in a newlineNormalizer first.
+// lines up to a blank-line terminator) at a time. EOF drains the tail.
+//
+// newSSEScanner normalises line endings to LF before this runs. As a
+// defence for callers that skip that, a frame also ends at "\r\n\r\n" when
+// it starts before the first "\n\n": preferring "\n\n" unconditionally made
+// the result depend on how much of an un-normalised body was buffered (a
+// CRLF frame followed by an LF frame merged into one unparseable frame when
+// both were buffered, but split correctly in smaller reads).
 func splitSSEFrames(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	if len(data) == 0 && atEOF {
 		return 0, nil, nil
 	}
-	if i := bytes.Index(data, []byte("\n\n")); i >= 0 {
-		return i + 2, data[:i], nil
+	lf := bytes.Index(data, []byte("\n\n"))
+	crlf := bytes.Index(data, []byte("\r\n\r\n"))
+	if crlf >= 0 && (lf < 0 || crlf < lf) {
+		return crlf + 4, data[:crlf], nil
+	}
+	if lf >= 0 {
+		return lf + 2, data[:lf], nil
 	}
 	if atEOF {
 		return len(data), bytes.TrimRight(data, "\r\n"), nil
