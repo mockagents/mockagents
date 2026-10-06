@@ -2,11 +2,14 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { getQuota, type QuotaResponse } from "@/lib/api";
-import { burnSession, getAuthStatus, logout, rotateSelf } from "@/lib/auth";
+import { withErrorCode } from "@/lib/actionError";
+import { burnSession, logout, rotateSelf } from "@/lib/auth";
 import { setFlash, takeFlash } from "@/lib/flash";
 import { Icon } from "@/lib/icons";
+import { getAuthStatus } from "@/lib/session";
 
 import { DangerConfirm } from "../DangerConfirm";
+import { ErrorBanner } from "../ErrorBanner";
 
 type PageProps = {
   searchParams: Promise<{
@@ -44,7 +47,7 @@ export default async function AccountPage({ searchParams }: PageProps) {
     "use server";
     const result = await rotateSelf();
     if (!result.ok) {
-      redirect(`/account?error=${encodeURIComponent(result.error)}`);
+      redirect(withErrorCode("/account", result.error));
     }
     await setFlash(JSON.stringify({ plaintext: result.plaintext }));
     redirect("/account");
@@ -54,7 +57,7 @@ export default async function AccountPage({ searchParams }: PageProps) {
     "use server";
     const result = await burnSession();
     if (!result.ok) {
-      redirect(`/account?error=${encodeURIComponent(result.error)}`);
+      redirect(withErrorCode("/account", result.error));
     }
     // burnSession already cleared the cookies — a redirect to
     // /login now presents an anonymous session. The user
@@ -99,16 +102,9 @@ export default async function AccountPage({ searchParams }: PageProps) {
         </p>
       </div>
 
-      {error && (
-        <div className="banner banner-error">
-          <div className="row gap-2">
-            <Icon name="x-circle" size={16} />
-            <div>
-              <strong>Could not rotate.</strong> {error}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Both rotate and burn land here on failure, so the lead-in names
+          neither. The text is fixed copy chosen by code, never the URL's. */}
+      <ErrorBanner code={error} title="That did not work." icon />
 
       {plaintext && (
         <div className="banner banner-ok">

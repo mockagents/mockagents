@@ -11,10 +11,18 @@ import {
   getHealth,
   getIdentity,
   listAgents,
+  type Identity,
 } from "@/lib/api";
+import { withErrorCode } from "@/lib/actionError";
 import { Icon } from "@/lib/icons";
+import { apiUrlVisible } from "@/lib/serverState";
 import { AgentCatalog } from "./AgentCatalog";
+import { ErrorBanner } from "./ErrorBanner";
 import { Stat } from "./Stat";
+
+// What `?deleted=` may contain: an agent's metadata.name. Anything else is not
+// echoed, so a crafted link cannot put its own text in the success banner.
+const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 type PageProps = {
   searchParams: Promise<{ error?: string; deleted?: string }>;
@@ -26,13 +34,14 @@ export default async function HomePage({ searchParams }: PageProps) {
   // Server action submitted by the confirmation dialog's form. The outcome
   // travels back in the query string rather than in client state, because the
   // dialog unmounts with the card on success — the same pattern the tenants
-  // page uses. Only a status message goes in the URL: no bodies, no credential.
+  // page uses. Only a short error code goes in the URL, mapped to fixed copy on
+  // render (K-18): no bodies, no credential, no free text.
   async function deleteAction(formData: FormData): Promise<void> {
     "use server";
     const name = String(formData.get("name") ?? "");
-    if (!name) redirect("/?error=" + encodeURIComponent("No agent was named, so nothing was deleted."));
+    if (!name) redirect(withErrorCode("/", "name_required"));
     const r = await deleteAgentByName(name);
-    if (!r.ok) redirect("/?error=" + encodeURIComponent(r.message));
+    if (!r.ok) redirect(withErrorCode("/", r.code ?? "request_failed"));
     revalidatePath("/");
     redirect("/?deleted=" + encodeURIComponent(name));
   }
@@ -45,7 +54,6 @@ export default async function HomePage({ searchParams }: PageProps) {
     error = err instanceof APIError ? err.message : "unknown error";
   }
   const health = await getHealth();
-  const host = getBaseUrl().replace(/^https?:\/\//, "");
 
   // U1-2: offer a write control only when the server has not said it would be
   // refused. If identity cannot be read at all we leave the controls enabled
@@ -53,8 +61,9 @@ export default async function HomePage({ searchParams }: PageProps) {
   // worse than an honest 403.
   let canWrite = true;
   let anonymous = false;
+  let identity: Identity | null = null;
   try {
-    const identity = await getIdentity();
+    identity = await getIdentity();
     if (identity) {
       canWrite = can(identity, "agents.write");
       anonymous = identity.mode === "local";
@@ -67,6 +76,12 @@ export default async function HomePage({ searchParams }: PageProps) {
   // two turns a would-be failure into a silent misroute. The dialog says so.
   const singleAgentFallback = anonymous && agents.length === 2;
 
+  // 6.6: the upstream address is not shown to an anonymous visitor of a
+  // multi-tenant deployment.
+  const host = apiUrlVisible(identity, health === null, process.env.NODE_ENV !== "production")
+    ? getBaseUrl().replace(/^https?:\/\//, "")
+    : null;
+
   const totalScenarios = agents.reduce((s, a) => s + a.scenario_count, 0);
   const totalTools = agents.reduce((s, a) => s + a.tool_count, 0);
 
@@ -77,7 +92,14 @@ export default async function HomePage({ searchParams }: PageProps) {
           <div className="grow">
             <h1 className="page-title">Agent catalog</h1>
             <p className="page-lede">
-              Every agent loaded by the running MockAgents server at <code>{host}</code>. Click an
+              Every agent loaded by the running MockAgents server
+              {host ? (
+                <>
+                  {" "}
+                  at <code>{host}</code>
+                </>
+              ) : null}
+              . Click an
               agent to inspect its scenarios, tools, and chaos config.
             </p>
           </div>
@@ -102,12 +124,8 @@ export default async function HomePage({ searchParams }: PageProps) {
 
       {/* Outcome of the last delete. Failure is assertive — the operator just
           pressed a destructive button and needs to know it did not land. */}
-      {deleteError && (
-        <div className="banner banner-error" role="alert">
-          <strong>Not deleted.</strong> {deleteError} Nothing on the server changed.
-        </div>
-      )}
-      {deleted && (
+      <ErrorBanner code={deleteError} title="Not deleted." />
+      {deleted && AGENT_NAME.test(deleted) && (
         <div className="banner banner-ok" role="status">
           <strong>Deleted.</strong> <code className="mono">{deleted}</code> has stopped
           serving.
@@ -134,7 +152,7 @@ export default async function HomePage({ searchParams }: PageProps) {
               icon="circle-dot"
               label="Server"
               value={health ? "online" : "offline"}
-              sub={health?.version ? `v${health.version}` : host}
+              sub={health?.version ? `v${health.version}` : (host ?? undefined)}
             />
           </div>
 

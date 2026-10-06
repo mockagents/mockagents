@@ -14,11 +14,13 @@ import {
   setTenantQuota,
   updateAPIKeyRole,
 } from "@/lib/api";
-import { getAuthStatus } from "@/lib/auth";
+import { errorRedirect, flashedErrorDetail, withErrorCode } from "@/lib/actionError";
 import { setFlash, takeFlash } from "@/lib/flash";
 import { Icon } from "@/lib/icons";
+import { getAuthStatus } from "@/lib/session";
 
 import { DangerConfirm } from "../../../DangerConfirm";
+import { ErrorBanner } from "../../../ErrorBanner";
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -52,6 +54,9 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
   let plaintext: string | undefined;
   let plaintextName: string | undefined;
   let bulkRotation: BulkRotationEntry[] | null = null;
+  // A failed action's upstream detail also comes through the flash store, so
+  // it is never in the URL (K-18).
+  let errorDetail: string | null = null;
   const flashRaw = await takeFlash();
   if (flashRaw) {
     try {
@@ -60,6 +65,7 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
         name?: string;
         bulk?: BulkRotationEntry[];
       };
+      errorDetail = flashedErrorDetail(data);
       if (Array.isArray(data.bulk)) {
         bulkRotation = data.bulk;
       } else if (typeof data.plaintext === "string") {
@@ -91,7 +97,10 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
       return (
         <div>
           <h1 className="page-title">Keys for {id}</h1>
-          <div className="banner banner-error">{err.message}</div>
+          <div className="banner banner-error">
+            Could not list keys: the server returned {err.status}
+            {err.detail ? ` (${err.detail})` : ""}.
+          </div>
         </div>
       );
     }
@@ -115,7 +124,7 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
     const keyName = (formData.get("name") ?? "").toString().trim();
     const role = ((formData.get("role") ?? "viewer").toString() as Role);
     if (!keyName) {
-      redirect(`/admin/tenants/${encodeURIComponent(id)}?error=name+required`);
+      redirect(withErrorCode(`/admin/tenants/${encodeURIComponent(id)}`, "name_required"));
     }
     try {
       const result = await createAPIKey(id, keyName, role);
@@ -123,9 +132,8 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
       await setFlash(JSON.stringify({ plaintext: result.plaintext, name: keyName }));
       redirect(`/admin/tenants/${encodeURIComponent(id)}`);
     } catch (err) {
-      if (err instanceof APIError) {
-        redirect(`/admin/tenants/${encodeURIComponent(id)}?error=${encodeURIComponent(err.message)}`);
-      }
+      const to = await errorRedirect(`/admin/tenants/${encodeURIComponent(id)}`, err);
+      if (to) redirect(to);
       throw err;
     }
   }
@@ -138,9 +146,8 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
       await deleteAPIKey(keyId);
       revalidatePath(`/admin/tenants/${id}`);
     } catch (err) {
-      if (err instanceof APIError) {
-        redirect(`/admin/tenants/${encodeURIComponent(id)}?error=${encodeURIComponent(err.message)}`);
-      }
+      const to = await errorRedirect(`/admin/tenants/${encodeURIComponent(id)}`, err);
+      if (to) redirect(to);
       throw err;
     }
   }
@@ -162,9 +169,8 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
       await setFlash(JSON.stringify({ bulk: entries }));
       redirect(`/admin/tenants/${encodeURIComponent(id)}`);
     } catch (err) {
-      if (err instanceof APIError) {
-        redirect(`/admin/tenants/${encodeURIComponent(id)}?error=${encodeURIComponent(err.message)}`);
-      }
+      const to = await errorRedirect(`/admin/tenants/${encodeURIComponent(id)}`, err);
+      if (to) redirect(to);
       throw err;
     }
   }
@@ -180,9 +186,8 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
       await setFlash(JSON.stringify({ plaintext: result.plaintext, name: keyName || result.key.name }));
       redirect(`/admin/tenants/${encodeURIComponent(id)}`);
     } catch (err) {
-      if (err instanceof APIError) {
-        redirect(`/admin/tenants/${encodeURIComponent(id)}?error=${encodeURIComponent(err.message)}`);
-      }
+      const to = await errorRedirect(`/admin/tenants/${encodeURIComponent(id)}`, err);
+      if (to) redirect(to);
       throw err;
     }
   }
@@ -196,9 +201,8 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
       await updateAPIKeyRole(keyId, role);
       revalidatePath(`/admin/tenants/${id}`);
     } catch (err) {
-      if (err instanceof APIError) {
-        redirect(`/admin/tenants/${encodeURIComponent(id)}?error=${encodeURIComponent(err.message)}`);
-      }
+      const to = await errorRedirect(`/admin/tenants/${encodeURIComponent(id)}`, err);
+      if (to) redirect(to);
       throw err;
     }
   }
@@ -216,20 +220,15 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
       monthly_spend_usd: num("monthly_spend_usd"),
     };
     if (Object.values(limits).some((v) => !Number.isFinite(v) || v < 0)) {
-      redirect(
-        `/admin/tenants/${encodeURIComponent(id)}?error=${encodeURIComponent(
-          "quota values must be non-negative numbers",
-        )}`,
-      );
+      redirect(withErrorCode(`/admin/tenants/${encodeURIComponent(id)}`, "invalid_quota"));
     }
     try {
       await setTenantQuota(id, limits);
       revalidatePath(`/admin/tenants/${id}`);
       redirect(`/admin/tenants/${encodeURIComponent(id)}`);
     } catch (err) {
-      if (err instanceof APIError) {
-        redirect(`/admin/tenants/${encodeURIComponent(id)}?error=${encodeURIComponent(err.message)}`);
-      }
+      const to = await errorRedirect(`/admin/tenants/${encodeURIComponent(id)}`, err);
+      if (to) redirect(to);
       throw err;
     }
   }
@@ -261,14 +260,7 @@ export default async function TenantKeysPage({ params, searchParams }: PageProps
         </p>
       </div>
 
-      {error && (
-        <div className="banner banner-error">
-          <div className="row gap-2">
-            <Icon name="x-circle" size={16} />
-            <div>{error}</div>
-          </div>
-        </div>
-      )}
+      <ErrorBanner code={error} detail={errorDetail} icon />
       {plaintext && (
         <div className="banner banner-ok">
           <div className="row gap-2">

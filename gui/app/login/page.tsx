@@ -3,6 +3,8 @@ import { redirect } from "next/navigation";
 import { login } from "@/lib/auth";
 import { safeRedirect } from "@/lib/redirect";
 
+import { ErrorBanner } from "../ErrorBanner";
+
 type PageProps = {
   searchParams: Promise<{ error?: string; next?: string; burned?: string }>;
 };
@@ -22,7 +24,8 @@ export default async function LoginPage({ searchParams }: PageProps) {
     // `next` is never echoed back into the login URL either (GUI-08, M-38).
     const dest = safeRedirect(next);
     if (!result.ok) {
-      const params = new URLSearchParams({ error: result.error ?? "unknown" });
+      // Only a code travels in the URL; the page maps it to fixed copy (K-18).
+      const params = new URLSearchParams({ error: result.error ?? "request_failed" });
       if (dest !== "/") params.set("next", dest);
       redirect(`/login?${params.toString()}`);
     }
@@ -38,11 +41,7 @@ export default async function LoginPage({ searchParams }: PageProps) {
         an HttpOnly cookie and forwarded on every management-API request.
       </p>
 
-      {error && (
-        <div className="banner banner-error">
-          <strong>Login failed.</strong> {error}
-        </div>
-      )}
+      <ErrorBanner code={error} title="Login failed." />
 
       {burned === "1" && (
         <div className="banner banner-warn">
