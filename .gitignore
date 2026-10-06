@@ -57,3 +57,18 @@ review/
 # Local-only operational runbooks / notes (never on public main)
 /RUNBOOK.md
 *.local.md
+
+# Coverage output written by `go test -coverprofile` and the Makefile targets.
+/coverage
+/coverage.out
+*.coverprofile
+
+# Node dependencies anywhere in the tree (gui/, sdk/*, examples/frameworks/*).
+node_modules/
+
+# Local environment files and OS/editor clutter.
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db

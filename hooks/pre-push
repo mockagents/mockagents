@@ -19,9 +19,11 @@
 remote="$1"
 url="$2"
 
-# Only guard the public origin. If this isn't `origin` and the URL isn't the
-# public repo, allow the push untouched (covers private dev remotes).
-if [ "$remote" != "origin" ] && ! printf '%s' "$url" | grep -Eq 'mockagents/mockagents(\.git)?$'; then
+# Only guard the canonical public repository, matched by URL. A contributor's
+# fork is usually also named `origin`, and the documented workflow is to push a
+# feature branch there and open a pull request — matching on the remote NAME
+# blocked exactly that.
+if ! printf '%s' "$url" | grep -Eq '[:/]mockagents/mockagents(\.git)?/?$'; then
   exit 0
 fi
 

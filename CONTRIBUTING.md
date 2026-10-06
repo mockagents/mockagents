@@ -51,17 +51,20 @@ cd mockagents
 make setup
 ```
 
-**Requirements:** the Go toolchain selected by `go.mod`; Python 3.10+ and
-Node.js 18+ when changing their SDKs.
+**Requirements:** the Go toolchain selected by `go.mod`; Python 3.10+ when
+changing the Python SDK; Node.js 22.12+ when changing the TypeScript SDKs or
+the GUI (the test toolchain — vitest 5, Next.js 16 — needs it, even though the
+published SDKs run on older Node versions).
 
 ### Branch model & git hooks
 
-Only `main` is published to the public repo — feature branches stay local (or
-on a private remote). `make setup` runs `make hooks`, which points
-`core.hooksPath` at the tracked `hooks/` directory and enables a `pre-push`
-guard that refuses to push any branch other than `main` to `origin`. Pushes to
-other remotes are unaffected; override once with `git push --no-verify`. If you
-skip `make setup`, activate the hook directly with `make hooks`.
+Contributors work the usual GitHub way: fork, push a feature branch to your
+fork, and open a pull request. `make setup` does not install any git hooks.
+
+Maintainers can opt into `make hooks`, which points `core.hooksPath` at the
+tracked `hooks/` directory. Its `pre-push` guard refuses to push a branch other
+than `main` to the canonical `mockagents/mockagents` repository (pushes to a
+fork are unaffected); override once with `git push --no-verify`.
 
 ## Running Tests
 
@@ -113,15 +116,34 @@ chokepoint), and a step-by-step guide to adding a provider adapter.
 ## Pull Request Process
 
 1. Fork the repository and create a feature branch
-2. Write tests for new functionality
+2. Write tests for new functionality — a test that fails without your change
 3. Ensure all tests pass: `make test-all`
 4. Follow existing code style (gofmt for Go, ruff for Python)
-5. Submit a PR with a clear description of what and why
+5. Sign off every commit (see below) and add a `CHANGELOG.md` entry under
+   `## [Unreleased]` for anything user-visible
+6. Submit a PR with a clear description of what and why; the pull request
+   template has the checklist
+
+## Developer Certificate of Origin
+
+Contributions are accepted under the [Apache License 2.0](LICENSE). To certify
+that you wrote the change or otherwise have the right to submit it under that
+licence, every commit must carry a `Signed-off-by` line matching the commit
+author, as defined by the [Developer Certificate of Origin 1.1](https://developercertificate.org/):
+
+```bash
+git commit -s -m "fix: describe the change"
+```
+
+`-s` adds `Signed-off-by: Your Name <you@example.com>` from your git config. To
+sign off commits you already made: `git rebase --signoff main`. Pull requests
+with unsigned commits are not merged.
 
 ## Code Style
 
 - **Go:** Standard `gofmt` formatting, `go vet` clean
-- **Python:** PEP 8, enforced by `ruff`
+- **Python:** PEP 8, checked with `ruff check sdk/python` (configured in
+  `sdk/python/pyproject.toml`)
 - **YAML:** 2-space indentation
 - **Commits:** Conventional commits preferred (`feat:`, `fix:`, `docs:`)
 
@@ -141,18 +163,7 @@ Every one is filed with the `good first issue` label, and each names the file to
 change, what the fix involves, and what "done" looks like. Comment on the issue
 to claim it so two people don't write the same patch.
 
-| # | What | Where |
-| --- | --- | --- |
-| [#37](https://github.com/mockagents/mockagents/issues/37) | `Cassette.Append` rewrites the whole file every call — O(n²) recording | `internal/recording/cassette.go` |
-| [#38](https://github.com/mockagents/mockagents/issues/38) | One torn last line makes a whole cassette unloadable | `internal/recording/cassette.go` |
-| [#39](https://github.com/mockagents/mockagents/issues/39) | `mockagents import` has no `--redact`, so imported cassettes keep their secrets | `cmd/mockagents/import.go` |
-| [#40](https://github.com/mockagents/mockagents/issues/40) | One oversized line aborts the whole stored-completions import | `internal/recording/import_openai.go` |
-| [#41](https://github.com/mockagents/mockagents/issues/41) | Connection-fault requests are logged as HTTP 200 | `internal/server/log_handlers.go` |
-| [#42](https://github.com/mockagents/mockagents/issues/42) | Record the README demo GIF (no Go needed) | `README.md` |
-| [#43](https://github.com/mockagents/mockagents/issues/43) | Gemini `inlineData` parts never trigger `has_image` matching | `internal/adapter/gemini.go` |
-| [#44](https://github.com/mockagents/mockagents/issues/44) | Anthropic streaming omits thinking blocks and cache usage | `internal/adapter/anthropic.go` |
-
-[Browse the live list →](https://github.com/mockagents/mockagents/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+[Browse the open good first issues →](https://github.com/mockagents/mockagents/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 
 The detail lives in the issues rather than here, so there is one copy to keep
 true.

@@ -42,7 +42,7 @@ internal/
   adapter/               # Protocol adapters (OpenAI, Anthropic, Gemini, Azure, Realtime bridge)
   audit/                 # Append-only audit log
   cli/                   # CLI scaffolding and color utilities
-  config/                # YAML loading and validation (all 5 kinds)
+  config/                # YAML loading and validation (all 7 kinds)
   contract/              # Contract extraction + diffing
   engine/                # Core mock engine (matching, generation, tools, chaos, strict-tools)
   engine/state/          # Session state management

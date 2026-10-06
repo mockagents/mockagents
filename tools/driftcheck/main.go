@@ -168,8 +168,41 @@ func checkLicenses(root string) []string {
 		problems = append(problems, fmt.Sprintf("docs/api-spec.yaml: info.license.name = %q, want %q", got, wantLicense))
 	}
 
+	// 5. Every published package carries the licence text and NOTICE
+	// (Apache-2.0 §4(a), §4(d)); the copies must not drift from the root.
+	problems = append(problems, checkPackageLicenseCopies(root)...)
+
 	return problems
 }
+
+// publishedPackageDirs are the directories that become separately published
+// packages and so must ship LICENSE and NOTICE themselves: npm only includes a
+// LICENSE that sits in the package root, and a wheel only the files listed in
+// license-files.
+var publishedPackageDirs = []string{"sdk/python", "sdk/typescript", "sdk/vitest", "sdk/npx"}
+
+func checkPackageLicenseCopies(root string) []string {
+	var problems []string
+	for _, name := range []string{"LICENSE", "NOTICE"} {
+		want, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("read %s: %v", name, err))
+			continue
+		}
+		for _, dir := range publishedPackageDirs {
+			got, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(dir), name))
+			switch {
+			case err != nil:
+				problems = append(problems, fmt.Sprintf("%s/%s: missing (copy the root %s)", dir, name, name))
+			case normalizeNewlines(got) != normalizeNewlines(want):
+				problems = append(problems, fmt.Sprintf("%s/%s: differs from the root %s", dir, name, name))
+			}
+		}
+	}
+	return problems
+}
+
+func normalizeNewlines(b []byte) string { return strings.ReplaceAll(string(b), "\r\n", "\n") }
 
 func jsonLicense(path string) (string, error) {
 	data, err := os.ReadFile(path)
