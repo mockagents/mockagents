@@ -250,3 +250,15 @@ func TestBootstrapTenancy_UnwritableFileFailsClosed(t *testing.T) {
 		t.Fatalf("platform keys left behind = %d, want 0 (would block every future bootstrap)", n)
 	}
 }
+
+// A stamped version wins; "dev" falls back to the module version from the
+// build info, which `go install …@vX.Y.Z` records (review O-06).
+func TestResolveVersion(t *testing.T) {
+	if got := resolveVersion("1.2.3"); got != "1.2.3" {
+		t.Fatalf("stamped version = %q", got)
+	}
+	// Under `go test` the main module version is "(devel)", so "dev" stays.
+	if got := resolveVersion("dev"); got != "dev" {
+		t.Fatalf("unstamped test binary = %q, want dev", got)
+	}
+}

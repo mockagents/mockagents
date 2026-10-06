@@ -24,3 +24,21 @@ updates:
   - package-ecosystem: pip
     directory: /sdk/python
     schedule: { interval: weekly }
+  # Ecosystems that had no update config (review O-09). The vitest helper and
+  # the framework recipes carried open critical advisories with no PR to fix
+  # them.
+  - package-ecosystem: npm
+    directory: /sdk/vitest
+    schedule: { interval: weekly }
+  - package-ecosystem: npm
+    directory: /sdk/npx
+    schedule: { interval: weekly }
+  - package-ecosystem: npm
+    directory: /examples/frameworks/typescript
+    schedule: { interval: weekly }
+  - package-ecosystem: pip
+    directory: /site
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directory: /
+    schedule: { interval: weekly }

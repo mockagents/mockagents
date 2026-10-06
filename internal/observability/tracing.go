@@ -1,8 +1,8 @@
 // Package observability provides OpenTelemetry wiring for MockAgents.
 // Tracing is disabled by default; callers opt in via environment variables:
 //
-//   OTEL_EXPORTER_OTLP_ENDPOINT — enables the OTLP/HTTP trace exporter
-//   MOCKAGENTS_OTEL_STDOUT=1    — enables the stdout exporter (local dev)
+//	OTEL_EXPORTER_OTLP_ENDPOINT — enables the OTLP/HTTP trace exporter
+//	MOCKAGENTS_OTEL_STDOUT=1    — enables the stdout exporter (local dev)
 //
 // When neither is set NewTracerProvider returns a NoOp provider, so
 // importing observability is free at runtime.

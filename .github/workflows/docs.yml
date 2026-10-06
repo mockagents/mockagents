@@ -4,10 +4,9 @@ name: Documentation
 #
 # Prerequisite (one-time, repo Settings → Pages → Build and deployment):
 #   Source = "GitHub Actions"
-# On a PRIVATE repository this additionally requires a plan that includes
-# Pages for private repos (GitHub Pro/Team/Enterprise), or making the repo
-# public. Until Pages is enabled the Pages API returns 404; configure it before
-# enabling this workflow so a failed documentation deployment remains visible.
+# While the source is still "Deploy from a branch", GitHub serves a Jekyll
+# render of docs/ (the internal review documents) instead of this site, even
+# though this workflow reports a successful deploy (review O-10).
 
 on:
   push:
@@ -28,6 +27,7 @@ jobs:
   build:
     name: Build MkDocs site
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -37,7 +37,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install MkDocs
-        run: pip install mkdocs-material
+        run: pip install -r site/requirements.txt
 
       - name: Build docs
         working-directory: site
@@ -52,6 +52,7 @@ jobs:
     name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       pages: write

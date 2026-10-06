@@ -3,8 +3,8 @@ name: Actions Self-Test
 # Exercises the two composite actions shipped under deploy/actions/ end-to-end
 # against this repo's own examples, so a change that breaks the install/start/
 # test wiring fails CI instead of breaking every downstream consumer. Uses
-# `source-path` to build the CLI from the checked-out tree — the published
-# `go install …@latest` path needs a release tag (D-02) that does not exist yet.
+# `source-path` to build the CLI from the checked-out tree, so the job tests
+# THIS commit rather than the latest release.
 
 on:
   push:
@@ -26,12 +26,15 @@ permissions:
 # Cancel superseded runs on the same branch/PR to save runner minutes.
 concurrency:
   group: actions-selftest-${{ github.ref }}
-  cancel-in-progress: true
+  # Only superseded pull-request runs are cancelled; a run on main must
+  # finish (readiness audit M-37, applied here as in ci.yml).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   setup-mockagents:
     name: setup-mockagents (server + exported env)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -57,6 +60,7 @@ jobs:
   mockagents-test:
     name: mockagents-test (validate + JUnit suite)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -88,6 +92,7 @@ jobs:
   mockagents-test-failure:
     name: mockagents-test (failing JUnit is retained)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Create an intentionally failing suite

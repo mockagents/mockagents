@@ -3,12 +3,30 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
+	"strings"
 
 	"github.com/mockagents/mockagents/internal/cli"
 	"github.com/spf13/cobra"
 )
 
-var version = "dev"
+// version is stamped at release time with -ldflags "-X main.version=...".
+// A binary built by `go install …@vX.Y.Z` has no ldflags, so it falls back to
+// the module version Go records in the build info; it used to report "dev",
+// which made the install-path monitor fail every day (review O-06).
+var version = resolveVersion("dev")
+
+func resolveVersion(stamped string) string {
+	if stamped != "" && stamped != "dev" {
+		return stamped
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v := info.Main.Version; v != "" && v != "(devel)" {
+			return strings.TrimPrefix(v, "v")
+		}
+	}
+	return stamped
+}
 
 var rootCmd = &cobra.Command{
 	Use:   "mockagents",
