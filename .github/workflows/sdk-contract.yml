@@ -1,0 +1,177 @@
+name: SDK contract
+
+# Cross-SDK contract suite (sdk/contract/README.md): the Python, TypeScript and
+# Go SDKs run the same data-driven cases (sdk/contract/cases.json) against one
+# real server binary and must reach the verdicts the case file expects. A
+# matcher that behaves differently in one language fails that language's step.
+
+on:
+  pull_request:
+    paths:
+      - "sdk/**"
+      - "internal/adapter/**"
+      - "internal/streaming/**"
+      - "internal/engine/**"
+      - ".github/workflows/sdk-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Cross-SDK contract (Python / TypeScript / Go)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ST_PORT: "18080"
+      MT_PORT: "18081"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: sdk/typescript/package-lock.json
+
+      # One binary for both legs. It lives outside the checkout so nothing the
+      # job builds or the server writes can end up in the workspace.
+      - name: Build the server binary
+        run: go build -o "$RUNNER_TEMP/mockagents" ./cmd/mockagents
+
+      - name: Validate the contract fixtures
+        run: |
+          "$RUNNER_TEMP/mockagents" validate --strict sdk/contract/agents
+          "$RUNNER_TEMP/mockagents" validate --strict sdk/contract/tenant
+
+      - name: Install the Python SDK
+        run: pip install -e "./sdk/python[dev]"
+
+      - name: Install the TypeScript SDK dependencies
+        working-directory: sdk/typescript
+        run: npm ci
+
+      # ---- Single-tenant leg -------------------------------------------------
+      # The server runs from a scratch directory: it writes its SQLite files
+      # into its working directory.
+      - name: Start the server (single-tenant)
+        id: st-server
+        run: |
+          mkdir -p "$RUNNER_TEMP/st"
+          cd "$RUNNER_TEMP/st"
+          nohup "$RUNNER_TEMP/mockagents" start \
+            --agents-dir "$GITHUB_WORKSPACE/sdk/contract/agents" \
+            --port "$ST_PORT" > server.log 2>&1 &
+          echo $! > server.pid
+          for _ in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:$ST_PORT/api/v1/health"; then exit 0; fi
+            sleep 0.5
+          done
+          echo "server did not become healthy" >&2
+          cat server.log >&2
+          exit 1
+
+      - name: Python runner (single-tenant)
+        if: ${{ !cancelled() && steps.st-server.outcome == 'success' }}
+        working-directory: sdk/python
+        env:
+          MOCKAGENTS_CONTRACT_URL: http://127.0.0.1:${{ env.ST_PORT }}
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: python -m pytest tests/contract -v -p no:cacheprovider
+
+      - name: TypeScript runner (single-tenant)
+        if: ${{ !cancelled() && steps.st-server.outcome == 'success' }}
+        working-directory: sdk/typescript
+        env:
+          MOCKAGENTS_CONTRACT_URL: http://127.0.0.1:${{ env.ST_PORT }}
+        run: npx vitest run tests/contract.test.ts
+
+      - name: Go runner (single-tenant)
+        if: ${{ !cancelled() && steps.st-server.outcome == 'success' }}
+        env:
+          MOCKAGENTS_CONTRACT_URL: http://127.0.0.1:${{ env.ST_PORT }}
+        run: go test ./sdk/go/mockagents -run Contract -count=1 -v
+
+      - name: Stop the server (single-tenant)
+        if: ${{ always() && steps.st-server.outcome != 'skipped' }}
+        run: |
+          kill "$(cat "$RUNNER_TEMP/st/server.pid")" 2>/dev/null || true
+          cat "$RUNNER_TEMP/st/server.log" || true
+
+      # ---- Multi-tenant leg --------------------------------------------------
+      # A fresh platform key per run, supplied through MOCKAGENTS_BOOTSTRAP_KEY
+      # (cmd/mockagents/start.go bootstrapTenancy). It never leaves this step:
+      # only the tenant key minted from it is exported, masked, to later steps.
+      # The agent write API persists the tenant agent into the agents directory,
+      # so this leg serves a scratch COPY of the fixtures.
+      - name: Start the server (multi-tenant) and provision a tenant
+        id: mt-server
+        if: ${{ !cancelled() && steps.st-server.outcome != 'skipped' }}
+        env:
+          MOCKAGENTS_CONTRACT_URL: http://127.0.0.1:${{ env.MT_PORT }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/mt/agents"
+          cp sdk/contract/agents/*.yaml "$RUNNER_TEMP/mt/agents/"
+          platform_key="mak_$(openssl rand -hex 4)_$(openssl rand -hex 16)"
+          echo "::add-mask::$platform_key"
+          (
+            cd "$RUNNER_TEMP/mt"
+            MOCKAGENTS_MULTI_TENANT=1 MOCKAGENTS_BOOTSTRAP_KEY="$platform_key" \
+              nohup "$RUNNER_TEMP/mockagents" start \
+                --agents-dir "$RUNNER_TEMP/mt/agents" \
+                --port "$MT_PORT" > server.log 2>&1 &
+            echo $! > server.pid
+          )
+          healthy=""
+          for _ in $(seq 1 60); do
+            if curl -fsS "$MOCKAGENTS_CONTRACT_URL/api/v1/health"; then healthy=1; break; fi
+            sleep 0.5
+          done
+          if [ -z "$healthy" ]; then
+            echo "multi-tenant server did not become healthy" >&2
+            cat "$RUNNER_TEMP/mt/server.log" >&2
+            exit 1
+          fi
+          tenant_key="$(MOCKAGENTS_CONTRACT_PLATFORM_KEY="$platform_key" bash sdk/contract/provision-tenant.sh)"
+          echo "::add-mask::$tenant_key"
+          echo "MOCKAGENTS_CONTRACT_TENANT_KEY=$tenant_key" >> "$GITHUB_ENV"
+
+      - name: Python runner (multi-tenant)
+        if: ${{ !cancelled() && steps.mt-server.outcome == 'success' }}
+        working-directory: sdk/python
+        env:
+          MOCKAGENTS_CONTRACT_URL: http://127.0.0.1:${{ env.MT_PORT }}
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: python -m pytest tests/contract -v -p no:cacheprovider
+
+      - name: TypeScript runner (multi-tenant)
+        if: ${{ !cancelled() && steps.mt-server.outcome == 'success' }}
+        working-directory: sdk/typescript
+        env:
+          MOCKAGENTS_CONTRACT_URL: http://127.0.0.1:${{ env.MT_PORT }}
+        run: npx vitest run tests/contract.test.ts
+
+      - name: Go runner (multi-tenant)
+        if: ${{ !cancelled() && steps.mt-server.outcome == 'success' }}
+        env:
+          MOCKAGENTS_CONTRACT_URL: http://127.0.0.1:${{ env.MT_PORT }}
+        run: go test ./sdk/go/mockagents -run Contract -count=1 -v
+
+      - name: Stop the server (multi-tenant)
+        if: ${{ always() && steps.mt-server.outcome != 'skipped' }}
+        run: |
+          kill "$(cat "$RUNNER_TEMP/mt/server.pid")" 2>/dev/null || true
+          cat "$RUNNER_TEMP/mt/server.log" || true
