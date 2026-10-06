@@ -4,14 +4,17 @@
 npm install -D @mockagents/sdk @mockagents/vitest
 ```
 
-ESM package, Node 18+ (uses the built-in `fetch`). The server manager expects
-the `mockagents` Go binary on `PATH` (or set `MOCKAGENTS_BIN`).
+ESM-only package, Node 18+ (uses the built-in `fetch`); there is no CommonJS
+build, so load it with `import`, not `require()`. The server manager expects
+the `mockagents` Go binary on `PATH` or at `./mockagents`, or pointed to by
+`MOCKAGENTS_BINARY` / `MOCKAGENTS_BIN`.
 
 ## Start here: one line of setup
 
 `@mockagents/vitest` registers the `beforeAll`/`afterAll` for you: one server
 per test file on a free port, provider env vars patched and restored. Works in
-Jest too, from the `/jest` subpath.
+Jest too, from the `/jest` subpath, with Jest running in ESM mode (see the
+helper's README).
 
 ```ts
 import { setupMockAgents } from "@mockagents/vitest";
@@ -86,12 +89,19 @@ try {
 |--------|---------|-------------|
 | `agentsDir` | `./agents` | Agent YAML directory |
 | `port` | `0` (auto) | Server port. 0 = auto-select a free port. |
-| `binaryPath` | auto-detect | Path to the `mockagents` binary (`MOCKAGENTS_BIN` honored) |
+| `binaryPath` | auto-detect | Path to the `mockagents` binary (see below) |
 | `logLevel` | `warn` | Server log level |
 
-`server.url`, `server.isRunning`, and `server.getLogs()` are available for
+`server.url` (always `http://127.0.0.1:<port>`, matching the binary's IPv4-only
+bind), `server.isRunning`, and `server.getLogs()` are available for
 diagnostics; `findFreePort()` and `findBinary()` are exported as free
-functions.
+functions. `start()` fails as soon as the child process exits before becoming
+healthy, with its logs in the error, rather than waiting out the timeout.
+
+Binary discovery: `MOCKAGENTS_BINARY`, then `MOCKAGENTS_BIN` (the same names,
+in the same order, as the Python and Go SDKs and `npx mockagents`), then
+`./mockagents` in the working directory, then `PATH`. Parent directories are
+not searched; point an env var at a monorepo build instead.
 
 ## MockAgentClient
 
@@ -116,16 +126,50 @@ console.log(response.toolCalls);     // []
 ```
 
 `ChatOptions`: `model`, `sessionId` (sent as `X-Session-Id`), `tools`,
-`toolChoice`, `temperature`, `maxTokens`, `extra`.
+`toolChoice`, `temperature`, `maxTokens`, `extra`, plus `signal` (an
+`AbortSignal`, honored by every call) and the stream-only `idleTimeoutMs` and
+`failOnStreamFault` (see [Streaming](#streaming)).
+
+Against a multi-tenant server, pass `apiKey` to the constructor. It is sent as
+`Authorization: Bearer <key>` on **every** request (chat, messages, streams and
+management calls) and as `X-Api-Key` on Anthropic calls. A missing key does
+not fail there: the LLM endpoints accept anonymous callers and route them to a
+different (global) agent.
 
 ### Anthropic Messages
 
 ```ts
 const message = await client.message(
   [{ role: "user", content: "hello" }],
-  { model: "claude-3-5-sonnet-latest", system: "You are helpful." },
+  { model: "claude-sonnet-4-20250514", system: "You are helpful." },
 );
 console.log(message.content);
+```
+
+The default model is `DEFAULT_ANTHROPIC_MODEL` (`claude-sonnet-4-20250514`),
+the same in all three SDKs.
+
+### Tool calls and round trips
+
+Each `ToolCall` carries `arguments` (the parsed object), `rawArguments` (the
+exact wire text) and `argumentsValid`. Malformed or non-object arguments, as
+produced by a `raw_arguments` fault fixture, leave `arguments` as `{}` with
+`argumentsValid: false`, so they are visible instead of looking like a call
+with no arguments.
+
+`ChatMessage` accepts assistant `tool_calls` and `tool_call_id` on `tool`
+turns (and a content-parts array), so a tool round trip can be replayed, which
+strict-tools id validation requires:
+
+```ts
+import { toAssistantMessage } from "@mockagents/sdk";
+
+const first = await client.chat(history, { tools });
+history.push(toAssistantMessage(first));
+for (const call of first.toolCalls) {
+  history.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(runTool(call)) });
+}
+const second = await client.chat(history, { tools });
 ```
 
 ### Streaming
@@ -145,12 +189,32 @@ for await (const chunk of client.chatStream(
 // Protocol-agnostic — same loop works for openai and anthropic
 for await (const chunk of client.iterStream(
   [{ role: "user", content: "hello" }],
-  { protocol: "anthropic", model: "claude-3-5-sonnet-latest" },
+  { protocol: "anthropic", model: "claude-sonnet-4-20250514" },
 )) {
   process.stdout.write(chunk.text);
   if (chunk.finished) console.log("\nfinish:", chunk.finishReason);
 }
 ```
+
+Every streaming method returns the async generator plus a live `stats`
+object, so injected stream faults are visible rather than looking like a
+normal completion:
+
+```ts
+const stream = client.iterStream(messages);
+for await (const chunk of stream) { /* ... */ }
+stream.stats; // { completed, truncated, malformedFrames }
+```
+
+`truncated` means the body ended without `[DONE]` / `message_stop` (a
+`streaming.truncateAfter` fault); `malformedFrames` counts skipped non-JSON
+frames (a `streaming.malformed` fault). Pass `failOnStreamFault: true` to get a
+`StreamError` at the end of such a stream instead.
+
+Cancellation: pass `signal` to abort a request or an in-flight stream, and
+`idleTimeoutMs` to fail with `StreamError` (`reason: "idle_timeout"`) when no
+bytes arrive for that long after the headers. The idle timeout is off by
+default, because a paced mock stream may pause legitimately.
 
 ```ts
 interface StreamChunk {
@@ -202,7 +266,8 @@ import { expect } from "@mockagents/sdk";
 
 expect(result)
   .toHaveResponseContaining("shipped")
-  .toHaveToolCall("lookup_order", { order_id: "ORD-1" })  // args are a PARTIAL match
+  .toHaveToolCall("lookup_order", { order_id: "ORD-1" })  // args are a PARTIAL match;
+                                                          // a key the call omitted never matches, even null
   .toHaveFinishReason("stop")
   .toHaveStatusCode(200)
   .toHaveLatencyLessThan(1000);

@@ -105,6 +105,70 @@ Fixes from the 2026-10-06 full-application quality review (see
   first file and rejected multi-document YAML. It now serves exactly the listed
   files, from any directories. The ignored `config_path` option is deprecated.
 - Python SDK: `get_agent` and `reload_agent` URL-encode the agent name.
+- **TypeScript and Go SDKs: the API key now reaches every request.** The TS
+  client sent `apiKey` only on JSON calls, so every streaming call
+  (`chatStream`, `messageStream`, `iterStream`) went out anonymous. The Go
+  client had no way to set a key at all. In multi-tenant mode an anonymous LLM
+  call is not rejected; it is routed to a different, global agent, so tests
+  passed against the wrong agent. Both clients now add
+  `Authorization: Bearer <key>` in one place used by every request path. When
+  a key is set, Anthropic calls send it as `X-Api-Key` instead of the
+  `mock-api-key` placeholder. The Go option is the new `ClientOptions.APIKey`.
+- **Go `ToHaveToolCall` no longer fails on integer expectations.** Arguments
+  decoded from JSON are `float64`, so `map[string]any{"limit": 5}` never
+  matched. Expected and actual values are now compared as JSON, so `5`,
+  `int64(5)`, `5.0` and `json.Number("5")` all match. The failure message
+  prints both sides with `%#v`.
+- **TS/Go tool-call arguments are no longer silently collapsed.** Malformed
+  or non-object arguments used to become `{}` / `nil`, so the
+  `raw_arguments` fault fixture was invisible. `ToolCall` now carries
+  `rawArguments` / `RawArguments` (the exact wire text) and `argumentsValid` /
+  `ArgumentsValid`. TS `toHaveToolCall` now treats an omitted key as distinct
+  from an explicit `null` or `undefined`.
+- **SSE parsing handles every spec-legal line ending.** TS and Go now
+  normalise CRLF and bare CR to LF before splitting frames, so these cases no
+  longer merge two events into one unparseable frame that was silently
+  dropped: mixed endings, the `\n\r\n` blank line, CR-only streams, and a
+  CRLF split across reads. The MCP event streams use the same splitter.
+- **Truncated and malformed streams are observable in TS and Go.** A stream
+  that ends without `[DONE]` / `message_stop`, or that carries unparseable
+  frames, used to look like a normal completion. TS streams now expose live
+  `stats` (`completed`, `truncated`, `malformedFrames`). The opt-in
+  `failOnStreamFault` option raises a typed `StreamError` instead. Go
+  `RawEventStream` and `ChunkStream` gain `Completed()`, `Truncated()` and
+  `MalformedFrames()`.
+- **TS/Go `MockAgentServer.start()` fails fast when the child exits early.**
+  A bad agents dir or a port collision used to wait out the full health
+  timeout. The error now reports the exit status and the child's logs.
+- **TS/Go server helpers use `127.0.0.1`.** They used `http://localhost:<port>`,
+  but the binary binds IPv4 only, and `localhost` can resolve to `::1` first.
+  This matches the Python SDK.
+- **The default Anthropic model is the same in every SDK.** TS and Go used
+  `claude-3-5-sonnet-latest`, while Python used `claude-sonnet-4-20250514`, so
+  one script could route to different agents per language. All three now use
+  `claude-sonnet-4-20250514`, exported as `DEFAULT_ANTHROPIC_MODEL` (TS) and
+  `DefaultAnthropicModel` (Go).
+- **Binary discovery is consistent and no longer runs a stale binary.** The TS
+  SDK, the Go SDK and `npx mockagents` all accept `MOCKAGENTS_BINARY`, then
+  `MOCKAGENTS_BIN`, as Python already did. TS and Go no longer search parent
+  directories for a `mockagents` binary, which in nested checkouts ran a stale
+  build ahead of `PATH`.
+- **`npx mockagents` works from Git Bash on Windows.** On Windows the release
+  `.zip` is now extracted with `%SystemRoot%\System32\tar.exe` (bsdtar),
+  called by absolute path. Before, the first `tar` on `PATH` ran, and GNU tar
+  cannot read zip files.
+- **`npx mockagents` no longer orphans the server.** The launcher used
+  `spawnSync`, so a `SIGTERM` (from a supervisor or a cancelled CI step)
+  killed Node and left the server holding its port. It now spawns
+  asynchronously and forwards `SIGINT`, `SIGTERM` and `SIGHUP`. It also exits
+  with the server's exit code or signal.
+- **Docs: Go in-process client scope and `Stop` signal.** The
+  `NewInProcessClient` doc no longer claims the full management API. That API
+  returns 404 in-process, and the doc now says so. The `Server.Stop` doc now
+  states it sends SIGINT, not SIGTERM.
+- **Docs: the JS packages are ESM-only.** The `@mockagents/vitest` Jest
+  section claimed plain Jest worked. Jest's default CommonJS runtime cannot
+  load these packages; the docs now cover Jest's ESM mode.
 
 ### Added
 
@@ -117,6 +181,16 @@ Fixes from the 2026-10-06 full-application quality review (see
   - `to_have_any_response_containing`, `to_have_malformed_tool_arguments`, and a
     `tool=` filter on `to_have_tool_error`
   - `McpClient(api_key=...)` and `MockAgentServer.client(api_key=...)`
+- TS streaming cancellation: `signal` (an `AbortSignal`) on every call and on
+  `iterStream`. An optional `idleTimeoutMs` bounds a stalled stream once
+  headers have arrived.
+- TS and Go `ChatMessage` can carry assistant `tool_calls` (and
+  `tool_call_id` on tool turns), so a tool round trip can be replayed under
+  strict-tools id validation. TS `content` also accepts a content-parts array.
+  New helpers `toAssistantMessage(response)` (TS) and
+  `AssistantMessage(resp)` (Go) build the assistant turn.
+- Go `Expectation.ToHaveToolCallCountByName`, matching the TS/Python named
+  tool-call count.
 
 ## [0.5.0] - 2026-09-09
 
