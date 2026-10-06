@@ -37,10 +37,13 @@ func (h *AuditHandlers) ListEvents(w http.ResponseWriter, r *http.Request) {
 	// Tenant isolation (X-SEC-002): in multi-tenant mode the route is
 	// admin-gated and every caller carries a principal, so scope the read
 	// to the caller's own tenant — a tenant admin must not see another
-	// tenant's audit trail. There is no super-admin tier, so this applies
-	// to every authenticated caller. In single-tenant mode there is no
-	// principal and the full local-dev view is returned unfiltered.
-	if p := tenancy.PrincipalFrom(r.Context()); p != nil && p.TenantID != "" {
+	// tenant's audit trail. The platform role is the cross-tenant operator
+	// and reads the whole trail: auth.denied events carry no tenant (the
+	// caller was never authenticated), so scoping the platform operator too
+	// left the brute-force trail visible to nobody (audit L-10). In
+	// single-tenant mode there is no principal and the full local-dev view is
+	// returned unfiltered.
+	if p := tenancy.PrincipalFrom(r.Context()); p != nil && p.TenantID != "" && p.Role != tenancy.RolePlatform {
 		q.ActorTenant = p.TenantID
 	}
 	if q.Kind != "" && !q.Kind.Valid() {

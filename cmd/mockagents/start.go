@@ -100,7 +100,9 @@ func parseGlobalChaos(seedText, rateText string, off bool) (int64, *float64, err
 		return seed, nil, nil
 	}
 	rate, err := strconv.ParseFloat(rateText, 64)
-	if err != nil || rate < 0 || rate > 1 {
+	// !(rate >= 0 && rate <= 1) also rejects NaN, which slips past
+	// "rate < 0 || rate > 1".
+	if err != nil || !(rate >= 0 && rate <= 1) {
 		return 0, nil, fmt.Errorf("invalid --chaos-rate %q: must be between 0 and 1", rateText)
 	}
 	return seed, &rate, nil
@@ -113,6 +115,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	globalSeed, globalRate, err := parseGlobalChaos(chaosSeed, chaosRate, chaosOff)
 	if err != nil {
 		return err
+	}
+	// Checked before any database is opened: an out-of-range port used to
+	// fail only at listen time, after the log and audit stores were created.
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("invalid --port %d: must be between 1 and 65535", port)
 	}
 	// Configure structured logger.
 	logLevel, err := parseLogLevel(cmd)
@@ -204,16 +211,19 @@ func runStart(cmd *cobra.Command, args []string) error {
 	//   MOCKAGENTS_SESSION_MAX     = max live sessions (default 100000)
 	//   MOCKAGENTS_SESSION_HISTORY = messages retained per session (default 256)
 	maxSessions, maxHistory := state.DefaultMaxSessions, state.DefaultMaxHistory
+	// A typo is a startup error, like every other knob (env.go): these used to
+	// log a warning and keep the default, so MOCKAGENTS_SESSION_MAX=10k ran
+	// with 100,000 sessions while the operator believed otherwise.
 	for _, k := range []struct {
 		name string
 		dst  *int
 	}{{"MOCKAGENTS_SESSION_MAX", &maxSessions}, {"MOCKAGENTS_SESSION_HISTORY", &maxHistory}} {
-		if v := strings.TrimSpace(os.Getenv(k.name)); v != "" {
-			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-				*k.dst = n
-			} else {
-				logger.Warn("ignoring invalid "+k.name, "value", v)
-			}
+		n, ok, err := envInt(k.name, 0, 0)
+		if err != nil {
+			return err
+		}
+		if ok {
+			*k.dst = n
 		}
 	}
 	store.SetLimits(maxSessions, maxHistory)
@@ -256,15 +266,19 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Interaction-log privacy + retention controls (SEC-05):
 	//   MOCKAGENTS_LOG_BODIES   = full | sanitized | none  (default full)
 	//   MOCKAGENTS_LOG_MAX_ROWS = <n>                       (default 0 = unlimited)
-	cfg.LogBodyMode = server.NormalizeLogBodyMode(os.Getenv("MOCKAGENTS_LOG_BODIES"))
+	bodyMode, err := server.ParseLogBodyMode(os.Getenv("MOCKAGENTS_LOG_BODIES"))
+	if err != nil {
+		return err
+	}
+	cfg.LogBodyMode = bodyMode
 	if n, ok, err := envInt("MOCKAGENTS_LOG_MAX_ROWS", 0, 0); err != nil {
 		return err
 	} else if ok {
 		cfg.LogMaxRows = n // 0 = unlimited
 	}
-	if cfg.LogBodyMode != server.LogBodyFull {
-		logger.Info("interaction-log body capture mode", "mode", string(cfg.LogBodyMode))
-	}
+	// Always state the effective mode: it is a privacy setting, and "full"
+	// being the silent default is exactly what an operator needs to see.
+	logger.Info("interaction-log body capture mode", "mode", string(cfg.LogBodyMode))
 	if cfg.LogMaxRows > 0 {
 		logger.Info("interaction-log retention enabled", "max_rows", cfg.LogMaxRows)
 	}
@@ -287,22 +301,18 @@ func runStart(cmd *cobra.Command, args []string) error {
 	//   MOCKAGENTS_AUDIT_MAX_ROWS           = <n>      keep only the newest n audit rows (0 = unlimited)
 	//   MOCKAGENTS_AUTH_FAILURES_PER_MINUTE = <n>      per-IP failed-auth budget before 429 (0 = off)
 	//   MOCKAGENTS_TRUSTED_PROXIES          = cidr,... peers whose X-Forwarded-For is believed
-	if v := strings.TrimSpace(os.Getenv("MOCKAGENTS_AUDIT_MAX_ROWS")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.AuditMaxRows = n
-		} else {
-			logger.Warn("ignoring invalid MOCKAGENTS_AUDIT_MAX_ROWS", "value", v)
-		}
+	if n, ok, err := envInt("MOCKAGENTS_AUDIT_MAX_ROWS", 0, 0); err != nil {
+		return err
+	} else if ok {
+		cfg.AuditMaxRows = n
 	}
 	if cfg.AuditMaxRows > 0 {
 		logger.Info("audit-log retention enabled", "max_rows", cfg.AuditMaxRows)
 	}
-	if v := strings.TrimSpace(os.Getenv("MOCKAGENTS_AUTH_FAILURES_PER_MINUTE")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			tenancy.SetAuthFailureLimit(n)
-		} else {
-			logger.Warn("ignoring invalid MOCKAGENTS_AUTH_FAILURES_PER_MINUTE", "value", v)
-		}
+	if n, ok, err := envInt("MOCKAGENTS_AUTH_FAILURES_PER_MINUTE", 0, 0); err != nil {
+		return err
+	} else if ok {
+		tenancy.SetAuthFailureLimit(n)
 	}
 	// Shutdown grace (audit M-34): MOCKAGENTS_SHUTDOWN_TIMEOUT bounds how long
 	// in-flight requests may run after SIGTERM (default 20s, inside Kubernetes'
