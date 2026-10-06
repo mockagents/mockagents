@@ -208,6 +208,7 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 	// Convert to engine request.
 	convertedMsgs, imageCount := convertAnthropicMessages(req.Messages, req.System)
 	inbound := &engine.InboundRequest{
+		WireProtocol:     ProtocolAnthropicMessages,
 		Model:            req.Model,
 		SessionID:        extractSessionID(r),
 		Messages:         convertedMsgs,
@@ -242,7 +243,7 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 			return
 		}
 		status := engineErrorStatus(err)
-		writeAnthropicError(w, status, "invalid_request_error", err.Error())
+		writeAnthropicError(w, status, anthropicEngineErrorType(status), err.Error())
 		return
 	}
 
@@ -499,7 +500,10 @@ func extractAnthropicContent(content any) string {
 }
 
 func formatAnthropicResponse(resp *engine.Response, inputTokens, outputTokens int, cacheCreation, cacheRead *int, thinkingText, thinkingSig string) *AnthropicResponse {
-	var content []AnthropicContent
+	// Always an array, never null: the real API returns [] when there is
+	// nothing to say (tool_choice none, the tool-loop exit turn), and both
+	// official SDKs iterate it unconditionally (review E-03).
+	content := []AnthropicContent{}
 
 	// Extended-thinking block leads the content array (A-04).
 	if thinkingText != "" {

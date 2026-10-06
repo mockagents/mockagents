@@ -48,9 +48,23 @@ type TemplateContext struct {
 	Message    string
 	TurnNumber int
 	SessionID  string
-	Timestamp  string
-	Vars       map[string]any    // Session variables
-	Match      map[string]string // Regex capture groups from scenario matching
+	// Now is the request time; templates read it formatted via
+	// {{ .Timestamp }}. A time.Time, not a pre-formatted string, so requests
+	// whose templates never ask for it pay no formatting allocation.
+	Now   time.Time
+	Vars  map[string]any    // Session variables
+	Match map[string]string // Regex capture groups from scenario matching
+}
+
+// Timestamp renders the request time as RFC3339 UTC for {{ .Timestamp }}.
+// It used to be a field that nothing ever set, so it rendered empty (audit
+// L-13). The zero Now (a hand-built context) falls back to the current time.
+func (c TemplateContext) Timestamp() string {
+	t := c.Now
+	if t.IsZero() {
+		t = time.Now()
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // renderBufPool recycles bytes.Buffer instances used during template

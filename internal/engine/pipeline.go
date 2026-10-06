@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -145,6 +147,13 @@ func (p *PipelineExecutor) RunContext(ctx context.Context, def *types.PipelineDe
 	}
 	if len(def.Spec.Agents) == 0 {
 		return nil, errors.New("pipeline has no agents")
+	}
+
+	// Every run gets its own session scope. An embedding caller that passed ""
+	// used to share one engine session per node across all runs, so
+	// turn_number scenarios advanced between unrelated runs (review E-23).
+	if sessionID == "" {
+		sessionID = newRunID()
 	}
 
 	start := time.Now()
@@ -442,4 +451,11 @@ func (p *PipelineExecutor) record(
 		Latency:      latency,
 		Err:          err,
 	})
+}
+
+// newRunID returns a random id that scopes one pipeline run's sessions.
+func newRunID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return "run-" + hex.EncodeToString(b[:])
 }

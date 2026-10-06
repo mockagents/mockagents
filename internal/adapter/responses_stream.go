@@ -193,7 +193,7 @@ func streamFunctionCallItem(
 		return err
 	}
 
-	for _, chunk := range chunkArguments(item.Arguments, 20) {
+	for _, chunk := range streaming.ChunkArguments(item.Arguments, 20) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -213,25 +213,6 @@ func streamFunctionCallItem(
 	}
 
 	return emit("response.output_item.done", map[string]any{"output_index": idx, "item": item})
-}
-
-// chunkArguments splits a function-call argument JSON string into byte-bounded
-// pieces so the arguments arrive as a sequence of deltas, the way a real
-// streamed tool call does. An empty string yields a single empty chunk so the
-// delta/done pair is still emitted.
-func chunkArguments(s string, size int) []string {
-	if size <= 0 || len(s) == 0 {
-		return []string{s}
-	}
-	var chunks []string
-	for i := 0; i < len(s); i += size {
-		end := i + size
-		if end > len(s) {
-			end = len(s)
-		}
-		chunks = append(chunks, s[i:end])
-	}
-	return chunks
 }
 
 // firstContentPart returns the message item's single content part (the engine
