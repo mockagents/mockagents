@@ -4,7 +4,7 @@
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import { platform } from "node:os";
 import { join } from "node:path";
 
@@ -39,8 +39,11 @@ export class MockAgentServer {
     this.binaryPath = options.binaryPath ?? findBinary();
   }
 
+  /** Base URL of the server. Uses 127.0.0.1, not localhost: the binary binds
+   * IPv4 only, and localhost can resolve to ::1 first on dual-stack hosts
+   * (Node 18/19 fetch has no address-family fallback). */
   get url(): string {
-    return `http://localhost:${this.port}`;
+    return `http://127.0.0.1:${this.port}`;
   }
 
   get isRunning(): boolean {
@@ -59,7 +62,10 @@ export class MockAgentServer {
 
   /**
    * Spawn the Go binary and wait for the health endpoint to respond.
-   * Throws ServerError on spawn failure and Error on health-check timeout.
+   * Throws ServerError on spawn failure, on health-check timeout, and as soon
+   * as the child exits before becoming healthy (a bad agents dir or a port
+   * collision fails fast with the child's logs instead of waiting out
+   * `timeoutMs`).
    */
   async start(timeoutMs: number = 10_000): Promise<void> {
     if (this.isRunning) return;
@@ -85,31 +91,63 @@ export class MockAgentServer {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
+    const child = this.process;
     const healthAbort = new AbortController();
     let spawnError: Error | null = null;
-    const spawnFailure = new Promise<never>((_resolve, reject) => this.process?.once("error", (err) => {
-      spawnError = err;
-      this.appendLog(`spawn error: ${err.message}`);
-      healthAbort.abort();
-      reject(err);
-    }));
-    this.process.stdout?.on("data", (chunk: Buffer) => {
+    let onExit: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+    // Rejects on a spawn error OR an exit before health passed; raced against
+    // the health poll so neither case waits out the full timeout.
+    const childFailure = new Promise<never>((_resolve, reject) => {
+      child.once("error", (err: Error) => {
+        spawnError = err;
+        this.appendLog(`spawn error: ${err.message}`);
+        healthAbort.abort();
+        reject(err);
+      });
+      onExit = (code, signal) => {
+        healthAbort.abort();
+        reject(
+          new Error(
+            `server process exited before becoming ready (code=${code ?? "null"}, signal=${signal ?? "null"})`,
+          ),
+        );
+      };
+      child.once("exit", onExit);
+    });
+    childFailure.catch(() => {
+      /* observed through the race below */
+    });
+    let stdioClosed = false;
+    child.once("close", () => {
+      stdioClosed = true;
+    });
+    child.stdout?.on("data", (chunk: Buffer) => {
       this.appendLog(chunk.toString());
     });
-    this.process.stderr?.on("data", (chunk: Buffer) => {
+    child.stderr?.on("data", (chunk: Buffer) => {
       this.appendLog(chunk.toString());
     });
 
     try {
-      await Promise.race([waitForHealth(this.url, timeoutMs, healthAbort.signal), spawnFailure]);
+      await Promise.race([waitForHealth(this.url, timeoutMs, healthAbort.signal), childFailure]);
     } catch (err) {
       healthAbort.abort();
-      if (spawnError) this.process = null;
-      else await this.stop();
+      if (spawnError || hasExited(child)) {
+        if (this.process === child) this.process = null;
+        // 'exit' can precede the last stdout/stderr bytes; give the pipes a
+        // moment to drain so the error carries the child's own diagnosis.
+        if (!spawnError && !stdioClosed) await waitForClose(child, 500);
+      } else {
+        await this.stop();
+      }
       throw new ServerError(
         `server did not become ready within ${timeoutMs}ms: ${(err as Error).message}\n` +
           `logs:\n${this.logs.join("")}`,
       );
+    } finally {
+      // The 'error' listener stays: removing it would turn a later child
+      // 'error' event into an uncaught exception.
+      if (onExit) child.off("exit", onExit);
     }
   }
 
@@ -186,13 +224,24 @@ function waitForExit(proc: ChildProcess, timeoutMs: number): Promise<boolean> {
   });
 }
 
+function waitForClose(proc: ChildProcess, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    timer.unref();
+    proc.once("close", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
 /** Resolve a free TCP port by asking the kernel for one. */
 export async function findFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = createServer();
     srv.unref();
     srv.on("error", reject);
-    srv.listen(0, () => {
+    srv.listen(0, "127.0.0.1", () => {
       const addr = srv.address();
       if (!addr || typeof addr === "string") {
         reject(new Error("unable to determine free port"));
@@ -205,22 +254,35 @@ export async function findFreePort(): Promise<number> {
 }
 
 /**
- * Locate the `mockagents` binary. Honors MOCKAGENTS_BIN, then checks the
- * monorepo root, then falls back to whatever the OS PATH finds via the
- * bare name.
+ * Locate the `mockagents` binary. Honors `MOCKAGENTS_BINARY`, then
+ * `MOCKAGENTS_BIN` (the same two names, in the same order, as the Python SDK
+ * and the npx launcher), then `./mockagents` in the working directory, then
+ * falls back to the bare name for a PATH lookup at spawn time.
+ *
+ * Parent directories are deliberately NOT searched: in a nested checkout that
+ * silently ran whatever stale binary sat a few levels up. Point an env var at
+ * a monorepo build instead.
  */
 export function findBinary(): string {
-  const envBin = process.env.MOCKAGENTS_BIN;
-  if (envBin && existsSync(envBin)) return envBin;
+  for (const name of ["MOCKAGENTS_BINARY", "MOCKAGENTS_BIN"]) {
+    const envBin = process.env[name];
+    if (envBin && isFile(envBin)) return envBin;
+  }
 
   const binaryName = platform() === "win32" ? "mockagents.exe" : "mockagents";
-  const repoRoot = join(process.cwd(), "..", "..", binaryName);
-  if (existsSync(repoRoot)) return repoRoot;
   const localRoot = join(process.cwd(), binaryName);
-  if (existsSync(localRoot)) return localRoot;
+  if (isFile(localRoot)) return localRoot;
 
   // Fall back to PATH lookup at spawn time.
   return binaryName;
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
 }
 
 async function waitForHealth(baseUrl: string, timeoutMs: number, signal?: AbortSignal): Promise<void> {

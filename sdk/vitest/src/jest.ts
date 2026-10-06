@@ -4,6 +4,10 @@
 // off `globalThis` rather than importing from `vitest`. Importing this module
 // therefore pulls in *no* test-framework dependency — the hooks are only
 // touched when `setupMockAgents()` is called inside a Jest test file.
+//
+// Like the rest of this package (and @mockagents/sdk) it is ESM-only: Jest
+// must run in ESM mode (`NODE_OPTIONS=--experimental-vm-modules`). Jest's
+// default CommonJS runtime cannot `require()` it; see the README.
 
 import { createSetup } from "./core.js";
 

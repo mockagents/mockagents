@@ -17,7 +17,7 @@
 //     throws so test failures stay visible.
 
 import { HTTPError } from "./types.js";
-import { parseSSEFrame } from "./client.js";
+import { SSEFrameSplitter, parseSSEFrame } from "./client.js";
 
 export interface McpClientOptions {
   baseUrl?: string;
@@ -141,27 +141,23 @@ export class McpClient {
 
       const reader = resp.body.getReader();
       const decoder = new TextDecoder("utf-8");
-      let buffer = "";
+      // Same splitter as the chat streams, so CRLF / CR line endings frame
+      // identically here (review K-12).
+      const splitter = new SSEFrameSplitter();
       try {
         // eslint-disable-next-line no-constant-condition
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let sep = buffer.indexOf("\n\n");
-          while (sep !== -1) {
-            const frame = buffer.slice(0, sep);
-            buffer = buffer.slice(sep + 2);
+          for (const frame of splitter.push(decoder.decode(value, { stream: true }))) {
             const event = parseMcpFrame(frame);
             if (event !== null) yield event;
-            sep = buffer.indexOf("\n\n");
           }
         }
         // Drain the trailing frame if the server didn't terminate
         // with a blank line.
-        const tail = buffer.trim();
-        if (tail.length > 0) {
-          const event = parseMcpFrame(tail);
+        for (const frame of splitter.push(decoder.decode()).concat(splitter.flush())) {
+          const event = parseMcpFrame(frame);
           if (event !== null) yield event;
         }
       } finally {

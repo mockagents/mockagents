@@ -12,19 +12,52 @@ import {
   parseUsageAnthropic,
   parseUsageOpenAI,
   StreamChunk,
+  StreamError,
+  StreamStats,
   ToolCall,
 } from "./types.js";
+
+/** Model sent on OpenAI-protocol calls when none is given. */
+export const DEFAULT_OPENAI_MODEL = "gpt-4o";
+/** Model sent on Anthropic-protocol calls when none is given. Identical across
+ * the Python, TypeScript and Go SDKs so one script routes to the same agent in
+ * every language. */
+export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-20250514";
+/** Placeholder `X-Api-Key` sent on Anthropic calls when no `apiKey` is set. */
+const ANTHROPIC_PLACEHOLDER_KEY = "mock-api-key";
 
 export interface MockAgentClientOptions {
   baseUrl?: string;
   timeoutMs?: number;
   /** Override the global fetch implementation (useful for tests). */
   fetch?: typeof fetch;
-  /** Viewer-or-higher management API key for multi-tenant deployments. */
+  /**
+   * API key for multi-tenant deployments. Sent as `Authorization: Bearer` on
+   * every request — chat, messages, streams and management calls — and as
+   * `X-Api-Key` on Anthropic calls (replacing the placeholder).
+   */
   apiKey?: string;
 }
 
-export interface ChatOptions {
+/** Cancellation and stream-health knobs shared by every request option type. */
+export interface StreamControlOptions {
+  /** Abort the request (or an in-flight stream). Rejects with the signal's reason. */
+  signal?: AbortSignal;
+  /**
+   * Streams only: fail with `StreamError` (`reason: "idle_timeout"`) when no
+   * bytes arrive for this many milliseconds after the response headers. Off
+   * by default — a paced mock stream may legitimately pause.
+   */
+  idleTimeoutMs?: number;
+  /**
+   * Streams only: throw `StreamError` at the end of a stream that was truncated
+   * (no `[DONE]` / `message_stop`) or carried malformed frames, instead of
+   * ending quietly. The same facts are always readable on `stream.stats`.
+   */
+  failOnStreamFault?: boolean;
+}
+
+export interface ChatOptions extends StreamControlOptions {
   model?: string;
   sessionId?: string;
   tools?: unknown[];
@@ -34,7 +67,7 @@ export interface ChatOptions {
   extra?: Record<string, unknown>;
 }
 
-export interface MessageOptions {
+export interface MessageOptions extends StreamControlOptions {
   model?: string;
   sessionId?: string;
   system?: string;
@@ -42,6 +75,13 @@ export interface MessageOptions {
   tools?: unknown[];
   extra?: Record<string, unknown>;
 }
+
+/** What the streaming methods return: an async generator you `for await`
+ * over, plus the live `stats` for that stream. Hold on to the object to read
+ * `stats` after the loop. */
+export type MockAgentStream<T> = AsyncGenerator<T, void, void> & {
+  readonly stats: StreamStats;
+};
 
 export class MockAgentClient {
   public readonly baseUrl: string;
@@ -58,22 +98,14 @@ export class MockAgentClient {
 
   /** Send an OpenAI Chat Completions request. */
   async chat(messages: ChatMessage[], options: ChatOptions = {}): Promise<ChatResponse> {
-    const payload: Record<string, unknown> = {
-      model: options.model ?? "gpt-4o",
-      messages,
-      stream: false,
-    };
-    if (options.tools) payload.tools = options.tools;
-    if (options.toolChoice !== undefined) payload.tool_choice = options.toolChoice;
-    if (options.temperature !== undefined) payload.temperature = options.temperature;
-    if (options.maxTokens !== undefined) payload.max_tokens = options.maxTokens;
-    if (options.extra) Object.assign(payload, options.extra);
-
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (options.sessionId) headers["X-Session-Id"] = options.sessionId;
-
     const start = performance.now();
-    const resp = await this.requestJSON("POST", "/v1/chat/completions", headers, payload);
+    const resp = await this.requestJSON(
+      "POST",
+      "/v1/chat/completions",
+      this.openAIHeaders(options.sessionId),
+      openAIPayload(messages, options, false),
+      options.signal,
+    );
     const latencyMs = performance.now() - start;
 
     return parseOpenAIResponse(resp.body, resp.status, latencyMs);
@@ -81,25 +113,14 @@ export class MockAgentClient {
 
   /** Send an Anthropic Messages request. */
   async message(messages: ChatMessage[], options: MessageOptions = {}): Promise<ChatResponse> {
-    const payload: Record<string, unknown> = {
-      model: options.model ?? "claude-3-5-sonnet-latest",
-      messages,
-      max_tokens: options.maxTokens ?? 1024,
-      stream: false,
-    };
-    if (options.system) payload.system = options.system;
-    if (options.tools) payload.tools = options.tools;
-    if (options.extra) Object.assign(payload, options.extra);
-
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      "X-Api-Key": "mock-api-key",
-      "Anthropic-Version": "2023-06-01",
-    };
-    if (options.sessionId) headers["X-Session-Id"] = options.sessionId;
-
     const start = performance.now();
-    const resp = await this.requestJSON("POST", "/v1/messages", headers, payload);
+    const resp = await this.requestJSON(
+      "POST",
+      "/v1/messages",
+      this.anthropicHeaders(options.sessionId),
+      anthropicPayload(messages, options, false),
+      options.signal,
+    );
     const latencyMs = performance.now() - start;
 
     return parseAnthropicResponse(resp.body, resp.status, latencyMs);
@@ -109,31 +130,15 @@ export class MockAgentClient {
    *
    * Yields the raw delta payloads from each ``data:`` line. The
    * helper terminates on the ``[DONE]`` sentinel. Use
-   * :meth:`iterStream` for a protocol-agnostic, typed view.
+   * :meth:`iterStream` for a protocol-agnostic, typed view. The returned
+   * object's ``stats`` reports truncation and malformed frames.
    */
-  async *chatStream(
+  chatStream(
     messages: ChatMessage[],
     options: ChatOptions = {},
-  ): AsyncGenerator<Record<string, unknown>, void, void> {
-    const payload: Record<string, unknown> = {
-      model: options.model ?? "gpt-4o",
-      messages,
-      stream: true,
-    };
-    if (options.tools) payload.tools = options.tools;
-    if (options.toolChoice !== undefined) payload.tool_choice = options.toolChoice;
-    if (options.temperature !== undefined) payload.temperature = options.temperature;
-    if (options.maxTokens !== undefined) payload.max_tokens = options.maxTokens;
-    if (options.extra) Object.assign(payload, options.extra);
-
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (options.sessionId) headers["X-Session-Id"] = options.sessionId;
-
-    for await (const event of this.requestSSE("/v1/chat/completions", headers, payload)) {
-      if (event.data === "[DONE]") return;
-      const parsed = tryParseJSON(event.data);
-      if (parsed !== undefined) yield parsed as Record<string, unknown>;
-    }
+  ): MockAgentStream<Record<string, unknown>> {
+    const stats = newStreamStats();
+    return withStats(this.openAIEvents(messages, options, stats), stats);
   }
 
   /** Stream Anthropic Messages events as parsed event dicts.
@@ -142,35 +147,12 @@ export class MockAgentClient {
    * ``message_start`` / ``content_block_*`` / ``message_delta`` /
    * ``message_stop`` payloads and terminates after ``message_stop``.
    */
-  async *messageStream(
+  messageStream(
     messages: ChatMessage[],
     options: MessageOptions = {},
-  ): AsyncGenerator<Record<string, unknown>, void, void> {
-    const payload: Record<string, unknown> = {
-      model: options.model ?? "claude-3-5-sonnet-latest",
-      messages,
-      max_tokens: options.maxTokens ?? 1024,
-      stream: true,
-    };
-    if (options.system) payload.system = options.system;
-    if (options.tools) payload.tools = options.tools;
-    if (options.extra) Object.assign(payload, options.extra);
-
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      "X-Api-Key": "mock-api-key",
-      "Anthropic-Version": "2023-06-01",
-    };
-    if (options.sessionId) headers["X-Session-Id"] = options.sessionId;
-
-    for await (const event of this.requestSSE("/v1/messages", headers, payload)) {
-      const parsed = tryParseJSON(event.data) as
-        | Record<string, unknown>
-        | undefined;
-      if (parsed === undefined) continue;
-      yield parsed;
-      if (parsed.type === "message_stop") return;
-    }
+  ): MockAgentStream<Record<string, unknown>> {
+    const stats = newStreamStats();
+    return withStats(this.anthropicEvents(messages, options, stats), stats);
   }
 
   /** Iterate a streamed completion as protocol-agnostic
@@ -178,24 +160,36 @@ export class MockAgentClient {
    * ``protocol: "openai"`` (default) or ``"anthropic"``.
    *
    * ```ts
-   * for await (const chunk of client.iterStream(messages, { protocol: "anthropic" })) {
+   * const stream = client.iterStream(messages, { protocol: "anthropic" });
+   * for await (const chunk of stream) {
    *   process.stdout.write(chunk.text);
    *   if (chunk.finished) break;
    * }
+   * if (stream.stats.truncated) throw new Error("stream was cut short");
    * ```
    */
-  async *iterStream(
+  iterStream(
     messages: ChatMessage[],
     options: { protocol?: "openai" | "anthropic" } & ChatOptions & MessageOptions = {},
-  ): AsyncGenerator<StreamChunk, void, void> {
+  ): MockAgentStream<StreamChunk> {
+    const stats = newStreamStats();
     const protocol = options.protocol ?? "openai";
     if (protocol === "openai") {
-      yield* normalizeOpenAIStream(this.chatStream(messages, options));
-    } else if (protocol === "anthropic") {
-      yield* normalizeAnthropicStream(this.messageStream(messages, options));
-    } else {
-      throw new Error(`unknown protocol ${String(protocol)}`);
+      return withStats(normalizeOpenAIStream(this.openAIEvents(messages, options, stats)), stats);
     }
+    if (protocol === "anthropic") {
+      return withStats(
+        normalizeAnthropicStream(this.anthropicEvents(messages, options, stats)),
+        stats,
+      );
+    }
+    // Fail on first iteration, as the generator form always did.
+    return withStats(
+      (async function* (): AsyncGenerator<StreamChunk, void, void> {
+        throw new Error(`unknown protocol ${String(protocol)}`);
+      })(),
+      stats,
+    );
   }
 
   async health(): Promise<Record<string, unknown>> {
@@ -247,6 +241,96 @@ export class MockAgentClient {
 
   // --- internals ---
 
+  private openAIHeaders(sessionId?: string): Record<string, string> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (sessionId) headers["X-Session-Id"] = sessionId;
+    return headers;
+  }
+
+  private anthropicHeaders(sessionId?: string): Record<string, string> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      // A configured key IS the Anthropic credential; the placeholder only
+      // satisfies clients/servers that insist on the header being present.
+      "X-Api-Key": this.apiKey ?? ANTHROPIC_PLACEHOLDER_KEY,
+      "Anthropic-Version": "2023-06-01",
+    };
+    if (sessionId) headers["X-Session-Id"] = sessionId;
+    return headers;
+  }
+
+  /** The single place request headers gain the credential. Every request
+   * path (JSON and SSE) goes through it, so no call can silently go out
+   * anonymous — in multi-tenant mode that routes to a DIFFERENT agent rather
+   * than failing (review K-01). */
+  private withAuth(headers: Record<string, string>): Record<string, string> {
+    const out = { ...headers };
+    if (this.apiKey && out.Authorization === undefined) {
+      out.Authorization = `Bearer ${this.apiKey}`;
+    }
+    return out;
+  }
+
+  private async *openAIEvents(
+    messages: ChatMessage[],
+    options: ChatOptions,
+    stats: StreamStats,
+  ): AsyncGenerator<Record<string, unknown>, void, void> {
+    const events = this.requestSSE(
+      "/v1/chat/completions",
+      this.openAIHeaders(options.sessionId),
+      openAIPayload(messages, options, true),
+      options,
+      stats,
+    );
+    for await (const event of events) {
+      if (event.data === "[DONE]") {
+        stats.completed = true;
+        assertStreamHealthy(options, stats);
+        return;
+      }
+      const parsed = tryParseEvent(event.data);
+      if (parsed === undefined) {
+        stats.malformedFrames++;
+        continue;
+      }
+      yield parsed;
+    }
+    // The body ended without [DONE]: a truncated stream, not a completion.
+    stats.truncated = true;
+    assertStreamHealthy(options, stats);
+  }
+
+  private async *anthropicEvents(
+    messages: ChatMessage[],
+    options: MessageOptions,
+    stats: StreamStats,
+  ): AsyncGenerator<Record<string, unknown>, void, void> {
+    const events = this.requestSSE(
+      "/v1/messages",
+      this.anthropicHeaders(options.sessionId),
+      anthropicPayload(messages, options, true),
+      options,
+      stats,
+    );
+    for await (const event of events) {
+      const parsed = tryParseEvent(event.data);
+      if (parsed === undefined) {
+        stats.malformedFrames++;
+        continue;
+      }
+      if (parsed.type === "message_stop") {
+        stats.completed = true;
+        assertStreamHealthy(options, stats);
+        yield parsed;
+        return;
+      }
+      yield parsed;
+    }
+    stats.truncated = true;
+    assertStreamHealthy(options, stats);
+  }
+
   /** POST a JSON body to ``path`` and yield parsed SSE events. Each
    * yielded value is the raw ``{event, data}`` pair after the
    * server-sent-events frame boundaries; the caller is responsible
@@ -256,14 +340,20 @@ export class MockAgentClient {
     path: string,
     headers: Record<string, string>,
     body: unknown,
+    control: StreamControlOptions,
+    stats: StreamStats,
   ): AsyncGenerator<{ event: string; data: string }, void, void> {
+    const external = control.signal;
+    throwIfAborted(external);
     const controller = new AbortController();
+    const onExternalAbort = () => controller.abort(external?.reason);
+    external?.addEventListener("abort", onExternalAbort, { once: true });
     // The deadline covers the wait for response HEADERS only. It used to span
     // the whole stream, so any stream that ran longer than timeoutMs (30s by
     // default) was aborted mid-flight — a paced or long-running mock stream
     // would fail for no reason the caller could see (audit M-38). Once headers
-    // arrive the server is demonstrably alive, and how long it keeps streaming
-    // is the scenario's business.
+    // arrive the server is demonstrably alive; from then on only the opt-in
+    // idleTimeoutMs and the caller's signal bound the stream.
     let headerTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(
       () => controller.abort(),
       this.timeoutMs,
@@ -279,59 +369,58 @@ export class MockAgentClient {
     try {
       resp = await this.fetchImpl(`${this.baseUrl}${path}`, {
         method: "POST",
-        headers,
+        headers: this.withAuth(headers),
         body: JSON.stringify(body),
         signal: controller.signal,
       });
     } catch (err) {
       clearHeaderTimer();
+      external?.removeEventListener("abort", onExternalAbort);
       throw err;
     }
     clearHeaderTimer();
 
     if (!resp.ok) {
+      external?.removeEventListener("abort", onExternalAbort);
       const text = await resp.text().catch(() => "");
       throw new HTTPError(resp.status, text);
     }
     if (!resp.body) {
+      external?.removeEventListener("abort", onExternalAbort);
       return;
     }
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder("utf-8");
-    let buffer = "";
+    const splitter = new SSEFrameSplitter();
     try {
       // eslint-disable-next-line no-constant-condition
       while (true) {
-        const { value, done } = await reader.read();
+        const { value, done } = await readWithLimits(
+          reader.read(),
+          control.idleTimeoutMs,
+          external,
+          stats,
+        );
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        // SSE frames are terminated by a blank line, which is CRLFCRLF as
-        // often as LFLF — the spec allows either, and proxies rewrite one into
-        // the other. Splitting on "\n\n" alone meant a CRLF server produced ONE
-        // giant unterminated frame and the stream yielded nothing until it
-        // ended (audit M-38).
-        let sep = findFrameBoundary(buffer);
-        while (sep !== null) {
-          const frame = buffer.slice(0, sep.end);
-          buffer = buffer.slice(sep.end + sep.sepLen);
+        for (const frame of splitter.push(decoder.decode(value, { stream: true }))) {
           const event = parseSSEFrame(frame);
           if (event !== null) yield event;
-          sep = findFrameBoundary(buffer);
         }
       }
       // Drain any trailing frame that lacked a terminating blank line.
-      const tail = buffer.trim();
-      if (tail.length > 0) {
-        const event = parseSSEFrame(tail);
+      for (const frame of splitter.push(decoder.decode()).concat(splitter.flush())) {
+        const event = parseSSEFrame(frame);
         if (event !== null) yield event;
       }
     } finally {
       clearHeaderTimer();
+      external?.removeEventListener("abort", onExternalAbort);
       // Cancel rather than only releasing the lock: a caller that breaks out of
       // the for-await early (took the first chunk, hit an assertion) would
       // otherwise leave the response body — and the socket behind it — open
-      // until the process exited.
+      // until the process exited. Cancelling also settles a read that an idle
+      // timeout or abort left pending.
       try {
         await reader.cancel();
       } catch {
@@ -350,17 +439,17 @@ export class MockAgentClient {
     path: string,
     headers: Record<string, string> = {},
     body?: unknown,
+    signal?: AbortSignal,
   ): Promise<{ status: number; body: unknown }> {
+    throwIfAborted(signal);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const onAbort = () => controller.abort(signal?.reason);
+    signal?.addEventListener("abort", onAbort, { once: true });
     try {
-      const requestHeaders = { ...headers };
-      if (this.apiKey && requestHeaders.Authorization === undefined) {
-        requestHeaders.Authorization = `Bearer ${this.apiKey}`;
-      }
       const resp = await this.fetchImpl(`${this.baseUrl}${path}`, {
         method,
-        headers: requestHeaders,
+        headers: this.withAuth(headers),
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,
       });
@@ -372,8 +461,117 @@ export class MockAgentClient {
       return { status: resp.status, body: parsed };
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
     }
   }
+}
+
+function openAIPayload(
+  messages: ChatMessage[],
+  options: ChatOptions,
+  stream: boolean,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    model: options.model ?? DEFAULT_OPENAI_MODEL,
+    messages,
+    stream,
+  };
+  if (options.tools) payload.tools = options.tools;
+  if (options.toolChoice !== undefined) payload.tool_choice = options.toolChoice;
+  if (options.temperature !== undefined) payload.temperature = options.temperature;
+  if (options.maxTokens !== undefined) payload.max_tokens = options.maxTokens;
+  if (options.extra) Object.assign(payload, options.extra);
+  return payload;
+}
+
+function anthropicPayload(
+  messages: ChatMessage[],
+  options: MessageOptions,
+  stream: boolean,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    model: options.model ?? DEFAULT_ANTHROPIC_MODEL,
+    messages,
+    max_tokens: options.maxTokens ?? 1024,
+    stream,
+  };
+  if (options.system) payload.system = options.system;
+  if (options.tools) payload.tools = options.tools;
+  if (options.extra) Object.assign(payload, options.extra);
+  return payload;
+}
+
+function newStreamStats(): StreamStats {
+  return { completed: false, truncated: false, malformedFrames: 0 };
+}
+
+function withStats<T>(
+  gen: AsyncGenerator<T, void, void>,
+  stats: StreamStats,
+): MockAgentStream<T> {
+  return Object.defineProperty(gen, "stats", { value: stats, enumerable: true }) as MockAgentStream<T>;
+}
+
+function assertStreamHealthy(options: StreamControlOptions, stats: StreamStats): void {
+  if (!options.failOnStreamFault) return;
+  if (stats.truncated) throw new StreamError("truncated", stats);
+  if (stats.malformedFrames > 0) throw new StreamError("malformed", stats);
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("This operation was aborted", "AbortError");
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw abortReason(signal);
+}
+
+/** Settle `read` normally, or reject when the caller's signal aborts or no
+ * data arrives within `idleTimeoutMs`. Racing (rather than relying on the
+ * fetch signal alone) matters: a body that simply stops producing bytes is
+ * not always errored by an abort, so the read could otherwise hang forever. */
+function readWithLimits<T>(
+  read: Promise<T>,
+  idleTimeoutMs: number | undefined,
+  signal: AbortSignal | undefined,
+  stats: StreamStats,
+): Promise<T> {
+  const idle = idleTimeoutMs !== undefined && idleTimeoutMs > 0;
+  if (!idle && !signal) return read;
+  return new Promise<T>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(abortReason(signal as AbortSignal));
+    };
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (idle) {
+      timer = setTimeout(() => {
+        cleanup();
+        reject(
+          new StreamError("idle_timeout", stats, `no stream data received for ${idleTimeoutMs}ms`),
+        );
+      }, idleTimeoutMs);
+    }
+    read.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (err) => {
+        cleanup();
+        reject(err);
+      },
+    );
+  });
 }
 
 // --- response parsers (exported for tests) ---
@@ -403,25 +601,46 @@ export function parseOpenAIResponse(
 
 // --- streaming helpers (exported for tests) ---
 
+/**
+ * Incremental SSE frame splitter. Line endings are normalised to LF first —
+ * the spec allows CRLF, LF or a bare CR, and proxies rewrite one into another
+ * — so a frame boundary is always a plain blank line. A CR that ends one chunk
+ * and an LF that starts the next count as ONE line ending, so a CRLF split
+ * across reads cannot fabricate a blank line (review K-12).
+ */
+export class SSEFrameSplitter {
+  private buffer = "";
+  private pendingCR = false;
+
+  /** Append decoded text; returns every frame it completed, in order. */
+  push(text: string): string[] {
+    if (this.pendingCR && text.startsWith("\n")) text = text.slice(1);
+    if (text.length === 0) return [];
+    this.pendingCR = text.endsWith("\r");
+    this.buffer += text.replace(/\r\n?/g, "\n");
+    const frames: string[] = [];
+    let sep = this.buffer.indexOf("\n\n");
+    while (sep !== -1) {
+      frames.push(this.buffer.slice(0, sep));
+      this.buffer = this.buffer.slice(sep + 2);
+      sep = this.buffer.indexOf("\n\n");
+    }
+    return frames;
+  }
+
+  /** End of input: returns the unterminated trailing frame, if any. */
+  flush(): string[] {
+    const tail = this.buffer;
+    this.buffer = "";
+    this.pendingCR = false;
+    return tail.trim().length > 0 ? [tail] : [];
+  }
+}
+
 /** Parse a single SSE frame ("event: foo\ndata: ...") into its
  * event/data parts. Returns null when the frame has no data line.
  * Multiple data lines are joined with newlines per the SSE spec.
  */
-/** Locate the end of the first complete SSE frame in `buf`.
- *
- * A frame ends at a blank line, which the spec permits to be either LF LF or
- * CRLF CRLF (and a mixed pair in between). Returns the index the frame text
- * ends at plus the length of the separator to skip, or null when the buffer
- * holds no complete frame yet.
- */
-export function findFrameBoundary(buf: string): { end: number; sepLen: number } | null {
-  const crlf = buf.indexOf("\r\n\r\n");
-  const lf = buf.indexOf("\n\n");
-  if (crlf === -1 && lf === -1) return null;
-  if (crlf !== -1 && (lf === -1 || crlf < lf)) return { end: crlf, sepLen: 4 };
-  return { end: lf, sepLen: 2 };
-}
-
 export function parseSSEFrame(frame: string): { event: string; data: string } | null {
   let event = "";
   const dataLines: string[] = [];
@@ -439,9 +658,14 @@ export function parseSSEFrame(frame: string): { event: string; data: string } | 
   return { event, data: dataLines.join("\n") };
 }
 
-function tryParseJSON(text: string): unknown | undefined {
+/** Parse one `data:` payload as a provider event. Anything that is not a JSON
+ * object (a cut-off frame, an injected `malformed` fault) is undefined. */
+function tryParseEvent(text: string): Record<string, unknown> | undefined {
   try {
-    return JSON.parse(text);
+    const v: unknown = JSON.parse(text);
+    return v !== null && typeof v === "object" && !Array.isArray(v)
+      ? (v as Record<string, unknown>)
+      : undefined;
   } catch {
     return undefined;
   }

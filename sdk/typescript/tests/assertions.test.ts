@@ -173,3 +173,22 @@ describe("pipeline trajectory assertions", () => {
       .toThrowError(AssertionError);
   });
 });
+
+// Review K-03: an argument the call never sent must not match an expected
+// null (or undefined) — "omitted" and "explicitly null" stay distinct.
+describe("toHaveToolCall argument presence", () => {
+  const resp = fakeResponse({
+    toolCalls: [{ id: "t", name: "search", arguments: { q: "cats", filter: null } }],
+  });
+
+  it("matches an explicit null", () => {
+    expect(resp).toHaveToolCall("search", { filter: null });
+  });
+
+  it("does not match a missing key against null or undefined", () => {
+    vexpect(() => expect(resp).toHaveToolCall("search", { limit: null })).toThrowError(AssertionError);
+    vexpect(() => expect(resp).toHaveToolCall("search", { limit: undefined })).toThrowError(
+      AssertionError,
+    );
+  });
+});
