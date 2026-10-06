@@ -19,8 +19,20 @@ func fuzzSecretValue(seed uint64) string {
 	return b.String()
 }
 
+// atWordStart makes an injected credential start a word: "sk-" and "key-"
+// are only masked at a word boundary, so "risk-based" and "turkey-dinner"
+// stay intact (review P-14), and a prefix ending in a letter or digit gets a
+// separator.
+func atWordStart(prefix string) string {
+	if n := len(prefix); n > 0 && isAlnum(prefix[n-1]) {
+		return prefix + " "
+	}
+	return prefix
+}
+
 // FuzzSanitizeBody exercises the log/cassette key masker with an
-// API-key-shaped token injected between two arbitrary strings.
+// API-key-shaped token injected, at a word start, between two arbitrary
+// strings.
 //
 // Invariants:
 //   - SanitizeBody never panics;
@@ -70,7 +82,7 @@ func FuzzSanitizeBody(f *testing.F) {
 		if strings.Contains(prefix, value) || strings.Contains(suffix, value) {
 			t.Skip()
 		}
-		in := prefix + token + suffix
+		in := atWordStart(prefix) + token + suffix
 		out := SanitizeBody(in)
 
 		if again := SanitizeBody(out); again != out {

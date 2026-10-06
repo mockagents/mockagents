@@ -71,6 +71,18 @@ func TestSanitizeBody_DoesNotRedactOrdinaryWords(t *testing.T) {
 	assert.NotContains(t, out, fakeKey)
 }
 
+// A "key-" credential followed by punctuation other than a quote, space or
+// comma is still masked, and the punctuation is kept (found by FuzzSanitizeBody).
+func TestSanitizeBody_KeyFollowedByPunctuation(t *testing.T) {
+	fakeKey := strings.Repeat("0f1e2d3c", 4)
+	for _, tail := range []string{"; rest", ")", ".", "&x=1", "\n"} {
+		in := "token=key-" + fakeKey + tail
+		out := SanitizeBody(in)
+		assert.Equal(t, "token=key-***"+tail, out, "input %q", in)
+		assert.Equal(t, out, SanitizeBody(out), "idempotent for %q", in)
+	}
+}
+
 // Timestamps are stored fixed-width so the lexical Since/Until filters order
 // rows by time (review P-19), and a blank timestamp becomes now (L-34).
 func TestNormalizeTimestamp(t *testing.T) {
