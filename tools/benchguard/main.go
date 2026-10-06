@@ -40,8 +40,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -93,35 +95,81 @@ func index(r *Report) map[string]Result {
 	return m
 }
 
+// options are the comparison knobs, one per command-line flag.
+type options struct {
+	BaselinePath   string
+	CandidatePath  string
+	BytesTolerance float64
+	GateNs         bool
+	NsThreshold    float64
+	NsFloorNs      float64
+	SummaryPath    string
+}
+
 func main() {
-	baselinePath := flag.String("baseline", "docs/benchmarks/latest.json", "committed baseline report")
-	candidatePath := flag.String("candidate", "", "freshly measured report to compare (required)")
-	bytesTolerance := flag.Float64("bytes-tolerance", 0.20, "max fractional B/op drift before failing (measured noise on unchanged code: 7.8%)")
-	gateNs := flag.Bool("gate-ns", false, "also fail on ns/op drift — only meaningful on a dedicated fixed-clock runner")
-	nsThreshold := flag.Float64("ns-threshold", 0.25, "max fractional ns/op drift when -gate-ns is set")
-	nsFloorNs := flag.Float64("ns-floor", 1000, "with -gate-ns, benchmarks below this baseline ns/op stay informational")
-	summaryPath := flag.String("summary", "", "optional path to append a Markdown summary (e.g. $GITHUB_STEP_SUMMARY)")
-	flag.Parse()
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
 
-	if *candidatePath == "" {
-		fmt.Fprintln(os.Stderr, "benchguard: -candidate is required")
-		os.Exit(2)
+// run is main without the process exit, so the flag handling, exit codes and
+// output are testable: 0 = no blocking change, 1 = blocking change, 2 = usage
+// or input error.
+func run(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("benchguard", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var o options
+	fs.StringVar(&o.BaselinePath, "baseline", "docs/benchmarks/latest.json", "committed baseline report")
+	fs.StringVar(&o.CandidatePath, "candidate", "", "freshly measured report to compare (required)")
+	fs.Float64Var(&o.BytesTolerance, "bytes-tolerance", 0.20, "max fractional B/op drift before failing (measured noise on unchanged code: 7.8%)")
+	fs.BoolVar(&o.GateNs, "gate-ns", false, "also fail on ns/op drift — only meaningful on a dedicated fixed-clock runner")
+	fs.Float64Var(&o.NsThreshold, "ns-threshold", 0.25, "max fractional ns/op drift when -gate-ns is set")
+	fs.Float64Var(&o.NsFloorNs, "ns-floor", 1000, "with -gate-ns, benchmarks below this baseline ns/op stay informational")
+	fs.StringVar(&o.SummaryPath, "summary", "", "optional path to append a Markdown summary (e.g. $GITHUB_STEP_SUMMARY)")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
 	}
 
-	base, err := load(*baselinePath)
+	if o.CandidatePath == "" {
+		fmt.Fprintln(stderr, "benchguard: -candidate is required")
+		return 2
+	}
+
+	base, err := load(o.BaselinePath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "benchguard:", err)
-		os.Exit(2)
+		fmt.Fprintln(stderr, "benchguard:", err)
+		return 2
 	}
-	cand, err := load(*candidatePath)
+	cand, err := load(o.CandidatePath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "benchguard:", err)
-		os.Exit(2)
+		fmt.Fprintln(stderr, "benchguard:", err)
+		return 2
 	}
 
+	failures, notes := compare(base, cand, o)
+	summary := renderSummary(base, cand, o, failures, notes)
+
+	fmt.Fprint(stdout, summary)
+	if o.SummaryPath != "" {
+		f, err := os.OpenFile(o.SummaryPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err == nil {
+			_, _ = f.WriteString(summary)
+			_ = f.Close()
+		}
+	}
+
+	if len(failures) > 0 {
+		return 1
+	}
+	return 0
+}
+
+// compare applies the gating rules described in the package comment and
+// returns the blocking failures (in baseline-name order) and the sorted
+// non-blocking notes.
+func compare(base, cand *Report, o options) (failures, notes []string) {
 	baseIdx, candIdx := index(base), index(cand)
-
-	var failures, notes []string
 
 	names := make([]string, 0, len(baseIdx))
 	for n := range baseIdx {
@@ -145,10 +193,10 @@ func main() {
 		}
 		if b.BytesPerOp > 0 {
 			bDrift := float64(c.BytesPerOp-b.BytesPerOp) / float64(b.BytesPerOp)
-			if bDrift > *bytesTolerance || bDrift < -*bytesTolerance {
+			if bDrift > o.BytesTolerance || bDrift < -o.BytesTolerance {
 				failures = append(failures, fmt.Sprintf(
 					"%s: B/op %d -> %d (%+.0f%%, over %.0f%% tolerance)",
-					name, b.BytesPerOp, c.BytesPerOp, bDrift*100, *bytesTolerance*100))
+					name, b.BytesPerOp, c.BytesPerOp, bDrift*100, o.BytesTolerance*100))
 			}
 		} else if c.BytesPerOp != b.BytesPerOp {
 			// A benchmark that allocated nothing now allocates: always notable.
@@ -159,14 +207,14 @@ func main() {
 			continue
 		}
 		drift := (c.NsPerOp - b.NsPerOp) / b.NsPerOp
-		if drift <= *nsThreshold && drift >= -*nsThreshold {
+		if drift <= o.NsThreshold && drift >= -o.NsThreshold {
 			continue
 		}
-		subMicro := b.NsPerOp < *nsFloorNs
-		if *gateNs && !subMicro && drift > *nsThreshold {
+		subMicro := b.NsPerOp < o.NsFloorNs
+		if o.GateNs && !subMicro && drift > o.NsThreshold {
 			failures = append(failures, fmt.Sprintf(
 				"%s: ns/op %.1f -> %.1f (%+.0f%%, over %.0f%% threshold)",
-				name, b.NsPerOp, c.NsPerOp, drift*100, *nsThreshold*100))
+				name, b.NsPerOp, c.NsPerOp, drift*100, o.NsThreshold*100))
 			continue
 		}
 		scale := "µs-scale"
@@ -185,12 +233,17 @@ func main() {
 		}
 	}
 	sort.Strings(notes)
+	return failures, notes
+}
 
+// renderSummary formats the comparison as the Markdown block printed to
+// stdout and appended to the -summary file.
+func renderSummary(base, cand *Report, o options, failures, notes []string) string {
 	var out strings.Builder
 	fmt.Fprintf(&out, "## Benchmark guard\n\n")
 	fmt.Fprintf(&out, "Baseline `%s` (%s %s/%s) vs candidate `%s` (%s %s/%s) — %d benchmarks compared.\n\n",
-		*baselinePath, base.GoVersion, base.GOOS, base.GOARCH,
-		*candidatePath, cand.GoVersion, cand.GOOS, cand.GOARCH, len(baseIdx))
+		o.BaselinePath, base.GoVersion, base.GOOS, base.GOARCH,
+		o.CandidatePath, cand.GoVersion, cand.GOOS, cand.GOARCH, len(index(base)))
 
 	if len(failures) > 0 {
 		fmt.Fprintf(&out, "### ❌ %d blocking change(s)\n\n", len(failures))
@@ -200,7 +253,7 @@ func main() {
 		fmt.Fprintf(&out, "\nIf these are intentional, regenerate the baseline in this PR:\n"+
 			"```bash\ngo run ./tools/benchreport -pkg %s -out docs/benchmarks\n```\n", base.Package)
 	} else {
-		fmt.Fprintf(&out, "### ✅ No blocking changes\n\nallocs/op matches exactly and B/op stays within the configured %.0f%% tolerance.\n", *bytesTolerance*100)
+		fmt.Fprintf(&out, "### ✅ No blocking changes\n\nallocs/op matches exactly and B/op stays within the configured %.0f%% tolerance.\n", o.BytesTolerance*100)
 	}
 	if len(notes) > 0 {
 		fmt.Fprintf(&out, "\n### Notes (non-blocking)\n\n")
@@ -208,17 +261,5 @@ func main() {
 			fmt.Fprintf(&out, "- %s\n", n)
 		}
 	}
-
-	fmt.Print(out.String())
-	if *summaryPath != "" {
-		f, err := os.OpenFile(*summaryPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err == nil {
-			_, _ = f.WriteString(out.String())
-			_ = f.Close()
-		}
-	}
-
-	if len(failures) > 0 {
-		os.Exit(1)
-	}
+	return out.String()
 }

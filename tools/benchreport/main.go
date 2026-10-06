@@ -17,8 +17,10 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,43 +56,65 @@ type Report struct {
 }
 
 func main() {
-	pkg := flag.String("pkg", "./internal/engine/...", "package pattern to benchmark")
-	outDir := flag.String("out", "docs/benchmarks", "directory to write latest.json + latest.md into")
-	benchTime := flag.String("benchtime", "1s", "value for go test -benchtime")
-	count := flag.Int("count", 1, "value for go test -count")
-	flag.Parse()
+	os.Exit(run(os.Args[1:], os.Stderr, execGoTest, time.Now))
+}
 
-	if err := os.MkdirAll(*outDir, 0o755); err != nil {
-		die("mkdir %s: %v", *outDir, err)
-	}
+// goTestRunner runs `go <args...>` and returns its stdout and stderr. It is a
+// seam so run can be tested without shelling out to the toolchain.
+type goTestRunner func(args []string) (stdout, stderr string, err error)
 
-	args := []string{
-		"test",
-		"-run", "^$",
-		"-bench", ".",
-		"-benchmem",
-		"-benchtime", *benchTime,
-		"-count", strconv.Itoa(*count),
-		*pkg,
-	}
-	fmt.Fprintf(os.Stderr, "benchreport: running go %s\n", strings.Join(args, " "))
+func execGoTest(args []string) (string, string, error) {
 	cmd := exec.Command("go", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprint(os.Stderr, stderr.String())
-		die("go test failed: %v", err)
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), err
+}
+
+// run is main without the process exit: 0 on success, 1 on any failure
+// (matching die), 2 on a flag parse error (matching flag.ExitOnError).
+func run(args []string, stderr io.Writer, goTest goTestRunner, now func() time.Time) int {
+	fs := flag.NewFlagSet("benchreport", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	pkg := fs.String("pkg", "./internal/engine/...", "package pattern to benchmark")
+	outDir := fs.String("out", "docs/benchmarks", "directory to write latest.json + latest.md into")
+	benchTime := fs.String("benchtime", "1s", "value for go test -benchtime")
+	count := fs.Int("count", 1, "value for go test -count")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
 	}
 
-	results := parseBenchOutput(stdout.String())
+	die := func(format string, args ...any) int {
+		fmt.Fprintf(stderr, "benchreport: "+format+"\n", args...)
+		return 1
+	}
+
+	if err := os.MkdirAll(*outDir, 0o755); err != nil {
+		return die("mkdir %s: %v", *outDir, err)
+	}
+
+	goArgs := goTestArgs(*pkg, *benchTime, *count)
+	fmt.Fprintf(stderr, "benchreport: running go %s\n", strings.Join(goArgs, " "))
+	stdout, goStderr, err := goTest(goArgs)
+	if err != nil {
+		fmt.Fprint(stderr, goStderr)
+		return die("go test failed: %v", err)
+	}
+
+	// The child `go test` inherits this process's GOMAXPROCS (same machine,
+	// same environment), which is the -N suffix it appends to names.
+	results := parseBenchOutput(stdout, runtime.GOMAXPROCS(0))
 	if len(results) == 0 {
-		die("no benchmark results parsed — check %q actually contains benchmarks", *pkg)
+		return die("no benchmark results parsed — check %q actually contains benchmarks", *pkg)
 	}
 
 	report := Report{
 		SchemaVersion: "1",
-		Timestamp:     time.Now().UTC(),
+		Timestamp:     now().UTC(),
 		GoVersion:     runtime.Version(),
 		GOOS:          runtime.GOOS,
 		GOARCH:        runtime.GOARCH,
@@ -100,15 +124,30 @@ func main() {
 
 	jsonPath := filepath.Join(*outDir, "latest.json")
 	if err := writeJSON(jsonPath, report); err != nil {
-		die("writing %s: %v", jsonPath, err)
+		return die("writing %s: %v", jsonPath, err)
 	}
 	mdPath := filepath.Join(*outDir, "latest.md")
 	if err := writeMarkdown(mdPath, report); err != nil {
-		die("writing %s: %v", mdPath, err)
+		return die("writing %s: %v", mdPath, err)
 	}
 
-	fmt.Fprintf(os.Stderr, "benchreport: wrote %d results to %s and %s\n",
+	fmt.Fprintf(stderr, "benchreport: wrote %d results to %s and %s\n",
 		len(results), jsonPath, mdPath)
+	return 0
+}
+
+// goTestArgs is the `go test` invocation: benchmarks only (-run ^$), with
+// allocation stats, at the requested benchtime and count.
+func goTestArgs(pkg, benchTime string, count int) []string {
+	return []string{
+		"test",
+		"-run", "^$",
+		"-bench", ".",
+		"-benchmem",
+		"-benchtime", benchTime,
+		"-count", strconv.Itoa(count),
+		pkg,
+	}
 }
 
 // parseBenchOutput consumes `go test -bench` stdout and returns one
@@ -118,7 +157,9 @@ func main() {
 // Expected format:
 //
 //	BenchmarkName-8   	1234567	      123.4 ns/op	      45 B/op	       2 allocs/op
-func parseBenchOutput(out string) []Result {
+//
+// procs is the GOMAXPROCS the benchmarks ran with; see stripProcSuffix.
+func parseBenchOutput(out string, procs int) []Result {
 	var results []Result
 	scanner := bufio.NewScanner(strings.NewReader(out))
 	for scanner.Scan() {
@@ -130,7 +171,7 @@ func parseBenchOutput(out string) []Result {
 		if len(fields) < 4 {
 			continue
 		}
-		name := stripProcSuffix(fields[0])
+		name := stripProcSuffix(fields[0], procs)
 		iters, err := strconv.ParseInt(fields[1], 10, 64)
 		if err != nil {
 			continue
@@ -168,12 +209,17 @@ func parseBenchOutput(out string) []Result {
 }
 
 // stripProcSuffix turns "BenchmarkX-8" into "BenchmarkX" so the results
-// stay comparable across machines with different GOMAXPROCS.
-func stripProcSuffix(name string) string {
-	if i := strings.LastIndex(name, "-"); i > 0 {
-		if _, err := strconv.Atoi(name[i+1:]); err == nil {
-			return name[:i]
-		}
+// stay comparable across machines with different GOMAXPROCS. `go test`
+// appends "-<procs>" only when procs > 1, so only that exact suffix is
+// removed: a sub-benchmark whose own name ends in "-<digits>" (such as
+// "BenchmarkX/size-10" on a one-CPU runner) keeps its name.
+func stripProcSuffix(name string, procs int) string {
+	if procs <= 1 {
+		return name
+	}
+	suffix := "-" + strconv.Itoa(procs)
+	if len(name) > len(suffix) && strings.HasSuffix(name, suffix) {
+		return name[:len(name)-len(suffix)]
 	}
 	return name
 }
@@ -234,9 +280,4 @@ func humanInt(n int64) string {
 		}
 	}
 	return out.String()
-}
-
-func die(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "benchreport: "+format+"\n", args...)
-	os.Exit(1)
 }
