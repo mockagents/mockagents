@@ -87,9 +87,13 @@ jobs:
       - working-directory: sdk/npx
         run: npm ci --no-audit --no-fund && npm test && npm pack --pack-destination ../../candidate/npm
       - name: Build reusable platform images
+        # VERSION stamps the binary (--version) and the image's OCI version
+        # label; without it the published image reported "docker" (review O-06).
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          docker buildx build --platform linux/amd64 --tag mockagents-candidate:${GITHUB_SHA}-amd64 --output type=docker,dest=candidate/images/linux-amd64.tar .
-          docker buildx build --platform linux/arm64 --tag mockagents-candidate:${GITHUB_SHA}-arm64 --output type=docker,dest=candidate/images/linux-arm64.tar .
+          docker buildx build --platform linux/amd64 --build-arg VERSION="$VERSION" --tag mockagents-candidate:${GITHUB_SHA}-amd64 --output type=docker,dest=candidate/images/linux-amd64.tar .
+          docker buildx build --platform linux/arm64 --build-arg VERSION="$VERSION" --tag mockagents-candidate:${GITHUB_SHA}-arm64 --output type=docker,dest=candidate/images/linux-arm64.tar .
       - name: Record and scan exact candidate artifacts
         run: |
           set -euo pipefail
@@ -169,6 +173,14 @@ jobs:
           bash scripts/verify-candidate-artifacts.sh candidate
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             args=(release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "MockAgents ${TAG#v}")
+            # The curated notes in docs/release-notes/ are the release body;
+            # without them the body was a raw commit dump (review O-17).
+            notes="docs/release-notes/${TAG}.md"
+            if [[ -f "$notes" ]]; then
+              args+=(--notes-file "$notes")
+            else
+              args+=(--generate-notes)
+            fi
             [[ "$STABLE" == true ]] || args+=(--prerelease)
             gh "${args[@]}"
           fi
