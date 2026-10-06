@@ -80,10 +80,17 @@ export function LogsConsole({
   // — and, if it cannot catch up, where the resulting gap begins.
   const lastSeenRef = useRef<LastSeen | null>(newestSeen(initial.rows));
   const selRef = useRef<number | null>(sel);
-  selRef.current = sel;
+  // Mirrored after commit: the ref is only read from event handlers and
+  // callbacks, never during render.
+  useEffect(() => {
+    selRef.current = sel;
+  }, [sel]);
 
   // A new server-rendered page (filters changed) replaces the feed wholesale.
+  // This resets refs as well as state, so it stays an effect rather than a
+  // render-time adjustment.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setRows(initial.rows);
     setSel(initial.rows[0]?.id ?? null);
     lastSeenRef.current = newestSeen(initial.rows);
@@ -172,6 +179,8 @@ export function LogsConsole({
         // EventSource hides the status code, so probe the proxy to find out
         // whether this is a network problem or a rejected credential. Retrying
         // forever against a 401 would never recover and would never say why.
+        // The route implements HEAD explicitly as a one-row auth check, so the
+        // probe never opens a second upstream stream (api/logs/stream/route.ts).
         void fetch("/api/logs/stream", { method: "HEAD" })
           .then((res) => {
             if (disposed) return;

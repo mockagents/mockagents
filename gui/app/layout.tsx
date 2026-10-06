@@ -4,7 +4,9 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { getBaseUrl, getIdentity, getServerStatus, type Identity } from "@/lib/api";
-import { getAuthStatus, logout } from "@/lib/auth";
+import { logout } from "@/lib/auth";
+import { apiUrlVisible } from "@/lib/serverState";
+import { getAuthStatus } from "@/lib/session";
 import { InstrumentStrip, OfflineBar } from "./InstrumentStrip";
 import { Shell } from "./Shell";
 
@@ -43,6 +45,16 @@ export default async function RootLayout({
   const themeCookie = (await cookies()).get("mockagents-theme")?.value;
   const theme = themeCookie === "dark" ? "dark" : "light";
 
+  // 6.6: the upstream address is withheld from anonymous visitors of a
+  // multi-tenant deployment (see apiUrlVisible).
+  const apiUrl = apiUrlVisible(
+    identity,
+    status.liveness === "unreachable",
+    process.env.NODE_ENV !== "production",
+  )
+    ? getBaseUrl()
+    : null;
+
   async function logoutAction() {
     "use server";
     await logout();
@@ -53,12 +65,12 @@ export default async function RootLayout({
     <html lang="en" data-theme={theme}>
       <body>
         <Shell
-          apiUrl={getBaseUrl()}
+          apiUrl={apiUrl}
           instrument={
             <>
               <InstrumentStrip
                 status={status}
-                apiUrl={getBaseUrl()}
+                apiUrl={apiUrl}
                 role={identity?.role ?? null}
                 tenantId={identity?.tenant_id ?? null}
                 mode={identity?.mode ?? null}

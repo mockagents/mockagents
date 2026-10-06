@@ -187,14 +187,15 @@ function Details({ details }: { details: string | undefined }) {
   if (!details) return <span className="muted">—</span>;
   // details is a JSON blob (audit.MarshalDetails). Flatten to k=v pairs when it
   // parses; otherwise show the raw string so nothing is silently dropped.
+  let entries: [string, unknown][] | null = null;
   try {
-    const parsed = JSON.parse(details) as Record<string, unknown>;
-    const entries = Object.entries(parsed);
-    if (entries.length === 0) return <span className="muted">—</span>;
-    return <>{entries.map(([k, v]) => `${k}=${String(v)}`).join("  ")}</>;
+    entries = Object.entries(JSON.parse(details) as Record<string, unknown>);
   } catch {
-    return <>{details}</>;
+    entries = null;
   }
+  if (entries === null) return <>{details}</>;
+  if (entries.length === 0) return <span className="muted">—</span>;
+  return <>{entries.map(([k, v]) => `${k}=${String(v)}`).join("  ")}</>;
 }
 
 function fmtWhen(iso: string): string {

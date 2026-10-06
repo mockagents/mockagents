@@ -22,8 +22,9 @@ import {
 
 export interface InstrumentStripProps {
   status: ServerStatus;
-  /** Base URL of the server being inspected. */
-  apiUrl: string;
+  /** Base URL of the server being inspected, or null when it is withheld from
+   * this visitor (review 6.6). */
+  apiUrl: string | null;
   /** Server-reported role, or null when unknown/local. */
   role: string | null;
   tenantId: string | null;
@@ -61,7 +62,7 @@ export function InstrumentStrip({ status, apiUrl, role, tenantId, mode }: Instru
     // status role plus label still describe what was reached.
     <div className="strip" role="status" aria-label="server context" tabIndex={0}>
       <Cell label="server">
-        <span className="mono">{apiUrl}</span>
+        {apiUrl ? <span className="mono">{apiUrl}</span> : <span className="muted">withheld until sign-in</span>}
       </Cell>
 
       <Cell label="liveness">

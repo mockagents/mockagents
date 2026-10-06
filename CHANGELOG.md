@@ -96,6 +96,8 @@ Fixes from the 2026-10-06 full-application quality review (see
 - Gemini `:countTokens` returns `{"totalTokens": N}` without running the agent;
   other unsupported methods return `404 NOT_FOUND` instead of being served as
   `generateContent`.
+- **GUI `npm run lint` works again.** `next lint` was removed in Next.js 16; the script now runs ESLint 9 with `eslint-config-next` (flat config `gui/eslint.config.mjs`), with the react-hooks rules as errors, and the CI GUI job runs it. Because the GUI compiles with TypeScript 7, which has no JavaScript compiler API, the config points typescript-eslint at `@typescript/typescript6` inside the ESLint process only (needs Node ≥ 22.15).
+- **GUI:** removed the dead `mockagents_role` legacy-cookie cleanup and the empty `experimental: {}` block in `next.config.ts` (its comment described behaviour it did not have).
 
 ### Fixed
 
@@ -268,6 +270,11 @@ Fixes from the 2026-10-06 full-application quality review (see
 - **Docs: the JS packages are ESM-only.** The `@mockagents/vitest` Jest
   section claimed plain Jest worked. Jest's default CommonJS runtime cannot
   load these packages; the docs now cover Jest's ESM mode.
+- **GUI guided form (`lib/yamlPath.ts`):** a trailing `# comment` is no longer read as part of a value (editing `model: gpt-4o  # prod` used to write the comment into the value); `key:  # comment` is treated as a mapping parent rather than "holds a scalar"; quoted keys (`"name": a`) resolve, and keep their quoting on rewrite; `encodeScalar` quotes every string YAML would resolve to a non-string (`1e3`, `0x1F`, `0o17`, `1_000`, `.inf`, `-.inf`, `.nan`, `~`, `y`/`n`, …) and escapes control characters so a value stays on one line (review K-17).
+- **GUI live log feed:** the credential probe used `HEAD /api/logs/stream`, which Next.js answers by running the GET handler — opening a real upstream SSE subscription per probe. The route now implements `HEAD` as a one-row `GET /api/v1/logs` auth check. The stream also sends an SSE comment first, so a quiet server no longer leaves the console on "reconnecting" until the first log event.
+- **GUI editors:** the agent editor, pipeline editor and `/editor` now ask before a reload, tab close, or in-app link click discards unsaved work (`lib/useUnsavedChanges.ts`). Browser back/forward during client-side navigation is not intercepted.
+- **GUI:** the agent link on a log entry percent-encodes the agent name like every other agent link.
+- **GUI:** fixed the issues the newly enforced lint surfaced: a missing React `key`, JSX constructed inside `try/catch` (logs and audit pages), a ref written during render (log console), and the pipeline editor's validation flag set synchronously inside an effect (now derived).
 
 ### Added
 
@@ -290,6 +297,14 @@ Fixes from the 2026-10-06 full-application quality review (see
   `AssistantMessage(resp)` (Go) build the assistant turn.
 - Go `Expectation.ToHaveToolCallCountByName`, matching the TS/Python named
   tool-call count.
+
+### Security
+
+- **GUI: `?error=` no longer renders URL text.** `/login`, `/account`, `/admin/tenants`, `/admin/tenants/{id}` and the agent catalog carried free-text errors in the query string and printed them verbatim, so a crafted link could show phishing copy under the console's chrome. They now carry a short error code mapped to fixed copy (`gui/lib/errors.ts`); unknown values render a generic message. Upstream detail for a failed admin action travels through the server-side flash store, never the URL (review K-18).
+- **GUI: raw upstream error bodies are no longer forwarded to the browser.** Every management-API failure is reduced to the server's own `{"error": …}` message, stripped of control characters and capped at 200 characters; an HTML proxy page or stack trace is dropped (`saveAgentYAML`, `saveAgent`, `savePipeline`, `runPipeline`, `fetchJSON`).
+- **GUI: nonce-based Content-Security-Policy.** Pages get a per-request script nonce via `gui/proxy.ts`; `script-src` no longer allows `'unsafe-inline'` (it uses `'nonce-…' 'strict-dynamic'`). Route handlers get `default-src 'none'`. `Strict-Transport-Security: max-age=63072000; includeSubDomains` is sent in production builds.
+- **GUI: the internal `MOCKAGENTS_API_URL` is no longer shown to anonymous visitors** of a multi-tenant deployment (sidebar, instrument strip, catalog lede). It stays visible in local mode, to signed-in callers, and in development builds when the server is unreachable (review 6.6).
+- **GUI: `getAuthStatus` is no longer a client-callable Server Action.** Read-only session helpers moved from the `"use server"` module `lib/auth.ts` to the plain server module `lib/session.ts` (review 6.7).
 
 ## [0.5.0] - 2026-09-09
 

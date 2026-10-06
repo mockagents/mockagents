@@ -170,3 +170,24 @@ export function buildChecklist(input: OnboardingInput): ChecklistItem[] {
 
   return items;
 }
+
+/** Whether the shell may display the management API's URL (review 6.6).
+ *
+ * MOCKAGENTS_API_URL is often an internal address (a cluster service name, a
+ * private host behind the GUI's reverse proxy). Showing it to every visitor —
+ * including on the unauthenticated /login page of a multi-tenant deployment —
+ * is a small but needless disclosure. So it is shown only when:
+ *   - the server says it runs in local mode (single-tenant: there is no access
+ *     control to protect, and the URL is the first thing a developer needs);
+ *   - the caller is authenticated; or
+ *   - this is a development build and the server cannot be reached, which is
+ *     exactly when a developer needs to see which address is failing.
+ * Everyone else sees that the address is withheld, not a guess. */
+export function apiUrlVisible(
+  identity: { mode: string; authenticated: boolean } | null,
+  unreachable: boolean,
+  isDev: boolean,
+): boolean {
+  if (identity) return identity.mode === "local" || identity.authenticated;
+  return unreachable && isDev;
+}

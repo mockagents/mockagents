@@ -10,10 +10,13 @@ import {
   listTenants,
   Tenant,
 } from "@/lib/api";
-import { getAuthStatus } from "@/lib/auth";
+import { errorRedirect, flashedErrorDetail, withErrorCode } from "@/lib/actionError";
+import { takeFlash } from "@/lib/flash";
 import { Icon } from "@/lib/icons";
+import { getAuthStatus } from "@/lib/session";
 
 import { DangerConfirm } from "../../DangerConfirm";
+import { ErrorBanner } from "../../ErrorBanner";
 
 type PageProps = {
   searchParams: Promise<{ error?: string; created?: string }>;
@@ -32,6 +35,18 @@ export default async function TenantsAdminPage({ searchParams }: PageProps) {
   const auth = await getAuthStatus();
   if (!auth) redirect("/login?next=/admin/tenants");
 
+  // Upstream detail for a failed action arrives through the single-read flash
+  // store, never the URL (K-18).
+  let errorDetail: string | null = null;
+  const flashRaw = await takeFlash();
+  if (flashRaw) {
+    try {
+      errorDetail = flashedErrorDetail(JSON.parse(flashRaw));
+    } catch {
+      /* ignore malformed flash */
+    }
+  }
+
   let tenants: Tenant[] | null;
   try {
     tenants = await listTenants();
@@ -44,7 +59,10 @@ export default async function TenantsAdminPage({ searchParams }: PageProps) {
       return (
         <div>
           <h1 className="page-title">Tenants</h1>
-          <div className="banner banner-error">{err.message}</div>
+          <div className="banner banner-error">
+            Could not list tenants: the server returned {err.status}
+            {err.detail ? ` (${err.detail})` : ""}.
+          </div>
         </div>
       );
     }
@@ -90,15 +108,14 @@ export default async function TenantsAdminPage({ searchParams }: PageProps) {
   async function createAction(formData: FormData) {
     "use server";
     const name = (formData.get("name") ?? "").toString().trim();
-    if (!name) redirect("/admin/tenants?error=name+is+required");
+    if (!name) redirect(withErrorCode("/admin/tenants", "name_required"));
     try {
       const tenant = await createTenant(name);
       revalidatePath("/admin/tenants");
       redirect(`/admin/tenants?created=${encodeURIComponent(tenant.id)}`);
     } catch (err) {
-      if (err instanceof APIError) {
-        redirect(`/admin/tenants?error=${encodeURIComponent(err.message)}`);
-      }
+      const to = await errorRedirect("/admin/tenants", err);
+      if (to) redirect(to);
       throw err;
     }
   }
@@ -111,9 +128,8 @@ export default async function TenantsAdminPage({ searchParams }: PageProps) {
       await deleteTenant(id);
       revalidatePath("/admin/tenants");
     } catch (err) {
-      if (err instanceof APIError) {
-        redirect(`/admin/tenants?error=${encodeURIComponent(err.message)}`);
-      }
+      const to = await errorRedirect("/admin/tenants", err);
+      if (to) redirect(to);
       throw err;
     }
   }
@@ -144,8 +160,10 @@ export default async function TenantsAdminPage({ searchParams }: PageProps) {
         </form>
       </div>
 
-      {error && <div className="banner banner-error">{error}</div>}
-      {created && (
+      <ErrorBanner code={error} detail={errorDetail} />
+      {/* `created` is from the URL too: only announce an id that is actually
+          in the list, so a crafted link cannot put its own text here. */}
+      {created && tenants.some((t) => t.id === created) && (
         <div className="banner banner-ok">
           <div className="row gap-2">
             <Icon name="check-circle" size={16} />
