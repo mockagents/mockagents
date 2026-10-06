@@ -61,27 +61,99 @@ function isFlow(valuePart: string): boolean {
   return v.startsWith("{") || v.startsWith("[");
 }
 
-/** Split `key: value` on a line, honouring quotes so a colon inside a quoted
- * string is not mistaken for the separator. Returns null when the line is not
- * a mapping entry. */
-function splitEntry(text: string): { key: string; value: string } | null {
-  let quote: string | null = null;
+/** Split `key: value` on a line. A key may be quoted (`"name": a`), and a
+ * colon inside a quoted key is not the separator. Returns the decoded key (no
+ * quotes) and its raw text, or null when the line is not a mapping entry. */
+function splitEntry(text: string): { key: string; rawKey: string; value: string } | null {
+  if (text[0] === '"' || text[0] === "'") {
+    const close = closingQuote(text, 0);
+    if (close < 0) return null;
+    let i = close + 1;
+    while (text[i] === " ") i++;
+    if (text[i] !== ":" || (i + 1 < text.length && !/\s/.test(text[i + 1]))) return null;
+    const rawKey = text.slice(0, close + 1);
+    return { key: decodeQuoted(rawKey), rawKey, value: text.slice(i + 1) };
+  }
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
-    if (quote) {
-      if (c === quote && text[i - 1] !== "\\") quote = null;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      quote = c;
-      continue;
-    }
-    if (c === "#") return null; // a comment before any colon
+    // A `#` that starts the text or follows whitespace opens a comment.
+    if (c === "#" && (i === 0 || /\s/.test(text[i - 1]))) return null;
     if (c === ":" && (i + 1 >= text.length || /\s/.test(text[i + 1]))) {
-      return { key: text.slice(0, i).trim(), value: text.slice(i + 1) };
+      const rawKey = text.slice(0, i).trim();
+      return { key: rawKey, rawKey, value: text.slice(i + 1) };
     }
   }
   return null;
+}
+
+/** Index of the quote that closes the quoted scalar opening at `start`, or -1.
+ * Double quotes use backslash escapes; single quotes escape as `''`. */
+function closingQuote(text: string, start: number): number {
+  const q = text[start];
+  for (let i = start + 1; i < text.length; i++) {
+    const c = text[i];
+    if (q === '"' && c === "\\") {
+      i++; // skip the escaped character
+      continue;
+    }
+    if (c === q) {
+      if (q === "'" && text[i + 1] === "'") {
+        i++; // '' is an escaped single quote
+        continue;
+      }
+      return i;
+    }
+  }
+  return -1;
+}
+
+const DOUBLE_QUOTE_ESCAPES: Record<string, string> = {
+  n: "\n",
+  t: "\t",
+  r: "\r",
+  "0": "\0",
+  '"': '"',
+  "\\": "\\",
+  "/": "/",
+};
+
+/** Decode a complete quoted scalar, quotes included. */
+function decodeQuoted(t: string): string {
+  const body = t.slice(1, -1);
+  if (t[0] === "'") return body.replace(/''/g, "'");
+  let out = "";
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c !== "\\" || i + 1 >= body.length) {
+      out += c;
+      continue;
+    }
+    const n = body[++i];
+    out += DOUBLE_QUOTE_ESCAPES[n] ?? "\\" + n;
+  }
+  return out;
+}
+
+/** Split a raw value into its scalar text and any trailing comment. Quote
+ * aware, so `"a # b"` is a value rather than a comment. In a plain scalar a
+ * comment starts at a `#` that begins the value or follows whitespace. */
+function splitComment(raw: string): { value: string; comment: string | null } {
+  const t = raw.trim();
+  if (t[0] === '"' || t[0] === "'") {
+    const close = closingQuote(t, 0);
+    if (close >= 0) {
+      const rest = t.slice(close + 1).trim();
+      if (rest === "") return { value: t.slice(0, close + 1), comment: null };
+      if (rest.startsWith("#")) return { value: t.slice(0, close + 1), comment: rest };
+    }
+    // Unterminated, or text after the closing quote: fall through as plain.
+  }
+  for (let i = 0; i < t.length; i++) {
+    if (t[i] === "#" && (i === 0 || /\s/.test(t[i - 1]))) {
+      return { value: t.slice(0, i).trimEnd(), comment: t.slice(i) };
+    }
+  }
+  return { value: t, comment: null };
 }
 
 /** Resolve the indentation of the keys directly inside a region. */
@@ -97,6 +169,8 @@ interface KeyHit {
   line: number;
   /** Column where the key starts (after `- ` for a first-in-item key). */
   keyStart: number;
+  /** The key exactly as written (quotes included), so a rewrite keeps it. */
+  rawKey: string;
   value: string;
 }
 
@@ -116,7 +190,12 @@ function findKey(lines: string[], region: Region, key: string): PathResult<KeyHi
       const after = line.slice(dashAt + DASH.length);
       const entry = splitEntry(after);
       if (entry && entry.key === key) {
-        hits.push({ line: region.dashLine, keyStart: dashAt + DASH.length, value: entry.value });
+        hits.push({
+          line: region.dashLine,
+          keyStart: dashAt + DASH.length,
+          rawKey: entry.rawKey,
+          value: entry.value,
+        });
       }
     }
   }
@@ -129,7 +208,9 @@ function findKey(lines: string[], region: Region, key: string): PathResult<KeyHi
     if (ind !== indent) continue; // nested deeper: not a direct child
     if (line.trimStart().startsWith(DASH.trim())) continue; // a list item, not a key
     const entry = splitEntry(line.trimStart());
-    if (entry && entry.key === key) hits.push({ line: i, keyStart: ind, value: entry.value });
+    if (entry && entry.key === key) {
+      hits.push({ line: i, keyStart: ind, rawKey: entry.rawKey, value: entry.value });
+    }
   }
 
   if (hits.length > 1) {
@@ -201,7 +282,8 @@ function locate(
     if (isFlow(hit.value.value)) {
       return { ok: false, reason: `"${seg}" uses inline flow syntax, which this form does not edit` };
     }
-    if (hit.value.value.trim() !== "" && !isBlockScalar(hit.value.value)) {
+    // `spec:  # comment` is still a mapping key; only a real value is a scalar.
+    if (splitComment(hit.value.value).value !== "" && !isBlockScalar(hit.value.value)) {
       return { ok: false, reason: `"${seg}" holds a scalar, so "${path}" does not exist` };
     }
     region = childRegion(lines, hit.value.line, indentOf(lines[hit.value.line]));
@@ -213,31 +295,51 @@ function locate(
   return { ok: true, value: { region, leaf, hit: hit.value } };
 }
 
-/** Strip surrounding quotes and a trailing comment from a scalar value. */
+/** Strip a trailing comment and any surrounding quotes from a scalar value. */
 function decodeScalar(raw: string): string {
-  const t = raw.trim();
-  if (t.startsWith('"') && t.endsWith('"') && t.length >= 2) {
-    return t.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  const { value } = splitComment(raw);
+  if (
+    value.length >= 2 &&
+    (value[0] === '"' || value[0] === "'") &&
+    closingQuote(value, 0) === value.length - 1
+  ) {
+    return decodeQuoted(value);
   }
-  if (t.startsWith("'") && t.endsWith("'") && t.length >= 2) {
-    return t.slice(1, -1).replace(/''/g, "'");
-  }
-  return t;
+  return value;
 }
 
+// Plain scalars a YAML loader resolves to something other than a string: the
+// YAML 1.2 core schema (null, bool, int incl. 0o/0x, float incl. exponents and
+// .inf/.nan) plus the YAML 1.1 forms many loaders still apply (y/n/yes/no/
+// on/off, 0b binary, `1_000` separators). Sexagesimal `1:20` contains a colon
+// and is caught by the punctuation rule.
+const NON_STRING_PLAIN: RegExp[] = [
+  /^(?:null|~)$/i,
+  /^(?:true|false|y|n|yes|no|on|off)$/i,
+  /^[-+]?\.?[0-9]/, // anything that starts like a number: 1e3, 0x1F, .5, +1
+  /^[-+]?\.(?:inf|nan)$/i,
+];
+
 /** Quote a value when YAML would otherwise misread it. Conservative: anything
- * that is not plainly safe gets double-quoted. */
+ * that is not plainly safe gets double-quoted. Control characters are escaped
+ * so the value always stays on one line. */
 export function encodeScalar(value: string): string {
   if (value === "") return '""';
   const needsQuote =
     /^[\s]|[\s]$/.test(value) ||
     /[:#{}[\],&*!|>'"%@`]/.test(value) ||
     /^[-?]/.test(value) ||
-    /^(true|false|null|yes|no|on|off|~)$/i.test(value) ||
-    /^[0-9.+-]+$/.test(value) ||
-    value.includes("\n");
+    NON_STRING_PLAIN.some((re) => re.test(value)) ||
+    /[\x00-\x1f\x7f]/.test(value);
   if (!needsQuote) return value;
-  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  const escaped = value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r")
+    .replace(/\t/g, "\\t")
+    .replace(/\0/g, "\\0");
+  return `"${escaped}"`;
 }
 
 /** Read the scalar at a dotted path. `value: null` means the key is absent. */
@@ -272,11 +374,12 @@ export function writeScalar(yaml: string, path: string, value: string): PathResu
     if (isFlow(hit.value)) {
       return { ok: false, reason: `"${path}" uses inline flow syntax, which this form does not edit` };
     }
-    // Preserve any trailing comment on the line.
-    const comment = hit.value.match(/\s+(#.*)$/);
+    // Preserve any trailing comment on the line. Quote aware, so a `#` inside
+    // the old quoted value is not mistaken for one.
+    const { comment } = splitComment(hit.value);
     const line = lines[hit.line];
-    const head = line.slice(0, hit.keyStart) + leaf + ": ";
-    lines[hit.line] = head + encodeScalar(value) + (comment ? " " + comment[1] : "");
+    const head = line.slice(0, hit.keyStart) + hit.rawKey + ": ";
+    lines[hit.line] = head + encodeScalar(value) + (comment ? " " + comment : "");
     return { ok: true, value: lines.join("\n") };
   }
 
