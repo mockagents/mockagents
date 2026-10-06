@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+
+	"gopkg.in/yaml.v3"
 )
 
 // ValidateDocuments runs cross-document reference checks across a
@@ -66,6 +68,8 @@ func ValidateDocuments(docs *Documents) *ValidationErrorList {
 		firstVectorFile[key] = vr.FilePath
 	}
 
+	firstClaim := map[string]string{}
+
 	// Build name indexes once. Both Agents and Pipelines are
 	// keyed by metadata.name — the same identifier the refs use.
 	agentNames := make(map[string]struct{}, len(docs.Agents))
@@ -86,7 +90,8 @@ func ValidateDocuments(docs *Documents) *ValidationErrorList {
 		// by model too. A request for the lost agent then resolves to whatever
 		// comes next rather than 404ing. Recursive scanning made this easy to
 		// hit, since organizing agents into subdirectories is the point of it.
-		if prev, dup := firstAgentFile[name]; dup {
+		key := ar.Definition.Metadata.TenantID + "\x00" + name
+		if prev, dup := firstAgentFile[key]; dup {
 			ctx := &validationContext{file: ar.FilePath, node: ar.Node}
 			ctx.addError(
 				"metadata.name",
@@ -96,9 +101,34 @@ func ValidateDocuments(docs *Documents) *ValidationErrorList {
 			errs = append(errs, ctx.errors...)
 			continue
 		}
-		firstAgentFile[name] = ar.FilePath
+		firstAgentFile[key] = ar.FilePath
 		agentNames[name] = struct{}{}
 	}
+	// Duplicate names in the other named kinds are the same bug as duplicate
+	// agents: the pipeline registry keeps the last one registered, `mcp
+	// --server` and `a2a --server` pick the first match, and two suites with
+	// one name share runner session keys. None of them used to be reported.
+	for _, pr := range docs.Pipelines {
+		if pr != nil && pr.Definition != nil {
+			errs = append(errs, claimName(firstClaim, "pipeline", pr.Definition.Metadata.TenantID, pr.Definition.Metadata.Name, pr.FilePath, pr.Node)...)
+		}
+	}
+	for _, sr := range docs.TestSuites {
+		if sr != nil && sr.Definition != nil {
+			errs = append(errs, claimName(firstClaim, "test suite", sr.Definition.Metadata.TenantID, sr.Definition.Metadata.Name, sr.FilePath, sr.Node)...)
+		}
+	}
+	for _, mr := range docs.MCPServers {
+		if mr != nil && mr.Definition != nil {
+			errs = append(errs, claimName(firstClaim, "MCP server", mr.Definition.Metadata.TenantID, mr.Definition.Metadata.Name, mr.FilePath, mr.Node)...)
+		}
+	}
+	for _, ar := range docs.A2AServers {
+		if ar != nil && ar.Definition != nil {
+			errs = append(errs, claimName(firstClaim, "A2A server", ar.Definition.Metadata.TenantID, ar.Definition.Metadata.Name, ar.FilePath, ar.Node)...)
+		}
+	}
+
 	// For pipelines we additionally record the node-id set so
 	// assertions that carry a node_id can be checked against the
 	// pipeline they target.
@@ -213,4 +243,23 @@ func ValidateDocuments(docs *Documents) *ValidationErrorList {
 		return nil
 	}
 	return &ValidationErrorList{Errors: errs}
+}
+
+// claimName records (kind, tenant, name) as claimed by file and returns an
+// error when an earlier file already claimed it. Unnamed documents are left to
+// the per-document validator.
+func claimName(claims map[string]string, kind, tenant, name, file string, node *yaml.Node) []*ValidationError {
+	if name == "" {
+		return nil
+	}
+	key := kind + "\x00" + tenant + "\x00" + name
+	if prev, dup := claims[key]; dup {
+		ctx := &validationContext{file: file, node: node}
+		ctx.addError("metadata.name",
+			fmt.Sprintf("%s name %q is already used by %s", kind, name, prev),
+			"Rename one of them: only one definition can answer to a name, and the other is silently shadowed.")
+		return ctx.errors
+	}
+	claims[key] = file
+	return nil
 }

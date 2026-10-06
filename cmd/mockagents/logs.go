@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -35,11 +37,15 @@ func init() {
 	logsCmd.Flags().StringVar(&logsSince, "since", "", "Show logs since duration (e.g., 1h, 30m)")
 	logsCmd.Flags().IntVar(&logsLimit, "limit", 50, "Maximum number of results")
 	logsCmd.Flags().StringVar(&logsOutputFmt, "output", "table", "Output format: table or json")
-	logsCmd.Flags().StringVar(&logsDBPath, "db", ".mockagents.db", "Path to SQLite database")
+	logsCmd.Flags().StringVar(&logsDBPath, "db", "", "Path to SQLite database (default: .mockagents.db in $MOCKAGENTS_DATA_DIR, else the current directory)")
 }
 
 func runLogs(cmd *cobra.Command, args []string) error {
-	store, err := storage.NewSQLiteStore(logsDBPath)
+	dbPath, err := resolveLogsDB(logsDBPath)
+	if err != nil {
+		return err
+	}
+	store, err := storage.NewSQLiteStore(dbPath)
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
@@ -68,6 +74,28 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		return printLogsJSON(logs)
 	}
 	return printLogsTable(logs)
+}
+
+// resolveLogsDB picks the database `logs` reads: --db when given, else the file
+// `start` writes (honouring MOCKAGENTS_DATA_DIR). A missing file is an error.
+// Opening it anyway used to create an empty database in the current directory
+// and report "No interaction logs found." with exit 0 — a false negative from
+// a read-only command, with a write side effect.
+func resolveLogsDB(flag string) (string, error) {
+	path := strings.TrimSpace(flag)
+	if path == "" {
+		path = ".mockagents.db"
+		if dir := strings.TrimSpace(os.Getenv("MOCKAGENTS_DATA_DIR")); dir != "" {
+			path = filepath.Join(dir, path)
+		}
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("no interaction log database at %s (has `mockagents start` run here? pass --db or set MOCKAGENTS_DATA_DIR)", path)
+		}
+		return "", fmt.Errorf("accessing %s: %w", path, err)
+	}
+	return path, nil
 }
 
 func printLogsTable(logs []storage.InteractionLog) error {

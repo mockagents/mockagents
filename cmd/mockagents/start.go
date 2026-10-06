@@ -120,6 +120,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	logger := newLogger(logLevel, jsonLogs)
+	// Package-level slog calls (registry collision warnings, the engine's
+	// per-request lines) must honour --json-logs and --log-level too, or a
+	// JSON log stream carries stray text lines.
+	slog.SetDefault(logger)
 	// Quota defaults are read up front so a typo fails the start, not the
 	// enforcement (an unparsable limit used to mean "unlimited").
 	quotaDefaults, err := quotaDefaultsFromEnv()

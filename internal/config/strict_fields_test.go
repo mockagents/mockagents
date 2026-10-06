@@ -199,3 +199,14 @@ func TestMultiDocument_LeadingAndTrailingSeparatorsAreFine(t *testing.T) {
 		})
 	}
 }
+
+// A UTF-8 BOM made encoding/json reject an otherwise valid .json file (C-15).
+func TestLoadFile_JSONWithBOM(t *testing.T) {
+	body := `{"apiVersion":"mockagents/v1","kind":"Agent","metadata":{"name":"bom"},"spec":{"protocol":"openai-chat-completions","model":"m","behavior":{"scenarios":[{"name":"d","response":{"content":"x"}}]}}}`
+	path := filepath.Join(t.TempDir(), "bom.json")
+	require.NoError(t, os.WriteFile(path, append([]byte{0xEF, 0xBB, 0xBF}, body...), 0o644))
+	res, err := LoadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "bom", res.Definition.Metadata.Name)
+	assert.Empty(t, ValidateBytes(append([]byte{0xEF, 0xBB, 0xBF}, body...)).Errors)
+}

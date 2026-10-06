@@ -130,6 +130,17 @@ type Change struct {
 func Diff(old, new *Contract) []Change {
 	var changes []Change
 
+	// Different names mean the two inputs describe different agents, so every
+	// "no change" verdict below would compare unrelated contracts and let a
+	// mis-pointed CI gate pass.
+	if old.Name != new.Name {
+		changes = append(changes, Change{
+			Severity: SeverityBreaking,
+			Path:     "name",
+			Message:  fmt.Sprintf("agent name changed %q -> %q (are both inputs the same agent?)", old.Name, new.Name),
+		})
+	}
+
 	if old.Protocol != new.Protocol {
 		changes = append(changes, Change{
 			Severity: SeverityBreaking,

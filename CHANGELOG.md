@@ -10,6 +10,60 @@ milestones that preceded it; all are on `main`.
 
 ---
 
+## [Unreleased]
+
+Fixes from the 2026-10-06 full-application quality review (see
+`docs/reviews/2026-10-06-quality-*.md`).
+
+### Changed
+
+- **Unknown fields are now validation errors on every authoring path.** A
+  misspelled or unsupported key used to be silently dropped by `validate`,
+  `start`, `test`, the GUI validator, `mockagents add` and MCP management, so a
+  typo such as `streming:` or `args:` (for `arguments:`) quietly disabled what
+  it configured, and a TestSuite assertion could pass without checking
+  anything. Each unknown key is now reported with its line and a did-you-mean
+  suggestion, matching the JSON schemas' `additionalProperties: false`. `start`
+  skips such a document with an error log, as it does any invalid document.
+  **Migration:** run `mockagents validate` and fix or remove the reported keys.
+  The agent write API now rejects unknown fields on every write; before, only
+  conditional (`If-Match` / `If-None-Match`) writes did.
+- **A file may hold only one YAML document.** Everything after the first `---`
+  used to be ignored silently; a second document is now an error naming its
+  line. Split multi-document files into one file per definition.
+- A TestSuite case must declare at least one assertion.
+- `mockagents validate` exits 1 when it finds no documents (`--allow-empty`
+  restores the old behaviour), exits 2 for a missing path or an unknown
+  `--format`, and in `--format json` mode writes exactly one JSON document to
+  stdout.
+- `mockagents rm` asks before deleting the agent's source file and refuses
+  without `--yes` when not on a terminal; `--keep-file` unregisters only
+  (`DELETE /api/v1/agents/{name}?keep_file=true`). The delete response reports
+  `persisted: true` when a file was removed.
+- `mockagents logs` reads the database `start` writes (honouring
+  `MOCKAGENTS_DATA_DIR`) and reports a missing database instead of creating an
+  empty one.
+
+### Fixed
+
+- `mockagents init --force` no longer deletes files you wrote in `agents/` and
+  `tests/`; it removes only unedited files a previous template shipped.
+- `mockagents mcp` and `mockagents a2a` validate the selected definition before
+  serving it (an invalid fault `status_code` used to panic every request).
+- Duplicate names are reported for pipelines, test suites, MCP servers and A2A
+  servers, not only agents; duplicates are keyed by tenant, and a file passed
+  twice is no longer reported as a duplicate of itself.
+- `mockagents contract diff` reports comparing two different agents as a
+  breaking change, rejects unknown keys in contract JSON, accepts JSON agent
+  definitions, and refuses an invalid agent definition.
+- Errors print once (no usage dump on runtime errors); `--json-logs` and
+  `--log-level` apply to every log line; `--no-color` works in any spelling and
+  colour is off when stdout is not a terminal; `test` prints FAIL lines on
+  stdout next to their failure details.
+- `.json` definitions with a UTF-8 byte-order mark load.
+
+---
+
 ## [0.5.0] - 2026-09-09
 
 This release is dominated by the **production-readiness audit** of 2026-09-03

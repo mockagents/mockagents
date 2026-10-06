@@ -24,7 +24,7 @@ mockagents init [project-name] [flags]
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--force` | | `false` | Overwrite existing files |
+| `--force` | | `false` | Overwrite the files the scaffold writes. Files another template wrote are removed only if unedited; your own files are never touched |
 | `--template` | `-t` | `basic` | Starter pack to scaffold (see `--list-templates`) |
 | `--list-templates` | | `false` | List available starter packs and exit |
 
@@ -149,16 +149,28 @@ mockagents validate [file|directory...] [flags]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--format` | `text` | Output format: text or json |
+| `--format` | `text` | Output format: `text` or `json` (anything else is a usage error) |
 | `--strict` | `false` | Treat warnings as errors |
+| `--allow-empty` | `false` | Succeed when no documents are found |
 
 **Exit Codes:**
 
 | Code | Meaning |
 |------|---------|
 | 0 | All definitions valid |
-| 1 | Validation errors found |
-| 2 | Unexpected error |
+| 1 | Validation or load errors found, or no documents found (without `--allow-empty`) |
+| 2 | A path does not exist, or a flag is invalid |
+
+Validation is strict: an unknown or misspelled key is an error that names the
+line and suggests the closest known field, and a file may hold only one YAML
+document (a second `---` document is an error). Duplicate names are reported for
+every kind, not just agents.
+
+`--format json` writes exactly one JSON document to stdout and nothing else:
+
+```json
+{"valid": false, "files": 3, "errors": [...], "load_errors": ["..."], "warnings": [...]}
+```
 
 **Examples:**
 
@@ -183,7 +195,7 @@ it instead (`PUT /api/v1/agents/{name}`). `rm` deletes by name.
 
 ```
 mockagents add <file> [--replace] [--server URL] [--api-key KEY]
-mockagents rm  <name>  [--server URL] [--api-key KEY]
+mockagents rm  <name>  [--yes | --keep-file] [--server URL] [--api-key KEY]
 ```
 
 | Flag | Default | Description |
@@ -191,6 +203,8 @@ mockagents rm  <name>  [--server URL] [--api-key KEY]
 | `--server`  | `$MOCKAGENTS_SERVER` or `http://localhost:8080` | Base URL of the running server |
 | `--api-key` | `$MOCKAGENTS_API_KEY` | API key (editor+) for multi-tenant servers |
 | `--replace` | `false` | Upsert via PUT instead of failing on a name conflict (`add` only) |
+| `--yes`, `-y` | `false` | Delete the agent's source file without asking (`rm` only) |
+| `--keep-file` | `false` | Unregister the agent but leave its source file on disk (`rm` only) |
 
 ```bash
 # Hot-add a new agent (fails if it already exists)
@@ -202,9 +216,15 @@ mockagents add agents/my-agent.yaml --replace
 # Against a remote, authenticated server
 mockagents add agents/my-agent.yaml --server https://mock.example.com --api-key mas_...
 
-# Delete it again
-mockagents rm my-agent
+# Delete it again, including the file it was loaded from
+mockagents rm my-agent --yes
+
+# Stop serving it but keep the file
+mockagents rm my-agent --keep-file
 ```
+
+`rm` deletes the file the agent was loaded from, even a hand-written one, so it
+asks for confirmation on a terminal and refuses without `--yes` otherwise.
 
 The file is validated server-side with the same rules as `mockagents validate`;
 a rejected write prints the server's error and exits non-zero. The agent is owned
@@ -229,7 +249,7 @@ mockagents logs [flags]
 | `--since` | | Show logs from duration ago (e.g., `1h`, `30m`) |
 | `--limit` | `50` | Maximum results |
 | `--output` | `table` | Output format: table or json |
-| `--db` | `.mockagents.db` | SQLite database path |
+| `--db` | `$MOCKAGENTS_DATA_DIR/.mockagents.db`, else `./.mockagents.db` | SQLite database path. A missing database is an error, never created |
 
 **Examples:**
 

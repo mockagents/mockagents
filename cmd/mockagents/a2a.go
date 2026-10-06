@@ -76,12 +76,12 @@ func selectA2AServer(docs *config.Documents, agentsDir string) (*types.A2AServer
 	case a2aServerName != "":
 		for _, r := range docs.A2AServers {
 			if r.Definition.Metadata.Name == a2aServerName {
-				return r.Definition, nil
+				return validA2AServer(r)
 			}
 		}
 		return nil, fmt.Errorf("a2a server %q not found in %q", a2aServerName, agentsDir)
 	case len(docs.A2AServers) == 1:
-		return docs.A2AServers[0].Definition, nil
+		return validA2AServer(docs.A2AServers[0])
 	default:
 		names := make([]string, 0, len(docs.A2AServers))
 		for _, r := range docs.A2AServers {
@@ -89,6 +89,16 @@ func selectA2AServer(docs *config.Documents, agentsDir string) (*types.A2AServer
 		}
 		return nil, fmt.Errorf("multiple A2AServer definitions loaded; pick one with --server (%v)", names)
 	}
+}
+
+// validA2AServer refuses to serve a definition its validator rejects. Serving
+// one used to be possible because only `validate` ran the validator: a fault
+// status_code of 42 then panicked net/http on every request.
+func validA2AServer(r *config.A2AServerLoadResult) (*types.A2AServerDefinition, error) {
+	if errs := config.ValidateA2AServer(r.Definition, r.FilePath, r.Node); errs != nil {
+		return nil, fmt.Errorf("a2a server %q is invalid:\n%s", r.Definition.Metadata.Name, errs.Error())
+	}
+	return r.Definition, nil
 }
 
 func serveA2AHTTP(server *a2a.Server, cardName string, port int) error {

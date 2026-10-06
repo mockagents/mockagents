@@ -23,6 +23,9 @@ type ScaffoldResult struct {
 	Template string
 	Agents   []string // project-relative paths, e.g. agents/support-agent.yaml
 	Tests    []string // project-relative paths, e.g. tests/support-suite.yaml
+	// Kept lists files from another template that --force left in place
+	// because their content no longer matches what the template shipped.
+	Kept []string
 }
 
 // Scaffold creates a new MockAgents project directory from a starter template.
@@ -58,14 +61,6 @@ func ScaffoldWithResult(opts ScaffoldOptions) (*ScaffoldResult, error) {
 	// Refuse to scaffold over a path that exists but isn't a directory.
 	if info, err := os.Stat(absDir); err == nil && !info.IsDir() {
 		return nil, fmt.Errorf("%q exists and is not a directory", absDir)
-	}
-
-	// Initializing "in place" (the current working directory) is allowed even
-	// when the directory is non-empty (e.g. an existing repo with .git/). We
-	// only guard against clobbering the specific files the scaffold writes.
-	inPlace := false
-	if cwd, err := os.Getwd(); err == nil && filepath.Clean(cwd) == filepath.Clean(absDir) {
-		inPlace = true
 	}
 
 	tmplFiles, err := loadTemplateFiles(tmpl)
@@ -107,16 +102,25 @@ func ScaffoldWithResult(opts ScaffoldOptions) (*ScaffoldResult, error) {
 		}
 	}
 
-	// With --force on a named project directory, replace the scaffold-owned
-	// agents/ and tests/ subtrees outright so re-scaffolding (e.g. switching
-	// templates) does not leave stale files from a previous template. We skip
-	// this when initializing in place, to never delete a user's own files.
-	if opts.Force && !inPlace {
-		for _, sub := range []string{"agents", "tests"} {
-			if err := os.RemoveAll(filepath.Join(absDir, sub)); err != nil {
-				return nil, fmt.Errorf("clearing %s/ for overwrite: %w", sub, err)
+	// With --force, files a previous scaffold wrote from a different template
+	// are removed so switching templates does not leave a stale agent behind.
+	// Only files that are byte-identical to what some template ships are
+	// removed: anything the user wrote or edited is kept and reported. (This
+	// used to RemoveAll agents/ and tests/, deleting user files — and the
+	// in-place guard compared path strings, so on a case-insensitive
+	// filesystem a differently-cased cwd lost them too.)
+	var kept []string
+	if opts.Force {
+		stale, edited, err := staleScaffoldFiles(absDir, files)
+		if err != nil {
+			return nil, err
+		}
+		for _, rel := range stale {
+			if err := os.Remove(filepath.Join(absDir, rel)); err != nil && !os.IsNotExist(err) {
+				return nil, fmt.Errorf("removing stale %s: %w", rel, err)
 			}
 		}
+		kept = edited
 	}
 
 	for rel, content := range files {
@@ -129,7 +133,7 @@ func ScaffoldWithResult(opts ScaffoldOptions) (*ScaffoldResult, error) {
 		}
 	}
 
-	return &ScaffoldResult{Dir: absDir, Template: tmpl, Agents: agents, Tests: tests}, nil
+	return &ScaffoldResult{Dir: absDir, Template: tmpl, Agents: agents, Tests: tests, Kept: kept}, nil
 }
 
 func projectConfig(name string) string {
@@ -183,4 +187,40 @@ func readmeTemplate(name, template string, agents, tests []string) string {
 	b.WriteString("- [Scenario Packs gallery](https://github.com/mockagents/mockagents/blob/main/site/docs/guides/scenario-packs.md)\n")
 	b.WriteString("- [Agent Definition Reference](https://github.com/mockagents/mockagents/blob/main/schema/mockagents-v1-agent.json)\n")
 	return b.String()
+}
+
+// staleScaffoldFiles returns the files under dir that some template ships but
+// the new file set does not. stale are byte-identical to the template copy and
+// safe to remove; edited differ and are left alone.
+func staleScaffoldFiles(dir string, keep map[string]string) (stale, edited []string, err error) {
+	shipped := map[string]map[string]bool{} // rel path -> set of template contents
+	for _, t := range ListTemplates() {
+		files, err := loadTemplateFiles(t.Name)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, f := range files {
+			if shipped[f.RelPath] == nil {
+				shipped[f.RelPath] = map[string]bool{}
+			}
+			shipped[f.RelPath][f.Content] = true
+		}
+	}
+	for rel, contents := range shipped {
+		if _, ok := keep[rel]; ok {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, rel))
+		if err != nil {
+			continue // absent (or unreadable): nothing to remove
+		}
+		if contents[string(data)] {
+			stale = append(stale, rel)
+		} else {
+			edited = append(edited, rel)
+		}
+	}
+	sort.Strings(stale)
+	sort.Strings(edited)
+	return stale, edited, nil
 }

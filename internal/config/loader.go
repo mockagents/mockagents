@@ -82,6 +82,9 @@ func readAndParse(path string) ([]byte, *yaml.Node, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading %s: %w", path, err)
 	}
+	// A UTF-8 byte-order mark (Windows PowerShell 5's `-Encoding utf8`, older
+	// Notepad) is valid in YAML but made encoding/json reject a .json file.
+	data = bytes.TrimPrefix(data, utf8BOM)
 	if len(strings.TrimSpace(string(data))) == 0 {
 		return nil, nil, fmt.Errorf("%s: file is empty", path)
 	}
@@ -97,6 +100,8 @@ func readAndParse(path string) ([]byte, *yaml.Node, error) {
 	}
 	return data, doc, nil
 }
+
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // errMultipleDocuments reports a file that holds more than one YAML document.
 // Only the first document used to be decoded, so everything after the first
@@ -343,67 +348,116 @@ func LoadAllDocuments(dir string) (*Documents, []error) {
 	}
 
 	for _, path := range paths {
-		_, doc, err := readAndParse(path)
-		if err != nil {
+		if err := appendDocument(docs, path); err != nil {
 			errs = append(errs, err)
-			continue
-		}
-		switch peekKind(doc) {
-		case types.AgentKind, "":
-			var def types.AgentDefinition
-			if err := doc.Decode(&def); err != nil {
-				errs = append(errs, &ParseError{File: path, Err: err})
-				continue
-			}
-			docs.Agents = append(docs.Agents, &LoadResult{Definition: &def, Node: doc, FilePath: path})
-		case types.PipelineKind:
-			var def types.PipelineDefinition
-			if err := doc.Decode(&def); err != nil {
-				errs = append(errs, &ParseError{File: path, Err: err})
-				continue
-			}
-			docs.Pipelines = append(docs.Pipelines, &PipelineLoadResult{Definition: &def, Node: doc, FilePath: path})
-		case types.TestSuiteKind:
-			var def types.TestSuiteDefinition
-			if err := doc.Decode(&def); err != nil {
-				errs = append(errs, &ParseError{File: path, Err: err})
-				continue
-			}
-			docs.TestSuites = append(docs.TestSuites, &TestSuiteLoadResult{Definition: &def, Node: doc, FilePath: path})
-		case types.MCPServerKind:
-			var def types.MCPServerDefinition
-			if err := doc.Decode(&def); err != nil {
-				errs = append(errs, &ParseError{File: path, Err: err})
-				continue
-			}
-			docs.MCPServers = append(docs.MCPServers, &MCPServerLoadResult{Definition: &def, Node: doc, FilePath: path})
-		case types.A2AServerKind:
-			var def types.A2AServerDefinition
-			if err := doc.Decode(&def); err != nil {
-				errs = append(errs, &ParseError{File: path, Err: err})
-				continue
-			}
-			docs.A2AServers = append(docs.A2AServers, &A2AServerLoadResult{Definition: &def, Node: doc, FilePath: path})
-		case types.VectorCollectionKind:
-			var def types.VectorCollectionDefinition
-			if err := doc.Decode(&def); err != nil {
-				errs = append(errs, &ParseError{File: path, Err: err})
-				continue
-			}
-			docs.Vectors = append(docs.Vectors, &VectorCollectionLoadResult{Definition: &def, Node: doc, FilePath: path})
-		case types.SearchServiceKind:
-			var def types.SearchServiceDefinition
-			if err := doc.Decode(&def); err != nil {
-				errs = append(errs, &ParseError{File: path, Err: err})
-				continue
-			}
-			docs.SearchServices = append(docs.SearchServices, &SearchServiceLoadResult{Definition: &def, Node: doc, FilePath: path})
-		default:
-			errs = append(errs, fmt.Errorf("%s: unrecognized kind %q", path, peekKind(doc)))
 		}
 	}
 
 	return docs, errs
+}
+
+// LoadDocumentFile loads one YAML/JSON file of any kind into a Documents
+// bucket set. It reads and parses the file once and dispatches on `kind`, so a
+// decode error is reported for the kind the file declares rather than as
+// "not an Agent" from whichever loader happened to be tried first.
+func LoadDocumentFile(path string) (*Documents, error) {
+	docs := &Documents{}
+	if err := appendDocument(docs, path); err != nil {
+		return docs, err
+	}
+	return docs, nil
+}
+
+// appendDocument parses path and appends it to the bucket matching its kind.
+func appendDocument(docs *Documents, path string) error {
+	_, doc, err := readAndParse(path)
+	if err != nil {
+		return err
+	}
+	switch kind := peekKind(doc); kind {
+	case types.AgentKind, "":
+		var def types.AgentDefinition
+		if err := doc.Decode(&def); err != nil {
+			return &ParseError{File: path, Err: err}
+		}
+		docs.Agents = append(docs.Agents, &LoadResult{Definition: &def, Node: doc, FilePath: path})
+	case types.PipelineKind:
+		var def types.PipelineDefinition
+		if err := doc.Decode(&def); err != nil {
+			return &ParseError{File: path, Err: err}
+		}
+		docs.Pipelines = append(docs.Pipelines, &PipelineLoadResult{Definition: &def, Node: doc, FilePath: path})
+	case types.TestSuiteKind:
+		var def types.TestSuiteDefinition
+		if err := doc.Decode(&def); err != nil {
+			return &ParseError{File: path, Err: err}
+		}
+		docs.TestSuites = append(docs.TestSuites, &TestSuiteLoadResult{Definition: &def, Node: doc, FilePath: path})
+	case types.MCPServerKind:
+		var def types.MCPServerDefinition
+		if err := doc.Decode(&def); err != nil {
+			return &ParseError{File: path, Err: err}
+		}
+		docs.MCPServers = append(docs.MCPServers, &MCPServerLoadResult{Definition: &def, Node: doc, FilePath: path})
+	case types.A2AServerKind:
+		var def types.A2AServerDefinition
+		if err := doc.Decode(&def); err != nil {
+			return &ParseError{File: path, Err: err}
+		}
+		docs.A2AServers = append(docs.A2AServers, &A2AServerLoadResult{Definition: &def, Node: doc, FilePath: path})
+	case types.VectorCollectionKind:
+		var def types.VectorCollectionDefinition
+		if err := doc.Decode(&def); err != nil {
+			return &ParseError{File: path, Err: err}
+		}
+		docs.Vectors = append(docs.Vectors, &VectorCollectionLoadResult{Definition: &def, Node: doc, FilePath: path})
+	case types.SearchServiceKind:
+		var def types.SearchServiceDefinition
+		if err := doc.Decode(&def); err != nil {
+			return &ParseError{File: path, Err: err}
+		}
+		docs.SearchServices = append(docs.SearchServices, &SearchServiceLoadResult{Definition: &def, Node: doc, FilePath: path})
+	default:
+		suggestion := ""
+		known := make([]string, 0, len(documentKinds))
+		for k := range documentKinds {
+			known = append(known, k)
+		}
+		if best := closestName(kind, known); best != "" {
+			suggestion = fmt.Sprintf(" (did you mean %q?)", best)
+		}
+		return fmt.Errorf("%s: unrecognized kind %q%s", path, kind, suggestion)
+	}
+	return nil
+}
+
+// Count returns the total number of documents across every bucket.
+func (d *Documents) Count() int {
+	if d == nil {
+		return 0
+	}
+	return len(d.Agents) + len(d.Pipelines) + len(d.TestSuites) + len(d.MCPServers) +
+		len(d.A2AServers) + len(d.Vectors) + len(d.SearchServices)
+}
+
+// Merge appends every bucket of other to d.
+func (d *Documents) Merge(other *Documents) {
+	if other == nil {
+		return
+	}
+	d.Agents = append(d.Agents, other.Agents...)
+	d.Pipelines = append(d.Pipelines, other.Pipelines...)
+	d.TestSuites = append(d.TestSuites, other.TestSuites...)
+	d.MCPServers = append(d.MCPServers, other.MCPServers...)
+	d.A2AServers = append(d.A2AServers, other.A2AServers...)
+	d.Vectors = append(d.Vectors, other.Vectors...)
+	d.SearchServices = append(d.SearchServices, other.SearchServices...)
+}
+
+// ListDocumentPaths returns every document path a directory scan would load,
+// in lexical order (the same set LoadAllDocuments reads).
+func ListDocumentPaths(dir string) ([]string, error) {
+	return listDocumentPaths(dir)
 }
 
 // skipDirs are directory names never descended into when scanning an agents

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 
@@ -39,6 +40,7 @@ type ValidateReport struct {
 // Agent also returns lint warnings. Unknown kinds return an error.
 func ValidateBytes(data []byte) *ValidateReport {
 	report := &ValidateReport{}
+	data = bytes.TrimPrefix(data, utf8BOM)
 	if len(strings.TrimSpace(string(data))) == 0 {
 		report.Errors = append(report.Errors, &ValidationError{
 			Field:   "document",

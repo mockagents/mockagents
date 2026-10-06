@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
+
+	"github.com/mattn/go-isatty"
 )
 
 // ANSI color codes.
@@ -15,19 +18,29 @@ const (
 	colorBold   = "\033[1m"
 )
 
-// ColorEnabled returns whether colored output should be used.
-// Respects the NO_COLOR environment variable (https://no-color.org/)
-// and the --no-color flag.
+// colorDisabled is set by --no-color (see DisableColor).
+var colorDisabled atomic.Bool
+
+// DisableColor turns colored output off for the rest of the process. The
+// root command calls it for --no-color, in any spelling cobra accepts
+// (--no-color, --no-color=true); scanning os.Args for the literal flag, as
+// this used to, missed the second.
+func DisableColor() { colorDisabled.Store(true) }
+
+// stdoutIsTerminal is a variable so tests can force either answer.
+var stdoutIsTerminal = func() bool {
+	fd := os.Stdout.Fd()
+	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
+}
+
+// ColorEnabled returns whether colored output should be used: never with
+// NO_COLOR (https://no-color.org/) or --no-color, and never when stdout is
+// not a terminal, so CI logs and redirected output stay free of ANSI codes.
 func ColorEnabled() bool {
-	if os.Getenv("NO_COLOR") != "" {
+	if colorDisabled.Load() || os.Getenv("NO_COLOR") != "" {
 		return false
 	}
-	for _, arg := range os.Args {
-		if arg == "--no-color" {
-			return false
-		}
-	}
-	return true
+	return stdoutIsTerminal()
 }
 
 // Red wraps text in red ANSI color if color is enabled.
