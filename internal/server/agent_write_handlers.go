@@ -346,7 +346,11 @@ func (h *Handlers) persistAndRegister(def *types.AgentDefinition, name, tenantID
 		h.Engine.Registry.Register(def)
 		return "", false, nil
 	}
-	if err := atomicWriteFile(target, canonical); err != nil {
+	data, err := config.EncodeForPath(target, canonical)
+	if err != nil {
+		return "", false, fmt.Errorf("encoding agent file: %w", err)
+	}
+	if err := atomicWriteFile(target, data); err != nil {
 		return "", false, fmt.Errorf("writing agent file: %w", err)
 	}
 	h.Engine.Registry.RegisterWithSource(def, target)

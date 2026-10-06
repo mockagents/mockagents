@@ -280,7 +280,9 @@ func flattenHeaders(h map[string][]string) map[string]string {
 	}
 	out := make(map[string]string, len(h))
 	for k, vs := range h {
-		if isSensitiveHeader(k) || len(vs) == 0 {
+		// Bodies are stored decoded, so the original framing (gzip
+		// Content-Encoding, compressed Content-Length) no longer applies.
+		if isSensitiveHeader(k) || isFramingHeader(k) || len(vs) == 0 {
 			continue
 		}
 		out[k] = vs[0]

@@ -2,10 +2,12 @@ package recording
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -509,5 +511,110 @@ func TestCassetteLoadRoundTripsAfterTornLineIsRewritten(t *testing.T) {
 	}
 	if reloaded.Len() != 2 {
 		t.Errorf("expected 2 interactions after recovery + append, got %d", reloaded.Len())
+	}
+}
+
+// A client that accepts gzip still gets a plain-JSON recording: the proxy no
+// longer forwards Accept-Encoding, so the Transport decodes upstream gzip
+// before the body is stored (review P-03).
+func TestProxyStoresDecodedBodyFromGzipUpstream(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		payload := []byte(`{"choices":[{"message":{"content":"compressed upstream"}}]}`)
+		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			w.Header().Set("Content-Encoding", "gzip")
+			gz := gzip.NewWriter(w)
+			_, _ = gz.Write(payload)
+			_ = gz.Close()
+			return
+		}
+		_, _ = w.Write(payload)
+	}))
+	defer upstream.Close()
+
+	cass := New(filepath.Join(t.TempDir(), "cass.jsonl"))
+	proxy, err := NewProxy(upstream.URL, cass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(proxy)
+	defer front.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, front.URL+"/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip") // as httpx and undici send by default
+	resp, err := (&http.Client{Transport: &http.Transport{DisableCompression: true}}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if cass.Len() != 1 {
+		t.Fatalf("cassette size = %d", cass.Len())
+	}
+	stored := string(cass.interactions[0].ResponseBodyBytes())
+	if !strings.Contains(stored, "compressed upstream") {
+		t.Fatalf("stored body = %q, want decoded JSON", stored)
+	}
+}
+
+// The request hash covers the canonical query, so recordings that differ only
+// by ?alt=sse are replayed to the right caller; credential parameters are
+// ignored, and a legacy path-only recording still replays (review P-15).
+func TestHashPathAndReplayByQuery(t *testing.T) {
+	mustURL := func(s string) *url.URL {
+		u, err := url.Parse(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	if got := HashPath(mustURL("/v1beta/models/m:streamGenerateContent?key=SECRET&alt=sse")); got != "/v1beta/models/m:streamGenerateContent?alt=sse" {
+		t.Fatalf("HashPath = %q", got)
+	}
+	if got := HashPath(mustURL("/v1/chat/completions?api_key=x")); got != "/v1/chat/completions" {
+		t.Fatalf("credential-only query must hash as the bare path, got %q", got)
+	}
+	if HashPath(mustURL("/p?b=2&a=1")) != HashPath(mustURL("/p?a=1&b=2")) {
+		t.Fatal("query order must not change the hash")
+	}
+
+	cass := New("")
+	body := []byte(`{"contents":[]}`)
+	for _, rec := range []struct{ path, out string }{
+		{"/v1beta/models/m:streamGenerateContent?alt=sse", "sse-body"},
+		{"/v1beta/models/m:streamGenerateContent", "json-body"},
+	} {
+		it := &Interaction{Method: "POST", Path: "/v1beta/models/m:streamGenerateContent", RequestBody: body,
+			ResponseStatus: 200, ResponseBody: json.RawMessage(`"` + rec.out + `"`)}
+		it.Hash = HashRequest("POST", HashPath(mustURL(rec.path)), body)
+		if err := cass.Append(it); err != nil {
+			t.Fatal(err)
+		}
+	}
+	legacy := &Interaction{Method: "POST", Path: "/legacy", RequestBody: body, ResponseStatus: 200, ResponseBody: json.RawMessage(`"legacy-body"`)}
+	if err := cass.Append(legacy); err != nil { // hashed on the bare path, as old cassettes are
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(NewReplay(cass))
+	defer srv.Close()
+	get := func(path string) string {
+		resp, err := http.Post(srv.URL+path, "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b)
+	}
+	if got := get("/v1beta/models/m:streamGenerateContent?alt=sse"); !strings.Contains(got, "sse-body") {
+		t.Fatalf("alt=sse caller got %q", got)
+	}
+	if got := get("/v1beta/models/m:streamGenerateContent"); !strings.Contains(got, "json-body") {
+		t.Fatalf("plain caller got %q", got)
+	}
+	if got := get("/legacy?alt=sse"); !strings.Contains(got, "legacy-body") {
+		t.Fatalf("legacy path-only recording not replayed: %q", got)
 	}
 }

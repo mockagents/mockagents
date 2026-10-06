@@ -770,3 +770,15 @@ func TestLooseEqual_NumericKinds(t *testing.T) {
 		}
 	}
 }
+
+// tool_call compares argument numbers like tool_call_args: 2 and 2.0 match
+// (review P-20).
+func TestHasToolCall_NumericArgumentsCompareByValue(t *testing.T) {
+	calls := []types.ToolCallSpec{{Name: "buy", Arguments: map[string]any{"qty": 2}}}
+	if !hasToolCall(calls, "buy", map[string]any{"qty": 2.0}) {
+		t.Fatal("qty 2 must match an expected 2.0")
+	}
+	if hasToolCall(calls, "buy", map[string]any{"qty": 3.0}) {
+		t.Fatal("qty 2 must not match 3.0")
+	}
+}

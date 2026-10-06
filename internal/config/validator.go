@@ -2,10 +2,12 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"regexp"
 	"slices"
 	"strings"
+	"text/template"
 
 	"github.com/mockagents/mockagents/internal/types"
 	"gopkg.in/yaml.v3"
@@ -213,6 +215,17 @@ func (v *Validator) validateScenarios(ctx *validationContext, def *types.AgentDe
 				"Add content text (or a refusal / tool_calls) for this scenario's response.")
 		}
 
+		// Templates are parsed the way the generator parses them, so an
+		// unclosed {{ or an unknown function fails validation instead of
+		// returning 500 on every request (review C-09).
+		if strings.Contains(sc.Response.Content, "{{") {
+			if _, err := template.New("response").Funcs(templateFuncStubs).Parse(sc.Response.Content); err != nil {
+				ctx.addError(field+".response.content",
+					fmt.Sprintf("invalid response template: %s", err),
+					"Close every {{ action and use only the documented template functions.")
+			}
+		}
+
 		for j, tc := range sc.Response.ToolCalls {
 			if tc.Name == "" {
 				ctx.addError(fmt.Sprintf("%s.response.tool_calls.%d.name", field, j),
@@ -268,7 +281,40 @@ func (v *Validator) validateStreaming(ctx *validationContext, def *types.AgentDe
 	}
 	checkPair(s.TTFTP50Ms, s.TTFTP95Ms, "ttft_p50_ms", "ttft_p95_ms")
 	checkPair(s.ITLP50Ms, s.ITLP95Ms, "itl_p50_ms", "itl_p95_ms")
+
+	// Bounds (review C-08). Timing values really sleep the request, so they
+	// share the chaos ceiling: ttft_ms: 3600000 used to hold a request open
+	// for an hour. Negatives, which the schema forbids, were accepted and
+	// silently coerced to defaults.
+	if s.ChunkSize < 0 {
+		ctx.addError("spec.behavior.streaming.chunk_size", "chunk_size must be >= 1 (omit it for the default)", "")
+	}
+	timings := map[string]int{
+		"ttft_ms": s.TTFTMs, "jitter_ms": s.JitterMs,
+		"ttft_p50_ms": s.TTFTP50Ms, "ttft_p95_ms": s.TTFTP95Ms,
+		"itl_p50_ms": s.ITLP50Ms, "itl_p95_ms": s.ITLP95Ms,
+	}
+	if s.ChunkDelayMs != nil {
+		timings["chunk_delay_ms"] = *s.ChunkDelayMs
+	}
+	for _, field := range slices.Sorted(maps.Keys(timings)) {
+		if ms := timings[field]; ms < 0 || ms > maxChaosMs {
+			ctx.addError("spec.behavior.streaming."+field,
+				fmt.Sprintf("%s must be between 0 and %d", field, maxChaosMs),
+				"Streaming delays really sleep the request.")
+		}
+	}
+	if math.IsNaN(s.TokensPerSec) || math.IsInf(s.TokensPerSec, 0) || s.TokensPerSec < 0 {
+		ctx.addError("spec.behavior.streaming.tokens_per_sec", "tokens_per_sec must be a finite number >= 0", "")
+	}
+	if s.TruncateAfterChunks < 0 {
+		ctx.addError("spec.behavior.streaming.truncate_after_chunks", "truncate_after_chunks must be >= 0", "")
+	}
 }
+
+// validRate reports whether r is a finite probability. "r < 0 || r > 1"
+// alone lets NaN through (every comparison with NaN is false).
+func validRate(r float64) bool { return r >= 0 && r <= 1 }
 
 // maxChaosMs bounds every chaos delay an agent may declare (latency draws and
 // the synthetic timeout sleep). It mirrors the engine's own cap on a single
@@ -313,7 +359,7 @@ func (v *Validator) validateChaos(ctx *validationContext, def *types.AgentDefini
 		}
 	}
 	if e := c.Errors; e != nil {
-		if e.Rate < 0 || e.Rate > 1 {
+		if !validRate(e.Rate) {
 			ctx.addError("spec.behavior.chaos.errors.rate",
 				"rate must be in [0.0, 1.0]", "")
 		}
@@ -355,7 +401,7 @@ func (v *Validator) validateChaos(ctx *validationContext, def *types.AgentDefini
 				fmt.Sprintf("unknown connection mode %q", cc.Mode),
 				fmt.Sprintf("Use one of: %s.", strings.Join(connectionModeNames(), ", ")))
 		}
-		if cc.Rate < 0 || cc.Rate > 1 {
+		if !validRate(cc.Rate) {
 			ctx.addError("spec.behavior.chaos.connection.rate",
 				"rate must be in [0.0, 1.0]", "")
 		}
@@ -411,9 +457,40 @@ func (v *Validator) validateTools(ctx *validationContext, def *types.AgentDefini
 		}
 		names[tool.Name] = true
 
+		if len(tool.Name) > maxToolNameLen {
+			ctx.addError(field+".name",
+				fmt.Sprintf("tool name is %d characters; the limit is %d", len(tool.Name), maxToolNameLen),
+				"Provider APIs reject function names longer than 64 characters.")
+		}
+
 		v.validateJSONSchema(ctx, tool.Parameters, field+".parameters")
 		if math.IsNaN(tool.ErrorRate) || math.IsInf(tool.ErrorRate, 0) || tool.ErrorRate < 0 || tool.ErrorRate > 1 {
 			ctx.addError(field+".error_rate", "error_rate must be finite and in [0.0, 1.0]", "")
+		}
+		v.validateToolResponses(ctx, tool.Responses, field+".responses")
+	}
+}
+
+// maxToolNameLen is the provider (and schema) limit on a function name.
+const maxToolNameLen = 64
+
+// validateToolResponses checks simulated tool response rules (review C-19):
+// each rule returns a response or an error (not both, not neither), and an
+// error carries the code and message the schema requires. Several default
+// rules stay valid: the processor deliberately uses the last one (DR-06).
+func (v *Validator) validateToolResponses(ctx *validationContext, rules []types.ToolResponseRule, field string) {
+	for i, r := range rules {
+		f := fmt.Sprintf("%s.%d", field, i)
+		switch {
+		case r.Response == nil && r.Error == nil:
+			ctx.addError(f, "tool response rule has neither response nor error",
+				"Give the rule a response value or an error {code, message}.")
+		case r.Response != nil && r.Error != nil:
+			ctx.addError(f, "tool response rule has both response and error",
+				"A rule returns one or the other.")
+		}
+		if r.Error != nil && (r.Error.Code == "" || r.Error.Message == "") {
+			ctx.addError(f+".error", "a simulated tool error needs both code and message", "")
 		}
 	}
 }
@@ -448,3 +525,14 @@ func (v *Validator) validateCrossReferences(ctx *validationContext, def *types.A
 		}
 	}
 }
+
+// templateFuncStubs has one entry per template function the generator
+// defines (types.TemplateFuncNames). Parsing only checks that a called
+// function exists, so the stubs are never invoked.
+var templateFuncStubs = func() template.FuncMap {
+	m := make(template.FuncMap, len(types.TemplateFuncNames))
+	for _, name := range types.TemplateFuncNames {
+		m[name] = func(...any) string { return "" }
+	}
+	return m
+}()

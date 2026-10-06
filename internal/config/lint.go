@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/mockagents/mockagents/internal/types"
 	"gopkg.in/yaml.v3"
@@ -31,4 +32,49 @@ func (v *Validator) Lint(def *types.AgentDefinition, filePath string, node *yaml
 	}
 
 	return ctx.errors
+}
+
+// LintDocuments returns cross-document WARNINGS (review C-13). Today: two
+// agents in one tenant that claim the same spec.model. The registry routes a
+// model to the lexicographically smallest agent name, so the others are only
+// reachable by name; `start` logged this, but `validate` — even with
+// --strict — never said a word.
+func LintDocuments(docs *Documents) []*ValidationError {
+	if docs == nil {
+		return nil
+	}
+	type claim struct{ names []string }
+	byModel := map[string]*claim{}
+	for _, r := range docs.Agents {
+		if r == nil || r.Definition == nil || r.Definition.Spec.Model == "" {
+			continue
+		}
+		key := r.Definition.Metadata.TenantID + "\x00" + r.Definition.Spec.Model
+		c := byModel[key]
+		if c == nil {
+			c = &claim{}
+			byModel[key] = c
+		}
+		c.names = append(c.names, r.Definition.Metadata.Name)
+	}
+	var warnings []*ValidationError
+	for _, r := range docs.Agents {
+		if r == nil || r.Definition == nil || r.Definition.Spec.Model == "" {
+			continue
+		}
+		c := byModel[r.Definition.Metadata.TenantID+"\x00"+r.Definition.Spec.Model]
+		if len(c.names) < 2 {
+			continue
+		}
+		winner := slices.Min(c.names)
+		if r.Definition.Metadata.Name == winner {
+			continue
+		}
+		ctx := &validationContext{file: r.FilePath, node: r.Node}
+		ctx.addError("spec.model",
+			fmt.Sprintf("model %q is also claimed by agent %q, which answers requests for it; this agent is reachable only by name", r.Definition.Spec.Model, winner),
+			"Give each agent a distinct spec.model.")
+		warnings = append(warnings, ctx.errors...)
+	}
+	return warnings
 }

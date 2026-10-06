@@ -166,3 +166,9 @@ func TestLogBroadcaster_SnapshotTenantScopes(t *testing.T) {
 	require.Equal(t, 3, b.SnapshotTenant("").SubscriberCount)
 	require.Equal(t, 3, b.Snapshot().SubscriberCount)
 }
+
+// A chaos fault at the 60 s ceiling must be delivered before the server's
+// write deadline cuts the connection (review E-13).
+func TestDefaultWriteTimeoutExceedsChaosCeiling(t *testing.T) {
+	require.Greater(t, DefaultConfig().WriteTimeout, 60*time.Second)
+}
