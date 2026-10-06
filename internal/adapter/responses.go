@@ -424,6 +424,7 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 	}
 
 	setHallucinationHeader(w, resp)
+	setToolErrorsHeader(w, resp)
 	setStrictViolationHeader(w, resp)
 
 	if req.Stream {

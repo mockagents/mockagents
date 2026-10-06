@@ -50,7 +50,7 @@ func TestStreamAnthropic_BasicContentStream(t *testing.T) {
 	err := StreamAnthropic(context.Background(), rec, resp, cfg)
 	require.NoError(t, err)
 
-	assert.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+	assert.Equal(t, "text/event-stream; charset=utf-8", rec.Header().Get("Content-Type"))
 
 	events := parseSSEEvents(rec.Body.String())
 	require.GreaterOrEqual(t, len(events), 6)

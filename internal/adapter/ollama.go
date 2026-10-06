@@ -131,6 +131,7 @@ func (h *OllamaHandler) HandleChat(w http.ResponseWriter, r *http.Request) {
 		meta.ToolCallsCount = len(resp.ToolCalls)
 	}
 	setHallucinationHeader(w, resp)
+	setToolErrorsHeader(w, resp)
 	setStrictViolationHeader(w, resp)
 	setImageCountHeader(w, images)
 

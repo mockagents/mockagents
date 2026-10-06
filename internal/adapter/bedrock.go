@@ -160,6 +160,7 @@ func (h *BedrockHandler) HandleConverse(w http.ResponseWriter, r *http.Request) 
 		meta.AgentName, meta.ScenarioName, meta.ToolCallsCount = resp.AgentName, resp.ScenarioName, len(resp.ToolCalls)
 	}
 	setHallucinationHeader(w, resp)
+	setToolErrorsHeader(w, resp)
 	setStrictViolationHeader(w, resp)
 	setImageCountHeader(w, images)
 	content := []BedrockContentBlock{}

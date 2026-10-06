@@ -110,7 +110,7 @@ func TestServerIntegration_OpenAIStreaming(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+	assert.Equal(t, "text/event-stream; charset=utf-8", resp.Header.Get("Content-Type"))
 
 	// Read all SSE data lines.
 	var dataLines []string
@@ -166,7 +166,7 @@ func TestServerIntegration_AnthropicStreaming(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+	assert.Equal(t, "text/event-stream; charset=utf-8", resp.Header.Get("Content-Type"))
 
 	// Parse events.
 	var eventTypes []string
@@ -219,7 +219,7 @@ func TestServerIntegration_StreamingWithToolCalls(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+	assert.Equal(t, "text/event-stream; charset=utf-8", resp.Header.Get("Content-Type"))
 
 	var dataLines []string
 	scanner := bufio.NewScanner(resp.Body)

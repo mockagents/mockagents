@@ -43,6 +43,29 @@ Fixes from the 2026-10-06 full-application quality review (see
 - `mockagents logs` reads the database `start` writes (honouring
   `MOCKAGENTS_DATA_DIR`) and reports a missing database instead of creating an
   empty one.
+- **Python SDK: outcome assertions read the final turn.** `to_have_response_containing`,
+  `to_have_status` and `to_have_finish_reason` passed if *any* turn matched, unlike
+  the YAML runner, the TypeScript and Go SDKs, and the Python docs. They now read
+  the final turn and fail on an empty result. `to_have_any_response_containing`
+  keeps the any-turn check.
+- **Python SDK: `run_scenario` matches the TypeScript and Go runners.** It sent a
+  request for every step, system and assistant steps included, and dropped empty
+  assistant turns. It now sends one request per user step, always records the
+  reply, sends system steps as the `system` parameter under Anthropic, and uses the
+  client's per-protocol default model (`Scenario.model` now defaults to `None`). It
+  raises `ValueError` for a scenario with no user step.
+- **Python SDK: streamed calls raise on a non-2xx status.** `chat(stream=True)` and
+  `message(stream=True)` returned an empty `ChatResponse`, so negative assertions
+  such as `to_have_tool_call_count(0)` passed on a server error.
+- Python SDK: `to_have_tool_call(name, {"k": None})` no longer matches a call
+  without `k`. `ValueExpect.to_contain` checks for a substring of a string or an
+  item of a collection, and raises `TypeError` for anything else. It used to
+  stringify the value, so `expect(None).to_contain("None")` passed.
+- Python SDK: consecutive `data:` lines form one SSE event, per the event-stream
+  spec, as in the TypeScript and Go SDKs.
+- Python SDK: `MockAgentClient` and `McpClient` default to `http://127.0.0.1:8080`,
+  the server's default bind address.
+- Provider SSE streams are sent as `text/event-stream; charset=utf-8`.
 
 ### Fixed
 
@@ -63,6 +86,37 @@ Fixes from the 2026-10-06 full-application quality review (see
 - `.json` definitions with a UTF-8 byte-order mark load.
 
 ---
+- Python SDK: the client's `api_key` was sent only by `run_pipeline`. Every other
+  call went out anonymously and, in multi-tenant mode, could reach a global agent
+  instead of the tenant's. It is now sent on every request, and as `x-api-key` on
+  Anthropic calls.
+- Python SDK: streamed text was decoded as ISO-8859-1, which mangled non-ASCII
+  content on every streaming path and in MCP events.
+- Python SDK: `to_have_tool_error` read a field that no response contains, so it
+  could never pass against a real server. It now reads `X-Mockagents-Tool-Errors`.
+- Python SDK: injected stream faults (truncation, malformed frames) looked like
+  normal completions. They now set `truncated` and `malformed_frames`.
+- Python SDK: tool arguments that are valid JSON but not an object (`"[1]"`)
+  raised `AttributeError` in assertions.
+- Python SDK: an MCP handler that returned `None` raised before replying, which
+  left the server-side request blocked until its timeout. It now replies `{}`, as
+  the Go SDK does.
+- Python SDK: `MockAgentServer.from_config` served the whole directory of the
+  first file and rejected multi-document YAML. It now serves exactly the listed
+  files, from any directories. The ignored `config_path` option is deprecated.
+- Python SDK: `get_agent` and `reload_agent` URL-encode the agent name.
+
+### Added
+
+- `X-Mockagents-Tool-Errors` response header on the OpenAI, Anthropic, Gemini,
+  Ollama, Bedrock and Responses endpoints. It lists the simulated tool calls whose
+  fixture resolved to an error, as `tool=code` pairs.
+- Python SDK additions:
+  - `ChatResponse.tool_errors`, `headers`, `truncated` and `malformed_frames`
+  - `ToolCall.raw_arguments` and `arguments_valid`
+  - `to_have_any_response_containing`, `to_have_malformed_tool_arguments`, and a
+    `tool=` filter on `to_have_tool_error`
+  - `McpClient(api_key=...)` and `MockAgentServer.client(api_key=...)`
 
 ## [0.5.0] - 2026-09-09
 

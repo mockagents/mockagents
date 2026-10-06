@@ -15,7 +15,7 @@ func TestSSEWriter_Creation(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, sse)
 
-	assert.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+	assert.Equal(t, "text/event-stream; charset=utf-8", rec.Header().Get("Content-Type"))
 	assert.Equal(t, "no-cache", rec.Header().Get("Cache-Control"))
 	assert.Equal(t, "keep-alive", rec.Header().Get("Connection"))
 }

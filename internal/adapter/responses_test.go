@@ -264,7 +264,7 @@ func TestResponses_StreamingTextEvents(t *testing.T) {
 	rec := doResponses(t, h, `{"model":"gpt-4o","input":"hello","stream":true}`)
 
 	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+	assert.Equal(t, "text/event-stream; charset=utf-8", rec.Header().Get("Content-Type"))
 
 	events := parseSSE(t, rec.Body.String())
 	require.NotEmpty(t, events)

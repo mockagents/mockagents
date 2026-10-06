@@ -138,7 +138,7 @@ func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key, X-Request-Id, X-Session-Id, If-Match, If-None-Match, Accept")
 			// Response headers a cross-origin caller is allowed to read: the
 			// revision ETag family, the request id, and strict-tools warnings.
-			w.Header().Set("Access-Control-Expose-Headers", "ETag, X-Mockagents-Revision-Effective, X-Mockagents-Revision-Source, X-Request-Id, X-Mockagents-Strict-Violation, Retry-After")
+			w.Header().Set("Access-Control-Expose-Headers", "ETag, X-Mockagents-Revision-Effective, X-Mockagents-Revision-Source, X-Request-Id, X-Mockagents-Strict-Violation, X-Mockagents-Tool-Errors, Retry-After")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 
 			if r.Method == http.MethodOptions {

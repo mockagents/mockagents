@@ -102,8 +102,11 @@ def test_from_config_valid_file():
     try:
         server = MockAgentServer.from_config(path, port=9999, binary_path=DUMMY_BINARY)
         assert server.port == 9999
-        assert server.agents_dir == os.path.dirname(os.path.abspath(path))
         assert server.binary_path == DUMMY_BINARY
+        # K-11: the server gets a private directory holding only this file,
+        # not the (shared) directory the file happens to live in.
+        assert server.agents_dir != os.path.dirname(os.path.abspath(path))
+        assert os.listdir(server.agents_dir) == ["000-" + os.path.basename(path)]
     finally:
         os.unlink(path)
 
@@ -125,9 +128,81 @@ def test_from_config_multiple_files():
 
         server = MockAgentServer.from_config(paths, binary_path=DUMMY_BINARY)
         assert server.port > 0
+        assert sorted(os.listdir(server.agents_dir)) == [
+            f"{i:03d}-{os.path.basename(p)}" for i, p in enumerate(paths)
+        ]
     finally:
         for p in paths:
             os.unlink(p)
+
+
+AGENT_DOC = {
+    "apiVersion": "mockagents/v1",
+    "kind": "Agent",
+    "metadata": {"name": "a"},
+    "spec": {"protocol": "openai-chat-completions"},
+}
+
+
+def test_from_config_serves_only_listed_files_across_directories(tmp_path):
+    # K-11: files from two directories are both served, and a sibling YAML
+    # file that was not listed is not.
+    (tmp_path / "one").mkdir()
+    (tmp_path / "two").mkdir()
+    first = tmp_path / "one" / "agent.yaml"
+    second = tmp_path / "two" / "agent.yaml"
+    for p in (first, second, tmp_path / "one" / "unlisted.yaml"):
+        p.write_text(yaml.dump(AGENT_DOC), encoding="utf-8")
+
+    server = MockAgentServer.from_config([str(first), str(second)], binary_path=DUMMY_BINARY)
+    assert sorted(os.listdir(server.agents_dir)) == ["000-agent.yaml", "001-agent.yaml"]
+
+
+def test_from_config_temp_dir_removed_with_server(tmp_path):
+    import gc
+
+    path = tmp_path / "agent.yaml"
+    path.write_text(yaml.dump(AGENT_DOC), encoding="utf-8")
+    server = MockAgentServer.from_config(str(path), binary_path=DUMMY_BINARY)
+    agents_dir = server.agents_dir
+    assert os.path.isdir(agents_dir)
+    del server
+    gc.collect()
+    assert not os.path.exists(agents_dir)
+
+
+def test_from_config_accepts_multi_document_yaml(tmp_path):
+    path = tmp_path / "agents.yaml"
+    path.write_text(yaml.dump(AGENT_DOC) + "---\n" + yaml.dump(AGENT_DOC), encoding="utf-8")
+    server = MockAgentServer.from_config(str(path), binary_path=DUMMY_BINARY)
+    assert os.listdir(server.agents_dir) == ["000-agents.yaml"]
+
+
+def test_from_config_rejects_bad_document_in_multi_document_yaml(tmp_path):
+    path = tmp_path / "agents.yaml"
+    path.write_text(yaml.dump(AGENT_DOC) + "---\napiVersion: wrong/v2\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="Invalid apiVersion"):
+        MockAgentServer.from_config(str(path), binary_path=DUMMY_BINARY)
+
+
+def test_from_config_rejects_empty_list_and_empty_file(tmp_path):
+    with pytest.raises(ConfigError, match="at least one"):
+        MockAgentServer.from_config([], binary_path=DUMMY_BINARY)
+    path = tmp_path / "empty.yaml"
+    path.write_text("", encoding="utf-8")
+    with pytest.raises(ConfigError, match="empty file"):
+        MockAgentServer.from_config(str(path), binary_path=DUMMY_BINARY)
+
+
+def test_config_path_is_deprecated():
+    with pytest.warns(DeprecationWarning, match="config_path"):
+        MockAgentServer(binary_path=DUMMY_BINARY, config_path="x.yaml")
+
+
+def test_client_carries_api_key():
+    server = MockAgentServer.__new__(MockAgentServer)
+    server.port = 9999
+    assert server.client(api_key="k").api_key == "k"
 
 
 def test_find_binary_not_found(tmp_path, monkeypatch):

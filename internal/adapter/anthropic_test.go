@@ -203,7 +203,7 @@ func TestAnthropic_StreamingResponse(t *testing.T) {
 	})
 
 	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+	assert.Equal(t, "text/event-stream; charset=utf-8", rec.Header().Get("Content-Type"))
 	body := rec.Body.String()
 	assert.Contains(t, body, "event: message_start")
 	assert.Contains(t, body, "event: message_stop")

@@ -38,7 +38,7 @@ func TestStreamOpenAI_BasicContentStream(t *testing.T) {
 	err := StreamOpenAI(context.Background(), rec, resp, cfg)
 	require.NoError(t, err)
 
-	assert.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+	assert.Equal(t, "text/event-stream; charset=utf-8", rec.Header().Get("Content-Type"))
 
 	lines := parseSSEDataLines(rec.Body.String())
 	require.GreaterOrEqual(t, len(lines), 4) // role + content chunks + finish + [DONE]
