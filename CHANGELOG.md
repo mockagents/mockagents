@@ -43,6 +43,24 @@ Fixes from the 2026-10-06 full-application quality review (see
 - `mockagents logs` reads the database `start` writes (honouring
   `MOCKAGENTS_DATA_DIR`) and reports a missing database instead of creating an
   empty one.
+- **Batches and pipelines are metered.** Every request inside an OpenAI or
+  Anthropic batch, and every pipeline node, now counts against the tenant's
+  request-rate limit and accrues monthly spend, exactly like a direct call. A
+  refused batch line carries the `429`/`402` body; a refused pipeline node fails
+  the run with `429`/`402`. Before, a rate-limited tenant could run a whole
+  batch or pipeline and none of it counted toward the spend cap.
+- `MOCKAGENTS_LOG_BODIES` is case-insensitive and any value other than `full`,
+  `sanitized` or `none` fails startup (a typo used to mean full capture). The
+  effective mode is always logged. `MOCKAGENTS_SESSION_MAX`, `_SESSION_HISTORY`,
+  `_AUDIT_MAX_ROWS` and `_AUTH_FAILURES_PER_MINUTE` fail startup on a bad value
+  instead of warning and keeping the default; float knobs and `--chaos-rate`
+  reject `NaN`/`Inf`; `--port` must be 1-65535.
+- A wildcard `--cors-origins '*'` no longer lets an SSO session cookie scope a
+  cross-origin realtime WebSocket to a tenant; list the console origin
+  explicitly.
+- Gemini `:countTokens` returns `{"totalTokens": N}` without running the agent;
+  other unsupported methods return `404 NOT_FOUND` instead of being served as
+  `generateContent`.
 
 ### Fixed
 
@@ -61,6 +79,13 @@ Fixes from the 2026-10-06 full-application quality review (see
   colour is off when stdout is not a terminal; `test` prints FAIL lines on
   stdout next to their failure details.
 - `.json` definitions with a UTF-8 byte-order mark load.
+- Gemini `contents` without a `role` are treated as user turns.
+- `/api/v1/logs/stream/metrics` shows a tenant admin only its own tenant's
+  subscriptions; the platform role reads the whole audit trail, including
+  `auth.denied` events.
+- Spend accrued while the shared spend ledger is failing is kept and written
+  through when it recovers, instead of being lost at the next cache refresh.
+  A model missing from the price table is logged once.
 
 ---
 
