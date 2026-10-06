@@ -3,6 +3,7 @@ package mockagents
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -344,5 +345,35 @@ func TestChatStreamHTTPErrorSurfacesAsHTTPError(t *testing.T) {
 	}
 	if herr, ok := err.(*HTTPError); !ok || herr.Status != 400 {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// TestSplitSSEFramesMixedLineEndings is the regression test for a
+// FuzzSSEStream finding: a CRLF-terminated frame followed by an
+// LF-terminated one was merged into a single frame when both were already
+// buffered (the "\n\n" search ran first and matched the later frame's
+// terminator), so both events were silently dropped as invalid JSON. The
+// same bytes arriving in smaller chunks parsed correctly.
+func TestSplitSSEFramesMixedLineEndings(t *testing.T) {
+	body := "data: {\"a\":1}\r\n\r\ndata: {\"b\":2}\n\n"
+	r := strings.NewReader(body)
+	stream := &RawEventStream{body: io.NopCloser(r), scanner: newSSEScanner(r)}
+	defer stream.Close()
+	var got []map[string]any
+	for stream.Next() {
+		got = append(got, stream.Value())
+	}
+	if len(got) != 2 || got[0]["a"] != float64(1) || got[1]["b"] != float64(2) {
+		t.Fatalf("events = %v, want [{a:1} {b:2}]", got)
+	}
+
+	sc := newSSEScanner(strings.NewReader("\r\n\r\n\n"))
+	var tokens []string
+	for sc.Scan() {
+		tokens = append(tokens, sc.Text())
+	}
+	// One empty frame for the CRLF terminator, then the drained LF tail.
+	if got, want := fmt.Sprintf("%q", tokens), `["" ""]`; got != want {
+		t.Fatalf("tokens = %s, want %s", got, want)
 	}
 }
