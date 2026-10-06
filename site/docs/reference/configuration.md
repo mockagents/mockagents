@@ -115,3 +115,9 @@ layer is not even wrapped, so tracing costs nothing. See
 | `MOCKAGENTS_SERVER` | `--server` | `http://localhost:8080` | Base URL used by `mockagents add` / `mockagents rm`. |
 | `MOCKAGENTS_API_KEY` | `--api-key` | unset | API key those commands send to a multi-tenant server. |
 | `NO_COLOR` | — | unset | Any value disables colored CLI output. |
+
+## SDKs and the npx launcher
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `MOCKAGENTS_BINARY` | unset | Path to the `mockagents` binary that the Python, TypeScript and Go SDK server helpers and the `npx mockagents` launcher run. `MOCKAGENTS_BIN` is accepted as an alias; `MOCKAGENTS_BINARY` wins when both are set. Unset, the TypeScript and Go helpers try `./mockagents` and then `PATH`, the Python SDK tries `PATH` and then its versioned download cache, and the npx launcher uses its cache (never `PATH`, which holds the launcher itself). |

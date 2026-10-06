@@ -12,7 +12,9 @@ go get github.com/mockagents/mockagents/sdk/go/mockagents
 ```
 
 Requires Go **1.26** or later. The `mockagents` Go binary must be
-available on your `PATH` or at `./mockagents` (or set `MOCKAGENTS_BIN`).
+available on your `PATH` or at `./mockagents`, or pointed to by
+`MOCKAGENTS_BINARY` / `MOCKAGENTS_BIN` (checked in that order; parent
+directories are not searched).
 Build it from the repo with `make build` or `go install
 github.com/mockagents/mockagents/cmd/mockagents@latest`.
 
@@ -62,10 +64,13 @@ func TestOrderLookupHappyPath(t *testing.T) {
 | Symbol                                        | Purpose                                                                                         |
 | --------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | `Server` / `NewServer` / `Start` / `Stop`     | Subprocess manager with free-port discovery and health-check polling.                           |
-| `Client` / `NewClient`                        | `net/http` client for `/v1/chat/completions`, `/v1/messages`, and the management API.           |
+| `Client` / `NewClient`                        | `net/http` client for `/v1/chat/completions`, `/v1/messages`, and the management API. `ClientOptions.APIKey` authenticates every request, streams included. |
 | `Chat` / `Message`                            | Typed requests returning `*ChatResponse`.                                                       |
 | `Scenario` / `RunScenario`                    | Declarative multi-turn conversation runner with automatic session scoping.                      |
-| `Expect` / `ExpectScenario`                   | `testing.TB`-integrated fluent matchers: `ToHaveContentContaining`, `ToHaveFinishReason`, `ToHaveStatusCode`, `ToHaveLatencyLessThanMs`, `ToHaveToolCallCount`, `ToHaveToolCall`, `ToHaveToolCallSequence`. Tool-call matchers read the whole trajectory (every turn), outcome matchers read the last response. |
+| `Expect` / `ExpectScenario`                   | `testing.TB`-integrated fluent matchers: `ToHaveContentContaining`, `ToHaveFinishReason`, `ToHaveStatusCode`, `ToHaveLatencyLessThanMs`, `ToHaveToolCallCount`, `ToHaveToolCallCountByName`, `ToHaveToolCall`, `ToHaveToolCallSequence`. Tool-call matchers read the whole trajectory (every turn), outcome matchers read the last response; argument values compare as JSON (`5` matches `5.0`). |
+| `ToolCall.RawArguments` / `ArgumentsValid`    | The exact wire arguments and whether they decoded to a JSON object, so malformed-argument faults stay visible. |
+| `AssistantMessage` / `ChatMessage.ToolCalls`  | Replay an assistant tool-call turn for a tool round trip.                                       |
+| `Truncated` / `MalformedFrames` / `Completed` | On `RawEventStream` and `ChunkStream`: whether a stream ended without its terminal event or carried unparseable frames. |
 | `FindFreePort` / `FindBinary`                 | Helpers exposed for advanced use cases and custom test harnesses.                               |
 
 ## Known limitations
@@ -84,5 +89,6 @@ of the release gate for lifecycle changes.
 Two former v1 limitations are gone: streaming **is** wrapped (`IterStream`
 yields protocol-agnostic `StreamChunk`s), and **in-process mode exists** —
 `NewInProcessClient` spins up an engine + `httptest.Server` inline with no
-subprocess (chat protocols + `/v1/models` + health). See the
+subprocess (chat protocols + `/v1/models` + health only; the management
+calls return 404 there). See the
 [Go SDK guide](https://mockagents.github.io/mockagents/sdk/go-sdk/).

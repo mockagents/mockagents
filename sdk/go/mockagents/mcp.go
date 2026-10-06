@@ -153,7 +153,7 @@ func (c *McpClient) Connect(ctx context.Context) (*McpEventStream, error) {
 		cancel()
 		return nil, &HTTPError{Status: resp.StatusCode, Body: string(body)}
 	}
-	scanner := bufio.NewScanner(resp.Body)
+	scanner := bufio.NewScanner(&newlineNormalizer{r: resp.Body})
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	scanner.Split(splitSSEFrames)
 	return &McpEventStream{

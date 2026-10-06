@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect as vexpect, it } from "vitest";
 import { createServer, Server } from "node:http";
 import { AddressInfo } from "node:net";
 
-import { MockAgentClient, findFrameBoundary } from "../src/client.js";
+import { MockAgentClient, SSEFrameSplitter } from "../src/client.js";
 
 let server: Server;
 let port: number;
@@ -62,22 +62,48 @@ afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
-describe("findFrameBoundary", () => {
-  it("finds an LF LF boundary", () => {
-    vexpect(findFrameBoundary("data: x\n\nrest")).toEqual({ end: 7, sepLen: 2 });
+// Review K-12: line endings are normalised to LF before frames are split, so
+// every spec-legal ending (and mixtures of them) frames identically.
+describe("SSEFrameSplitter", () => {
+  const split = (...chunks: string[]): string[] => {
+    const s = new SSEFrameSplitter();
+    const frames = chunks.flatMap((c) => s.push(c));
+    return frames.concat(s.flush());
+  };
+
+  const cases: Array<[string, string]> = [
+    ["LF", "data: a\n\ndata: b\n\n"],
+    ["CRLF", "data: a\r\n\r\ndata: b\r\n\r\n"],
+    ["CR", "data: a\r\rdata: b\r\r"],
+    ["mixed CRLF then LF", "data: a\r\n\r\ndata: b\n\n"],
+    ["an LF + CRLF blank line (\\n\\r\\n)", "data: a\n\r\ndata: b\n\n"],
+    ["CRLF + CR, then CRLF + LF", "data: a\r\n\rdata: b\r\n\n"],
+  ];
+  for (const [name, wire] of cases) {
+    it(`splits ${name} into two frames`, () => {
+      vexpect(split(wire)).toEqual(["data: a", "data: b"]);
+    });
+  }
+
+  it("treats a CRLF split across two chunks as one line ending", () => {
+    // "\r" ends chunk 1 and "\n" starts chunk 2: that is ONE line break, so
+    // no blank line (and no frame) may appear until the real terminator.
+    vexpect(split("data: a\r", "\ndata: b\r\n\r\n")).toEqual(["data: a\ndata: b"]);
   });
 
-  it("finds a CRLF CRLF boundary", () => {
-    vexpect(findFrameBoundary("data: x\r\n\r\nrest")).toEqual({ end: 7, sepLen: 4 });
+  it("finds a boundary split across chunks", () => {
+    vexpect(split("data: a\r\n", "\r\ndata: b", "\n\n")).toEqual(["data: a", "data: b"]);
+    vexpect(split("data: a\n", "\n")).toEqual(["data: a"]);
   });
 
-  it("prefers whichever boundary comes first", () => {
-    const buf = "a\n\nb\r\n\r\nc";
-    vexpect(findFrameBoundary(buf)).toEqual({ end: 1, sepLen: 2 });
+  it("drains an unterminated trailing frame on flush", () => {
+    vexpect(split("data: a\n\ndata: tail")).toEqual(["data: a", "data: tail"]);
   });
 
-  it("returns null for an incomplete frame", () => {
-    vexpect(findFrameBoundary("data: partial\r\n")).toBeNull();
+  it("holds an incomplete frame until more input arrives", () => {
+    const s = new SSEFrameSplitter();
+    vexpect(s.push("data: partial\r\n")).toEqual([]);
+    vexpect(s.push("\r\n")).toEqual(["data: partial"]);
   });
 });
 

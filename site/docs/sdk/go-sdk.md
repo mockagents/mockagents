@@ -44,8 +44,10 @@ official OpenAI/Anthropic Go SDKs at it too. Options: `AgentsDir` (required),
 
 !!! note "In-process scope"
     The in-process mux serves the two chat protocols, `GET /v1/models`, and
-    `GET /api/v1/health`. Management routes (list/reload agents), Gemini,
-    Realtime, etc. need the full server — use `NewServer` below.
+    `GET /api/v1/health`. The management calls (`ListAgents`, `GetAgent`,
+    `ReloadAgent`, `RotateMyAPIKey`) return a 404 `*HTTPError`, and Gemini,
+    Responses, Realtime, MCP, auth/tenancy and the server-wide chaos policy
+    are absent. Use `NewServer` below when a test needs them.
 
 ## Server (subprocess)
 
@@ -59,15 +61,25 @@ client := server.Client()
 ```
 
 **Options:** `AgentsDir`, `Port` (0 = auto), `BinaryPath`
-(auto-detected; `MOCKAGENTS_BIN` honored), `LogLevel` (default `warn`).
-`server.URL()`, `server.Logs()`, and `server.IsRunning()` help debugging;
-`FindFreePort()` / `FindBinary()` are exported.
+(auto-detected, see below), `LogLevel` (default `warn`).
+`server.URL()` (always `http://127.0.0.1:<port>`, matching the binary's
+IPv4-only bind), `server.Logs()`, and `server.IsRunning()` help debugging;
+`FindFreePort()` / `FindBinary()` are exported. `Start` fails as soon as the
+child exits before becoming healthy, with its logs in the error, rather than
+waiting out the timeout. `Stop` sends `os.Interrupt` (SIGINT) on Unix and kills
+the process on Windows, escalating to `Kill` after the timeout.
+
+`FindBinary` checks `MOCKAGENTS_BINARY`, then `MOCKAGENTS_BIN` (the same names,
+in the same order, as the Python and TypeScript SDKs and `npx mockagents`),
+then `./mockagents` in the working directory, then `PATH`. Parent directories
+are not searched; point an env var at a monorepo build instead.
 
 ## Client
 
 ```go
 client := mockagents.NewClient(mockagents.ClientOptions{
     BaseURL: "http://localhost:8080",   // default; Timeout defaults to 30s
+    APIKey:  os.Getenv("MOCKAGENTS_API_KEY"), // multi-tenant servers only
 })
 
 // OpenAI Chat Completions (default model gpt-4o)
@@ -80,13 +92,41 @@ fmt.Println(resp.Content, resp.FinishReason, resp.Usage.TotalTokens)
 // Anthropic Messages
 resp, err = client.Message(ctx,
     []mockagents.ChatMessage{{Role: "user", Content: "hello"}},
-    mockagents.MessageOptions{Model: "claude-3-5-sonnet-latest", System: "You are helpful."},
+    mockagents.MessageOptions{Model: "claude-sonnet-4-20250514", System: "You are helpful."},
 )
 ```
+
+The default Anthropic model is `mockagents.DefaultAnthropicModel`
+(`claude-sonnet-4-20250514`), the same in all three SDKs. `APIKey` is sent as
+`Authorization: Bearer <key>` on **every** request (chat, messages, streams and
+management calls) and as `X-Api-Key` on Anthropic calls. Without it, a
+multi-tenant server routes LLM calls to a different (global) agent rather than
+failing.
 
 Management helpers: `Health`, `ListAgents`, `GetAgent`, `ReloadAgent`, and
 `RotateMyAPIKey` (self-service key rotation against a
 [multi-tenant](../guides/management-api.md) server).
+
+### Tool calls and round trips
+
+Each `ToolCall` carries `Arguments` (decoded), `RawArguments` (the exact wire
+text) and `ArgumentsValid`. Malformed or non-object arguments, as produced by a
+`raw_arguments` fault fixture, leave `Arguments` nil with `ArgumentsValid`
+false instead of looking like a call with no arguments.
+
+`ChatMessage.ToolCalls` carries an assistant turn's calls, so a tool round trip
+can be replayed (strict-tools id validation requires it):
+
+```go
+first, _ := client.Chat(ctx, history, mockagents.ChatOptions{Tools: tools})
+history = append(history, mockagents.AssistantMessage(first))
+for _, call := range first.ToolCalls {
+    history = append(history, mockagents.ChatMessage{
+        Role: "tool", ToolCallID: call.ID, Content: runTool(call),
+    })
+}
+second, _ := client.Chat(ctx, history, mockagents.ChatOptions{Tools: tools})
+```
 
 ## Streaming
 
@@ -123,6 +163,13 @@ type StreamChunk struct {
 ```
 
 `IterStreamOptions.Protocol` is `"openai"` (default) or `"anthropic"`.
+
+After the loop, `stream.Truncated()` reports a body that ended without its
+terminal event (a `streaming.truncateAfter` fault), `stream.MalformedFrames()`
+counts skipped non-JSON frames (a `streaming.malformed` fault), and
+`stream.Completed()` reports a clean finish. All three exist on both
+`RawEventStream` and `ChunkStream`. CRLF, LF and bare-CR line endings are all
+framed identically.
 
 ## Scenarios
 
@@ -173,7 +220,13 @@ mockagents.ExpectScenario(t, result).
 
 The sequence is compared for full equality, not as a subsequence: an
 unexpected extra call fails it. `result.ToolCalls()` returns the same
-aggregate if you want to inspect it directly.
+aggregate if you want to inspect it directly. `ToHaveToolCallCountByName(name,
+n)` narrows the count to one tool (an SDK-only convenience, like the
+two-argument TypeScript form).
+
+`ToHaveToolCall` compares argument values as JSON, so `5`, `int64(5)`, `5.0`
+and `json.Number("5")` all match a wire argument of `5`. A key the call omitted
+never matches, not even an expected `nil`.
 
 ## Parity with the other SDKs
 

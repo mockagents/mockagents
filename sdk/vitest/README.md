@@ -10,7 +10,7 @@ npm install -D @mockagents/vitest @mockagents/sdk
 ```
 
 Requires Node.js **18+**. The `mockagents` Go binary must be on your `PATH`, at
-`./mockagents`, or pointed to by `MOCKAGENTS_BIN` — install it with
+`./mockagents`, or pointed to by `MOCKAGENTS_BINARY` / `MOCKAGENTS_BIN` — install it with
 `go install github.com/mockagents/mockagents/cmd/mockagents@latest` or build it
 from the repo with `make build`.
 
@@ -128,7 +128,22 @@ test("injected client", async ({ mockagentsClient }) => {
 ## Jest
 
 The same ergonomics are available for Jest from the `/jest` subpath, wired to
-Jest's global `beforeAll` / `afterAll`:
+Jest's global `beforeAll` / `afterAll`.
+
+Both this package and `@mockagents/sdk` are **ESM-only** (there is no CommonJS
+build), so Jest must run your tests as ES modules. Jest's default CommonJS
+runtime fails with `ERR_PACKAGE_PATH_NOT_EXPORTED` or a "Cannot use import
+statement" error. To set it up:
+
+- Run Jest with `NODE_OPTIONS=--experimental-vm-modules`. For example, set
+  `"test": "NODE_OPTIONS=--experimental-vm-modules jest"` (use `cross-env` on
+  Windows).
+- Write test files as ESM: `.mjs` files, or a package with `"type": "module"`,
+  or TypeScript through `ts-jest`'s ESM preset (`preset: "ts-jest/presets/default-esm"`).
+- Disable any transform that would compile `import` to `require()` for these
+  packages.
+
+If that setup is not an option, use the Vitest entry point instead.
 
 ```ts
 import { setupMockAgents } from "@mockagents/vitest/jest";
@@ -150,7 +165,7 @@ test("my agent", async () => {
 | --- | --- | --- |
 | `agentsDir` | `"./agents"` | Directory of agent YAML definitions. |
 | `port` | `0` (auto) | Port to listen on; `0` picks a free one. |
-| `binaryPath` | auto-detect | Path to the `mockagents` binary. Honors `MOCKAGENTS_BIN`. |
+| `binaryPath` | auto-detect | Path to the `mockagents` binary. Honors `MOCKAGENTS_BINARY`, then `MOCKAGENTS_BIN`. |
 | `logLevel` | `"warn"` | Server log level. |
 | `patchEnv` | `true` | Patch the provider base-URL / key env vars. Set `false` to use the client only. |
 | `env` | — | Extra env vars to set for the suite (merged after, and overriding, the provider patch). Restored afterwards. |

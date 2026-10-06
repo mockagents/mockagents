@@ -34,10 +34,19 @@ type InProcessOptions struct {
 // spin it up thousands of times in a single test run with sub-
 // millisecond startup.
 //
-// The embedded Client exposes the same Chat / Message / IterStream /
-// management-API surface as the HTTP client, so tests that used to
-// depend on NewServer can drop the binary requirement without
-// rewriting call sites. Close releases the underlying resources.
+// The embedded Client is the ordinary HTTP client, but the in-process
+// server mounts only a subset of the real routes:
+//
+//   - POST /v1/chat/completions and GET /v1/models (OpenAI)
+//   - POST /v1/messages (Anthropic)
+//   - GET /api/v1/health
+//
+// So Chat, Message, ChatStream, MessageStream, IterStream and Health work
+// unchanged, while the management API (ListAgents, GetAgent, ReloadAgent,
+// RotateMyAPIKey), the Gemini and Responses endpoints, MCP, auth/tenancy
+// and the server-wide chaos policy are NOT available: those calls return a
+// 404 *HTTPError. Use NewServer (the real binary) when a test needs them.
+// Close releases the underlying resources.
 type InProcessClient struct {
 	*Client
 	server *httptest.Server
