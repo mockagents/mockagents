@@ -222,20 +222,27 @@ func TestCLIStart_FailsClosedOnBadConfiguration(t *testing.T) {
 	}
 }
 
-func TestCLIStart_LenientEnvKnobsFailClosed(t *testing.T) {
-	t.Skip("BUG: MOCKAGENTS_SESSION_MAX, _SESSION_HISTORY, _AUDIT_MAX_ROWS and _AUTH_FAILURES_PER_MINUTE typos are logged and ignored, contrary to the fail-closed env policy (audit M-35) every other knob follows")
+// These four knobs used to log and ignore a typo; they now fail startup like
+// every other MOCKAGENTS_* knob (audit M-35).
+func TestCLIStart_CapKnobsFailClosed(t *testing.T) {
 	for _, name := range []string{"MOCKAGENTS_SESSION_MAX", "MOCKAGENTS_SESSION_HISTORY", "MOCKAGENTS_AUDIT_MAX_ROWS", "MOCKAGENTS_AUTH_FAILURES_PER_MINUTE"} {
 		t.Run(name, func(t *testing.T) {
 			isolateStartEnv(t)
 			t.Setenv(name, "lots")
-			// Hold the port so the run cannot block serving if the bug is present.
+			// Hold the port so a regression fails instead of blocking to serve.
 			l, err := net.Listen("tcp", "127.0.0.1:0")
 			require.NoError(t, err)
 			defer l.Close()
 			res := runCLI(t, "start", "--agents-dir", writeTree(t, map[string]string{"alpha.yaml": validAgentYAML}),
 				"--port", strconv.Itoa(l.Addr().(*net.TCPAddr).Port))
 			assert.Equal(t, 2, res.Code)
-			assert.ErrorContains(t, res.Err, name)
+			assert.EqualError(t, res.Err, name+`="lots" is not an integer`)
+
+			t.Setenv(name, "-1")
+			res = runCLI(t, "start", "--agents-dir", writeTree(t, map[string]string{"alpha.yaml": validAgentYAML}),
+				"--port", strconv.Itoa(l.Addr().(*net.TCPAddr).Port))
+			assert.Equal(t, 2, res.Code)
+			assert.EqualError(t, res.Err, name+"=-1 must be >= 0")
 		})
 	}
 }

@@ -41,6 +41,9 @@ func init() {
 }
 
 func runLogs(cmd *cobra.Command, args []string) error {
+	if logsOutputFmt != "table" && logsOutputFmt != "json" {
+		return fmt.Errorf("unknown --output %q (want table or json)", logsOutputFmt)
+	}
 	dbPath, err := resolveLogsDB(logsDBPath)
 	if err != nil {
 		return err

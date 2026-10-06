@@ -223,10 +223,10 @@ func TestCLIContractDiff(t *testing.T) {
 }
 
 func TestCLIContractDiff_UnknownFormatIsAUsageError(t *testing.T) {
-	t.Skip("BUG: contract diff --format accepts any value and silently prints text, while validate and test reject an unknown format")
 	dir := writeTree(t, map[string]string{"a.yaml": contractAgentYAML})
 	a := filepath.Join(dir, "a.yaml")
 	res := runCLI(t, "contract", "diff", "--format", "yaml", a, a)
 	assert.Equal(t, 2, res.Code)
-	assert.ErrorContains(t, res.Err, "yaml")
+	assert.EqualError(t, res.Err, `unknown --format "yaml" (want text or json)`)
+	assert.Empty(t, res.Stdout, "nothing is compared or printed")
 }

@@ -112,11 +112,11 @@ func TestCLILogs(t *testing.T) {
 }
 
 func TestCLILogs_UnknownOutputIsAUsageError(t *testing.T) {
-	t.Skip("BUG: logs --output accepts any value and silently prints the table, while validate and test reject an unknown format")
 	db := seedLogsDB(t)
 	res := runCLI(t, "logs", "--db", db, "--output", "jsonl")
 	assert.Equal(t, 2, res.Code)
-	assert.ErrorContains(t, res.Err, "jsonl")
+	assert.EqualError(t, res.Err, `unknown --output "jsonl" (want table or json)`)
+	assert.Empty(t, res.Stdout)
 }
 
 // ---- init ------------------------------------------------------------------
