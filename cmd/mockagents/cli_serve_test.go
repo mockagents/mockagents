@@ -389,6 +389,31 @@ func TestCLIA2A_SelectionErrors(t *testing.T) {
 	assert.Equal(t, "other-a2a", def.Metadata.Name)
 }
 
+func TestCLIA2A_ServesOnLoopbackByDefault(t *testing.T) {
+	assert.Equal(t, "127.0.0.1", a2aCmd.Flags().Lookup("bind").DefValue)
+	dir := writeTree(t, map[string]string{"a.yaml": mustRead(t, filepath.Join("..", "..", "examples", "a2a-server.yaml"))})
+
+	port := freePort(t)
+	s, early, ok := serveCLI(t, loopbackURL(port, "/healthz"),
+		"a2a", "--agents-dir", dir, "--port", strconv.Itoa(port), "--max-tasks", "5", "--task-ttl", "1m")
+	require.True(t, ok, "a2a exited early: %+v", early)
+	code, body := httpDo(t, http.MethodGet, loopbackURL(port, "/.well-known/agent-card.json"), "", "")
+	assert.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, "Weather Agent")
+	res := s.stop(os.Interrupt)
+	require.NoError(t, res.Err)
+	assert.Equal(t, "mockagents a2a listening on 127.0.0.1:"+strconv.Itoa(port)+" (agent=Weather Agent)\n", res.Stdout)
+
+	// A port that is already taken is an error, not a hang.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer l.Close()
+	res = runCLI(t, "a2a", "--agents-dir", dir, "--bind", "127.0.0.1", "--port", strconv.Itoa(l.Addr().(*net.TCPAddr).Port))
+	assert.Equal(t, 2, res.Code)
+	assert.Error(t, res.Err)
+	assert.Empty(t, res.Stdout, "no listening line when the bind fails")
+}
+
 func TestNewA2AMux_ServesCardAndRPC(t *testing.T) {
 	docs, errs := config.LoadAllDocuments(writeTree(t, map[string]string{
 		"a.yaml": mustRead(t, filepath.Join("..", "..", "examples", "a2a-server.yaml")),
