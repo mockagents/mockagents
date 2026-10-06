@@ -113,6 +113,33 @@ Fixes from the 2026-10-06 full-application quality review (see
   bounded to 1 KiB; oversized bodies on every Conversations route return 413;
   `{{ .Timestamp }}` renders the request time; pipeline runs without a session
   id no longer share engine sessions.
+- Recording: a failed cassette write no longer loses interactions (the next
+  write rebuilds the file from memory); replay never sends a stored
+  `Content-Encoding`/`Content-Length`, so imported gzip vcrpy cassettes replay;
+  the proxy stores decoded bodies even when the client accepts gzip; the request
+  hash covers the (credential-free) query string, so `?alt=sse` and plain
+  requests no longer share a recording — older path-only recordings still
+  replay; redaction no longer turns words like `risk-based` into `risk-***`.
+- MCP: server-initiated messages are delivered in order and never lost when a
+  new subscriber takes over the event stream; a request that timed out is not
+  delivered later; a lagging streamable-HTTP subscriber is disconnected (and
+  replays from `Last-Event-ID`) instead of silently missing events; at the
+  session cap a new session is refused with `503` rather than evicting a live
+  one; `id: null` and a missing method are `-32600`; malformed bodies get HTTP
+  `400`; `resources/subscribe` rejects undeclared URIs with `-32002`; a
+  panicking tool handler becomes an internal error.
+- A2A: idle non-terminal tasks expire after the task TTL instead of pinning
+  capacity forever; notifications are never answered and batches are
+  `-32600`; the card URL only takes `http`/`https` from `X-Forwarded-Proto`.
+- Realtime: G.711 (`audio/pcmu`, `audio/pcma`) durations and voice detection
+  use the right byte rate; session memory is bounded; the advertised
+  `expires_at` is enforced with a `session_expired` error.
+- Updating an agent loaded from a `.json` file writes JSON back, keeping the
+  file loadable. `tool_call` assertions compare numbers like
+  `tool_call_args` (`2` matches `2.0`). Audit write failures are logged.
+  Interaction-log and audit timestamps are stored fixed-width UTC so time
+  filters order rows correctly. The standalone `mcp` and `a2a` servers bound
+  request reads and idle connections.
 
 ---
 

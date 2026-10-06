@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -195,6 +196,7 @@ func columnExists(db *sql.DB, table, column string) (bool, error) {
 
 // Log inserts a single interaction log record.
 func (s *SQLiteStore) Log(ctx context.Context, entry *InteractionLog) error {
+	entry.Timestamp = NormalizeTimestamp(entry.Timestamp)
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO interaction_logs
 			(timestamp, tenant_id, agent_name, session_id, protocol, request_method, request_path,
@@ -252,11 +254,11 @@ func (s *SQLiteStore) Query(ctx context.Context, filter InteractionFilter) ([]In
 	}
 	if filter.Since != "" {
 		query += " AND timestamp >= ?"
-		args = append(args, filter.Since)
+		args = append(args, NormalizeTimestamp(filter.Since))
 	}
 	if filter.Until != "" {
 		query += " AND timestamp <= ?"
-		args = append(args, filter.Until)
+		args = append(args, NormalizeTimestamp(filter.Until))
 	}
 
 	query += " ORDER BY id DESC"
@@ -546,4 +548,25 @@ func defaultSource(source string) string {
 		return SourceHTTP
 	}
 	return source
+}
+
+// TimestampLayout is how interaction-log timestamps are stored: RFC3339 with
+// a fixed nine-digit fraction, always UTC, so the Since/Until string
+// comparisons order rows by time. Callers wrote three formats into one column
+// (RFC3339, RFC3339Nano, SQLite's datetime default) and the lexical filters
+// misordered rows at sub-second boundaries (review P-19).
+const TimestampLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+// NormalizeTimestamp rewrites an RFC3339 timestamp into TimestampLayout. An
+// empty value becomes the current time (a blank timestamp used to be stored
+// as ”, audit L-34); a value that does not parse is kept as given.
+func NormalizeTimestamp(ts string) string {
+	if strings.TrimSpace(ts) == "" {
+		return time.Now().UTC().Format(TimestampLayout)
+	}
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return ts
+	}
+	return t.UTC().Format(TimestampLayout)
 }

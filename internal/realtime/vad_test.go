@@ -1,6 +1,7 @@
 package realtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
@@ -364,16 +365,43 @@ func TestSessionUpdate_BetaAliases(t *testing.T) {
 	}
 }
 
+func pcm16Energy(b64 string) (float64, float64) {
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	return audioEnergy(raw, err, len(b64), codecPCM16)
+}
+
 func TestAudioEnergy(t *testing.T) {
-	ms, energy := audioEnergy(pcmChunk(100, 0))
+	ms, energy := pcm16Energy(pcmChunk(100, 0))
 	if ms != 100 || energy != 0 {
 		t.Errorf("silence chunk = (%v ms, %v), want (100, 0)", ms, energy)
 	}
-	ms, energy = audioEnergy(pcmChunk(50, 16384))
+	ms, energy = pcm16Energy(pcmChunk(50, 16384))
 	if ms != 50 || energy < 0.49 || energy > 0.51 {
 		t.Errorf("half-amplitude chunk = (%v ms, %v), want (50, ~0.5)", ms, energy)
 	}
-	if _, energy := audioEnergy("not base64 at all"); energy != 1.0 {
+	if _, energy := pcm16Energy("not base64 at all"); energy != 1.0 {
 		t.Errorf("undecodable payload energy = %v, want 1.0", energy)
+	}
+}
+
+// G.711 audio is 8 bytes/ms with 1-byte samples (review P-08): a 500 ms
+// μ-law buffer is 500 ms long, μ-law silence (0xFF) reads as silence and a
+// loud byte (0x80) as speech.
+func TestAudioEnergy_G711(t *testing.T) {
+	silence := bytes.Repeat([]byte{0xFF}, 500*8)
+	ms, energy := audioEnergy(silence, nil, 0, codecFor([]byte(`{"type":"audio/pcmu"}`)))
+	if ms != 500 || energy > 0.01 {
+		t.Errorf("μ-law silence = (%v ms, %v), want (500, ~0)", ms, energy)
+	}
+	loud := bytes.Repeat([]byte{0x80}, 100*8)
+	if _, energy := audioEnergy(loud, nil, 0, codecFor([]byte(`{"type":"audio/pcmu"}`))); energy < 0.9 {
+		t.Errorf("μ-law full scale energy = %v, want ~1", energy)
+	}
+	aSilence := bytes.Repeat([]byte{0xD5}, 100*8)
+	if ms, energy := audioEnergy(aSilence, nil, 0, codecFor([]byte(`{"type":"audio/pcma"}`))); ms != 100 || energy > 0.01 {
+		t.Errorf("A-law silence = (%v ms, %v), want (100, ~0)", ms, energy)
+	}
+	if codecFor(nil).bytesPerMs != 48 || codecFor([]byte(`{"type":"audio/pcm","rate":24000}`)).bytesPerMs != 48 {
+		t.Error("PCM16 stays the default codec")
 	}
 }

@@ -229,17 +229,20 @@ func (h *StreamableHTTPHandler) handlePost(w http.ResponseWriter, r *http.Reques
 
 	// A JSON array is a batch — removed from MCP in 2025-06-18, so it is an
 	// Invalid Request, not a parse error (round-10 R10-12).
+	// Envelope failures carry HTTP 400 alongside the JSON-RPC error, as the
+	// official SDK servers do; a 200 let a client's error-path tests pass
+	// against the mock and fail against a real server (review P-12).
 	if isBatchBody(body) {
 		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(newError(nil, ErrInvalidRequest, "JSON-RPC batching is not supported (removed in MCP 2025-06-18)", nil))
 		return
 	}
 
 	var req Request
 	if err := json.Unmarshal(body, &req); err != nil {
-		// Malformed JSON: answer with a JSON-RPC parse error so a client gets a
-		// structured failure rather than a bare 400.
 		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(newError(nil, ErrParseError, "invalid JSON", err.Error()))
 		return
 	}
@@ -278,6 +281,11 @@ func (h *StreamableHTTPHandler) handlePost(w http.ResponseWriter, r *http.Reques
 	// on garbage payloads.
 	if init && resp.Error == nil {
 		sess := h.sessions.create()
+		if sess == nil {
+			w.Header().Set("Retry-After", "5")
+			http.Error(w, "too many active MCP sessions; retry later", http.StatusServiceUnavailable)
+			return
+		}
 		w.Header().Set(headerSessionID, sess.id)
 	}
 
@@ -524,21 +532,27 @@ func newSessionManagerTTL(max int, idleTTL time.Duration) *sessionManager {
 	}
 }
 
+// create opens a new session, or returns nil when the manager is full of
+// live sessions. Idle sessions are reclaimed first; a live one is never
+// evicted to make room — evicting the oldest live session (what this used to
+// do) answered its client's next request with 404 mid-conversation, so a burst
+// of anonymous initialize calls could tear down every active session (review
+// P-16). The caller refuses the new session instead.
 func (m *sessionManager) create() *streamSession {
-	s := newStreamSession(newSessionID())
 	m.mu.Lock()
 	now := m.now()
+	expired := m.sweepLocked(now)
+	if len(m.order) >= m.max {
+		m.mu.Unlock()
+		for _, old := range expired {
+			old.close()
+		}
+		return nil
+	}
+	s := newStreamSession(newSessionID())
 	s.touch(now)
 	m.sessions[s.id] = s
 	m.order = append(m.order, s.id)
-	// Reclaim idle sessions FIRST, so a burst of new sessions never evicts a
-	// live one while an abandoned session is still holding a slot.
-	expired := m.sweepLocked(now)
-	for len(m.order) > m.max {
-		if s, ok := m.removeLocked(m.order[0]); ok {
-			expired = append(expired, s)
-		}
-	}
 	m.mu.Unlock()
 	for _, old := range expired {
 		old.close()
@@ -715,6 +729,13 @@ func (s *streamSession) broadcastNotification(n *Notification) {
 		select {
 		case ch <- ev:
 		default:
+			// The subscriber fell more than a buffer behind. Dropping the
+			// event while keeping the stream open left the client with a
+			// gap it could not detect (SSE has no gap detection — review
+			// P-11). End this stream instead: the client reconnects with
+			// Last-Event-ID and the replay log fills the gap.
+			close(ch)
+			delete(s.subs, ch)
 		}
 	}
 	s.mu.Unlock()

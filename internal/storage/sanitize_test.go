@@ -70,3 +70,16 @@ func TestSanitizeBody_DoesNotRedactOrdinaryWords(t *testing.T) {
 	assert.NotContains(t, out, "abc123")
 	assert.NotContains(t, out, fakeKey)
 }
+
+// Timestamps are stored fixed-width so the lexical Since/Until filters order
+// rows by time (review P-19), and a blank timestamp becomes now (L-34).
+func TestNormalizeTimestamp(t *testing.T) {
+	a := NormalizeTimestamp("2026-10-06T10:00:00.5Z")
+	b := NormalizeTimestamp("2026-10-06T10:00:00Z")
+	c := NormalizeTimestamp("2026-10-06T10:00:00.123Z")
+	assert.Equal(t, "2026-10-06T10:00:00.500000000Z", a)
+	assert.True(t, b < c && c < a, "lexical order must equal time order: %s %s %s", b, c, a)
+	assert.Equal(t, "2026-10-06T08:00:00.000000000Z", NormalizeTimestamp("2026-10-06T10:00:00+02:00"))
+	assert.NotEmpty(t, NormalizeTimestamp(""))
+	assert.Equal(t, "not a time", NormalizeTimestamp("not a time"))
+}

@@ -116,6 +116,10 @@ func serveA2AHTTP(server *a2a.Server, cardName string, port int) error {
 		Addr:              fmt.Sprintf(":%d", port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		// Bound the request read and idle keep-alives like record/replay
+		// (audit L-43). No WriteTimeout: the SSE streams are long-lived.
+		ReadTimeout: 30 * time.Second,
+		IdleTimeout: 120 * time.Second,
 	}
 
 	fmt.Printf("mockagents a2a listening on :%d (agent=%s)\n", port, cardName)

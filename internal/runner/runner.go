@@ -401,8 +401,11 @@ func hasToolCall(calls []types.ToolCallSpec, name string, wantArgs map[string]an
 		}
 		match := true
 		for k, v := range wantArgs {
+			// looseEqual, as tool_call_args uses: YAML's 2 and JSON's 2.0
+			// are the same argument. DeepEqual made tool_call fail where
+			// tool_call_args passed on identical input (review P-20).
 			got, ok := tc.Arguments[k]
-			if !ok || !reflect.DeepEqual(got, v) {
+			if !ok || !looseEqual(got, v) {
 				match = false
 				break
 			}
