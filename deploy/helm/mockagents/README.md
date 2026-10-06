@@ -22,7 +22,7 @@ Or, more ergonomically, pass a values file:
 ```yaml
 # my-values.yaml
 image:
-  tag: "0.1.0"
+  tag: "0.5.0"
 
 agents:
   inline:
@@ -68,7 +68,9 @@ in the NOTES in that case.
 
 | Value                                | Purpose                                                  |
 | ------------------------------------ | -------------------------------------------------------- |
+| `image.repository`                   | Image to run. Default `ghcr.io/mockagents/mockagents`.   |
 | `image.tag`                          | Pin a specific Docker image tag.                         |
+| `image.digest`                       | Pin by digest (`sha256:…`); overrides `image.tag`.       |
 | `replicaCount`                       | Replicas. Values above 1 are refused unless `multiReplica.acknowledged=true`, even when a tenancy DSN is configured. |
 | `multiReplica.acknowledged`          | Explicitly accept per-pod registry, session, interaction-log, audit-log and rate-state behavior. |
 | `service.type`                       | `ClusterIP` (default), `NodePort`, or `LoadBalancer`.    |
