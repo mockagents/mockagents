@@ -28,10 +28,15 @@ import (
 )
 
 const (
-	DefaultHost         = "127.0.0.1"
-	DefaultPort         = 8080
-	DefaultReadTimeout  = 30 * time.Second
-	DefaultWriteTimeout = 60 * time.Second
+	DefaultHost        = "127.0.0.1"
+	DefaultPort        = 8080
+	DefaultReadTimeout = 30 * time.Second
+	// DefaultWriteTimeout leaves headroom above the 60 s ceiling on chaos
+	// latency and timeout faults. At 60 s a non-streaming response delayed
+	// by a fault at that ceiling hit the write deadline first and the client
+	// saw EOF instead of the fault (review E-13). SSE streams extend their
+	// own deadline per frame.
+	DefaultWriteTimeout = 90 * time.Second
 	DefaultIdleTimeout  = 120 * time.Second
 	// DefaultReadHeaderTimeout bounds the request-header read on its own, so a
 	// slow-loris client dribbling headers can't tie up a connection for the full

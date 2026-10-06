@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mockagents/mockagents/internal/engine/state"
 	"github.com/mockagents/mockagents/internal/types"
@@ -444,5 +445,47 @@ func TestTemplate_TimestampIsSet(t *testing.T) {
 	}
 	if !strings.HasPrefix(resp.Content, "at=20") || !strings.HasSuffix(resp.Content, "Z") {
 		t.Fatalf("content = %q, want an RFC3339 UTC timestamp", resp.Content)
+	}
+}
+
+// Every latency distribution is clamped to the chaos ceiling (review E-16):
+// fixed and uniform used to be unbounded, and a huge uniform span could
+// overflow Intn.
+func TestSampleLatency_ClampedForEveryDistribution(t *testing.T) {
+	c := NewChaosInjector()
+	ceiling := time.Duration(maxChaosLatencyMs) * time.Millisecond
+	for name, l := range map[string]*types.ChaosLatencyConfig{
+		"fixed":          {Distribution: "fixed", MinMs: 3_600_000},
+		"uniform":        {Distribution: "uniform", MinMs: 0, MaxMs: 1 << 62},
+		"inferred":       {MinMs: 10, MaxMs: 9_000_000},
+		"negative fixed": {Distribution: "fixed", MinMs: -5},
+		"normal":         {Distribution: "normal", MeanMs: 1_000_000, StddevMs: 1},
+	} {
+		got := c.sampleLatency(l)
+		if got < 0 || got > ceiling {
+			t.Errorf("%s: %v outside [0, %v]", name, got, ceiling)
+		}
+	}
+}
+
+// types.TemplateFuncNames (which the config validator parses templates
+// against) lists exactly the functions the generator defines.
+func TestTemplateFuncNamesMatchGenerator(t *testing.T) {
+	g := NewResponseGenerator()
+	want := map[string]bool{}
+	for name := range g.funcMap {
+		want[name] = true
+	}
+	got := map[string]bool{}
+	for _, name := range types.TemplateFuncNames {
+		got[name] = true
+		if !want[name] {
+			t.Errorf("types.TemplateFuncNames has %q, which the generator does not define", name)
+		}
+	}
+	for name := range want {
+		if !got[name] {
+			t.Errorf("generator defines %q but types.TemplateFuncNames does not list it", name)
+		}
 	}
 }
