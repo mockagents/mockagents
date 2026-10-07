@@ -108,6 +108,13 @@ Fixes from the 2026-10-06 full-application quality review (see
 
 ### Fixed
 
+- **Go SDK `NewInProcessClient` ignored chaos presets.** It registered agents without
+  `config.ApplyDefaults`, so `chaos.preset` names (`rate-limited`, `server-down`, `flaky`, …) never
+  expanded and the agent answered 200. In-process agents now get defaults applied and are validated
+  in the same order as `mockagents start`. Invalid definitions are skipped (an error is returned only
+  when no agent loads) instead of being registered. Because validation now runs in-process, a
+  definition with an unknown field (for example `match: {default: true}`) is skipped there too, as it
+  already is by `mockagents start`.
 - `mockagents init --force` no longer deletes files you wrote in `agents/` and
   `tests/`; it removes only unedited files a previous template shipped.
 - `mockagents mcp` and `mockagents a2a` validate the selected definition before
