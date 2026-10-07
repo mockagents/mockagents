@@ -9,7 +9,7 @@
   "devDependencies": {
     "@ai-sdk/openai": "^2.0.0",
     "ai": "^5.0.0",
-    "vitest": "^2.1.0",
+    "vitest": "^5.0.3",
     "zod": "^4.4.3"
   }
 }
