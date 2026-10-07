@@ -464,3 +464,56 @@ func TestCard_DefaultsRequiredFields(t *testing.T) {
 	assert.Contains(t, string(raw), `"version":`)
 	assert.Contains(t, string(raw), `"description":`)
 }
+
+// An abandoned non-terminal task is reclaimed once it has been idle for the
+// TTL, so the server does not stay at capacity forever (review P-09).
+func TestIdleNonTerminalTaskExpires(t *testing.T) {
+	now := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+	s := NewServerWithOptions(testDef(), ServerOptions{MaxTasks: 1, MaxTaskBytes: 1 << 20, MaxHistory: 4, TaskTTL: time.Minute, Now: func() time.Time { return now }})
+	abandoned := sendMessage(t, s, "slow")
+	require.Equal(t, "working", abandoned.Status.State)
+
+	now = now.Add(2 * time.Minute)
+	fresh := sendMessage(t, s, "weather")
+	assert.NotEqual(t, abandoned.ID, fresh.ID)
+	gone := call(t, s, "tasks/get", map[string]any{"id": abandoned.ID})
+	require.NotNil(t, gone.Error)
+	assert.Equal(t, errTaskNotFound, gone.Error.Code)
+}
+
+// JSON-RPC envelope rules (audit L-39): a notification for a known method is
+// processed but not answered, and a batch is an Invalid Request (-32600),
+// not a parse error.
+func TestJSONRPC_NotificationsAndBatches(t *testing.T) {
+	s := NewServer(testDef())
+	out, err := s.HandleBytes([]byte(`{"jsonrpc":"2.0","method":"message/send","params":{"message":{"role":"user","parts":[{"kind":"text","text":"weather"}]}}}`))
+	require.NoError(t, err)
+	assert.Nil(t, out, "a notification must not be answered")
+
+	out, err = s.HandleBytes([]byte(`[{"jsonrpc":"2.0","id":1,"method":"tasks/get","params":{"id":"x"}}]`))
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"code":-32600`)
+
+	out, err = s.HandleBytes([]byte(`[{"jsonrpc":`))
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"code":-32700`, "a malformed batch is still a parse error")
+}
+
+// The advertised card URL only takes http or https from X-Forwarded-Proto
+// (audit L-36).
+func TestRequestBaseURL_ForwardedProtoIsConstrained(t *testing.T) {
+	for in, want := range map[string]string{
+		"https":        "https://agent.example",
+		"HTTPS, http":  "https://agent.example",
+		"ftp":          "http://agent.example",
+		"weird-scheme": "http://agent.example",
+		"":             "http://agent.example",
+	} {
+		r := httptest.NewRequest(http.MethodGet, "http://agent.example/.well-known/agent-card.json", nil)
+		r.Host = "agent.example"
+		if in != "" {
+			r.Header.Set("X-Forwarded-Proto", in)
+		}
+		assert.Equal(t, want, requestBaseURL(r), "X-Forwarded-Proto=%q", in)
+	}
+}

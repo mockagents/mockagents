@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mockagents/mockagents/internal/server"
 	"github.com/spf13/cobra"
 
 	"github.com/mockagents/mockagents/internal/tenancy"
@@ -248,5 +249,48 @@ func TestBootstrapTenancy_UnwritableFileFailsClosed(t *testing.T) {
 	}
 	if n := len(platformKeys(t, store)); n != 0 {
 		t.Fatalf("platform keys left behind = %d, want 0 (would block every future bootstrap)", n)
+	}
+}
+
+// A stamped version wins; "dev" falls back to the module version from the
+// build info, which `go install …@vX.Y.Z` records (review O-06).
+func TestResolveVersion(t *testing.T) {
+	if got := resolveVersion("1.2.3"); got != "1.2.3" {
+		t.Fatalf("stamped version = %q", got)
+	}
+	// Under `go test` the main module version is "(devel)", so "dev" stays.
+	if got := resolveVersion("dev"); got != "dev" {
+		t.Fatalf("unstamped test binary = %q, want dev", got)
+	}
+}
+
+// Knobs that used to fail open or warn-and-continue (2026-10-06 review C-05,
+// C-17).
+func TestStrictKnobs_NonFiniteAndCaptureMode(t *testing.T) {
+	t.Setenv("MOCKAGENTS_TEST_FLOAT", "NaN")
+	if _, _, err := envFloat("MOCKAGENTS_TEST_FLOAT", 0); err == nil {
+		t.Fatal("NaN must be rejected")
+	}
+	t.Setenv("MOCKAGENTS_TEST_FLOAT", "+Inf")
+	if _, _, err := envFloat("MOCKAGENTS_TEST_FLOAT", 0); err == nil {
+		t.Fatal("Inf must be rejected")
+	}
+	if _, _, err := parseGlobalChaos("", "NaN", false); err == nil {
+		t.Fatal("--chaos-rate NaN must be rejected")
+	}
+
+	for in, want := range map[string]server.LogBodyMode{
+		"": server.LogBodyFull, "full": server.LogBodyFull, " NONE ": server.LogBodyNone,
+		"Sanitized": server.LogBodySanitized,
+	} {
+		got, err := server.ParseLogBodyMode(in)
+		if err != nil || got != want {
+			t.Errorf("ParseLogBodyMode(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"sanitised", "off", "redacted"} {
+		if _, err := server.ParseLogBodyMode(bad); err == nil {
+			t.Errorf("ParseLogBodyMode(%q) must fail rather than capture full bodies", bad)
+		}
 	}
 }

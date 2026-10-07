@@ -50,7 +50,7 @@ func TestStreamAnthropic_BasicContentStream(t *testing.T) {
 	err := StreamAnthropic(context.Background(), rec, resp, cfg)
 	require.NoError(t, err)
 
-	assert.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+	assert.Equal(t, "text/event-stream; charset=utf-8", rec.Header().Get("Content-Type"))
 
 	events := parseSSEEvents(rec.Body.String())
 	require.GreaterOrEqual(t, len(events), 6)
@@ -211,4 +211,23 @@ func TestStreamAnthropic_DefaultConfig(t *testing.T) {
 
 	events := parseSSEEvents(rec.Body.String())
 	assert.Equal(t, "message_stop", events[len(events)-1].EventType)
+}
+
+// A response with both content and a refusal streams both, as the
+// non-streaming response does (audit L-14).
+func TestStream_ContentAndRefusalBothStream(t *testing.T) {
+	resp := &engine.Response{Model: "m", Content: "partial answer", Refusal: "I cannot continue"}
+	cfg := &types.StreamingConfig{ChunkSize: 100, ChunkDelayMs: types.Ptr(0)}
+
+	rec := httptest.NewRecorder()
+	require.NoError(t, StreamAnthropic(context.Background(), rec, resp, cfg))
+	body := rec.Body.String()
+	assert.Contains(t, body, "partial answer")
+	assert.Contains(t, body, "I cannot continue")
+	assert.Equal(t, 2, strings.Count(body, "event: content_block_start"), "one text block each")
+
+	rec = httptest.NewRecorder()
+	require.NoError(t, StreamGemini(context.Background(), rec, resp, cfg, 1, 1))
+	assert.Contains(t, rec.Body.String(), "partial answer")
+	assert.Contains(t, rec.Body.String(), "I cannot continue")
 }

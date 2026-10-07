@@ -295,12 +295,13 @@ paths:
         unconditional create-or-replace. Existing clients are unaffected.
 
 
-        **Strict fields ride along with the opt-in.** A request carrying either
-        precondition also gets unknown fields REJECTED (422) instead of silently
-        dropped. Without this, an editor doing GET → modify → PUT would delete
-        any field its types do not model, while the response still said
-        `"persisted": true`. An unconditional PUT keeps the older lenient
-        behaviour, where unknown fields are discarded.
+        **Unknown fields are rejected.** Every write, conditional or not,
+        gets unknown fields REJECTED (422) instead of silently dropped, each
+        reported with its line. Without this, an editor doing GET → modify →
+        PUT would delete any field its types do not model while the response
+        still said `"persisted": true`, and a misspelled block silently did
+        nothing. (Before the 2026-10-06 release only conditional writes were
+        strict.) A body holding a second YAML document is rejected the same way.
 
 
         **Known limit:** because the route stays additive, a client that sends
@@ -419,8 +420,8 @@ paths:
         "422":
           description: >
             Validation failed and NOTHING was changed; the body lists the
-            errors. When a precondition was sent this also covers unsupported
-            fields, each reported with its line so an editor can highlight it.
+            errors, including unknown fields, each reported with its line so
+            an editor can highlight it.
         "500":
           $ref: "#/components/responses/InternalServerError"
     delete:
@@ -428,9 +429,12 @@ paths:
       summary: Delete an agent at runtime
       description: >
         Removes the agent from the engine (it stops serving immediately) and
-        deletes its persisted file when one exists. Tenant-scoped: a caller can
-        only delete an agent owned by its own tenant. Requires the `editor` role
-        in multi-tenant mode. Emits an `agent.deleted` audit event.
+        deletes the file it was loaded from, unless `keep_file=true`. Only the
+        tracked source file is ever removed; an agent with no tracked source
+        removes nothing from disk. `persisted` is true when a file was removed.
+        Tenant-scoped: a caller can only delete an agent owned by its own
+        tenant. Requires the `editor` role in multi-tenant mode. Emits an
+        `agent.deleted` audit event.
       tags: [Agents]
       parameters:
         - name: name
@@ -438,6 +442,11 @@ paths:
           required: true
           description: Agent name.
           schema: { type: string }
+        - name: keep_file
+          in: query
+          required: false
+          description: When `true`, unregister the agent but leave its source file on disk.
+          schema: { type: boolean, default: false }
       responses:
         "200":
           description: Agent deleted.

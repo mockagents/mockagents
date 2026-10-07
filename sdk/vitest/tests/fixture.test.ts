@@ -8,7 +8,7 @@ import type { MockAgentsHandle, MockAgentServerLike } from "../src/core.js";
 import { mockagentsFixture } from "../src/index.js";
 
 const fakeServer = new MockAgentServer({ port: 6543 });
-const fakeClient = new MockAgentClient({ baseUrl: "http://localhost:6543" });
+const fakeClient = new MockAgentClient({ baseUrl: "http://127.0.0.1:6543" });
 
 const fakeHandle: MockAgentsHandle = {
   get server(): MockAgentServerLike {
@@ -27,7 +27,7 @@ describe("mockagentsFixture", () => {
 
   test("injects the server fixture from the handle", ({ mockagents }) => {
     expect(mockagents).toBe(fakeServer);
-    expect(mockagents.url).toBe("http://localhost:6543");
+    expect(mockagents.url).toBe("http://127.0.0.1:6543");
   });
 
   test("injects the client fixture from the handle", ({ mockagentsClient }) => {

@@ -97,3 +97,15 @@ describe("offline bar", () => {
     await expect(container).toHaveNoAxeViolations();
   });
 });
+
+// Review 6.6: the management API's address is internal in a proxied
+// deployment and is withheld from anonymous visitors (lib/serverState.ts
+// apiUrlVisible decides; the strip must honour a withheld value).
+describe("instrument strip: withheld server address", () => {
+  it("says the address is withheld rather than printing one", () => {
+    render(<InstrumentStrip status={status()} apiUrl={null} role={null} tenantId={null} mode="multi_tenant" />);
+    const s = strip();
+    expect(within(s).getByText(/withheld until sign-in/i)).toBeInTheDocument();
+    expect(s.textContent).not.toMatch(/https?:\/\//);
+  });
+});

@@ -13,7 +13,8 @@ import { setupMockAgents } from "../src/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../.."); // tests -> vitest -> sdk -> repo root
-const binary = process.env.MOCKAGENTS_BIN ?? resolve(repoRoot, "mockagents");
+const binary =
+  process.env.MOCKAGENTS_BINARY ?? process.env.MOCKAGENTS_BIN ?? resolve(repoRoot, "mockagents");
 const agentsDir = resolve(here, "fixtures");
 
 describe.skipIf(!existsSync(binary))("e2e against the real binary", () => {

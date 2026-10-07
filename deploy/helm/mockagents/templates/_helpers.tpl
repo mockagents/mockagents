@@ -65,8 +65,12 @@ Name of the ServiceAccount to use.
 Resolve the image ref: repository:tag where tag defaults to Chart.AppVersion.
 */}}
 {{- define "mockagents.image" -}}
+{{- if .Values.image.digest -}}
+{{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
+{{- else -}}
 {{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
 {{- printf "%s:%s" .Values.image.repository $tag -}}
+{{- end -}}
 {{- end -}}
 
 {{/*

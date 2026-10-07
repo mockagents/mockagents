@@ -4,3 +4,10 @@
 
 # Git hooks are shell scripts too (extensionless) — force LF.
 hooks/** text eol=lf
+
+# Go source is gofmt-formatted with LF endings. Checking it out as LF keeps
+# gofmt -l truthful on Windows (with autocrlf the working tree used to get CRLF
+# and gofmt flagged every file).
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf

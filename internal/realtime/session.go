@@ -251,7 +251,30 @@ func (s *Session) rememberItem(item map[string]any) map[string]any {
 	if id, _ := item["id"].(string); id != "" {
 		s.items[id] = item
 	}
+	s.enforceBounds()
 	return item
+}
+
+// Per-session memory bounds (audit M-32, review P-07). One socket could
+// otherwise grow items, itemOrder and history without limit — 20,000
+// item.create events retained ~166 MiB — and a 16 MiB frame was stored twice.
+// Past a bound the OLDEST entries are dropped, the way a long real session's
+// context is truncated; recent turns, which is what scenarios match on, stay.
+const (
+	maxSessionItems   = 4096
+	maxSessionHistory = 4096
+)
+
+// enforceBounds drops the oldest items and history entries past the caps.
+func (s *Session) enforceBounds() {
+	for len(s.items) > maxSessionItems && len(s.itemOrder) > 0 {
+		oldest := s.itemOrder[0]
+		s.itemOrder = s.itemOrder[1:]
+		delete(s.items, oldest)
+	}
+	if over := len(s.history) - maxSessionHistory; over > 0 {
+		s.history = append(s.history[:0:0], s.history[over:]...)
+	}
 }
 
 // joinTail appends a new item id at the conversation tail (the common case:
@@ -357,6 +380,9 @@ func NewSession(id, model string, gen Generator) *Session {
 	s.refreshVAD()
 	return s
 }
+
+// ExpiresAt returns the session's expiry (unix seconds), 0 when unset.
+func (s *Session) ExpiresAt() int64 { return s.expiresAt }
 
 // SetExpiry sets the session's expiry (unix seconds), reported as expires_at in
 // the GA session object so a client can schedule a reconnect. The transport sets
@@ -479,10 +505,11 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 
 	case "input_audio_buffer.append":
 		s.audioBuffer = true
-		ms, energy := audioEnergy(ce.Audio)
+		raw, decodeErr := base64.StdEncoding.DecodeString(ce.Audio)
+		ms, energy := audioEnergy(raw, decodeErr, len(ce.Audio), codecFor(s.cfg.inputFormat))
 		s.bufferedMs += ms
 		// Keep the (bounded) audio bytes so retrieve can return them later.
-		if raw, err := base64.StdEncoding.DecodeString(ce.Audio); err == nil && len(s.audioBuf) < maxBufferedAudioBytes {
+		if decodeErr == nil && len(s.audioBuf) < maxBufferedAudioBytes {
 			if n := min(len(raw), maxBufferedAudioBytes-len(s.audioBuf)); n > 0 {
 				s.audioBuf = append(s.audioBuf, raw[:n]...)
 			}
@@ -526,7 +553,7 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		committedMs, committedAudio := s.bufferedMs, s.audioBuf
 		if s.vadCommitting && s.audioWindowStartMs > 0 && s.audioWindowStartMs < committedMs {
 			committedMs -= s.audioWindowStartMs
-			if off := int(s.audioWindowStartMs) * 48; off < len(committedAudio) {
+			if off := int(s.audioWindowStartMs * codecFor(s.cfg.inputFormat).bytesPerMs); off < len(committedAudio) {
 				committedAudio = committedAudio[off:]
 			} else {
 				committedAudio = nil

@@ -18,7 +18,7 @@ import (
 type ServerOptions struct {
 	AgentsDir  string
 	Port       int    // 0 = auto-pick a free port
-	BinaryPath string // empty = auto-detect via MOCKAGENTS_BIN / repo layout / PATH
+	BinaryPath string // empty = auto-detect via FindBinary (env vars, ./mockagents, PATH)
 	LogLevel   string // debug, info, warn, error (default: warn)
 }
 
@@ -58,9 +58,10 @@ func NewServer(opts ServerOptions) (*Server, error) {
 }
 
 // URL returns the base URL the server is listening on. Only valid after
-// Start has allocated a port.
+// Start has allocated a port. It uses 127.0.0.1, not localhost: the binary
+// binds IPv4 only, and localhost can resolve to ::1 first on dual-stack hosts.
 func (s *Server) URL() string {
-	return fmt.Sprintf("http://localhost:%d", s.Port)
+	return fmt.Sprintf("http://127.0.0.1:%d", s.Port)
 }
 
 // Client returns a Client pre-configured for this server.
@@ -90,7 +91,10 @@ func (s *Server) IsRunning() bool {
 }
 
 // Start spawns the subprocess, picking a free port if Port was zero, and
-// blocks until /api/v1/health responds 200 or the timeout elapses.
+// blocks until /api/v1/health responds 200 or the timeout elapses. If the
+// subprocess exits first (a bad agents dir, a port collision) Start fails
+// immediately with the exit status and the captured logs instead of waiting
+// out the timeout.
 func (s *Server) Start(ctx context.Context, timeout time.Duration) error {
 	s.mu.Lock()
 	if s.cmd != nil {
@@ -133,7 +137,7 @@ func (s *Server) Start(ctx context.Context, timeout time.Duration) error {
 	s.mu.Unlock()
 	go func() { done <- cmd.Wait(); close(done) }()
 
-	if err := waitForHealth(ctx, s.URL(), timeout); err != nil {
+	if err := waitForHealth(ctx, s.URL(), timeout, done); err != nil {
 		// Tear down on failed startup so callers don't leak processes.
 		_ = s.Stop(5 * time.Second)
 		return fmt.Errorf("server did not become ready within %s: %w\nlogs:\n%s", timeout, err, s.Logs())
@@ -141,9 +145,10 @@ func (s *Server) Start(ctx context.Context, timeout time.Duration) error {
 	return nil
 }
 
-// Stop sends SIGTERM (SIGKILL fallback on Windows) and waits up to the
-// given timeout for the process to exit. Safe to call on an un-started
-// or already-stopped server.
+// Stop sends os.Interrupt (SIGINT) on Unix, or kills the process outright on
+// Windows where os/exec cannot deliver a portable interrupt, then waits up to
+// the given timeout for the process to exit, falling back to Kill. Safe to
+// call on an un-started or already-stopped server.
 func (s *Server) Stop(timeout time.Duration) error {
 	s.mu.Lock()
 	cmd := s.cmd
@@ -163,8 +168,8 @@ func (s *Server) Stop(timeout time.Duration) error {
 	default:
 	}
 
-	// On Unix, SIGTERM for graceful; on Windows, Kill is the only
-	// portable option via os/exec.
+	// On Unix, SIGINT for a graceful shutdown (the binary handles it like
+	// SIGTERM); on Windows, Kill is the only portable option via os/exec.
 	if runtime.GOOS == "windows" {
 		_ = cmd.Process.Kill()
 	} else {
@@ -193,7 +198,7 @@ func (s *Server) Stop(timeout time.Duration) error {
 
 // FindFreePort asks the kernel for an unused TCP port.
 func FindFreePort() (int, error) {
-	ln, err := net.Listen("tcp", "localhost:0")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, err
 	}
@@ -201,12 +206,17 @@ func FindFreePort() (int, error) {
 	return ln.Addr().(*net.TCPAddr).Port, nil
 }
 
-// FindBinary locates the mockagents binary. Honors MOCKAGENTS_BIN, then
-// looks in the repo root relative to the working directory, then falls
-// back to the bare binary name (which PATH lookup handles at spawn).
+// FindBinary locates the mockagents binary. It honors MOCKAGENTS_BINARY, then
+// MOCKAGENTS_BIN (the same names, in the same order, as the Python SDK and
+// the npx launcher), then ./mockagents in the working directory, then falls
+// back to the bare binary name, which PATH lookup handles at spawn.
+//
+// Parent directories are deliberately not searched: in a nested checkout
+// that silently ran whatever stale binary sat a few levels up. Point one of
+// the env vars at a monorepo build instead.
 func FindBinary() string {
-	if env := os.Getenv("MOCKAGENTS_BIN"); env != "" {
-		if _, err := os.Stat(env); err == nil {
+	for _, key := range []string{"MOCKAGENTS_BINARY", "MOCKAGENTS_BIN"} {
+		if env := os.Getenv(key); env != "" && isRegularFile(env) {
 			return env
 		}
 	}
@@ -214,24 +224,32 @@ func FindBinary() string {
 	if runtime.GOOS == "windows" {
 		name = "mockagents.exe"
 	}
-	cwd, _ := os.Getwd()
-	for _, rel := range []string{".", "..", filepath.Join("..", ".."), filepath.Join("..", "..", "..")} {
-		candidate := filepath.Join(cwd, rel, name)
-		if _, err := os.Stat(candidate); err == nil {
+	if cwd, err := os.Getwd(); err == nil {
+		if candidate := filepath.Join(cwd, name); isRegularFile(candidate) {
 			return candidate
 		}
 	}
 	return name
 }
 
-// waitForHealth polls /api/v1/health until it returns 200 or the
-// timeout elapses.
-func waitForHealth(ctx context.Context, baseURL string, timeout time.Duration) error {
+func isRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
+// waitForHealth polls /api/v1/health until it returns 200, the timeout
+// elapses, or exited yields (the subprocess died before becoming ready).
+func waitForHealth(ctx context.Context, baseURL string, timeout time.Duration, exited <-chan error) error {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		select {
+		case err := <-exited:
+			return processExitedError(err)
+		default:
 		}
 		reqCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 		req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, baseURL+"/api/v1/health", nil)
@@ -247,12 +265,25 @@ func waitForHealth(ctx context.Context, baseURL string, timeout time.Duration) e
 		if err != nil {
 			lastErr = err
 		}
-		time.Sleep(75 * time.Millisecond)
+		select {
+		case err := <-exited:
+			return processExitedError(err)
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(75 * time.Millisecond):
+		}
 	}
 	if lastErr == nil {
 		lastErr = errors.New("timeout")
 	}
 	return lastErr
+}
+
+func processExitedError(waitErr error) error {
+	if waitErr == nil {
+		return errors.New("server process exited before becoming ready (exit status 0)")
+	}
+	return fmt.Errorf("server process exited before becoming ready: %w", waitErr)
 }
 
 // logBuffer synchronizes the shared stdout/stderr sink and readers.

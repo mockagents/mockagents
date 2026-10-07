@@ -32,6 +32,7 @@ const (
 //     both); at most one default; a declared `state` must be a known task state
 func ValidateA2AServer(def *types.A2AServerDefinition, filePath string, node *yaml.Node) *ValidationErrorList {
 	ctx := &validationContext{file: filePath, node: node}
+	ctx.errors = append(ctx.errors, unknownFieldErrors(filePath, node, def)...)
 
 	if def.APIVersion == "" {
 		ctx.addError("apiVersion", "required field missing",

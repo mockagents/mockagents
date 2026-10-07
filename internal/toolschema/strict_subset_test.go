@@ -98,3 +98,31 @@ func TestValidateStrictSubset(t *testing.T) {
 		t.Errorf("nil schema produced errors: %v", errs)
 	}
 }
+
+// With several properties missing from required, the reported errors come
+// in a stable order, so the 400 message is identical on every request
+// (review E-18).
+func TestValidateStrictSubset_DeterministicOrder(t *testing.T) {
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"zeta": map[string]any{"type": "string"}, "alpha": map[string]any{"type": "string"},
+			"mid": map[string]any{"type": "string"}, "beta": map[string]any{"type": "string"},
+		},
+		"required": []any{},
+	}
+	first := ValidateStrictSubset(schema)
+	if len(first) < 4 {
+		t.Fatalf("errors = %v, want one per unrequired property", first)
+	}
+	for i := 0; i < 50; i++ {
+		got := ValidateStrictSubset(schema)
+		if strings.Join(got, "|") != strings.Join(first, "|") {
+			t.Fatalf("run %d order differs:\n%v\n%v", i, got, first)
+		}
+	}
+	if !strings.Contains(first[0], "'alpha'") {
+		t.Fatalf("first error = %q, want the alphabetically first property", first[0])
+	}
+}

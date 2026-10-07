@@ -34,7 +34,9 @@ func NewSSEWriter(w http.ResponseWriter) (*SSEWriter, error) {
 
 	s := &SSEWriter{w: w, flusher: flusher, rc: http.NewResponseController(w)}
 	// Set SSE headers.
-	w.Header().Set("Content-Type", "text/event-stream")
+	// The charset matches the providers and stops clients that default text/*
+	// to ISO-8859-1 (Python requests) from mangling UTF-8 (review K-05).
+	w.Header().Set("Content-Type", SSEContentType)
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
@@ -90,3 +92,6 @@ func (s *SSEWriter) WriteRaw(raw string) error {
 	s.flusher.Flush()
 	return nil
 }
+
+// SSEContentType is the Content-Type of every provider SSE stream.
+const SSEContentType = "text/event-stream; charset=utf-8"

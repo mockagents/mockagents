@@ -165,8 +165,15 @@ type responseFunctionCallItem struct {
 // mock cannot grow without limit.
 type responseStore struct {
 	mu    sync.Mutex
-	m     map[responseKey][]engine.RequestMessage
+	m     map[responseKey]storedResponse
 	order []responseKey
+}
+
+// storedResponse is one response's replayable thread plus how many turns the
+// chain behind it has taken, which seeds turn numbering on the next hop.
+type storedResponse struct {
+	msgs  []engine.RequestMessage
+	turns int
 }
 
 // The empty tenant is the anonymous namespace, never a wildcard.
@@ -175,17 +182,17 @@ type responseKey struct{ tenant, id string }
 const maxStoredResponses = 1024
 
 func newResponseStore() *responseStore {
-	return &responseStore{m: make(map[responseKey][]engine.RequestMessage)}
+	return &responseStore{m: make(map[responseKey]storedResponse)}
 }
 
-func (s *responseStore) get(tenant, id string) ([]engine.RequestMessage, bool) {
+func (s *responseStore) get(tenant, id string) (storedResponse, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	msgs, ok := s.m[responseKey{tenant, id}]
-	return msgs, ok
+	r, ok := s.m[responseKey{tenant, id}]
+	return r, ok
 }
 
-func (s *responseStore) put(tenant, id string, msgs []engine.RequestMessage) {
+func (s *responseStore) put(tenant, id string, r storedResponse) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := responseKey{tenant, id}
@@ -197,7 +204,7 @@ func (s *responseStore) put(tenant, id string, msgs []engine.RequestMessage) {
 			delete(s.m, oldest)
 		}
 	}
-	s.m[key] = msgs
+	s.m[key] = r
 }
 
 // --- Handler ---
@@ -298,13 +305,21 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 	// previous_response_id), or a fresh `instructions` system message, then this
 	// request's input.
 	var messages []engine.RequestMessage
+	// priorTurns is how many turns the thread behind this request has taken;
+	// it seeds the engine's turn numbering (see InboundRequest.PriorTurns).
+	priorTurns := 0
+	//
+	// `instructions` apply to this request only: they are never carried over
+	// from an earlier response, and a new value replaces the old (the real
+	// API documents exactly that). The replay used to keep the stored system
+	// message and ignore the new instructions (review E-11).
+	if req.Instructions != nil && *req.Instructions != "" {
+		messages = append(messages, engine.RequestMessage{Role: "system", Content: *req.Instructions})
+	}
 	switch {
 	case conv != nil:
-		prior := conv.messages()
-		if len(prior) == 0 && req.Instructions != nil && *req.Instructions != "" {
-			messages = append(messages, engine.RequestMessage{Role: "system", Content: *req.Instructions})
-		}
-		messages = append(messages, prior...)
+		messages = append(messages, conv.messages()...)
+		priorTurns = conv.turnCount()
 	case req.PreviousResponseID != nil && *req.PreviousResponseID != "":
 		prior, ok := h.store.get(tenant, *req.PreviousResponseID)
 		if !ok {
@@ -312,11 +327,12 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 				fmt.Sprintf("Previous response with id '%s' not found.", *req.PreviousResponseID))
 			return
 		}
-		messages = append(messages, prior...)
-	default:
-		if req.Instructions != nil && *req.Instructions != "" {
-			messages = append(messages, engine.RequestMessage{Role: "system", Content: *req.Instructions})
+		for _, m := range prior.msgs {
+			if m.Role != "system" {
+				messages = append(messages, m)
+			}
 		}
+		priorTurns = prior.turns
 	}
 	messages = append(messages, inputMsgs...)
 
@@ -326,8 +342,10 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 	}
 
 	inbound := &engine.InboundRequest{
+		WireProtocol:     ProtocolOpenAIResponses,
 		Model:            req.Model,
-		SessionID:        responsesSessionID(r, req.PreviousResponseID),
+		SessionID:        r.Header.Get("X-Session-Id"),
+		PriorTurns:       priorTurns,
 		Messages:         messages,
 		Stream:           req.Stream,
 		ToolChoice:       parseResponsesToolChoice(req.ToolChoice, req.ParallelToolCalls),
@@ -362,7 +380,7 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		status := engineErrorStatus(err)
-		writeError(w, status, "invalid_request_error", err.Error())
+		writeError(w, status, openAIEngineErrorType(status), err.Error())
 		return
 	}
 
@@ -400,7 +418,7 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 		stored = append(stored, engine.RequestMessage{Role: "assistant", ToolCalls: echoed})
 	}
 	if boolOr(req.Store, true) {
-		h.store.put(tenant, respID, stored)
+		h.store.put(tenant, respID, storedResponse{msgs: stored, turns: priorTurns + 1})
 	}
 
 	// When this turn referenced a conversation, append the new input + the
@@ -415,6 +433,7 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 		}
 		appended = append(appended, assistantItemsFromResponse(resp)...)
 		conv.appendItems(appended)
+		conv.addTurn()
 	}
 
 	inputTokens := sumMessageTokens(messages)
@@ -424,6 +443,7 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 	}
 
 	setHallucinationHeader(w, resp)
+	setToolErrorsHeader(w, resp)
 	setStrictViolationHeader(w, resp)
 
 	if req.Stream {
@@ -481,7 +501,9 @@ func parseResponsesInput(raw json.RawMessage) ([]engine.RequestMessage, error) {
 
 	msgs := make([]engine.RequestMessage, 0, len(items))
 	for _, it := range items {
-		msgs = append(msgs, responsesItemToMessage(it.Type, it.Role, it.Content, it.Output, it.Name, it.Arguments, it.CallID))
+		if m, ok := responsesItemToMessage(it.Type, it.Role, it.Content, it.Output, it.Name, it.Arguments, it.CallID); ok {
+			msgs = append(msgs, m)
+		}
 	}
 	return msgs, nil
 }
@@ -588,7 +610,11 @@ func parseResponsesToolChoice(raw json.RawMessage, parallel *bool) engine.ToolCh
 // produce identical history (review finding X-001). The discriminator is the
 // item type (plus role for plain messages); content/output are the raw JSON
 // payloads each kind carries.
-func responsesItemToMessage(itemType, role string, content, output json.RawMessage, name, arguments, callID string) engine.RequestMessage {
+// ok is false for an item kind this mock does not model (reasoning,
+// item_reference, mcp_*, custom_tool_call_output, …): it is skipped. Treating
+// it as a role-less message made it an empty user turn that shadowed the real
+// user message and failed the request with "empty user message" (review E-10).
+func responsesItemToMessage(itemType, role string, content, output json.RawMessage, name, arguments, callID string) (msg engine.RequestMessage, ok bool) {
 	switch itemType {
 	case "function_call_output":
 		// A tool result fed back in. Map to a "tool" role so it joins the
@@ -599,7 +625,7 @@ func responsesItemToMessage(itemType, role string, content, output json.RawMessa
 		if callID != "" {
 			rm.ToolResultIDs = []string{callID}
 		}
-		return rm
+		return rm, true
 	case "function_call":
 		// An echoed prior tool call. Keep it in history as an assistant turn; it
 		// carries no user-visible text to match on, but its name+arguments are
@@ -607,13 +633,15 @@ func responsesItemToMessage(itemType, role string, content, output json.RawMessa
 		echoed := engine.EchoToolCall(name, arguments)
 		echoed.ID = callID
 		return engine.RequestMessage{Role: "assistant", Content: "",
-			ToolCalls: []engine.EchoedToolCall{echoed}}
-	default:
+			ToolCalls: []engine.EchoedToolCall{echoed}}, true
+	case "", "message":
 		// "message" or a role-only object.
 		if role == "" {
 			role = "user"
 		}
-		return engine.RequestMessage{Role: role, Content: extractStringContent(decodeContent(content))}
+		return engine.RequestMessage{Role: role, Content: extractStringContent(decodeContent(content))}, true
+	default:
+		return engine.RequestMessage{}, false
 	}
 }
 
@@ -642,20 +670,6 @@ func rawToString(raw json.RawMessage) string {
 		return s
 	}
 	return extractStringContent(decodeContent(raw))
-}
-
-// responsesSessionID derives a stable session id so multi-turn conversations
-// keyed by previous_response_id share engine session state. An explicit
-// X-Session-Id header wins; otherwise a chained turn reuses the prior response
-// id as the thread key, and a brand-new conversation gets a fresh id.
-func responsesSessionID(r *http.Request, prev *string) string {
-	if id := r.Header.Get("X-Session-Id"); id != "" {
-		return id
-	}
-	if prev != nil && *prev != "" {
-		return "resp-thread-" + *prev
-	}
-	return "sess-" + generateID()
 }
 
 // --- translate-out ---

@@ -3,6 +3,19 @@ name: Candidate verification
 on:
   workflow_call:
   workflow_dispatch:
+  # Exercise the release gate on the pull requests that can break it, so it is
+  # not first run by a release tag (it had never run, and failed on its first
+  # job: review O-05).
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/verify.yml"
+      - ".github/workflows/release.yml"
+      - ".goreleaser.yml"
+      - "Dockerfile"
+      - "scripts/**"
+      - "sdk/**"
+      - "deploy/helm/**"
 
 permissions:
   contents: read
@@ -10,6 +23,7 @@ permissions:
 jobs:
   go:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -30,6 +44,7 @@ jobs:
 
   postgres:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16-alpine
@@ -53,6 +68,7 @@ jobs:
 
   packages:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -66,7 +82,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: python -m pip install --disable-pip-version-check build pytest
+      # The SDK's own dev extra brings its runtime and test dependencies
+      # (requests, pyyaml, responses); installing only build+pytest failed on
+      # `import requests`.
+      - run: python -m pip install --disable-pip-version-check build -e "sdk/python[dev]"
       - run: python -m pytest sdk/python/tests
       - run: python -m build sdk/python
       - working-directory: sdk/typescript
@@ -79,6 +98,7 @@ jobs:
 
   product:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -96,7 +116,7 @@ jobs:
         run: npx playwright install --with-deps chromium
       - working-directory: gui
         run: npm run test:e2e
-      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
       - name: Helm defaults, monitoring, and topology guards
         shell: bash
         run: |
@@ -123,6 +143,7 @@ jobs:
 
   vulnerability:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -133,6 +154,7 @@ jobs:
 
   container:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: docker build --tag mockagents-candidate:${{ github.sha }} .

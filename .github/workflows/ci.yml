@@ -22,6 +22,7 @@ jobs:
   test-go:
     name: Go Tests
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       matrix:
         # Linux (1× billing, carries the race detector) + Windows (2×, the
@@ -79,6 +80,7 @@ jobs:
   test-go-postgres:
     name: Go Tests (Postgres)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16-alpine
@@ -106,6 +108,7 @@ jobs:
   test-python:
     name: Python SDK Tests
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       matrix:
         os: [ubuntu-latest]
@@ -125,6 +128,11 @@ jobs:
       - name: Install SDK
         working-directory: sdk/python
         run: pip install -e ".[dev]"
+
+      # CONTRIBUTING says Python style is checked with ruff; now it is.
+      - name: Lint (ruff)
+        working-directory: sdk/python
+        run: python -m ruff check .
 
       - name: Run tests
         working-directory: sdk/python
@@ -152,6 +160,7 @@ jobs:
   demo-rag:
     name: RAG demo (end to end)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -190,6 +199,7 @@ jobs:
   framework-recipes:
     name: Framework recipe (${{ matrix.recipe }})
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -230,6 +240,7 @@ jobs:
   framework-recipe-vercel:
     name: Framework recipe (Vercel AI SDK)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -254,6 +265,37 @@ jobs:
           MOCKAGENTS_BIN: ${{ github.workspace }}/mockagents
         run: npm test
 
+  # The TypeScript SDK, the vitest helper and the npx launcher had no PR job,
+  # so dependency bumps (TypeScript 7, vitest 5) merged on a green build that
+  # never ran them (review O-16). verify.yml runs the same at release time.
+  test-js-sdks:
+    name: JS SDKs (typescript, vitest, npx)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            sdk/typescript/package-lock.json
+            sdk/vitest/package-lock.json
+            sdk/npx/package-lock.json
+
+      - name: TypeScript SDK
+        working-directory: sdk/typescript
+        run: npm ci --no-audit --no-fund && npm run typecheck && npm test && npm run build
+
+      - name: vitest helper
+        working-directory: sdk/vitest
+        run: npm ci --no-audit --no-fund && npm test && npm run build
+
+      - name: npx launcher
+        working-directory: sdk/npx
+        run: npm ci --no-audit --no-fund && npm test
+
   # UX-08: the GUI delivery gate. Epic §10 is explicit that a green TypeScript
   # compile is not evidence of UX correctness, so this job runs four distinct
   # layers: types, production build, component interaction tests (jsdom) and
@@ -264,6 +306,7 @@ jobs:
   gui:
     name: GUI (typecheck, build, component + browser tests)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -308,6 +351,10 @@ jobs:
         working-directory: gui
         run: npm test
 
+      - name: Lint (ESLint, react-hooks rules enforced)
+        working-directory: gui
+        run: npm run lint
+
       - name: Install Playwright browser
         working-directory: gui
         run: npx playwright install --with-deps chromium
@@ -327,6 +374,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -363,9 +411,29 @@ jobs:
       - name: Docs Liquid check
         run: go run ./tools/liquidcheck
 
+      # The rest of `make docs-check`, which CONTRIBUTING tells every docs
+      # change to pass: CI ran only the two checks above (review O-31).
+      - name: Contract, route-coverage and link checks
+        run: |
+          go run ./tools/contractcheck
+          go run ./tools/handoffcatalog -check
+          go run ./tools/doccheck
+
+      # Formatting gate (review O-15): eight product files had drifted from
+      # gofmt with nothing to notice. Lists the offenders and fails.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt-formatted (run gofmt -w):"
+            echo "$unformatted"
+            exit 1
+          fi
+
   docker:
     name: Docker Build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -401,6 +469,7 @@ jobs:
   helm:
     name: Helm Chart
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -484,6 +553,7 @@ jobs:
   vuln:
     name: Vulnerability Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

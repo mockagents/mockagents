@@ -22,8 +22,6 @@ spec:
   behavior:
     scenarios:
       - name: default
-        match:
-          default: true
         response:
           content: "hi"
 `
@@ -59,8 +57,6 @@ spec:
   behavior:
     scenarios:
       - name: default
-        match:
-          default: true
         response:
           content: "hi"
 `
@@ -98,8 +94,6 @@ spec:
   behavior:
     scenarios:
       - name: default
-        match:
-          default: true
         response:
           content: "hi"
 `,

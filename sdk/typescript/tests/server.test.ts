@@ -1,5 +1,8 @@
 import { EventEmitter } from "node:events";
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { findBinary, findFreePort, MockAgentServer } from "../src/server.js";
 
@@ -23,9 +26,11 @@ describe("MockAgentServer pure logic", () => {
     expect(server.isRunning).toBe(false);
   });
 
-  it("url reflects the configured port", () => {
+  it("url reflects the configured port on IPv4 loopback", () => {
+    // 127.0.0.1, not localhost: the binary binds IPv4 only (review K-19).
     const server = new MockAgentServer({ agentsDir: "./examples", port: 12345 });
-    expect(server.url).toBe("http://localhost:12345");
+    expect(server.url).toBe("http://127.0.0.1:12345");
+    expect(server.client().baseUrl).toBe("http://127.0.0.1:12345");
   });
 
   it("stop() is a no-op when never started", async () => {
@@ -96,5 +101,82 @@ describe("MockAgentServer process lifecycle", () => {
     (server as unknown as { process: FakeChild }).process = child;
     await server.stop(5);
     expect(child.signals).toEqual([]);
+  });
+});
+
+// Review K-22: both env-var names, the same precedence as the Python SDK and
+// the npx launcher, and no walk up into parent directories.
+describe("findBinary discovery", () => {
+  const saved = {
+    binary: process.env.MOCKAGENTS_BINARY,
+    bin: process.env.MOCKAGENTS_BIN,
+    cwd: process.cwd(),
+  };
+  let tmp: string | undefined;
+
+  afterEach(() => {
+    process.chdir(saved.cwd);
+    for (const [key, value] of [
+      ["MOCKAGENTS_BINARY", saved.binary],
+      ["MOCKAGENTS_BIN", saved.bin],
+    ] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+    tmp = undefined;
+  });
+
+  function fakeFile(name: string): string {
+    tmp ??= mkdtempSync(join(tmpdir(), "ma-ts-bin-"));
+    const p = join(tmp, name);
+    writeFileSync(p, "x");
+    return p;
+  }
+
+  const cases: Array<{ name: string; binary?: string; bin?: string; want: "binary" | "bin" | "fallback" }> = [
+    { name: "MOCKAGENTS_BINARY only", binary: "a", want: "binary" },
+    { name: "MOCKAGENTS_BIN only", bin: "b", want: "bin" },
+    { name: "both set: MOCKAGENTS_BINARY wins", binary: "a", bin: "b", want: "binary" },
+    { name: "MOCKAGENTS_BINARY missing on disk: MOCKAGENTS_BIN used", binary: "missing", bin: "b", want: "bin" },
+    { name: "neither set", want: "fallback" },
+  ];
+  for (const c of cases) {
+    it(c.name, () => {
+      delete process.env.MOCKAGENTS_BINARY;
+      delete process.env.MOCKAGENTS_BIN;
+      const a = fakeFile("fake-a");
+      const b = fakeFile("fake-b");
+      if (c.binary) process.env.MOCKAGENTS_BINARY = c.binary === "missing" ? join(tmp!, "nope") : a;
+      if (c.bin) process.env.MOCKAGENTS_BIN = b;
+      const got = findBinary();
+      if (c.want === "binary") expect(got).toBe(a);
+      else if (c.want === "bin") expect(got).toBe(b);
+      else expect(got).toMatch(/^mockagents(\.exe)?$/);
+    });
+  }
+
+  it("does not pick up a binary from a parent directory", () => {
+    delete process.env.MOCKAGENTS_BINARY;
+    delete process.env.MOCKAGENTS_BIN;
+    const name = process.platform === "win32" ? "mockagents.exe" : "mockagents";
+    fakeFile(name); // <tmp>/mockagents — a stale "repo root" binary
+    const nested = join(tmp!, "sdk", "typescript");
+    mkdirSync(nested, { recursive: true });
+    process.chdir(nested);
+    expect(findBinary()).toBe(name);
+  });
+});
+
+// Review K-23: a child that dies before /health passes must fail start()
+// promptly, not after the full health timeout.
+describe("MockAgentServer early exit", () => {
+  it("rejects fast with the exit status when the child exits before ready", async () => {
+    // `node start --port …` exits at once (no module named "start").
+    const server = new MockAgentServer({ binaryPath: process.execPath, agentsDir: "." });
+    const started = Date.now();
+    await expect(server.start(10_000)).rejects.toThrow(/exited before becoming ready/);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(server.isRunning).toBe(false);
   });
 });

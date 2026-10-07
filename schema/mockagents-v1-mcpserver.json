@@ -15,7 +15,8 @@
       "properties": {
         "name": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$", "maxLength": 63 },
         "description": { "type": "string" },
-        "tags": { "type": "array", "items": { "type": "string" } }
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "tenant_id": { "type": "string", "description": "Owning tenant. Written by the server when a definition is saved through the multi-tenant API; never trusted from a request body. Omit it in hand-written files (empty means global)." }
       }
     },
     "spec": {
@@ -31,7 +32,17 @@
             "seed": { "type": "integer" },
             "rate": { "type": "number", "minimum": 0, "maximum": 1 },
             "latency_ms": { "type": "integer", "minimum": 0, "maximum": 60000 },
-            "error": { "type": "boolean" }
+            "timeout_ms": { "type": "integer", "minimum": 0, "maximum": 60000, "description": "Sleep this long, then answer with a timeout error." },
+            "status_code": { "type": "integer", "minimum": 400, "maximum": 599, "description": "HTTP status for an injected transport error (HTTP transport only)." },
+            "disconnect": { "type": "boolean", "description": "Close the connection without a response." },
+            "reset": { "type": "boolean", "description": "Reset the connection (TCP RST where possible)." },
+            "malformed": { "type": "boolean", "description": "Answer with a body that is not valid JSON." },
+            "malformed_schema": { "type": "boolean", "description": "Answer with valid JSON that violates the JSON-RPC response schema." },
+            "truncate_after_bytes": { "type": "integer", "minimum": 0, "maximum": 1048576, "description": "Cut the response after this many bytes." },
+            "error": { "type": "boolean" },
+            "operation_rates": { "type": "object", "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 } },
+            "fixture_rates": { "type": "object", "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 } },
+            "sequence_rates": { "type": "object", "propertyNames": { "pattern": "^[1-9][0-9]*$" }, "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }, "description": "Per-request-number rates, keyed by the 1-based request sequence." }
           }
         },
         "capabilities": {

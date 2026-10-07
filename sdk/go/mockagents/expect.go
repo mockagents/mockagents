@@ -1,6 +1,7 @@
 package mockagents
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"testing"
@@ -109,9 +110,29 @@ func (e *Expectation) ToHaveToolCallCount(count int) *Expectation {
 	return e
 }
 
+// ToHaveToolCallCountByName asserts how many calls to one tool were made across the
+// whole trajectory. It is an SDK-only convenience (the TypeScript and Python
+// SDKs' named tool-call count) with no YAML equivalent.
+func (e *Expectation) ToHaveToolCallCountByName(name string, count int) *Expectation {
+	e.t.Helper()
+	got := 0
+	for _, tc := range e.toolCalls {
+		if tc.Name == name {
+			got++
+		}
+	}
+	if got != count {
+		e.t.Errorf("%sexpected %d calls to %q, got %d %v",
+			e.prefix, count, name, got, toolCallNames(e.toolCalls))
+	}
+	return e
+}
+
 // ToHaveToolCall asserts a tool call with the given name happened anywhere in
-// the trajectory. When args is non-nil, every key in args must deep-equal the
-// matching key on the actual tool call.
+// the trajectory. When args is non-nil, every key in args must be present on
+// the actual tool call and equal its value. Values are compared as JSON, so
+// 5, int64(5), 5.0 and json.Number("5") all match a wire argument of 5; a
+// missing key never matches, not even an expected nil.
 func (e *Expectation) ToHaveToolCall(name string, args map[string]any) *Expectation {
 	e.t.Helper()
 	for _, tc := range e.toolCalls {
@@ -122,7 +143,7 @@ func (e *Expectation) ToHaveToolCall(name string, args map[string]any) *Expectat
 			return e
 		}
 	}
-	e.t.Errorf("%sexpected tool call %q with args %v, got %v",
+	e.t.Errorf("%sexpected tool call %q with args %#v, got %v",
 		e.prefix, name, args, toolCallSummary(e.toolCalls))
 	return e
 }
@@ -176,11 +197,28 @@ func indexOf(s, sub string) int {
 func argsMatch(actual, expected map[string]any) bool {
 	for k, v := range expected {
 		got, ok := actual[k]
-		if !ok || !reflect.DeepEqual(got, v) {
+		if !ok || !reflect.DeepEqual(jsonNormalize(got), jsonNormalize(v)) {
 			return false
 		}
 	}
 	return true
+}
+
+// jsonNormalize round-trips v through encoding/json so both sides of a
+// comparison share one representation: every number becomes float64, typed
+// slices and maps become []any / map[string]any. Wire arguments are decoded
+// that way, so without this an int expectation could never equal a decoded
+// argument (review K-06). A value JSON cannot encode is compared as is.
+func jsonNormalize(v any) any {
+	buf, err := json.Marshal(v)
+	if err != nil {
+		return v
+	}
+	var out any
+	if err := json.Unmarshal(buf, &out); err != nil {
+		return v
+	}
+	return out
 }
 
 // toolCallNames extracts the ordered names, for sequence comparison and for
@@ -196,7 +234,7 @@ func toolCallNames(calls []ToolCall) []string {
 func toolCallSummary(calls []ToolCall) []string {
 	out := make([]string, 0, len(calls))
 	for _, c := range calls {
-		out = append(out, fmt.Sprintf("%s(%v)", c.Name, c.Arguments))
+		out = append(out, fmt.Sprintf("%s(%#v)", c.Name, c.Arguments))
 	}
 	return out
 }

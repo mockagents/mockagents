@@ -57,7 +57,7 @@ func (e *McpEvent) IsNotification() bool {
 
 // Params returns the event's params as a generic map, or an empty
 // map when the server omitted the field. Always non-nil so handlers
-// can use ``params["x"]`` without first checking for nil.
+// can use “params["x"]“ without first checking for nil.
 func (e *McpEvent) Params() map[string]any {
 	if e == nil || e.Payload.Params == nil {
 		return map[string]any{}
@@ -153,7 +153,7 @@ func (c *McpClient) Connect(ctx context.Context) (*McpEventStream, error) {
 		cancel()
 		return nil, &HTTPError{Status: resp.StatusCode, Body: string(body)}
 	}
-	scanner := bufio.NewScanner(resp.Body)
+	scanner := bufio.NewScanner(&newlineNormalizer{r: resp.Body})
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	scanner.Split(splitSSEFrames)
 	return &McpEventStream{

@@ -6,7 +6,8 @@
 //
 //   - The draft is never destroyed. Not by a conflict, not by a denied write,
 //     not by a failed one. Whatever the server says, the text the user typed is
-//     still in the box.
+//     still in the box. Leaving the page with unsaved work asks first
+//     (useUnsavedChangesGuard: reload, tab close, and in-app link clicks).
 //   - Nothing is applied without being previewed. Apply is reachable only after
 //     the change has been shown as a diff against what is actually stored.
 //   - A save is not reported as durable unless the server said it was. A
@@ -24,6 +25,7 @@ import type { ConditionalSaveResult, ValidateResult, ValidationError } from "@/l
 import { collapseUnchanged, diffLines } from "@/lib/diff";
 import { downloadText, draftFilename } from "@/lib/download";
 import { Icon } from "@/lib/icons";
+import { useUnsavedChangesGuard } from "@/lib/useUnsavedChanges";
 
 import { GuidedForm } from "./GuidedForm";
 
@@ -97,6 +99,7 @@ export function AgentEditor({
   const [exportFailed, setExportFailed] = useState(false);
 
   const dirty = draft !== base;
+  useUnsavedChangesGuard(dirty);
   // Every write path needs the server. Offline is not a permission problem, so
   // it reads differently from the read-only-for-your-role case.
   const writable = canWrite && online;

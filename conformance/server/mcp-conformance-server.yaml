@@ -132,6 +132,14 @@ spec:
       mimeType: image/png
       blob: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 
+    # resources-subscribe / resources-unsubscribe. Only declared resources can
+    # be subscribed to (an unknown URI gets -32002), so the URI the suite
+    # watches must exist.
+    - uri: "test://watched-resource"
+      name: Watched Resource
+      mimeType: text/plain
+      text: "This resource is watched for updates."
+
   prompts:
     # prompts-get-simple
     - name: test_simple_prompt

@@ -39,23 +39,40 @@ type OutboundMessage struct {
 // The map of pending responses is keyed by stringified JSON-RPC id and
 // the request id is a monotonic counter so collisions are impossible
 // within a single Server lifetime.
+//
+// Delivery is a single ordered queue. Every message is appended to
+// outbound; the current subscriber's pump goroutine pops the head and hands
+// it to the subscriber over an UNBUFFERED channel, so a message leaves the
+// queue only when the reader actually takes it. The previous design split
+// messages between the queue and a buffered channel: a stolen stream lost
+// whatever sat in its channel buffer (audit M-27, review P-05), and a message
+// that overflowed the buffer could be overtaken by a later one and stranded
+// until the client reconnected (review P-06). With one container neither can
+// happen.
 type bidirectional struct {
 	mu sync.Mutex
-	// outbound is the buffered queue. When a subscriber is attached it
-	// is additionally signaled via the sub channel; unsubscribed
-	// messages stay buffered until someone subscribes.
+	// outbound is the ordered queue of undelivered messages.
 	outbound []*OutboundMessage
 	// pending maps string(id) -> response channel so DeliverResponse
 	// can route replies back to the blocked SendRequest caller.
 	pending map[string]chan *Response
-	// sub is the currently-attached subscriber channel. At most one
-	// subscriber is active at any time; attaching a second one closes
-	// the first (matching the "new tab steals the SSE stream" pattern
-	// that real MCP proxies use).
-	sub chan *OutboundMessage
+	// sub is the attached subscription. At most one is active; attaching a
+	// second detaches the first (the "new tab steals the SSE stream" pattern
+	// real MCP proxies use).
+	sub *subscription
 
 	nextID atomic.Int64
 }
+
+// subscription is one attached reader and the pump that feeds it.
+type subscription struct {
+	ch   chan *OutboundMessage // unbuffered; closed by the pump on exit
+	wake chan struct{}         // cap 1: "the queue may have grown"
+	done chan struct{}         // closed to detach
+	once sync.Once
+}
+
+func (s *subscription) stop() { s.once.Do(func() { close(s.done) }) }
 
 func newBidirectional() *bidirectional {
 	return &bidirectional{
@@ -63,79 +80,119 @@ func newBidirectional() *bidirectional {
 	}
 }
 
-// Subscribe attaches a channel that receives every outbound message
-// from now on. Any messages queued before the subscription are replayed
-// synchronously in FIFO order. Calling Subscribe a second time closes
-// the previous subscriber. The returned cancel function detaches the
-// subscription and drains any unread messages back into the buffer so
-// a reconnecting client does not lose work.
+// Subscribe attaches a reader that receives every queued and future
+// outbound message in FIFO order. Calling Subscribe again detaches the
+// previous reader, whose channel is then closed; anything it had not
+// received stays queued for the new one. The returned cancel function
+// detaches this reader the same way. buffer is accepted for API
+// compatibility and ignored: delivery is unbuffered by design (see
+// bidirectional).
 func (b *bidirectional) Subscribe(buffer int) (<-chan *OutboundMessage, func()) {
-	if buffer <= 0 {
-		buffer = 16
+	_ = buffer
+	sub := &subscription{
+		ch:   make(chan *OutboundMessage),
+		wake: make(chan struct{}, 1),
+		done: make(chan struct{}),
 	}
 	b.mu.Lock()
-	// Steal the previous subscription if one exists.
 	if b.sub != nil {
-		close(b.sub)
+		b.sub.stop()
 	}
-	ch := make(chan *OutboundMessage, buffer)
-	b.sub = ch
-	// Replay any buffered messages. If the buffer overflows we keep
-	// the tail in the outbound slice and deliver it on the next drain.
-	drained := 0
-	for i, msg := range b.outbound {
-		select {
-		case ch <- msg:
-			drained = i + 1
-		default:
-			// channel full — stop replaying; whatever is left stays
-			// buffered for the next subscriber.
-			goto done
-		}
-	}
-done:
-	b.outbound = append(b.outbound[:0], b.outbound[drained:]...)
+	b.sub = sub
 	b.mu.Unlock()
 
+	go b.pump(sub)
+
 	cancel := func() {
+		sub.stop()
 		b.mu.Lock()
-		defer b.mu.Unlock()
-		if b.sub == ch {
-			// Drain anything the subscriber never read and push it
-			// back to the head of the queue.
-			close(ch)
-			var residual []*OutboundMessage
-			for m := range ch {
-				residual = append(residual, m)
-			}
-			b.outbound = append(residual, b.outbound...)
+		if b.sub == sub {
 			b.sub = nil
 		}
+		b.mu.Unlock()
 	}
-	return ch, cancel
+	return sub.ch, cancel
 }
 
-// enqueue pushes a message to the outbound queue and, if a subscriber
-// is attached, delivers it directly. Overflow (subscriber channel
-// full) is handled by falling back to the buffered queue so messages
-// are never dropped.
-func (b *bidirectional) enqueue(msg *OutboundMessage) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.sub != nil {
+// pump hands queued messages to sub one at a time, in order, until sub is
+// detached. A message is removed from the queue only once the reader has
+// received it; on detach the in-flight message is put back at the head.
+func (b *bidirectional) pump(sub *subscription) {
+	defer close(sub.ch)
+	for {
+		b.mu.Lock()
+		// A detached pump must not pop: it would hold a message the new
+		// subscriber's pump is waiting for.
 		select {
-		case b.sub <- msg:
+		case <-sub.done:
+			b.mu.Unlock()
 			return
 		default:
-			// channel full — fall through and buffer.
+		}
+		if len(b.outbound) == 0 {
+			b.mu.Unlock()
+			select {
+			case <-sub.wake:
+				continue
+			case <-sub.done:
+				return
+			}
+		}
+		msg := b.outbound[0]
+		b.outbound = b.outbound[1:]
+		b.mu.Unlock()
+
+		select {
+		case sub.ch <- msg:
+		case <-sub.done:
+			b.mu.Lock()
+			b.outbound = append([]*OutboundMessage{msg}, b.outbound...)
+			next := b.sub
+			b.mu.Unlock()
+			// The replacement pump may already be asleep on an empty queue;
+			// tell it the message is back.
+			if next != nil {
+				select {
+				case next.wake <- struct{}{}:
+				default:
+				}
+			}
+			return
 		}
 	}
+}
+
+// enqueue appends a message to the queue and wakes the attached pump. With
+// no subscriber the queue is bounded like the pending queue (audit M-25):
+// the oldest messages are dropped so a late subscriber still gets the most
+// recent ones.
+func (b *bidirectional) enqueue(msg *OutboundMessage) {
+	b.mu.Lock()
 	b.outbound = append(b.outbound, msg)
-	// Bounded like the pending queue (audit M-25): with no subscriber attached
-	// this only ever grew. Drop the oldest so a late subscriber still gets the
-	// most recent messages.
 	if over := len(b.outbound) - maxPendingNotifications; over > 0 {
 		b.outbound = append(b.outbound[:0], b.outbound[over:]...)
+	}
+	sub := b.sub
+	b.mu.Unlock()
+	if sub != nil {
+		select {
+		case sub.wake <- struct{}{}:
+		default: // already signalled
+		}
+	}
+}
+
+// dropRequest removes a not-yet-delivered request from the queue, so a
+// request whose SendRequest timed out is never delivered to a later
+// subscriber (whose reply would only get a 404).
+func (b *bidirectional) dropRequest(id json.RawMessage) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i, m := range b.outbound {
+		if m.Kind == OutboundRequest && m.Request != nil && string(m.Request.ID) == string(id) {
+			b.outbound = append(b.outbound[:i], b.outbound[i+1:]...)
+			return
+		}
 	}
 }
 
@@ -222,6 +279,7 @@ func (s *Server) SendRequest(ctx context.Context, method string, params map[stri
 	case resp := <-ch:
 		return resp, nil
 	case <-ctx.Done():
+		s.bi.dropRequest(id)
 		return nil, ctx.Err()
 	}
 }

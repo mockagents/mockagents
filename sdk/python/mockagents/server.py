@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import warnings
+import weakref
 from typing import Any, Optional
 
 import yaml
@@ -31,7 +35,8 @@ class MockAgentServer:
         port: Server port. 0 means auto-select a free port.
         binary_path: Path to the mockagents binary. Auto-detected if None.
         log_level: Server log level (debug, info, warn, error).
-        config_path: Path to .mockagents.yaml project config.
+        config_path: Deprecated and ignored: ``mockagents start`` has no
+            project-config option. Passing it emits a DeprecationWarning.
         auto_download: When the binary isn't found, download the matching
             release binary from GitHub and cache it (Playwright-style). Also
             enabled by setting MOCKAGENTS_AUTO_DOWNLOAD=1. Default False, which
@@ -60,6 +65,13 @@ class MockAgentServer:
         # FileNotFoundError later.
         self.binary_path = binary_path or ensure_binary(auto_download=auto_download)
         self.log_level = log_level
+        if config_path is not None:
+            warnings.warn(
+                "MockAgentServer(config_path=...) has no effect and is deprecated; "
+                "use agents_dir, or MockAgentServer.from_config() to serve specific files",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         self.config_path = config_path
         self._process: Optional[subprocess.Popen[bytes]] = None
         self._logs: list[str] = []
@@ -76,11 +88,17 @@ class MockAgentServer:
         log_level: str = "warn",
         auto_download: bool = False,
     ) -> MockAgentServer:
-        """Create a MockAgentServer from YAML configuration file(s).
+        """Create a MockAgentServer that serves exactly the given YAML file(s).
+
+        The files are copied into a private temporary directory, which is
+        served as the agents directory and removed when the server object is
+        garbage collected. So only the listed files load, even when they sit
+        next to other YAML files or in different directories.
 
         Args:
             config_path: Path to agent YAML file(s). Can be a single path
-                or a list of paths.
+                or a list of paths. A file may hold several ``---``-separated
+                documents, as the server accepts.
             port: Server port (0 for auto-select).
             binary_path: Path to mockagents binary.
             log_level: Server log level.
@@ -89,39 +107,36 @@ class MockAgentServer:
             Configured MockAgentServer instance.
 
         Raises:
-            ConfigError: If any YAML file is invalid.
+            ConfigError: If any YAML file is invalid or the list is empty.
             FileNotFoundError: If a file does not exist.
         """
-        if isinstance(config_path, str):
-            config_path = [config_path]
+        paths = [config_path] if isinstance(config_path, str) else list(config_path)
+        if not paths:
+            raise ConfigError("from_config needs at least one agent config file")
 
-        # Validate all config files exist and are valid YAML.
-        for path in config_path:
-            abs_path = os.path.abspath(path)
-            if not os.path.exists(abs_path):
-                raise FileNotFoundError(f"Agent config not found: {abs_path}")
-            try:
-                with open(abs_path, "r") as f:
-                    doc = yaml.safe_load(f)
-                if not isinstance(doc, dict):
-                    raise ConfigError(f"Invalid agent config (not a YAML mapping): {abs_path}")
-                if doc.get("apiVersion") != "mockagents/v1":
-                    raise ConfigError(
-                        f"Invalid apiVersion in {abs_path}: expected 'mockagents/v1'"
-                    )
-            except yaml.YAMLError as e:
-                raise ConfigError(f"YAML parse error in {abs_path}: {e}") from e
+        abs_paths = [os.path.abspath(p) for p in paths]
+        for abs_path in abs_paths:
+            _check_agent_file(abs_path)
 
-        # Determine agents directory from the config file paths.
-        agents_dir = os.path.dirname(os.path.abspath(config_path[0]))
-
-        return cls(
-            agents_dir=agents_dir,
-            port=port,
-            binary_path=binary_path,
-            log_level=log_level,
-            auto_download=auto_download,
-        )
+        agents_dir = tempfile.mkdtemp(prefix="mockagents-agents-")
+        try:
+            for i, abs_path in enumerate(abs_paths):
+                # The index prefix keeps same-named files from different
+                # directories apart and preserves the caller's order.
+                dest = os.path.join(agents_dir, f"{i:03d}-{os.path.basename(abs_path)}")
+                shutil.copyfile(abs_path, dest)
+            server = cls(
+                agents_dir=agents_dir,
+                port=port,
+                binary_path=binary_path,
+                log_level=log_level,
+                auto_download=auto_download,
+            )
+        except BaseException:
+            shutil.rmtree(agents_dir, ignore_errors=True)
+            raise
+        weakref.finalize(server, shutil.rmtree, agents_dir, ignore_errors=True)
+        return server
 
     def start(self, timeout: float = 10.0) -> None:
         """Start the MockAgents server subprocess.
@@ -234,13 +249,16 @@ class MockAgentServer:
                 except (OSError, ValueError):
                     pass
 
-    def client(self) -> MockAgentClient:
+    def client(self, api_key: Optional[str] = None) -> MockAgentClient:
         """Create a MockAgentClient connected to this server.
+
+        Args:
+            api_key: Credential sent on every request (multi-tenant mode).
 
         Returns:
             Configured MockAgentClient instance.
         """
-        return MockAgentClient(base_url=self.url)
+        return MockAgentClient(base_url=self.url, api_key=api_key)
 
     @property
     def url(self) -> str:
@@ -342,3 +360,23 @@ class MockAgentServer:
         guidance when the binary is absent.
         """
         return ensure_binary()
+
+
+def _check_agent_file(abs_path: str) -> None:
+    """Fail fast on a missing file or one that is not MockAgents YAML."""
+    if not os.path.exists(abs_path):
+        raise FileNotFoundError(f"Agent config not found: {abs_path}")
+    try:
+        with open(abs_path, "r", encoding="utf-8-sig") as f:
+            docs = [d for d in yaml.safe_load_all(f) if d is not None]
+    except yaml.YAMLError as e:
+        raise ConfigError(f"YAML parse error in {abs_path}: {e}") from e
+    if not docs:
+        raise ConfigError(f"Invalid agent config (empty file): {abs_path}")
+    for doc in docs:
+        if not isinstance(doc, dict):
+            raise ConfigError(f"Invalid agent config (not a YAML mapping): {abs_path}")
+        if doc.get("apiVersion") != "mockagents/v1":
+            raise ConfigError(
+                f"Invalid apiVersion in {abs_path}: expected 'mockagents/v1'"
+            )

@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -128,12 +129,17 @@ func (rp *Replay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// The full-body hash is always computed: it keys the exact-match path and is
 	// echoed in the miss diagnostics regardless of which matching mode is used.
-	hash := HashRequest(r.Method, r.URL.Path, body)
+	hash := HashRequest(r.Method, HashPath(r.URL), body)
 	var it *Interaction
 	if rp.Matcher.active() {
 		it = rp.nextFromMatchIndex(rp.Matcher.Key(r.Method, r.URL.Path, body))
 	} else {
 		it = rp.next(hash)
+		// Recordings made before the hash covered the query (and imported
+		// cassettes, which carry no query) are keyed on the path alone.
+		if it == nil && HashPath(r.URL) != r.URL.Path {
+			it = rp.next(HashRequest(r.Method, r.URL.Path, body))
+		}
 	}
 	if it == nil {
 		if rp.Strict {
@@ -157,9 +163,7 @@ func (rp *Replay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for k, v := range it.ResponseHeaders {
-		w.Header().Set(k, v)
-	}
+	setReplayHeaders(w, it.ResponseHeaders)
 	w.Header().Set("X-Mockagents-Replay", "hit")
 	status := it.ResponseStatus
 	if status == 0 {
@@ -175,9 +179,7 @@ func (rp *Replay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // flushing after every chunk so downstream consumers see the same
 // incremental arrivals they would from a real LLM server.
 func (rp *Replay) serveStreaming(ctx context.Context, w http.ResponseWriter, it *Interaction) {
-	for k, v := range it.ResponseHeaders {
-		w.Header().Set(k, v)
-	}
+	setReplayHeaders(w, it.ResponseHeaders)
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "text/event-stream")
 	}
@@ -214,6 +216,30 @@ func (rp *Replay) serveStreaming(ctx context.Context, w http.ResponseWriter, it 
 		}
 		if flusher != nil {
 			flusher.Flush()
+		}
+	}
+}
+
+// framingHeaders describe how a body was framed on the original wire, not the
+// body replay writes. Replay always writes the decoded body, so copying a
+// stored Content-Encoding: gzip or the compressed Content-Length made clients
+// fail with "unexpected EOF" on an imported vcrpy cassette (review P-02).
+// net/http frames the body actually written.
+var framingHeaders = map[string]bool{
+	"content-length":    true,
+	"content-encoding":  true,
+	"transfer-encoding": true,
+	"connection":        true,
+	"keep-alive":        true,
+}
+
+func isFramingHeader(name string) bool { return framingHeaders[strings.ToLower(name)] }
+
+// setReplayHeaders copies stored response headers except framing headers.
+func setReplayHeaders(w http.ResponseWriter, headers map[string]string) {
+	for k, v := range headers {
+		if !isFramingHeader(k) {
+			w.Header().Set(k, v)
 		}
 	}
 }

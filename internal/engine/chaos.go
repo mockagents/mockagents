@@ -380,6 +380,26 @@ func clampUnitInterval(r float64) float64 {
 // mis-ordered or single-value range still produces a sensible fixed delay
 // instead of a panic or validation failure.
 func (c *ChaosInjector) sampleLatency(l *types.ChaosLatencyConfig) time.Duration {
+	// Every branch is clamped to [0, maxChaosLatencyMs] as defence in depth:
+	// only "normal" used to be, so a fixed or uniform latency registered
+	// without the validator (in-process or SDK registrations) could sleep for
+	// hours, and a huge uniform span could overflow span+1 into a negative
+	// Intn argument and panic (review E-16).
+	return clampLatency(c.drawLatency(l))
+}
+
+func clampLatency(ms int) time.Duration {
+	if ms < 0 {
+		ms = 0
+	}
+	if ms > maxChaosLatencyMs {
+		ms = maxChaosLatencyMs
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// drawLatency returns the raw (unclamped) latency in milliseconds.
+func (c *ChaosInjector) drawLatency(l *types.ChaosLatencyConfig) int {
 	dist := l.Distribution
 	if dist == "" {
 		if l.MaxMs > l.MinMs {
@@ -395,31 +415,29 @@ func (c *ChaosInjector) sampleLatency(l *types.ChaosLatencyConfig) time.Duration
 	// concurrent use, so the uniform/normal draws still take the lock — but
 	// for the minimum span: a single Intn/NormFloat64 call.
 	switch dist {
-	case "fixed":
-		return time.Duration(l.MinMs) * time.Millisecond
 	case "uniform":
-		if l.MaxMs <= l.MinMs {
-			return time.Duration(l.MinMs) * time.Millisecond
+		lo, hi := max(l.MinMs, 0), min(l.MaxMs, maxChaosLatencyMs)
+		if hi <= lo {
+			return l.MinMs
 		}
-		span := l.MaxMs - l.MinMs
 		c.mu.Lock()
-		n := c.RandSrc.Intn(span + 1)
+		n := c.RandSrc.Intn(hi - lo + 1)
 		c.mu.Unlock()
-		return time.Duration(l.MinMs+n) * time.Millisecond
+		return lo + n
 	case "normal":
 		c.mu.Lock()
 		norm := c.RandSrc.NormFloat64()
 		c.mu.Unlock()
 		ms := norm*float64(l.StddevMs) + float64(l.MeanMs)
-		if ms < 0 {
-			ms = 0
+		switch {
+		case ms < 0 || ms != ms: // negative or NaN
+			return 0
+		case ms > maxChaosLatencyMs:
+			return maxChaosLatencyMs
 		}
-		if ms > maxChaosLatencyMs {
-			ms = maxChaosLatencyMs
-		}
-		return time.Duration(ms) * time.Millisecond
-	default:
-		return time.Duration(l.MinMs) * time.Millisecond
+		return int(ms)
+	default: // "fixed" and anything unrecognised
+		return l.MinMs
 	}
 }
 

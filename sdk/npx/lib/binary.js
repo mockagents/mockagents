@@ -1,10 +1,12 @@
 'use strict';
 // Resolve — or download — the MockAgents Go binary for the npx launcher.
 // Shares the Python SDK's release-asset naming and FAIL-CLOSED sha256 check.
-// NOTE: binary lookup is intentionally narrow ($MOCKAGENTS_BINARY + cache only,
-// NOT PATH). When run via `npx mockagents`, this package's own bin shim is on
-// PATH, so resolving via PATH could re-exec the launcher (a fork bomb). Set
-// MOCKAGENTS_BINARY to reuse an already-installed binary instead of downloading.
+// NOTE: binary lookup is intentionally narrow ($MOCKAGENTS_BINARY or
+// $MOCKAGENTS_BIN + cache only, NOT PATH). When run via `npx mockagents`, this
+// package's own bin shim is on PATH, so resolving via PATH could re-exec the
+// launcher (a fork bomb). Set MOCKAGENTS_BINARY (or MOCKAGENTS_BIN, the name
+// the TypeScript and Go SDKs also read) to reuse an already-installed binary
+// instead of downloading.
 
 const fs = require('fs');
 const os = require('os');
@@ -55,9 +57,15 @@ function isFile(p) {
   }
 }
 
+// Both names are accepted everywhere (the Python, TypeScript and Go SDKs and
+// this launcher), with MOCKAGENTS_BINARY taking precedence.
+const BINARY_ENV_VARS = ['MOCKAGENTS_BINARY', 'MOCKAGENTS_BIN'];
+
 function findBinary(version) {
-  const explicit = process.env.MOCKAGENTS_BINARY;
-  if (explicit && isFile(explicit)) return explicit; // reject a directory etc.
+  for (const name of BINARY_ENV_VARS) {
+    const explicit = process.env[name];
+    if (explicit && isFile(explicit)) return explicit; // reject a directory etc.
+  }
   if (version) {
     const cached = versionedBinaryPath(version);
     if (isFile(cached)) return cached;
@@ -95,7 +103,7 @@ const INSTALL_HINT =
   '  brew install mockagents/tap/mockagents\n' +
   '  docker run -p 8080:8080 mockagents/mockagents\n' +
   '  go install github.com/mockagents/mockagents/cmd/mockagents@latest\n' +
-  'Or point at an existing binary: export MOCKAGENTS_BINARY=/path/to/mockagents';
+  'Or point at an existing binary: export MOCKAGENTS_BINARY=/path/to/mockagents (MOCKAGENTS_BIN also works)';
 
 async function download(version) {
   const { os: o, arch: a } = assetOsArch();
@@ -147,12 +155,13 @@ async function download(version) {
   // .tar.gz is handled by tar everywhere via -xzf.
   const bin = binaryName();
   const args = ext === 'zip' ? ['-xf', archivePath, '-C', tempDir, bin] : ['-xzf', archivePath, '-C', tempDir, bin];
+  const tar = tarCommand();
   try {
-    execFileSync('tar', args, { stdio: 'inherit' });
+    execFileSync(tar, args, { stdio: 'inherit' });
   } catch (e) {
     fs.rmSync(tempDir, { recursive: true, force: true });
     if (e && e.code === 'ENOENT') {
-      throw new Error(`extraction needs 'tar' on PATH, which was not found.\n${INSTALL_HINT}`);
+      throw new Error(`extraction needs '${tar}', which was not found.\n${INSTALL_HINT}`);
     }
     throw new Error(`failed to extract ${asset}: ${e.message}`);
   }
@@ -171,10 +180,31 @@ async function download(version) {
   }
 }
 
+// tarCommand picks the extractor. On Windows it is the bsdtar that ships in
+// System32 (Windows 10 1803+), called by absolute path: a PATH lookup finds Git
+// Bash's GNU tar first in many shells, and GNU tar reads `C:\...` as a remote
+// host and cannot open .zip archives at all.
+function tarCommand(platform = process.platform, env = process.env) {
+  if (platform !== 'win32') return 'tar';
+  const root = env.SystemRoot || env.SYSTEMROOT || env.windir || 'C:\\Windows';
+  return path.win32.join(root, 'System32', 'tar.exe');
+}
+
 async function ensureBinary(version) {
   const found = findBinary(version);
   if (found) return found;
   return download(version);
 }
 
-module.exports = { ensureBinary, findBinary, download, assetOsArch, cacheDir, versionedBinaryPath, binaryName, INSTALL_HINT };
+module.exports = {
+  ensureBinary,
+  findBinary,
+  download,
+  assetOsArch,
+  cacheDir,
+  versionedBinaryPath,
+  binaryName,
+  tarCommand,
+  BINARY_ENV_VARS,
+  INSTALL_HINT,
+};

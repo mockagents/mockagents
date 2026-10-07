@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -62,9 +63,13 @@ func loadContract(path string) (*contract.Contract, error) {
 	for i < len(data) && (data[i] == ' ' || data[i] == '\n' || data[i] == '\r' || data[i] == '\t') {
 		i++
 	}
-	if i < len(data) && data[i] == '{' {
+	if i < len(data) && data[i] == '{' && !isAgentJSON(data) {
 		var c contract.Contract
-		if err := json.Unmarshal(data, &c); err != nil {
+		dec := json.NewDecoder(bytes.NewReader(data))
+		// A misspelled key (`tool` for `tools`) used to decode as an empty
+		// list, making every current tool look additive and the gate pass.
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&c); err != nil {
 			return nil, fmt.Errorf("%s: invalid contract JSON: %w", path, err)
 		}
 		if err := contract.Validate(&c); err != nil {
@@ -72,13 +77,29 @@ func loadContract(path string) (*contract.Contract, error) {
 		}
 		return &c, nil
 	}
-	// Otherwise treat as agent YAML.
+	// Otherwise treat as an agent definition (YAML or JSON). It must validate:
+	// a contract extracted from a definition with a misspelled field would
+	// describe behaviour the server never serves.
 	result, err := config.LoadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	config.ApplyDefaults(result.Definition)
+	if errs := (&config.Validator{}).Validate(result.Definition, result.FilePath, result.Node); errs != nil {
+		return nil, fmt.Errorf("%s is not a valid agent definition:\n%s", path, errs.Error())
+	}
 	return contract.Extract(result.Definition), nil
+}
+
+// isAgentJSON reports whether a JSON document is an agent definition rather
+// than an extracted contract: definitions carry apiVersion/kind, contracts
+// never do.
+func isAgentJSON(data []byte) bool {
+	var probe struct {
+		APIVersion string `json:"apiVersion"`
+		Kind       string `json:"kind"`
+	}
+	return json.Unmarshal(data, &probe) == nil && (probe.APIVersion != "" || probe.Kind != "")
 }
 
 func runContractExtract(cmd *cobra.Command, args []string) error {
@@ -98,6 +119,9 @@ func runContractExtract(cmd *cobra.Command, args []string) error {
 }
 
 func runContractDiff(cmd *cobra.Command, args []string) error {
+	if contractDiffFormat != "text" && contractDiffFormat != "json" {
+		return fmt.Errorf("unknown --format %q (want text or json)", contractDiffFormat)
+	}
 	oldC, err := loadContract(args[0])
 	if err != nil {
 		return err
@@ -124,7 +148,7 @@ func runContractDiff(cmd *cobra.Command, args []string) error {
 
 	if contract.HasBreaking(changes) {
 		fmt.Fprintln(os.Stderr, "\nbreaking changes detected")
-		os.Exit(1)
+		osExit(1)
 	}
 	return nil
 }

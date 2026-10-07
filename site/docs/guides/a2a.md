@@ -63,6 +63,8 @@ mockagents a2a --agents-dir examples --server weather-a2a
 ```
 
 `--server` is only needed when more than one `A2AServer` document is loaded.
+The server listens on `127.0.0.1` by default; pass `--bind 0.0.0.0` to reach it
+from another host or from outside a container.
 
 ### Deterministic chaos
 
@@ -176,6 +178,7 @@ mockagents a2a [flags]
 | Flag | Default | Description |
 |---|---|---|
 | `--port`, `-p` | `8083` | HTTP port |
+| `--bind` | `127.0.0.1` | Interface to bind (`0.0.0.0` to expose) |
 | `--server` | | Name of the `A2AServer` to serve (required when multiple are loaded) |
 | `--agents-dir` | `./agents` | Directory containing definitions (global flag) |
 | `--max-tasks` | `10000` | Maximum number of retained A2A tasks |

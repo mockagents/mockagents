@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/types"
@@ -266,18 +267,37 @@ func streamOpenAIToolCalls(
 	return nil
 }
 
-// chunkString splits a string into pieces of at most size characters.
-func chunkString(s string, size int) []string {
+// chunkString splits a string into pieces of at most size bytes, never inside
+// a UTF-8 sequence (see ChunkArguments).
+func chunkString(s string, size int) []string { return ChunkArguments(s, size) }
+
+// ChunkArguments splits s into pieces of at most size bytes for streaming as
+// successive deltas, always cutting on a rune boundary. Cutting mid-rune left
+// both halves invalid UTF-8, which json.Marshal replaced with U+FFFD, so any
+// streamed tool argument with an accent, CJK character or emoji was corrupted
+// while the non-streamed response was fine (2026-10-06 review E-02). A rune
+// wider than size becomes a chunk of its own. An empty string yields a single
+// empty chunk so a delta/done pair is still emitted.
+func ChunkArguments(s string, size int) []string {
 	if size <= 0 || len(s) == 0 {
 		return []string{s}
 	}
-	var chunks []string
-	for i := 0; i < len(s); i += size {
+	chunks := make([]string, 0, len(s)/size+1)
+	for i := 0; i < len(s); {
 		end := i + size
-		if end > len(s) {
-			end = len(s)
+		if end >= len(s) {
+			chunks = append(chunks, s[i:])
+			break
+		}
+		for end > i && !utf8.RuneStart(s[end]) {
+			end--
+		}
+		if end == i { // one rune wider than size: take it whole
+			_, w := utf8.DecodeRuneInString(s[i:])
+			end = i + w
 		}
 		chunks = append(chunks, s[i:end])
+		i = end
 	}
 	return chunks
 }

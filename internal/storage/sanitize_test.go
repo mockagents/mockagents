@@ -56,3 +56,42 @@ func TestSanitizeBody_TrailingSecretAfterStars(t *testing.T) {
 	// And the fix stays idempotent.
 	assert.Equal(t, out, SanitizeBody(out))
 }
+
+// Prose with hyphenated words is left alone; real keys are still masked
+// (review P-14).
+func TestSanitizeBody_DoesNotRedactOrdinaryWords(t *testing.T) {
+	prose := `a risk-based task-list for the turkey-dinner desk-lamp, a key-value store`
+	assert.Equal(t, prose, SanitizeBody(prose))
+
+	// Built by concatenation so secret scanners do not mistake the fixture
+	// for a leaked credential.
+	fakeKey := strings.Repeat("0f1e2d3c", 4)
+	out := SanitizeBody(`{"a":"sk-proj-abc123","b":"key-` + fakeKey + `"}`)
+	assert.NotContains(t, out, "abc123")
+	assert.NotContains(t, out, fakeKey)
+}
+
+// A "key-" credential followed by punctuation other than a quote, space or
+// comma is still masked, and the punctuation is kept (found by FuzzSanitizeBody).
+func TestSanitizeBody_KeyFollowedByPunctuation(t *testing.T) {
+	fakeKey := strings.Repeat("0f1e2d3c", 4)
+	for _, tail := range []string{"; rest", ")", ".", "&x=1", "\n"} {
+		in := "token=key-" + fakeKey + tail
+		out := SanitizeBody(in)
+		assert.Equal(t, "token=key-***"+tail, out, "input %q", in)
+		assert.Equal(t, out, SanitizeBody(out), "idempotent for %q", in)
+	}
+}
+
+// Timestamps are stored fixed-width so the lexical Since/Until filters order
+// rows by time (review P-19), and a blank timestamp becomes now (L-34).
+func TestNormalizeTimestamp(t *testing.T) {
+	a := NormalizeTimestamp("2026-10-06T10:00:00.5Z")
+	b := NormalizeTimestamp("2026-10-06T10:00:00Z")
+	c := NormalizeTimestamp("2026-10-06T10:00:00.123Z")
+	assert.Equal(t, "2026-10-06T10:00:00.500000000Z", a)
+	assert.True(t, b < c && c < a, "lexical order must equal time order: %s %s %s", b, c, a)
+	assert.Equal(t, "2026-10-06T08:00:00.000000000Z", NormalizeTimestamp("2026-10-06T10:00:00+02:00"))
+	assert.NotEmpty(t, NormalizeTimestamp(""))
+	assert.Equal(t, "not a time", NormalizeTimestamp("not a time"))
+}

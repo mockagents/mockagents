@@ -146,6 +146,8 @@ func TestRm_DeletesByName(t *testing.T) {
 	rs := newRecordingServer(t, http.StatusOK, `{"status":"deleted"}`)
 	resetAgentFlags(rs.srv.URL)
 
+	rmYes = true
+	t.Cleanup(func() { rmYes = false })
 	if err := runRm(nil, []string{"gone-bot"}); err != nil {
 		t.Fatalf("runRm: %v", err)
 	}
@@ -161,6 +163,8 @@ func TestRm_NotFound(t *testing.T) {
 	rs := newRecordingServer(t, http.StatusNotFound, `{"error":"agent \"ghost\" not found"}`)
 	resetAgentFlags(rs.srv.URL)
 
+	rmYes = true
+	t.Cleanup(func() { rmYes = false })
 	err := runRm(nil, []string{"ghost"})
 	if err == nil || !strings.Contains(err.Error(), "HTTP 404") {
 		t.Errorf("expected 404 error, got %v", err)
@@ -174,5 +178,20 @@ func TestAgentNameFromBytes(t *testing.T) {
 	}
 	if _, err := agentNameFromBytes([]byte("metadata: {}\n")); err == nil {
 		t.Error("expected error on empty name")
+	}
+}
+
+// rm deletes the agent's source file, which may be hand-written: it must not
+// do that non-interactively without --yes (2026-10-06 review C-07).
+func TestConfirmRemoval(t *testing.T) {
+	ok, err := confirmRemoval(strings.NewReader(""), io.Discard, false, "a")
+	if err == nil || ok {
+		t.Fatalf("non-TTY without --yes must refuse, got ok=%v err=%v", ok, err)
+	}
+	for answer, want := range map[string]bool{"y\n": true, "yes\n": true, "n\n": false, "\n": false, "": false} {
+		ok, err := confirmRemoval(strings.NewReader(answer), io.Discard, true, "a")
+		if err != nil || ok != want {
+			t.Errorf("answer %q: ok=%v err=%v, want %v", answer, ok, err, want)
+		}
 	}
 }

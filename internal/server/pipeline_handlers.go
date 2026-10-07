@@ -149,6 +149,14 @@ func (h *PipelineHandlers) RunPipeline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := h.Executor.RunContext(r.Context(), def, req.Input, req.SessionID)
+	var denied *quotaDenial
+	if errors.As(err, &denied) {
+		// A node was refused by the tenant's quota: report it like the
+		// provider call that node stands for (429/402), not as a broken
+		// pipeline.
+		writeQuotaDenial(w, denied)
+		return
+	}
 	if err != nil {
 		// The definition exists, but one or more nodes could not execute. 422
 		// distinguishes a valid HTTP request from a runnable pipeline and keeps

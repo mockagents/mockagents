@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -27,10 +28,15 @@ import (
 )
 
 const (
-	DefaultHost         = "127.0.0.1"
-	DefaultPort         = 8080
-	DefaultReadTimeout  = 30 * time.Second
-	DefaultWriteTimeout = 60 * time.Second
+	DefaultHost        = "127.0.0.1"
+	DefaultPort        = 8080
+	DefaultReadTimeout = 30 * time.Second
+	// DefaultWriteTimeout leaves headroom above the 60 s ceiling on chaos
+	// latency and timeout faults. At 60 s a non-streaming response delayed
+	// by a fault at that ceiling hit the write deadline first and the client
+	// saw EOF instead of the fault (review E-13). SSE streams extend their
+	// own deadline per frame.
+	DefaultWriteTimeout = 90 * time.Second
 	DefaultIdleTimeout  = 120 * time.Second
 	// DefaultReadHeaderTimeout bounds the request-header read on its own, so a
 	// slow-loris client dribbling headers can't tie up a connection for the full
@@ -182,6 +188,8 @@ type Server struct {
 	cancelBase context.CancelFunc
 	// draining flips readiness to 503 for the whole shutdown sequence.
 	draining atomic.Bool
+	// unpricedModels remembers models already warned about (warnUnpricedModel).
+	unpricedModels sync.Map
 }
 
 // New creates a new Server with the given engine and configuration.
@@ -288,20 +296,7 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 	if s.logWorker != nil {
 		// When quotas + pricing are configured, accrue each response's cost
 		// against the tenant's monthly spend as it's captured.
-		var spendHook func(tenantID, path, respBody string)
-		if cfg.QuotaEnforcer != nil && cfg.Prices != nil {
-			enf, prices := cfg.QuotaEnforcer, cfg.Prices
-			spendHook = func(tenantID, path, respBody string) {
-				if tenantID == "" || respBody == "" {
-					return
-				}
-				usage := pricingpkg.ExtractUsageForPath([]byte(respBody), path)
-				if cost := prices.Estimate(usage.Model, usage.PromptTokens, usage.CompletionTokens); cost > 0 {
-					enf.AddSpend(tenantID, cost)
-				}
-			}
-		}
-		handler = InteractionCapture(s.logWorker, NormalizeLogBodyMode(string(cfg.LogBodyMode)), spendHook)(handler)
+		handler = InteractionCapture(s.logWorker, NormalizeLogBodyMode(string(cfg.LogBodyMode)), s.spendHook())(handler)
 	}
 	handler = WithPrincipalTenantScope(handler)
 	// Tenancy auth gates every /api/v1/* route when multi-tenant mode
@@ -425,6 +420,14 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		if rt, ok := a.(*adapter.RealtimeHandler); ok {
 			s.wireRealtime(rt)
 		}
+		// Batches replay their requests in process too; each sub-request is
+		// metered like the direct call it stands for (metering.go).
+		switch b := a.(type) {
+		case *adapter.BatchesHandler:
+			b.SubrequestMiddleware = s.subrequestMeter()
+		case *adapter.AnthropicBatchesHandler:
+			b.SubrequestMiddleware = s.subrequestMeter()
+		}
 		for _, route := range a.Routes() {
 			mux.HandleFunc(route.Pattern, route.Handler)
 			// Every provider surface is open: clients send their own provider
@@ -479,6 +482,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		// execute and the log would show nothing.
 		executor := engine.NewPipelineExecutor(s.engine)
 		executor.Recorder = newPipelineRecorder(s.logWorker, NormalizeLogBodyMode(string(s.config.LogBodyMode)))
+		executor.Meter = s.newPipelineMeter()
 		pipelineH := &PipelineHandlers{
 			Registry:      s.config.Pipelines,
 			Executor:      executor,

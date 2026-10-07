@@ -224,3 +224,35 @@ func TestGemini_HallucinationHeader(t *testing.T) {
 	})
 	assert.Empty(t, clean.Header().Get("X-Mockagents-Hallucination"))
 }
+
+// Every method used to be served as generateContent (2026-10-06 review E-04):
+// countTokens now counts without an engine call and unknown methods are 404.
+func TestGemini_MethodDispatch(t *testing.T) {
+	eng := testEngine(testGeminiAgent())
+	h := &GeminiHandler{Engine: eng}
+	req := GeminiRequest{Contents: []GeminiContent{{Role: "user", Parts: []GeminiPart{{Text: "hello there friend"}}}}}
+
+	rec := doGeminiRequest(t, h, "gemini-1.5-pro", "countTokens", req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var counted map[string]int
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &counted))
+	assert.Positive(t, counted["totalTokens"])
+	assert.Len(t, counted, 1, "countTokens returns only totalTokens")
+	assert.Zero(t, eng.States.Count(), "counting tokens must not run the engine")
+
+	for _, method := range []string{"embedContent", "bogus", "batchGenerateContent"} {
+		rec := doGeminiRequest(t, h, "gemini-1.5-pro", method, req)
+		assert.Equal(t, http.StatusNotFound, rec.Code, method)
+		assert.Contains(t, rec.Body.String(), "NOT_FOUND", method)
+	}
+}
+
+// Role is optional on Gemini contents and means the user (review E-05).
+func TestGemini_RolelessContentsAreUserTurns(t *testing.T) {
+	h := &GeminiHandler{Engine: testEngine(testGeminiAgent())}
+	rec := doGeminiRequest(t, h, "gemini-1.5-pro", "generateContent", GeminiRequest{
+		Contents: []GeminiContent{{Parts: []GeminiPart{{Text: "hello"}}}},
+	})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "Hi there!")
+}

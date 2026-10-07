@@ -95,7 +95,10 @@ tools:
     and by `kind: MCPServer` documents. The HTTP protocol surfaces
     (OpenAI/Anthropic/Gemini) return the tool **calls** only — real APIs
     never execute tools, the client does — so these tables do not change
-    what an SDK client receives on those endpoints.
+    the response body on those endpoints. One signal does reach the wire:
+    when a simulated call resolves to an error, the response carries
+    `X-Mockagents-Tool-Errors: <tool>=<code>[,<tool>=<code>…]` (each side
+    query-escaped), which the Python SDK's `to_have_tool_error` reads.
 
 ## `spec.behavior.strict_tools`
 

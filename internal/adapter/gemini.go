@@ -185,6 +185,21 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 			"path must be /v1beta/models/{model}:generateContent")
 		return
 	}
+	// Dispatch on the method. Every method used to be served as
+	// generateContent, so :countTokens and :embedContent returned a
+	// GenerateContentResponse, consumed a scenario turn, and — because the
+	// quota classifier bills only the two generate methods — ran quota- and
+	// spend-exempt (2026-10-06 review E-04).
+	switch method {
+	case "generateContent", "streamGenerateContent":
+	case "countTokens":
+		h.handleCountTokens(w, r)
+		return
+	default:
+		writeGeminiError(w, http.StatusNotFound, "NOT_FOUND",
+			fmt.Sprintf("method %q is not supported for models/%s (supported: generateContent, streamGenerateContent, countTokens)", method, model))
+		return
+	}
 	stream := method == "streamGenerateContent"
 
 	var req GeminiRequest
@@ -206,6 +221,7 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	convertedMsgs, imageCount := convertGeminiContents(req.Contents, req.SystemInstruction)
 	inbound := &engine.InboundRequest{
+		WireProtocol:     ProtocolGoogleGemini,
 		Model:            model,
 		SessionID:        extractSessionID(r),
 		Messages:         convertedMsgs,
@@ -254,6 +270,7 @@ func (h *GeminiHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	setHallucinationHeader(w, resp)
+	setToolErrorsHeader(w, resp)
 	setStrictViolationHeader(w, resp)
 	setImageCountHeader(w, imageCount)
 
@@ -317,8 +334,14 @@ func convertGeminiContents(contents []GeminiContent, system *GeminiContent) ([]e
 		// Gemini uses "model" for the assistant turn; normalize so scenario
 		// matching and turn counting line up with the other adapters.
 		role := c.Role
-		if role == "model" {
+		switch role {
+		case "model":
 			role = "assistant"
+		case "":
+			// Role is optional on the wire and defaults to the user (Google's
+			// own REST quickstart omits it); left empty, the engine found no
+			// user turn and rejected the request (review E-05).
+			role = "user"
 		}
 		imgCount := geminiImageParts(c.Parts)
 		totalImages += imgCount
@@ -406,7 +429,7 @@ func joinGeminiParts(parts []GeminiPart) string {
 }
 
 func formatGeminiResponse(resp *engine.Response, model string, promptTokens, candidateTokens int) *GeminiResponse {
-	var parts []GeminiPart
+	parts := []GeminiPart{} // an array on the wire, never null (review E-03)
 	if resp.Content != "" {
 		parts = append(parts, GeminiPart{Text: resp.Content})
 	}
@@ -478,4 +501,41 @@ func geminiStatusFor(code int) string {
 	default:
 		return "INTERNAL"
 	}
+}
+
+// geminiCountTokensRequest is the :countTokens body: either bare contents or a
+// full generateContentRequest.
+type geminiCountTokensRequest struct {
+	Contents               []GeminiContent `json:"contents"`
+	GenerateContentRequest *GeminiRequest  `json:"generateContentRequest,omitempty"`
+}
+
+// handleCountTokens answers :countTokens with an estimate and no engine call:
+// counting tokens neither generates a response nor advances a conversation.
+func (h *GeminiHandler) handleCountTokens(w http.ResponseWriter, r *http.Request) {
+	var req geminiCountTokensRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeGeminiError(w, http.StatusRequestEntityTooLarge, "INVALID_ARGUMENT", "request body too large")
+			return
+		}
+		writeGeminiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", fmt.Sprintf("invalid JSON: %s", err))
+		return
+	}
+	defer r.Body.Close()
+	contents := req.Contents
+	var system *GeminiContent
+	if req.GenerateContentRequest != nil {
+		contents = append(contents, req.GenerateContentRequest.Contents...)
+		system = req.GenerateContentRequest.SystemInstruction
+	}
+	total := 0
+	if system != nil {
+		total += EstimateTokens(joinGeminiParts(system.Parts))
+	}
+	for _, c := range contents {
+		total += EstimateTokens(joinGeminiParts(c.Parts))
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"totalTokens": total})
 }

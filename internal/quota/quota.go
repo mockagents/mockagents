@@ -67,6 +67,11 @@ type counter struct {
 	usd   float64
 	// expiry is when this cached total goes stale (backend mode only).
 	expiry time.Time
+	// unsynced is spend accrued while the backend was failing. It is added
+	// on top of every refreshed total and folded into the next successful
+	// backend write, so a transient ledger error never loses a charge (it
+	// used to be overwritten by the next refresh — audit L-28).
+	unsynced float64
 }
 
 // Enforcer is the per-tenant quota state. The zero value is not usable; use
@@ -206,16 +211,24 @@ func (e *Enforcer) AddSpend(tenantID string, usd float64) {
 	e.mu.Unlock()
 
 	if backend != nil {
+		e.mu.Lock()
+		pending := e.counterForMonthLocked(tenantID, month).unsynced
+		e.mu.Unlock()
+
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		total, err := backend.AddSpend(ctx, tenantID, month, usd)
+		total, err := backend.AddSpend(ctx, tenantID, month, usd+pending)
 		cancel()
 		e.mu.Lock()
 		c := e.counterForMonthLocked(tenantID, month)
 		if err == nil {
-			c.usd = total // authoritative cross-replica total
+			// The write carried the earlier unsynced spend too; anything
+			// accrued since the read above stays pending.
+			c.unsynced -= pending
+			c.usd = total + c.unsynced // authoritative cross-replica total
 			c.expiry = e.now().Add(spendCacheTTL)
 		} else {
-			c.usd += usd // best-effort local fallback so we don't lose the charge
+			c.unsynced += usd // kept until a write succeeds
+			c.usd += usd
 		}
 		e.mu.Unlock()
 		return
@@ -258,7 +271,7 @@ func (e *Enforcer) currentSpend(tenantID string) (float64, error) {
 	defer e.mu.Unlock()
 	c = e.counterForMonthLocked(tenantID, month)
 	if err == nil {
-		c.usd = total
+		c.usd = total + c.unsynced
 		c.expiry = e.now().Add(spendCacheTTL)
 	}
 	// On error, serve the last-known (stale) value rather than fail open/closed.

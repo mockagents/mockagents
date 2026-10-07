@@ -113,7 +113,7 @@ func (s *SQLiteStore) Append(ctx context.Context, e *Event) error {
 		`INSERT INTO audit_events
 		 (timestamp, kind, actor_name, actor_tenant, actor_key, actor_role, actor_ip, target, details)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.Timestamp.Format(time.RFC3339Nano),
+		e.Timestamp.UTC().Format(timestampLayout),
 		string(e.Kind),
 		e.Actor.Name,
 		e.Actor.TenantID,
@@ -180,7 +180,7 @@ func (s *SQLiteStore) List(ctx context.Context, q Query) ([]*Event, error) {
 	}
 	if !q.Since.IsZero() {
 		where = append(where, "timestamp >= ?")
-		args = append(args, q.Since.UTC().Format(time.RFC3339Nano))
+		args = append(args, q.Since.UTC().Format(timestampLayout))
 	}
 
 	query := `SELECT id, timestamp, kind, actor_name, actor_tenant, actor_key,
@@ -273,3 +273,11 @@ func (s *SQLiteStore) PruneToMaxRows(ctx context.Context, maxRows int) (int64, e
 	}
 	return res.RowsAffected()
 }
+
+// timestampLayout is RFC3339 with a FIXED nine-digit fraction, always UTC.
+// The Since filter compares timestamps as strings; RFC3339Nano trims
+// trailing zeros, so "…:00.5Z" sorted after "…:00.123Z" and before "…:00Z"
+// depending on width, and boundary rows were misfiltered (audit L-22).
+// Fixed width makes lexical order equal time order. (Rows written before
+// this change keep their variable-width form.)
+const timestampLayout = "2006-01-02T15:04:05.000000000Z07:00"

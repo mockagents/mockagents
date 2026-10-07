@@ -23,7 +23,8 @@ func TestStreamAnthropic_UsageFromAdapterCounts(t *testing.T) {
 	rec := httptest.NewRecorder()
 	resp := &engine.Response{Model: "claude-3", Content: "one two three four five six seven"}
 	cfg := &types.StreamingConfig{ChunkSize: 4, ChunkDelayMs: types.Ptr(0)}
-	require.NoError(t, StreamAnthropic(context.Background(), rec, resp, cfg, 17, 42))
+	require.NoError(t, StreamAnthropic(context.Background(), rec, resp, cfg,
+		AnthropicStreamOptions{InputTokens: 17, OutputTokens: 42}))
 
 	var sawStart, sawDelta bool
 	for _, ev := range parseSSEEvents(rec.Body.String()) {

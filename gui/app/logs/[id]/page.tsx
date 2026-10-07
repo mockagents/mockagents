@@ -52,7 +52,7 @@ export default async function LogDetailPage({
               <dt>Agent</dt>
               <dd>
                 {log.agent_name ? (
-                  <Link href={`/agents/${log.agent_name}`}>{log.agent_name}</Link>
+                  <Link href={`/agents/${encodeURIComponent(log.agent_name)}`}>{log.agent_name}</Link>
                 ) : (
                   <span className="muted">—</span>
                 )}

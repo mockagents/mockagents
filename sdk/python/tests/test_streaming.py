@@ -3,7 +3,6 @@ that close the chat_stream parity gap."""
 
 from __future__ import annotations
 
-import json
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -192,6 +191,7 @@ def _fake_sse_response(lines: list[str], status_code: int = 200) -> MagicMock:
     resp.status_code = status_code
     resp.iter_lines.return_value = iter(lines)
     resp.raise_for_status.return_value = None
+    resp.headers = {}
     return resp
 
 
@@ -225,7 +225,9 @@ def test_message_stream_stops_after_message_stop():
     """Trailing events past message_stop must be ignored."""
     lines = [
         'data: {"type":"message_stop"}',
+        "",
         'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"leak"}}',
+        "",
     ]
     client = MockAgentClient()
     with patch.object(client._session, "post", return_value=_fake_sse_response(lines)):
@@ -237,8 +239,11 @@ def test_message_stream_stops_after_message_stop():
 def test_message_stream_skips_malformed_data():
     lines = [
         'data: {"type":"message_start","message":{}}',
+        "",
         "data: not-json-at-all",
+        "",
         'data: {"type":"message_stop"}',
+        "",
     ]
     client = MockAgentClient()
     with patch.object(client._session, "post", return_value=_fake_sse_response(lines)):
@@ -252,9 +257,13 @@ def test_iter_stream_openai_end_to_end():
     """iter_stream(protocol='openai') must produce StreamChunks."""
     lines = [
         'data: {"choices":[{"delta":{"content":"a"}}]}',
+        "",
         'data: {"choices":[{"delta":{"content":"b"}}]}',
+        "",
         'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        "",
         "data: [DONE]",
+        "",
     ]
     client = MockAgentClient()
     with patch.object(client._session, "post", return_value=_fake_sse_response(lines)):
@@ -267,9 +276,13 @@ def test_iter_stream_openai_end_to_end():
 def test_iter_stream_anthropic_end_to_end():
     lines = [
         'data: {"type":"message_start","message":{}}',
+        "",
         'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}',
+        "",
         'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}',
+        "",
         'data: {"type":"message_stop"}',
+        "",
     ]
     client = MockAgentClient()
     with patch.object(client._session, "post", return_value=_fake_sse_response(lines)):

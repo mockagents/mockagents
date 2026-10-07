@@ -49,7 +49,8 @@
             "minLength": 1
           },
           "description": "Labels for categorizing the agent."
-        }
+        },
+        "tenant_id": { "type": "string", "description": "Owning tenant. Written by the server when a definition is saved through the multi-tenant API; never trusted from a request body. Omit it in hand-written files (empty means global)." }
       }
     },
     "AgentSpec": {
@@ -343,11 +344,13 @@
         "chunk_delay_ms": {
           "type": "integer",
           "minimum": 0,
+          "maximum": 60000,
           "description": "Delay between chunks in milliseconds. Default: 50."
         },
         "ttft_ms": {
           "type": "integer",
           "minimum": 0,
+          "maximum": 60000,
           "description": "Time-to-first-token: delay before the first content chunk."
         },
         "tokens_per_sec": {
@@ -358,26 +361,31 @@
         "jitter_ms": {
           "type": "integer",
           "minimum": 0,
+          "maximum": 60000,
           "description": "Deterministic +/- jitter (ms) added to each inter-chunk delay."
         },
         "ttft_p50_ms": {
           "type": "integer",
           "minimum": 0,
+          "maximum": 60000,
           "description": "Median time-to-first-token (ms). With ttft_p95_ms, TTFT is sampled from a lognormal fit to the two percentiles, overriding ttft_ms (FB-05)."
         },
         "ttft_p95_ms": {
           "type": "integer",
           "minimum": 0,
+          "maximum": 60000,
           "description": "95th-percentile time-to-first-token (ms). Pair with ttft_p50_ms."
         },
         "itl_p50_ms": {
           "type": "integer",
           "minimum": 0,
+          "maximum": 60000,
           "description": "Median inter-token latency (ms, per token). With itl_p95_ms, the per-chunk delay is sampled from a lognormal and scaled by token count, overriding tokens_per_sec (FB-05)."
         },
         "itl_p95_ms": {
           "type": "integer",
           "minimum": 0,
+          "maximum": 60000,
           "description": "95th-percentile inter-token latency (ms, per token). Pair with itl_p50_ms."
         },
         "truncate_after_chunks": {

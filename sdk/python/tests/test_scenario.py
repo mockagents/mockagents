@@ -93,7 +93,8 @@ def test_scenario_result_content():
 def test_scenario_default_protocol():
     s = Scenario(name="test", steps=[])
     assert s.protocol == "openai"
-    assert s.model == "gpt-4o"
+    # None defers to the client's per-protocol default (review K-07).
+    assert s.model is None
 
 
 def test_scenario_anthropic_protocol():

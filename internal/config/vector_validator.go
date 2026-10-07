@@ -12,6 +12,7 @@ import (
 
 func ValidateVectorCollection(def *types.VectorCollectionDefinition, filePath string, node *yaml.Node) *ValidationErrorList {
 	ctx := &validationContext{file: filePath, node: node}
+	ctx.errors = append(ctx.errors, unknownFieldErrors(filePath, node, def)...)
 	if def.APIVersion != types.AgentAPIVersion {
 		ctx.addError("apiVersion", fmt.Sprintf("unsupported version %q", def.APIVersion),
 			fmt.Sprintf("Use apiVersion: %s", types.AgentAPIVersion))

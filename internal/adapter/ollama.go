@@ -88,6 +88,7 @@ func (h *OllamaHandler) HandleChat(w http.ResponseWriter, r *http.Request) {
 
 	messages, images := convertOllamaMessages(req.Messages)
 	inbound := &engine.InboundRequest{
+		WireProtocol:     ProtocolOllamaChat,
 		Model:            req.Model,
 		SessionID:        extractSessionID(r),
 		Messages:         messages,
@@ -131,6 +132,7 @@ func (h *OllamaHandler) HandleChat(w http.ResponseWriter, r *http.Request) {
 		meta.ToolCallsCount = len(resp.ToolCalls)
 	}
 	setHallucinationHeader(w, resp)
+	setToolErrorsHeader(w, resp)
 	setStrictViolationHeader(w, resp)
 	setImageCountHeader(w, images)
 

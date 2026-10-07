@@ -160,6 +160,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	copyHeaders(proxyReq.Header, r.Header)
+	// Let the Transport negotiate compression itself: a forwarded client
+	// Accept-Encoding turns off its transparent gzip handling, so the proxy
+	// stored compressed bytes that replay then served as JSON and that
+	// --redact could not see into (review P-03). Without the header the
+	// Transport asks for gzip and hands back the decoded body.
+	proxyReq.Header.Del("Accept-Encoding")
 	if p.UpstreamAPIKey != "" {
 		proxyReq.Header.Set("Authorization", "Bearer "+p.UpstreamAPIKey)
 	}
@@ -211,7 +217,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Compute the hash from the ORIGINAL request body before any redaction or
 	// encoding wrapper, so replay (which sees the un-redacted request) still
 	// matches (R-03).
-	it.Hash = HashRequest(it.Method, it.Path, body)
+	it.Hash = HashRequest(it.Method, HashPath(r.URL), body)
 	if !p.skipRecording(it.ResponseStatus) {
 		if p.Redactor != nil {
 			if err := p.Redactor.Apply(it); err != nil {
@@ -314,7 +320,7 @@ func (p *Proxy) serveStreaming(w http.ResponseWriter, r *http.Request, reqBody [
 		Streaming:           true,
 		StreamEvents:        events,
 	}
-	it.Hash = HashRequest(it.Method, it.Path, reqBody)
+	it.Hash = HashRequest(it.Method, HashPath(r.URL), reqBody)
 	// A stream that broke mid-flight (upstream reset/crash) is a transient
 	// failure, not a canonical response — on the record-on-miss path, skipping
 	// it avoids permanently caching a truncated, [DONE]-less stream. The status

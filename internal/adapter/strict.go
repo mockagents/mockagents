@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mockagents/mockagents/internal/engine"
 )
@@ -19,7 +20,24 @@ func setStrictViolationHeader(w http.ResponseWriter, resp *engine.Response) {
 	if resp == nil || len(resp.StrictWarnings) == 0 {
 		return
 	}
-	w.Header().Set(HeaderStrictViolation, strings.Join(resp.StrictWarnings, "; "))
+	w.Header().Set(HeaderStrictViolation, boundedHeaderValue(strings.Join(resp.StrictWarnings, "; ")))
+}
+
+// maxStrictViolationHeader bounds the warn-mode header. It lists client
+// supplied tool ids, so a large history could make a multi-megabyte header
+// that Node (16 KiB) and h11 reject as a protocol error instead of a 200 with
+// a warning (review E-22).
+const maxStrictViolationHeader = 1024
+
+func boundedHeaderValue(v string) string {
+	if len(v) <= maxStrictViolationHeader {
+		return v
+	}
+	cut := maxStrictViolationHeader
+	for cut > 0 && !utf8.RuneStart(v[cut]) {
+		cut--
+	}
+	return v[:cut] + fmt.Sprintf("… (+%d bytes truncated)", len(v)-cut)
 }
 
 // The renderers below translate an engine.StrictToolError into each

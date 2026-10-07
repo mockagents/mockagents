@@ -12,6 +12,277 @@ milestones that preceded it; all are on `main`.
 
 ## [Unreleased]
 
+Fixes from the 2026-10-06 full-application quality review (see
+`docs/reviews/2026-10-06-quality-*.md`).
+
+### Changed
+
+- **Unknown fields are now validation errors on every authoring path.** A
+  misspelled or unsupported key used to be silently dropped by `validate`,
+  `start`, `test`, the GUI validator, `mockagents add` and MCP management, so a
+  typo such as `streming:` or `args:` (for `arguments:`) quietly disabled what
+  it configured, and a TestSuite assertion could pass without checking
+  anything. Each unknown key is now reported with its line and a did-you-mean
+  suggestion, matching the JSON schemas' `additionalProperties: false`. `start`
+  skips such a document with an error log, as it does any invalid document.
+  **Migration:** run `mockagents validate` and fix or remove the reported keys.
+  The agent write API now rejects unknown fields on every write; before, only
+  conditional (`If-Match` / `If-None-Match`) writes did.
+- **A file may hold only one YAML document.** Everything after the first `---`
+  used to be ignored silently; a second document is now an error naming its
+  line. Split multi-document files into one file per definition.
+- A TestSuite case must declare at least one assertion.
+- `mockagents validate` exits 1 when it finds no documents (`--allow-empty`
+  restores the old behaviour), exits 2 for a missing path or an unknown
+  `--format`, and in `--format json` mode writes exactly one JSON document to
+  stdout.
+- `mockagents rm` asks before deleting the agent's source file and refuses
+  without `--yes` when not on a terminal; `--keep-file` unregisters only
+  (`DELETE /api/v1/agents/{name}?keep_file=true`). The delete response reports
+  `persisted: true` when a file was removed.
+- **Stricter validation of values.** Streaming timing (`ttft_ms`, `jitter_ms`,
+  `chunk_delay_ms`, the `*_p50/p95_ms` percentiles) must be 0-60000 ms like
+  chaos delays, and negative `chunk_size`, `tokens_per_sec` or
+  `truncate_after_chunks` are rejected (a `ttft_ms: 3600000` used to hold a
+  request open for an hour). Response templates are parsed at validation, so
+  an unclosed `{{` or an unknown function is an error instead of a 500 on every
+  request. Chaos rates of `NaN` are rejected. A tool response rule must return a
+  response or an error (not both), an error needs `code` and `message`, and tool
+  names are limited to 64 characters. `validate` warns when two agents in a
+  tenant claim the same `spec.model`.
+- The server's default write timeout is 90 s (was 60 s), so a chaos fault at the
+  60 s ceiling reaches the client.
+- `mockagents logs` reads the database `start` writes (honouring
+  `MOCKAGENTS_DATA_DIR`) and reports a missing database instead of creating an
+  empty one.
+- **Python SDK: outcome assertions read the final turn.** `to_have_response_containing`,
+  `to_have_status` and `to_have_finish_reason` passed if *any* turn matched, unlike
+  the YAML runner, the TypeScript and Go SDKs, and the Python docs. They now read
+  the final turn and fail on an empty result. `to_have_any_response_containing`
+  keeps the any-turn check.
+- **Python SDK: `run_scenario` matches the TypeScript and Go runners.** It sent a
+  request for every step, system and assistant steps included, and dropped empty
+  assistant turns. It now sends one request per user step, always records the
+  reply, sends system steps as the `system` parameter under Anthropic, and uses the
+  client's per-protocol default model (`Scenario.model` now defaults to `None`). It
+  raises `ValueError` for a scenario with no user step.
+- **Python SDK: streamed calls raise on a non-2xx status.** `chat(stream=True)` and
+  `message(stream=True)` returned an empty `ChatResponse`, so negative assertions
+  such as `to_have_tool_call_count(0)` passed on a server error.
+- Python SDK: `to_have_tool_call(name, {"k": None})` no longer matches a call
+  without `k`. `ValueExpect.to_contain` checks for a substring of a string or an
+  item of a collection, and raises `TypeError` for anything else. It used to
+  stringify the value, so `expect(None).to_contain("None")` passed.
+- Python SDK: consecutive `data:` lines form one SSE event, per the event-stream
+  spec, as in the TypeScript and Go SDKs.
+- Python SDK: `MockAgentClient` and `McpClient` default to `http://127.0.0.1:8080`,
+  the server's default bind address.
+- Provider SSE streams are sent as `text/event-stream; charset=utf-8`.
+- **Batches and pipelines are metered.** Every request inside an OpenAI or
+  Anthropic batch, and every pipeline node, now counts against the tenant's
+  request-rate limit and accrues monthly spend, exactly like a direct call. A
+  refused batch line carries the `429`/`402` body; a refused pipeline node fails
+  the run with `429`/`402`. Before, a rate-limited tenant could run a whole
+  batch or pipeline and none of it counted toward the spend cap.
+- `MOCKAGENTS_LOG_BODIES` is case-insensitive and any value other than `full`,
+  `sanitized` or `none` fails startup (a typo used to mean full capture). The
+  effective mode is always logged. `MOCKAGENTS_SESSION_MAX`, `_SESSION_HISTORY`,
+  `_AUDIT_MAX_ROWS` and `_AUTH_FAILURES_PER_MINUTE` fail startup on a bad value
+  instead of warning and keeping the default; float knobs and `--chaos-rate`
+  reject `NaN`/`Inf`; `--port` must be 1-65535.
+- A wildcard `--cors-origins '*'` no longer lets an SSO session cookie scope a
+  cross-origin realtime WebSocket to a tenant; list the console origin
+  explicitly.
+- Gemini `:countTokens` returns `{"totalTokens": N}` without running the agent;
+  other unsupported methods return `404 NOT_FOUND` instead of being served as
+  `generateContent`.
+- **GUI `npm run lint` works again.** `next lint` was removed in Next.js 16; the script now runs ESLint 9 with `eslint-config-next` (flat config `gui/eslint.config.mjs`), with the react-hooks rules as errors, and the CI GUI job runs it. Because the GUI compiles with TypeScript 7, which has no JavaScript compiler API, the config points typescript-eslint at `@typescript/typescript6` inside the ESLint process only (needs Node ≥ 22.15).
+- **GUI:** removed the dead `mockagents_role` legacy-cookie cleanup and the empty `experimental: {}` block in `next.config.ts` (its comment described behaviour it did not have).
+- `mockagents a2a` now binds `127.0.0.1` by default, like `mcp`, `record` and
+  `replay`; pass `--bind 0.0.0.0` to expose it. The startup line prints the
+  actual listening address.
+- `mockagents logs --output` and `mockagents contract diff --format` reject an
+  unknown value as a usage error (exit 2) naming the accepted values
+  (`table`/`json` and `text`/`json`); they used to fall back to the default
+  format silently.
+
+### Fixed
+
+- `mockagents init --force` no longer deletes files you wrote in `agents/` and
+  `tests/`; it removes only unedited files a previous template shipped.
+- `mockagents mcp` and `mockagents a2a` validate the selected definition before
+  serving it (an invalid fault `status_code` used to panic every request).
+- Duplicate names are reported for pipelines, test suites, MCP servers and A2A
+  servers, not only agents; duplicates are keyed by tenant, and a file passed
+  twice is no longer reported as a duplicate of itself.
+- `mockagents contract diff` reports comparing two different agents as a
+  breaking change, rejects unknown keys in contract JSON, accepts JSON agent
+  definitions, and refuses an invalid agent definition.
+- Errors print once (no usage dump on runtime errors); `--json-logs` and
+  `--log-level` apply to every log line; `--no-color` works in any spelling and
+  colour is off when stdout is not a terminal; `test` prints FAIL lines on
+  stdout next to their failure details.
+- `.json` definitions with a UTF-8 byte-order mark load.
+- Gemini `contents` without a `role` are treated as user turns.
+- `/api/v1/logs/stream/metrics` shows a tenant admin only its own tenant's
+  subscriptions; the platform role reads the whole audit trail, including
+  `auth.denied` events.
+- Spend accrued while the shared spend ledger is failing is kept and written
+  through when it recovers, instead of being lost at the next cache refresh.
+  A model missing from the price table is logged once.
+- Streamed tool-call arguments are cut on character boundaries; a multi-byte
+  character (accent, CJK, emoji) used to be split across two deltas and
+  arrive as `U+FFFD` on OpenAI, Anthropic and Responses streams.
+- Anthropic responses always carry `"content": []` (never `null`) when there
+  is nothing to say, which the official SDKs require.
+- Responses API: a `previous_response_id` chain or a `conversation` advances
+  `turn_number` on every hop, and calls without `X-Session-Id` no longer store
+  an engine session each. `instructions` apply to the request that sends them
+  and are not replayed from earlier responses. Unmodelled input items
+  (`reasoning`, `item_reference`, …) are skipped instead of becoming an empty
+  user turn.
+- Strict `tool_choice` forcing reports the finish reason of the API the request
+  arrived on, not the agent's declared protocol (an OpenAI-protocol agent on
+  `/v1/messages` now ends a forced call with `stop_reason: "tool_use"`).
+- Engine failures (e.g. a broken response template) are reported as
+  `server_error` / `api_error`, so SDKs retry them, instead of
+  `invalid_request_error`.
+- Streaming Anthropic and Gemini responses include the refusal when a response
+  also has content, as the non-streaming responses do.
+- Bedrock ConverseStream delivers connection-layer chaos faults to the socket
+  instead of a 502 JSON body.
+- `/v1/models` lists each model once with a stable `created`; tool-argument
+  `minLength`/`maxLength` count characters; strict-schema 400 messages are
+  deterministic; the warn-mode `X-Mockagents-Strict-Violation` header is
+  bounded to 1 KiB; oversized bodies on every Conversations route return 413;
+  `{{ .Timestamp }}` renders the request time; pipeline runs without a session
+  id no longer share engine sessions.
+- Recording: a failed cassette write no longer loses interactions (the next
+  write rebuilds the file from memory); replay never sends a stored
+  `Content-Encoding`/`Content-Length`, so imported gzip vcrpy cassettes replay;
+  the proxy stores decoded bodies even when the client accepts gzip; the request
+  hash covers the (credential-free) query string, so `?alt=sse` and plain
+  requests no longer share a recording — older path-only recordings still
+  replay; redaction no longer turns words like `risk-based` into `risk-***`.
+- MCP: server-initiated messages are delivered in order and never lost when a
+  new subscriber takes over the event stream; a request that timed out is not
+  delivered later; a lagging streamable-HTTP subscriber is disconnected (and
+  replays from `Last-Event-ID`) instead of silently missing events; at the
+  session cap a new session is refused with `503` rather than evicting a live
+  one; `id: null` and a missing method are `-32600`; malformed bodies get HTTP
+  `400`; `resources/subscribe` rejects undeclared URIs with `-32002`; a
+  panicking tool handler becomes an internal error.
+- A2A: idle non-terminal tasks expire after the task TTL instead of pinning
+  capacity forever; notifications are never answered and batches are
+  `-32600`; the card URL only takes `http`/`https` from `X-Forwarded-Proto`.
+- Realtime: G.711 (`audio/pcmu`, `audio/pcma`) durations and voice detection
+  use the right byte rate; session memory is bounded; the advertised
+  `expires_at` is enforced with a `session_expired` error.
+- Updating an agent loaded from a `.json` file writes JSON back, keeping the
+  file loadable. `tool_call` assertions compare numbers like
+  `tool_call_args` (`2` matches `2.0`). Audit write failures are logged.
+  Interaction-log and audit timestamps are stored fixed-width UTC so time
+  filters order rows correctly. The standalone `mcp` and `a2a` servers bound
+  request reads and idle connections.
+- The JSON schemas now declare every field the server accepts:
+  `metadata.tenant_id` (agent, pipeline, test suite, MCP server), the ten MCP
+  fault fields (`timeout_ms`, `status_code`, `disconnect`, `reset`,
+  `malformed`, `malformed_schema`, `truncate_after_bytes`, `operation_rates`,
+  `fixture_rates`, `sequence_rates`) and the vector `seed`, `rate` and
+  `operation_rates` faults, so editors no longer flag valid configuration. A
+  test now compares every schema with its Go type.
+- Chaos latency is clamped to 60 s for every distribution, not only `normal`.
+
+---
+- Python SDK: the client's `api_key` was sent only by `run_pipeline`. Every other
+  call went out anonymously and, in multi-tenant mode, could reach a global agent
+  instead of the tenant's. It is now sent on every request, and as `x-api-key` on
+  Anthropic calls.
+- Python SDK: streamed text was decoded as ISO-8859-1, which mangled non-ASCII
+  content on every streaming path and in MCP events.
+- Python SDK: `to_have_tool_error` read a field that no response contains, so it
+  could never pass against a real server. It now reads `X-Mockagents-Tool-Errors`.
+- Python SDK: injected stream faults (truncation, malformed frames) looked like
+  normal completions. They now set `truncated` and `malformed_frames`.
+- Python SDK: tool arguments that are valid JSON but not an object (`"[1]"`)
+  raised `AttributeError` in assertions.
+- Python SDK: an MCP handler that returned `None` raised before replying, which
+  left the server-side request blocked until its timeout. It now replies `{}`, as
+  the Go SDK does.
+- Python SDK: `MockAgentServer.from_config` served the whole directory of the
+  first file and rejected multi-document YAML. It now serves exactly the listed
+  files, from any directories. The ignored `config_path` option is deprecated.
+- Python SDK: `get_agent` and `reload_agent` URL-encode the agent name.
+- **TypeScript and Go SDKs: the API key now reaches every request.** The TS
+  client sent `apiKey` only on JSON calls, so every streaming call
+  (`chatStream`, `messageStream`, `iterStream`) went out anonymous. The Go
+  client had no way to set a key at all. In multi-tenant mode an anonymous LLM
+  call is not rejected; it is routed to a different, global agent, so tests
+  passed against the wrong agent. Both clients now add
+  `Authorization: Bearer <key>` in one place used by every request path. When
+  a key is set, Anthropic calls send it as `X-Api-Key` instead of the
+  `mock-api-key` placeholder. The Go option is the new `ClientOptions.APIKey`.
+- **Go `ToHaveToolCall` no longer fails on integer expectations.** Arguments
+  decoded from JSON are `float64`, so `map[string]any{"limit": 5}` never
+  matched. Expected and actual values are now compared as JSON, so `5`,
+  `int64(5)`, `5.0` and `json.Number("5")` all match. The failure message
+  prints both sides with `%#v`.
+- **TS/Go tool-call arguments are no longer silently collapsed.** Malformed
+  or non-object arguments used to become `{}` / `nil`, so the
+  `raw_arguments` fault fixture was invisible. `ToolCall` now carries
+  `rawArguments` / `RawArguments` (the exact wire text) and `argumentsValid` /
+  `ArgumentsValid`. TS `toHaveToolCall` now treats an omitted key as distinct
+  from an explicit `null` or `undefined`.
+- **SSE parsing handles every spec-legal line ending.** TS and Go now
+  normalise CRLF and bare CR to LF before splitting frames, so these cases no
+  longer merge two events into one unparseable frame that was silently
+  dropped: mixed endings, the `\n\r\n` blank line, CR-only streams, and a
+  CRLF split across reads. The MCP event streams use the same splitter.
+- **Truncated and malformed streams are observable in TS and Go.** A stream
+  that ends without `[DONE]` / `message_stop`, or that carries unparseable
+  frames, used to look like a normal completion. TS streams now expose live
+  `stats` (`completed`, `truncated`, `malformedFrames`). The opt-in
+  `failOnStreamFault` option raises a typed `StreamError` instead. Go
+  `RawEventStream` and `ChunkStream` gain `Completed()`, `Truncated()` and
+  `MalformedFrames()`.
+- **TS/Go `MockAgentServer.start()` fails fast when the child exits early.**
+  A bad agents dir or a port collision used to wait out the full health
+  timeout. The error now reports the exit status and the child's logs.
+- **TS/Go server helpers use `127.0.0.1`.** They used `http://localhost:<port>`,
+  but the binary binds IPv4 only, and `localhost` can resolve to `::1` first.
+  This matches the Python SDK.
+- **The default Anthropic model is the same in every SDK.** TS and Go used
+  `claude-3-5-sonnet-latest`, while Python used `claude-sonnet-4-20250514`, so
+  one script could route to different agents per language. All three now use
+  `claude-sonnet-4-20250514`, exported as `DEFAULT_ANTHROPIC_MODEL` (TS) and
+  `DefaultAnthropicModel` (Go).
+- **Binary discovery is consistent and no longer runs a stale binary.** The TS
+  SDK, the Go SDK and `npx mockagents` all accept `MOCKAGENTS_BINARY`, then
+  `MOCKAGENTS_BIN`, as Python already did. TS and Go no longer search parent
+  directories for a `mockagents` binary, which in nested checkouts ran a stale
+  build ahead of `PATH`.
+- **`npx mockagents` works from Git Bash on Windows.** On Windows the release
+  `.zip` is now extracted with `%SystemRoot%\System32\tar.exe` (bsdtar),
+  called by absolute path. Before, the first `tar` on `PATH` ran, and GNU tar
+  cannot read zip files.
+- **`npx mockagents` no longer orphans the server.** The launcher used
+  `spawnSync`, so a `SIGTERM` (from a supervisor or a cancelled CI step)
+  killed Node and left the server holding its port. It now spawns
+  asynchronously and forwards `SIGINT`, `SIGTERM` and `SIGHUP`. It also exits
+  with the server's exit code or signal.
+- **Docs: Go in-process client scope and `Stop` signal.** The
+  `NewInProcessClient` doc no longer claims the full management API. That API
+  returns 404 in-process, and the doc now says so. The `Server.Stop` doc now
+  states it sends SIGINT, not SIGTERM.
+- **Docs: the JS packages are ESM-only.** The `@mockagents/vitest` Jest
+  section claimed plain Jest worked. Jest's default CommonJS runtime cannot
+  load these packages; the docs now cover Jest's ESM mode.
+- **GUI guided form (`lib/yamlPath.ts`):** a trailing `# comment` is no longer read as part of a value (editing `model: gpt-4o  # prod` used to write the comment into the value); `key:  # comment` is treated as a mapping parent rather than "holds a scalar"; quoted keys (`"name": a`) resolve, and keep their quoting on rewrite; `encodeScalar` quotes every string YAML would resolve to a non-string (`1e3`, `0x1F`, `0o17`, `1_000`, `.inf`, `-.inf`, `.nan`, `~`, `y`/`n`, …) and escapes control characters so a value stays on one line (review K-17).
+- **GUI live log feed:** the credential probe used `HEAD /api/logs/stream`, which Next.js answers by running the GET handler — opening a real upstream SSE subscription per probe. The route now implements `HEAD` as a one-row `GET /api/v1/logs` auth check. The stream also sends an SSE comment first, so a quiet server no longer leaves the console on "reconnecting" until the first log event.
+- **GUI editors:** the agent editor, pipeline editor and `/editor` now ask before a reload, tab close, or in-app link click discards unsaved work (`lib/useUnsavedChanges.ts`). Browser back/forward during client-side navigation is not intercepted.
+- **GUI:** the agent link on a log entry percent-encodes the agent name like every other agent link.
+- **GUI:** fixed the issues the newly enforced lint surfaced: a missing React `key`, JSX constructed inside `try/catch` (logs and audit pages), a ref written during render (log console), and the pipeline editor's validation flag set synchronously inside an effect (now derived).
+
 ### Added
 
 - **Agent Playground demo** ([`demo/agent-playground/`](demo/agent-playground/README.md)): a Go
@@ -22,6 +293,33 @@ milestones that preceded it; all are on `main`.
   judge, human review gates and tool approvals, per-run traces, and runs that cannot get stuck. It ships
   a Postman collection, a Docker image and compose file, and a `verify` self-test. `make playground`,
   `make playground-verify`.
+- `X-Mockagents-Tool-Errors` response header on the OpenAI, Anthropic, Gemini,
+  Ollama, Bedrock and Responses endpoints. It lists the simulated tool calls whose
+  fixture resolved to an error, as `tool=code` pairs.
+- Python SDK additions:
+  - `ChatResponse.tool_errors`, `headers`, `truncated` and `malformed_frames`
+  - `ToolCall.raw_arguments` and `arguments_valid`
+  - `to_have_any_response_containing`, `to_have_malformed_tool_arguments`, and a
+    `tool=` filter on `to_have_tool_error`
+  - `McpClient(api_key=...)` and `MockAgentServer.client(api_key=...)`
+- TS streaming cancellation: `signal` (an `AbortSignal`) on every call and on
+  `iterStream`. An optional `idleTimeoutMs` bounds a stalled stream once
+  headers have arrived.
+- TS and Go `ChatMessage` can carry assistant `tool_calls` (and
+  `tool_call_id` on tool turns), so a tool round trip can be replayed under
+  strict-tools id validation. TS `content` also accepts a content-parts array.
+  New helpers `toAssistantMessage(response)` (TS) and
+  `AssistantMessage(resp)` (Go) build the assistant turn.
+- Go `Expectation.ToHaveToolCallCountByName`, matching the TS/Python named
+  tool-call count.
+
+### Security
+
+- **GUI: `?error=` no longer renders URL text.** `/login`, `/account`, `/admin/tenants`, `/admin/tenants/{id}` and the agent catalog carried free-text errors in the query string and printed them verbatim, so a crafted link could show phishing copy under the console's chrome. They now carry a short error code mapped to fixed copy (`gui/lib/errors.ts`); unknown values render a generic message. Upstream detail for a failed admin action travels through the server-side flash store, never the URL (review K-18).
+- **GUI: raw upstream error bodies are no longer forwarded to the browser.** Every management-API failure is reduced to the server's own `{"error": …}` message, stripped of control characters and capped at 200 characters; an HTML proxy page or stack trace is dropped (`saveAgentYAML`, `saveAgent`, `savePipeline`, `runPipeline`, `fetchJSON`).
+- **GUI: nonce-based Content-Security-Policy.** Pages get a per-request script nonce via `gui/proxy.ts`; `script-src` no longer allows `'unsafe-inline'` (it uses `'nonce-…' 'strict-dynamic'`). Route handlers get `default-src 'none'`. `Strict-Transport-Security: max-age=63072000; includeSubDomains` is sent in production builds.
+- **GUI: the internal `MOCKAGENTS_API_URL` is no longer shown to anonymous visitors** of a multi-tenant deployment (sidebar, instrument strip, catalog lede). It stays visible in local mode, to signed-in callers, and in development builds when the server is unreachable (review 6.6).
+- **GUI: `getAuthStatus` is no longer a client-callable Server Action.** Read-only session helpers moved from the `"use server"` module `lib/auth.ts` to the plain server module `lib/session.ts` (review 6.7).
 
 ## [0.5.0] - 2026-09-09
 

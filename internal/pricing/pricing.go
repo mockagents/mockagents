@@ -27,9 +27,9 @@ import (
 // expressed per 1,000 tokens to match the units every provider uses
 // in its public docs — avoiding micro-USD floats that round badly.
 type Price struct {
-	Model                 string  `yaml:"model" json:"model"`
-	PromptPer1KUSD        float64 `yaml:"prompt_per_1k_usd" json:"prompt_per_1k_usd"`
-	CompletionPer1KUSD    float64 `yaml:"completion_per_1k_usd" json:"completion_per_1k_usd"`
+	Model              string  `yaml:"model" json:"model"`
+	PromptPer1KUSD     float64 `yaml:"prompt_per_1k_usd" json:"prompt_per_1k_usd"`
+	CompletionPer1KUSD float64 `yaml:"completion_per_1k_usd" json:"completion_per_1k_usd"`
 }
 
 // Estimate returns the estimated USD cost of a (prompt, completion)
@@ -49,9 +49,9 @@ func (p Price) Estimate(promptTokens, completionTokens int) float64 {
 // case-insensitive and support a Fallback price for unknown models
 // so cost totals never silently drop data.
 type Table struct {
-	mu        sync.RWMutex
-	prices    map[string]Price // lower-cased model name → Price
-	Fallback  Price
+	mu       sync.RWMutex
+	prices   map[string]Price // lower-cased model name → Price
+	Fallback Price
 }
 
 // NewDefaultTable returns a Table seeded with built-in prices for

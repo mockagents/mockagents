@@ -75,10 +75,7 @@ manually-created secret.
 
 ### 3. Repository settings
 
-- [ ] **Flip the repo to Public** when ready:
-      `gh repo edit mockagents/mockagents --visibility public --accept-visibility-change-consequences`.
-      (Before this, decide whether the internal `autobuild/state` branch should
-      stay private — see the project notes.)
+- [x] **Repository is public** (done).
 - [ ] **Add discovery topics** (D-07):
       ```bash
       gh repo edit mockagents/mockagents \

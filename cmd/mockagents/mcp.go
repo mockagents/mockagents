@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
@@ -139,12 +138,12 @@ func selectMCPServer(docs *config.Documents, agentsDir string) (*types.MCPServer
 	case mcpServerName != "":
 		for _, r := range docs.MCPServers {
 			if r.Definition.Metadata.Name == mcpServerName {
-				return r.Definition, nil
+				return validMCPServer(r)
 			}
 		}
 		return nil, fmt.Errorf("mcp server %q not found in %q", mcpServerName, agentsDir)
 	case len(docs.MCPServers) == 1:
-		return docs.MCPServers[0].Definition, nil
+		return validMCPServer(docs.MCPServers[0])
 	default:
 		names := make([]string, 0, len(docs.MCPServers))
 		for _, r := range docs.MCPServers {
@@ -152,6 +151,15 @@ func selectMCPServer(docs *config.Documents, agentsDir string) (*types.MCPServer
 		}
 		return nil, fmt.Errorf("multiple MCPServer definitions loaded; pick one with --server (%v)", names)
 	}
+}
+
+// validMCPServer refuses to serve a definition its validator rejects (see
+// validA2AServer).
+func validMCPServer(r *config.MCPServerLoadResult) (*types.MCPServerDefinition, error) {
+	if errs := config.ValidateMCPServer(r.Definition, r.FilePath, r.Node); errs != nil {
+		return nil, fmt.Errorf("mcp server %q is invalid:\n%s", r.Definition.Metadata.Name, errs.Error())
+	}
+	return r.Definition, nil
 }
 
 // buildManageRegistry builds an agent registry from the loaded Agent documents,
@@ -177,6 +185,10 @@ func serveMCPHTTP(server *mcp.Server, bind string, port int) error {
 		Addr:              addr,
 		Handler:           newMCPMux(server),
 		ReadHeaderTimeout: 10 * time.Second,
+		// Bound the request read and idle keep-alives like record/replay
+		// (audit L-43). No WriteTimeout: the SSE streams are long-lived.
+		ReadTimeout: 30 * time.Second,
+		IdleTimeout: 120 * time.Second,
 	}
 
 	fmt.Printf("mockagents mcp listening on %s (server=%s)\n", addr, server.Definition().Metadata.Name)
@@ -185,7 +197,7 @@ func serveMCPHTTP(server *mcp.Server, bind string, port int) error {
 	go func() { errCh <- srv.ListenAndServe() }()
 
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	notifySignals(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	select {
 	case <-sigCh:

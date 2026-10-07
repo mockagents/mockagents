@@ -263,3 +263,30 @@ func TestEncodeDecodeBodyRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// A failed flush keeps its interactions: once the cassette is writable again
+// the next Append persists everything recorded in memory (review P-04).
+func TestAppendAfterFailedFlushLosesNothing(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "not-yet")
+	c := &Cassette{Path: filepath.Join(dir, "cassette.jsonl"), byHash: map[string][]*Interaction{}}
+
+	if err := c.Append(testInteraction(1)); err == nil {
+		t.Fatal("first append should fail: the directory does not exist")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Append(testInteraction(2)); err != nil {
+		t.Fatalf("second append: %v", err)
+	}
+	if got := countLines(t, c.Path); got != 2 {
+		t.Fatalf("cassette has %d lines on disk, want 2 (memory holds 2)", got)
+	}
+	reloaded, err := Load(c.Path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if len(reloaded.interactions) != 2 {
+		t.Fatalf("reloaded %d interactions, want 2", len(reloaded.interactions))
+	}
+}

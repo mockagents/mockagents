@@ -171,7 +171,7 @@ func runTest(cmd *cobra.Command, args []string) error {
 	}
 
 	if totalFailed > 0 {
-		os.Exit(1)
+		osExit(1)
 	}
 	return nil
 }
@@ -228,7 +228,9 @@ func printTextResults(results []*runner.SuiteResult) {
 			if c.Passed {
 				cli.PrintSuccess(fmt.Sprintf("  PASS  %s (%s)", c.Name, c.Latency))
 			} else {
-				cli.PrintError(fmt.Sprintf("  FAIL  %s (%s)", c.Name, c.Latency))
+				// Same stream as the PASS lines and the failure bullets below:
+				// redirecting stdout used to lose which case failed.
+				fmt.Println(cli.Red(fmt.Sprintf("  FAIL  %s (%s)", c.Name, c.Latency)))
 				for _, f := range c.Failures {
 					fmt.Printf("        - %s\n", f)
 				}

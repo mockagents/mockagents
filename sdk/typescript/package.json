@@ -18,7 +18,9 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "NOTICE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -41,9 +43,18 @@
   ],
   "license": "Apache-2.0",
   "devDependencies": {
-    "@types/node": "^26.4.1",
+    "@types/node": "^26.6.4",
     "rimraf": "^6.0.0",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mockagents/mockagents.git",
+    "directory": "sdk/typescript"
+  },
+  "homepage": "https://github.com/mockagents/mockagents",
+  "bugs": {
+    "url": "https://github.com/mockagents/mockagents/issues"
   }
 }

@@ -85,17 +85,21 @@ func parseSSEFrame(frame string) *sseFrame {
 //	if err := stream.Err(); err != nil { … }
 //	_ = stream.Close()
 type RawEventStream struct {
-	body    io.ReadCloser
-	scanner *bufio.Scanner
-	cancel  context.CancelFunc
-	stopAt  func(map[string]any) bool // returns true when this event is terminal
-	done    bool
-	value   map[string]any
-	err     error
+	body      io.ReadCloser
+	scanner   *bufio.Scanner
+	cancel    context.CancelFunc
+	stopAt    func(map[string]any) bool // returns true when this event is terminal
+	done      bool
+	value     map[string]any
+	err       error
+	completed bool // the terminal sentinel ([DONE] / message_stop) arrived
+	truncated bool // the body ended cleanly without that sentinel
+	malformed int  // data frames that were not a JSON object (skipped)
 }
 
 // Next advances the stream. Returns true when Value holds a new event.
-// After Next returns false, inspect Err to tell EOF from failure.
+// After Next returns false, inspect Err to tell EOF from failure, and
+// Truncated / MalformedFrames to tell a clean completion from a faulty one.
 func (s *RawEventStream) Next() bool {
 	if s == nil || s.done {
 		return false
@@ -106,26 +110,51 @@ func (s *RawEventStream) Next() bool {
 			continue
 		}
 		if frame.Data == "[DONE]" {
+			s.completed = true
 			s.done = true
 			return false
 		}
 		var ev map[string]any
-		if err := json.Unmarshal([]byte(frame.Data), &ev); err != nil {
-			// Malformed data lines are skipped — matches Python SDK.
+		if err := json.Unmarshal([]byte(frame.Data), &ev); err != nil || ev == nil {
+			// Malformed data lines are skipped but counted, so an injected
+			// `malformed` fault is observable (review K-14).
+			s.malformed++
 			continue
 		}
 		s.value = ev
 		if s.stopAt != nil && s.stopAt(ev) {
 			// Deliver the terminal event, then stop on the next call.
+			s.completed = true
 			s.done = true
 		}
 		return true
 	}
 	if err := s.scanner.Err(); err != nil {
 		s.err = err
+	} else {
+		// A clean EOF without the terminal sentinel: a truncated stream.
+		s.truncated = true
 	}
 	s.done = true
 	return false
+}
+
+// Completed reports whether the terminal sentinel ([DONE] for OpenAI,
+// message_stop for Anthropic) arrived.
+func (s *RawEventStream) Completed() bool { return s != nil && s.completed }
+
+// Truncated reports whether the body ended without the terminal sentinel,
+// e.g. under a `streaming.truncateAfter` fault. A stream the caller stopped
+// reading early, or one that failed with Err, is not reported as truncated.
+func (s *RawEventStream) Truncated() bool { return s != nil && s.truncated }
+
+// MalformedFrames counts the data frames that were not a JSON object and were
+// skipped, e.g. under a `streaming.malformed` fault.
+func (s *RawEventStream) MalformedFrames() int {
+	if s == nil {
+		return 0
+	}
+	return s.malformed
 }
 
 // Value returns the event most recently surfaced by Next.
@@ -179,6 +208,7 @@ func (c *Client) requestSSE(ctx context.Context, path string, headers map[string
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	c.applyAuth(req)
 	// SSE clients must not apply a read timeout — use a per-request
 	// context instead so Close() can cancel mid-stream.
 	httpClient := c.httpClient
@@ -198,26 +228,43 @@ func (c *Client) requestSSE(ctx context.Context, path string, headers map[string
 		cancel()
 		return nil, nil, nil, &HTTPError{Status: resp.StatusCode, Body: string(body)}
 	}
-	scanner := bufio.NewScanner(resp.Body)
+	return resp.Body, newSSEScanner(resp.Body), cancel, nil
+}
+
+// newSSEScanner returns a scanner over r that yields one SSE frame per Scan.
+// Line endings are normalised to LF first (newlineNormalizer), so the
+// splitter sees one kind of blank-line terminator however the body was
+// chunked.
+func newSSEScanner(r io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(&newlineNormalizer{r: r})
 	// Raise the frame cap — default 64 KiB is fine for typical SSE but
 	// pathological chunks can exceed it. 1 MiB matches the adapter
 	// body-size ceiling on the server side.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	scanner.Split(splitSSEFrames)
-	return resp.Body, scanner, cancel, nil
+	return scanner
 }
 
 // splitSSEFrames is a bufio.SplitFunc that yields one SSE frame (all the
 // lines up to a blank-line terminator) at a time. EOF drains the tail.
+//
+// newSSEScanner normalises line endings to LF before this runs. As a
+// defence for callers that skip that, a frame also ends at "\r\n\r\n" when
+// it starts before the first "\n\n": preferring "\n\n" unconditionally made
+// the result depend on how much of an un-normalised body was buffered (a
+// CRLF frame followed by an LF frame merged into one unparseable frame when
+// both were buffered, but split correctly in smaller reads).
 func splitSSEFrames(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	if len(data) == 0 && atEOF {
 		return 0, nil, nil
 	}
-	if i := bytes.Index(data, []byte("\n\n")); i >= 0 {
-		return i + 2, data[:i], nil
+	lf := bytes.Index(data, []byte("\n\n"))
+	crlf := bytes.Index(data, []byte("\r\n\r\n"))
+	if crlf >= 0 && (lf < 0 || crlf < lf) {
+		return crlf + 4, data[:crlf], nil
 	}
-	if i := bytes.Index(data, []byte("\r\n\r\n")); i >= 0 {
-		return i + 4, data[:i], nil
+	if lf >= 0 {
+		return lf + 2, data[:lf], nil
 	}
 	if atEOF {
 		return len(data), bytes.TrimRight(data, "\r\n"), nil
@@ -225,13 +272,51 @@ func splitSSEFrames(data []byte, atEOF bool) (advance int, token []byte, err err
 	return 0, nil, nil
 }
 
+// newlineNormalizer rewrites CRLF and bare CR line endings to LF as bytes are
+// read. The SSE spec allows all three (and proxies rewrite one into another);
+// normalising before frame splitting means a frame boundary is always a
+// plain blank line, so mixed endings can no longer merge two events into one
+// unparseable frame (review K-12). A CR that ends one read and an LF that
+// starts the next are still a single line ending.
+type newlineNormalizer struct {
+	r         io.Reader
+	pendingCR bool // the last byte emitted was a CR rewritten to LF
+}
+
+func (n *newlineNormalizer) Read(p []byte) (int, error) {
+	for {
+		nr, err := n.r.Read(p)
+		out := 0
+		for i := 0; i < nr; i++ {
+			b := p[i]
+			if n.pendingCR {
+				n.pendingCR = false
+				if b == '\n' {
+					continue // second half of a CRLF already emitted as LF
+				}
+			}
+			if b == '\r' {
+				b = '\n'
+				n.pendingCR = true
+			}
+			p[out] = b
+			out++
+		}
+		// Never report (0, nil) just because a read held only the swallowed
+		// LF of a split CRLF; read again instead.
+		if out > 0 || err != nil || nr == 0 {
+			return out, err
+		}
+	}
+}
+
 // ChatStream opens an OpenAI Chat Completions stream and returns a
 // RawEventStream that yields the parsed delta payloads from each
-// ``data:`` line. Terminates on the ``[DONE]`` sentinel.
+// “data:“ line. Terminates on the “[DONE]“ sentinel.
 func (c *Client) ChatStream(ctx context.Context, messages []ChatMessage, opts ChatOptions) (*RawEventStream, error) {
 	model := opts.Model
 	if model == "" {
-		model = "gpt-4o"
+		model = DefaultOpenAIModel
 	}
 	payload := map[string]any{
 		"model":    model,
@@ -265,12 +350,12 @@ func (c *Client) ChatStream(ctx context.Context, messages []ChatMessage, opts Ch
 }
 
 // MessageStream opens an Anthropic Messages stream. Yields
-// ``message_start`` / ``content_block_*`` / ``message_delta`` /
-// ``message_stop`` events and terminates cleanly after ``message_stop``.
+// “message_start“ / “content_block_*“ / “message_delta“ /
+// “message_stop“ events and terminates cleanly after “message_stop“.
 func (c *Client) MessageStream(ctx context.Context, messages []ChatMessage, opts MessageOptions) (*RawEventStream, error) {
 	model := opts.Model
 	if model == "" {
-		model = "claude-3-5-sonnet-latest"
+		model = DefaultAnthropicModel
 	}
 	max := opts.MaxTokens
 	if max == 0 {
@@ -291,14 +376,7 @@ func (c *Client) MessageStream(ctx context.Context, messages []ChatMessage, opts
 	for k, v := range opts.Extra {
 		payload[k] = v
 	}
-	headers := map[string]string{
-		"Content-Type":      "application/json",
-		"X-Api-Key":         "mock-api-key",
-		"Anthropic-Version": "2023-06-01",
-	}
-	if opts.SessionID != "" {
-		headers["X-Session-Id"] = opts.SessionID
-	}
+	headers := c.anthropicHeaders(opts.SessionID)
 	body, scanner, cancel, err := c.requestSSE(ctx, "/v1/messages", headers, payload)
 	if err != nil {
 		return nil, err
@@ -319,6 +397,7 @@ type ChunkStream struct {
 	pending   []StreamChunk
 	value     StreamChunk
 	done      bool
+	finished  bool // a Finished chunk was delivered
 }
 
 type normalizeState struct {
@@ -342,6 +421,7 @@ func (s *ChunkStream) Next() bool {
 	s.value = s.pending[0]
 	s.pending = s.pending[1:]
 	if s.value.Finished {
+		s.finished = true
 		s.done = true
 	}
 	return true
@@ -361,6 +441,25 @@ func (s *ChunkStream) Err() error {
 		return nil
 	}
 	return s.raw.Err()
+}
+
+// Completed reports whether the terminal event arrived: a Finished chunk (the
+// OpenAI finish_reason chunk or Anthropic message_stop) or the raw sentinel.
+func (s *ChunkStream) Completed() bool {
+	return s != nil && (s.finished || s.raw.Completed())
+}
+
+// Truncated reports whether the stream ended without its terminal event; see
+// RawEventStream.Truncated.
+func (s *ChunkStream) Truncated() bool { return s != nil && s.raw.Truncated() }
+
+// MalformedFrames counts skipped non-JSON data frames; see
+// RawEventStream.MalformedFrames.
+func (s *ChunkStream) MalformedFrames() int {
+	if s == nil {
+		return 0
+	}
+	return s.raw.MalformedFrames()
 }
 
 // Close releases underlying resources.

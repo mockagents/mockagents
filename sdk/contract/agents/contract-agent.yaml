@@ -1,0 +1,101 @@
+# Cross-SDK contract fixture: the GLOBAL agent every contract case talks to.
+#
+# Loaded by `mockagents start --agents-dir sdk/contract/agents`. The Python,
+# TypeScript and Go runners send the same requests (sdk/contract/cases.json)
+# to this agent and must reach the same assertion verdicts. Scenarios match on
+# the latest user message, so each case drives a scenario by keyword.
+#
+# The multi-tenant leg registers a tenant-owned agent with the SAME model
+# (sdk/contract/tenant/contract-tenant-agent.yaml): a tenant key must reach
+# that one, an anonymous caller must fall back to this one. Keep the
+# "global contract agent" phrase in the default reply — the auth cases assert
+# on it.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: contract-agent
+  description: Deterministic global agent for the cross-SDK contract suite.
+  tags: [contract, sdk]
+
+spec:
+  protocol: openai-chat-completions
+  model: contract-main
+
+  tools:
+    - name: search_docs
+      description: Search the documentation.
+      parameters:
+        type: object
+        properties:
+          query: { type: string }
+          limit: { type: integer }
+          filter: { description: "Optional filter; the fixture sends an explicit null." }
+        required: [query]
+      responses:
+        - default: true
+          response: { value: { hits: 1 } }
+
+    - name: summarize
+      description: Summarize a document.
+      parameters:
+        type: object
+        properties:
+          doc_id: { type: string }
+        required: [doc_id]
+      responses:
+        - default: true
+          response: { value: { summary: "short" } }
+
+  behavior:
+    # Small chunks so multi-byte UTF-8 text is split across SSE frames, and no
+    # pacing so the suite stays fast.
+    streaming:
+      chunk_size: 1
+      chunk_delay_ms: 0
+
+    scenarios:
+      # Turn 1 of the recovery conversation: the reply mentions an error.
+      - name: trouble
+        match: { content_contains: "trouble" }
+        response:
+          content: "There was an error fetching that page."
+
+      # Turn 2 of the recovery conversation: the final reply is clean.
+      - name: recovered
+        match: { content_contains: "retry" }
+        response:
+          content: "All good now, the page loaded."
+
+      # Integer argument (limit: 5) and an explicit null argument (filter).
+      - name: search
+        match: { content_contains: "search" }
+        response:
+          content: "Searching the docs."
+          tool_calls:
+            - name: search_docs
+              arguments: { query: "pricing", limit: 5, filter: null }
+
+      - name: summarize
+        match: { content_contains: "summarize" }
+        response:
+          content: "Summarizing the document."
+          tool_calls:
+            - name: summarize
+              arguments: { doc_id: "doc-1" }
+
+      # Overridden finish reason (mapped per provider: length / max_tokens).
+      - name: long-answer
+        match: { content_contains: "long answer" }
+        response:
+          content: "This answer was cut short"
+          finish_reason: length
+
+      # Multi-byte UTF-8 for the streaming-vs-non-streaming text comparison.
+      - name: unicode
+        match: { content_contains: "unicode" }
+        response:
+          content: "café ☕ 日本"
+
+      - name: default
+        response:
+          content: "Hello from the global contract agent."

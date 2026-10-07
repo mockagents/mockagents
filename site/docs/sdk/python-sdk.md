@@ -121,16 +121,24 @@ server.stop()
 | `port` | `0` (auto) | Server port. 0 = auto-select free port. |
 | `binary_path` | auto-detect | Path to `mockagents` binary (`MOCKAGENTS_BINARY` honored) |
 | `log_level` | `warn` | Server log level |
-| `config_path` | | Path to a `.mockagents.yaml` project config (stored on the instance; not passed to the server). To serve a single agent YAML file, use `MockAgentServer.from_config(...)` below. |
+| `config_path` | | **Deprecated, ignored**: `mockagents start` has no project-config option. Passing it emits a `DeprecationWarning`. To serve specific YAML files, use `MockAgentServer.from_config(...)` below. |
 | `auto_download` | `False` | Download a matching server binary if none is found (also available as the `mockagents-install` console script) |
 
 **Class methods:**
 
 ```python
-# Load from YAML config file(s)
+# Serve exactly these YAML file(s)
 server = MockAgentServer.from_config("agents/my-agent.yaml")
-server = MockAgentServer.from_config(["agents/a.yaml", "agents/b.yaml"])
+server = MockAgentServer.from_config(["agents/a.yaml", "other/b.yaml"])
 ```
+
+`from_config` validates each file (multi-document `---` files included) and
+copies the listed files into a private temporary directory that the server
+serves, so neighbouring YAML files are not loaded and files from different
+directories work. The directory is removed when the server object is garbage
+collected.
+
+`server.client(api_key=...)` returns a client bound to the server's URL.
 
 ## MockAgentClient
 
@@ -141,7 +149,7 @@ HTTP client for the mock server, supporting both OpenAI and Anthropic protocols.
 ```python
 from mockagents import MockAgentClient
 
-client = MockAgentClient(base_url="http://localhost:8080")
+client = MockAgentClient(base_url="http://127.0.0.1:8080")
 
 response = client.chat(
     messages=[{"role": "user", "content": "hello"}],
@@ -153,6 +161,26 @@ print(response.finish_reason)  # "stop"
 print(response.usage.total_tokens)  # 15
 print(response.tool_calls)     # []
 ```
+
+**Credentials.** In multi-tenant mode pass `api_key=`. The client sends it on
+every request (chat, messages, every streaming call and the management calls)
+as `Authorization: Bearer`, and as `x-api-key` on Anthropic calls:
+
+```python
+client = MockAgentClient(base_url="http://127.0.0.1:8080", api_key="mak_...")
+```
+
+**Errors.** Any non-2xx status raises `requests.HTTPError`, for streamed calls
+too (`chat(stream=True)`, `message(stream=True)` and the stream iterators).
+
+**Tool calls.** Each `ToolCall` has `arguments` (the decoded object),
+`raw_arguments` (the string as sent) and `arguments_valid`. Arguments that are
+not a JSON object decode to `{}` with `arguments_valid=False`, so a
+malformed-arguments fixture stays visible.
+
+**Fixture signals.** `response.tool_errors` lists the simulated tool calls whose
+fixture resolved to an error (from the `X-Mockagents-Tool-Errors` header), and
+`response.headers` holds the other `X-Mockagents-*` headers.
 
 ### Anthropic Messages
 
@@ -192,7 +220,14 @@ for chunk in client.iter_stream(
 
 `StreamChunk` fields: `text`, `tool_call_delta` (index, name, arguments
 fragment), `finish_reason`, `finished`, `raw`. `message_stream()` is the raw
-Anthropic-event equivalent of `chat_stream()`. The TypeScript and Go SDKs
+Anthropic-event equivalent of `chat_stream()`.
+
+Streams are decoded as UTF-8 and parsed by the event-stream rules (multi-line
+`data:`, `data:` without a space, CRLF). Injected stream faults are visible:
+`chat(stream=True)` / `message(stream=True)` set `response.truncated` when the
+stream ended without `[DONE]` / `message_stop`, and count skipped non-JSON
+frames in `response.malformed_frames`. With `iter_stream`, a truncated stream
+ends without a `finished` chunk. The TypeScript and Go SDKs
 expose the same helper as [`iterStream`](typescript-sdk.md#streaming) /
 [`IterStream`](go-sdk.md#streaming).
 
@@ -207,7 +242,14 @@ client.reload_agent("my-agent")   # Hot reload from disk
 
 ## Scenarios
 
-Define multi-turn conversation tests.
+Define multi-turn conversation tests. Each `user` step sends one request
+carrying the conversation so far; `system`, `assistant` and `tool` steps are
+context for the requests after them, and every reply is appended as an
+assistant turn. This is what the TypeScript and Go runners do, so a scenario
+makes the same requests in every SDK. `run_scenario` raises `ValueError` for a
+scenario with no user step. Leave `model` unset to use the client's default
+for the protocol; under `protocol="anthropic"`, system steps are sent as the
+`system` parameter.
 
 ```python
 from mockagents import Scenario, run_scenario
@@ -238,12 +280,15 @@ Fluent assertion library for expressive tests.
 ```python
 from mockagents import expect
 
-# Response content
+# Response content (final turn), or any turn
 expect(result).to_have_response_containing("Hello")
+expect(result).to_have_any_response_containing("Hello")
 
 # Tool calls — did this call happen at all? (arguments are a PARTIAL match)
 expect(result).to_have_tool_call("search")
 expect(result).to_have_tool_call("search", {"query": "test"})
+expect(result).to_have_tool_call("search", {"filter": None})  # needs an explicit null; an absent key fails
+expect(result).to_have_malformed_tool_arguments("search")     # arguments were not a JSON object
 
 # Trajectory — the ordered shape of what the agent did.
 # Both read the AGGREGATE across every turn of a ScenarioResult.
@@ -251,8 +296,9 @@ expect(result).to_have_tool_call_sequence(["search", "summarize"])  # full equal
 expect(result).to_have_tool_call_count(3)                          # total across all turns
 expect(result).to_have_tool_call_count(2, name="search")           # narrowed to one tool (SDK-only)
 
-# Simulated tool errors (tools[].responses[].error fixtures)
+# Simulated tool errors (tools[].responses[].error fixtures), at any turn
 expect(result).to_have_tool_error("NOT_FOUND")
+expect(result).to_have_tool_error("NOT_FOUND", tool="lookup_order")
 
 # Status and finish reason
 expect(result).to_have_status(200)
@@ -261,7 +307,8 @@ expect(result).to_have_finish_reason("stop")
 # Value assertions
 expect(result.latency_ms).to_be_less_than(100)
 expect(result.latency_ms).to_be_greater_than(0)
-expect(response.content).to_contain("hello")
+expect(response.content).to_contain("hello")     # substring of a string
+expect(["a", "b"]).to_contain("b")              # item of a list, tuple, set or dict
 expect(response.model).to_equal("gpt-4o")
 
 # Chaining
@@ -288,7 +335,10 @@ and `mockagents test` without changing meaning:
   form is an SDK convenience with **no YAML equivalent** — use the unnamed form
   when you want a check that transfers.
 - Outcome assertions (`to_have_response_containing`, `to_have_status`,
-  `to_have_finish_reason`) read the **final** turn.
+  `to_have_finish_reason`) read the **final** turn, as the YAML runner and the
+  TypeScript and Go SDKs do; they fail on a result with no responses.
+  `to_have_any_response_containing` checks every turn.
+- `to_have_tool_error` reads every turn, like the YAML `tool_error` assertion.
 
 Pipeline trajectories are typed and use the same exact-order rule:
 

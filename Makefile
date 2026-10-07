@@ -33,8 +33,8 @@ test-verbose:                   ## Run Go tests with verbose output
 # The race detector requires CGO_ENABLED=1 and a C compiler (gcc/clang).
 # This codebase is otherwise pure-Go (modernc.org/sqlite, no cgo), so a bare
 # dev box — notably Windows without mingw — cannot run this target and will
-# error with "requires cgo". CI runs it on the Linux and macOS legs, which
-# always have a C toolchain; see CONTRIBUTING.md "Race detection".
+# error with "requires cgo". CI runs it on the Linux leg, which always has
+# a C toolchain; see CONTRIBUTING.md "Race detection".
 test-race:                      ## Run Go tests with race detector (needs a C compiler)
 	CGO_ENABLED=1 $(GO) test ./... -count=1 -race -timeout 5m
 
@@ -144,7 +144,7 @@ changelog-finalize:             ## Promote CHANGELOG [Unreleased] -> [VERSION] (
 run: build                      ## Build and run with example agents
 	./$(BIN_OUT) start --agents-dir examples --log-level debug
 
-setup: hooks                    ## Install development tools + git hooks
+setup:                          ## Install development tools (git hooks are opt-in: make hooks)
 	$(GO) install golang.org/x/tools/cmd/goimports@latest
 	@echo "Go tools installed."
 	@if command -v pip > /dev/null 2>&1; then \
@@ -152,7 +152,7 @@ setup: hooks                    ## Install development tools + git hooks
 		echo "Python SDK installed."; \
 	fi
 
-hooks:                          ## Activate tracked git hooks (core.hooksPath)
+hooks:                          ## Maintainers: activate tracked git hooks (core.hooksPath)
 	git config core.hooksPath hooks
 	@chmod +x hooks/* 2>/dev/null || true
 	@echo "Git hooks activated (core.hooksPath=hooks)."
