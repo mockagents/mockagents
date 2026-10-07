@@ -81,7 +81,9 @@ const WIDE = ["/logs", "/costs", "/admin"];
 
 export interface ShellProps {
   children: ReactNode;
-  apiUrl: string;
+  /** The management API's URL, or null when it is withheld from this visitor
+   * (review 6.6 — see apiUrlVisible in lib/serverState.ts). */
+  apiUrl: string | null;
   // UX-01/X-1: the instrument strip, rendered by the root layout and passed in
   // as a slot. It is a server component and this is a client component, so it
   // cannot be imported here — but it belongs to the shell, not to any page,
@@ -138,8 +140,11 @@ export function Shell({
   const [theme, setTheme] = useState<"light" | "dark">("light");
 
   // Sync with whatever the no-flash <head> script already applied.
+  // Reading the DOM in a lazy initializer would disagree with the server
+  // render and break hydration, so this one-shot sync stays in an effect.
   useEffect(() => {
     const current = document.documentElement.getAttribute("data-theme");
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTheme(current === "dark" ? "dark" : "light");
   }, []);
 
@@ -154,7 +159,7 @@ export function Shell({
 
   const crumbs = crumbsFor(pathname);
   const wide = WIDE.some((m) => pathname === m || pathname.startsWith(m + "/"));
-  const host = apiUrl.replace(/^https?:\/\//, "");
+  const host = apiUrl ? apiUrl.replace(/^https?:\/\//, "") : null;
 
   return (
     <div className="app">
@@ -213,7 +218,9 @@ export function Shell({
         <div className="side-foot">
           <div className="env-pill">
             <Icon name="circle-dot" size={13} />
-            <span>{host}</span>
+            <span title={host ? undefined : "The server address is shown after you sign in."}>
+              {host ?? "server · sign in to view"}
+            </span>
           </div>
         </div>
       </aside>

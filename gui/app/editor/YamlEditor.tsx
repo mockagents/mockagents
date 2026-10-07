@@ -16,6 +16,7 @@ import { useMemo, useState, useTransition } from "react";
 
 import { Icon } from "@/lib/icons";
 import type { ValidateResult, ValidationError, SaveResult } from "@/lib/api";
+import { useUnsavedChangesGuard } from "@/lib/useUnsavedChanges";
 
 const SAMPLE_AGENT = `apiVersion: mockagents/v1
 kind: Agent
@@ -60,6 +61,10 @@ export function YamlEditor({ validateAction, saveAction }: YamlEditorProps) {
   const [result, setResult] = useState<ValidateResult | null>(null);
   const [saved, setSaved] = useState<SaveResult | null>(null);
   const [isPending, startTransition] = useTransition();
+  // The last text that is not the user's own unsaved work: the loaded sample,
+  // or what was last saved. Leaving with anything else asks first.
+  const [baseline, setBaseline] = useState(SAMPLE_AGENT);
+  useUnsavedChangesGuard(yaml !== baseline);
 
   const lines = useMemo(() => yaml.split("\n"), [yaml]);
   // Lines the server flagged — rendered red in the gutter for at-a-glance triage.
@@ -83,15 +88,18 @@ export function YamlEditor({ validateAction, saveAction }: YamlEditorProps) {
   }
 
   function onSave() {
+    const submitted = yaml;
     startTransition(async () => {
-      const r = await saveAction(yaml);
+      const r = await saveAction(submitted);
       setSaved(r);
       setResult(null);
+      if (r.ok) setBaseline(submitted);
     });
   }
 
   function load(sample: string) {
     setYaml(sample);
+    setBaseline(sample);
     setResult(null);
     setSaved(null);
   }

@@ -202,7 +202,7 @@ func validateToolChoiceName(tc ToolChoice, requestToolNames []string) *StrictToo
 // forced calls report finish_reason "stop", not "tool_calls"
 // (staff-confirmed round-11 ground truth). Warn mode never mutates — it
 // returns the would-have descriptions.
-func applyStrictToolChoice(tc ToolChoice, mode StrictMode, resp *Response, agent *types.AgentDefinition, requestToolNames []string) []string {
+func applyStrictToolChoice(tc ToolChoice, mode StrictMode, resp *Response, agent *types.AgentDefinition, requestToolNames []string, wireProtocol string) []string {
 	if tc.None || mode == StrictOff {
 		return nil
 	}
@@ -252,7 +252,11 @@ func applyStrictToolChoice(tc ToolChoice, mode StrictMode, resp *Response, agent
 			// The scenario naturally satisfied the forcing.
 			forced = mode == StrictEnforce && len(resp.ToolCalls) > 0
 		}
-		if forced && resp.FinishReason == "" && strings.HasPrefix(agent.Spec.Protocol, "openai") {
+		protocol := wireProtocol
+		if protocol == "" {
+			protocol = agent.Spec.Protocol
+		}
+		if forced && resp.FinishReason == "" && strings.HasPrefix(protocol, "openai") {
 			resp.FinishReason = "stop"
 		}
 	}

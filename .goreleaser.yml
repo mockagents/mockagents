@@ -4,8 +4,13 @@ project_name: mockagents
 
 before:
   hooks:
-    - go mod tidy
+    # Fail on an untidy go.mod rather than rewriting it mid-release, after the
+    # tests ran against different inputs (review O-21).
+    - go mod tidy -diff
     - go vet ./...
+    # Licence and NOTICE text of every statically linked module, shipped in
+    # each archive (review O-02).
+    - go run ./tools/thirdpartynotices -o THIRD_PARTY_NOTICES.md
 
 builds:
   - id: mockagents
@@ -23,6 +28,11 @@ builds:
     ignore:
       - goos: windows
         goarch: arm64
+    # Reproducible builds: no local paths in the binary, and file times taken
+    # from the commit rather than the build clock.
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
@@ -38,7 +48,9 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - LICENSE*
+      - NOTICE
       - README*
+      - THIRD_PARTY_NOTICES.md
 
 checksum:
   name_template: "checksums.txt"

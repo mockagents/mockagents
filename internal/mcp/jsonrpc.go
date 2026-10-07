@@ -42,8 +42,11 @@ type Request struct {
 
 // IsNotification returns true when the request carries no ID and must
 // not receive a response per the JSON-RPC 2.0 spec.
+// An explicit "id": null is not a notification: MCP forbids a null id, so
+// such a request is an Invalid Request (Handle answers it). It used to be
+// dropped silently as if it were a notification (review P-12).
 func (r *Request) IsNotification() bool {
-	return len(r.ID) == 0 || string(r.ID) == "null"
+	return len(r.ID) == 0
 }
 
 // IsResponse reports whether the decoded message is a client response

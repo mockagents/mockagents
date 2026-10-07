@@ -7,7 +7,7 @@ import { createServer, Server } from "node:http";
 import { AddressInfo } from "node:net";
 
 import { MockAgentClient, parseAnthropicResponse, parseOpenAIResponse } from "../src/client.js";
-import { HTTPError } from "../src/types.js";
+import { ChatMessage, HTTPError, parseToolCallAnthropic, parseToolCallOpenAI, toAssistantMessage } from "../src/types.js";
 
 let server: Server;
 let port: number;
@@ -187,5 +187,95 @@ describe("pure parsers", () => {
     const resp = parseAnthropicResponse({}, 200, 5);
     vexpect(resp.content).toBe("");
     vexpect(resp.toolCalls).toEqual([]);
+  });
+});
+
+// Review K-03: malformed / non-object tool arguments are surfaced instead of
+// silently becoming `{}`.
+describe("tool-call argument fidelity", () => {
+  const openai = (args: unknown) => ({ id: "c", function: { name: "f", arguments: args } });
+
+  it("keeps the raw string and marks well-formed arguments valid", () => {
+    const tc = parseToolCallOpenAI(openai('{"limit": 5}'));
+    vexpect(tc.arguments).toEqual({ limit: 5 });
+    vexpect(tc.rawArguments).toBe('{"limit": 5}');
+    vexpect(tc.argumentsValid).toBe(true);
+  });
+
+  for (const [label, wire] of [
+    ["malformed JSON", '{"limit": 5'],
+    ["a JSON array", "[1]"],
+    ["a JSON scalar", "42"],
+    ["JSON null", "null"],
+    ["an empty string", ""],
+  ] as const) {
+    it(`flags ${label} as invalid and keeps the raw text`, () => {
+      const tc = parseToolCallOpenAI(openai(wire));
+      vexpect(tc.arguments).toEqual({});
+      vexpect(tc.argumentsValid).toBe(false);
+      vexpect(tc.rawArguments).toBe(wire);
+    });
+  }
+
+  it("flags a missing arguments field as invalid", () => {
+    const tc = parseToolCallOpenAI({ id: "c", function: { name: "f" } });
+    vexpect(tc.argumentsValid).toBe(false);
+    vexpect(tc.rawArguments).toBe("");
+  });
+
+  it("serializes Anthropic input and validates its shape", () => {
+    const ok = parseToolCallAnthropic({ id: "t", name: "s", input: { q: null } });
+    vexpect(ok).toMatchObject({ arguments: { q: null }, rawArguments: '{"q":null}', argumentsValid: true });
+    const bad = parseToolCallAnthropic({ id: "t", name: "s", input: ["x"] });
+    vexpect(bad).toMatchObject({ arguments: {}, rawArguments: '["x"]', argumentsValid: false });
+  });
+});
+
+// Review K-25: an assistant tool-call turn can be sent back verbatim.
+describe("assistant tool_calls in ChatMessage", () => {
+  it("toAssistantMessage rebuilds the OpenAI wire turn from a response", () => {
+    const resp = parseOpenAIResponse(
+      {
+        choices: [
+          {
+            message: {
+              content: "",
+              tool_calls: [{ id: "call_9", function: { name: "lookup", arguments: '{"id": 1}' } }],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      },
+      200,
+      1,
+    );
+    vexpect(toAssistantMessage(resp)).toEqual({
+      role: "assistant",
+      content: "",
+      tool_calls: [{ id: "call_9", type: "function", function: { name: "lookup", arguments: '{"id": 1}' } }],
+    });
+  });
+
+  it("sends assistant tool_calls and the tool result on the wire", async () => {
+    const bodies: any[] = [];
+    const spyFetch: typeof fetch = (input, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return fetch(input, init);
+    };
+    const client = new MockAgentClient({ baseUrl: `http://localhost:${port}`, fetch: spyFetch });
+    const messages: ChatMessage[] = [
+      { role: "user", content: "where is ORD-1?" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: "call_1", type: "function", function: { name: "lookup_order", arguments: '{"id":"ORD-1"}' } }],
+      },
+      { role: "tool", tool_call_id: "call_1", content: '{"status":"shipped"}' },
+      { role: "user", content: [{ type: "text", text: "thanks" }] },
+    ];
+    await client.chat(messages);
+    vexpect(bodies[0].messages[1].tool_calls[0].id).toBe("call_1");
+    vexpect(bodies[0].messages[2].tool_call_id).toBe("call_1");
+    vexpect(bodies[0].messages[3].content).toEqual([{ type: "text", text: "thanks" }]);
   });
 });

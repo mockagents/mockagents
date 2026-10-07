@@ -17,8 +17,18 @@ Downloads publish atomically after verification, so concurrent or interrupted
 installs cannot expose a partial executable. All arguments pass through to the binary
 (`start`, `validate`, `test`, `record`, `replay`, `mcp`, …).
 
-**Binary resolution order:** `$MOCKAGENTS_BINARY` → the npx cache. To use an
-existing binary instead of downloading, set `MOCKAGENTS_BINARY=/path/to/mockagents`.
+**Binary resolution order:** `$MOCKAGENTS_BINARY` → `$MOCKAGENTS_BIN` → the npx
+cache. To use an existing binary instead of downloading, set
+`MOCKAGENTS_BINARY=/path/to/mockagents` (`MOCKAGENTS_BIN`, the name the
+TypeScript and Go SDKs also read, works too).
+
+On Windows the release `.zip` is extracted with the `tar.exe` in
+`%SystemRoot%\System32` (bsdtar, Windows 10 1803+), called by absolute path, so
+a GNU `tar` earlier on `PATH` (Git Bash) cannot break the install.
+
+The launcher forwards `SIGINT`, `SIGTERM` and `SIGHUP` to the server and exits
+with the server's exit code (or signal), so stopping `npx mockagents` from a
+process supervisor or a cancelled CI step stops the server too.
 
 **Other installs:** `brew install mockagents/tap/mockagents`,
 `docker run -p 8080:8080 mockagents/mockagents`, or

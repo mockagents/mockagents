@@ -95,13 +95,13 @@ func StreamGemini(
 		CandidatesTokenCount: candidateTokens,
 		TotalTokenCount:      promptTokens + candidateTokens,
 	}
-	textBody := resp.Content
-	if textBody == "" {
-		textBody = resp.Refusal // refusal-only responses stream the refusal text (FB-03)
-	}
+	// The content and the refusal (FB-03) both stream, as the non-streaming
+	// response carries both parts; only the content used to (audit L-14).
 	var texts []string
-	if textBody != "" {
-		texts = NewChunker(chunkSize).Chunk(textBody)
+	for _, body := range []string{resp.Content, resp.Refusal} {
+		if body != "" {
+			texts = append(texts, NewChunker(chunkSize).Chunk(body)...)
+		}
 	}
 	totalParts := len(texts) + len(resp.ToolCalls)
 	emitted := 0

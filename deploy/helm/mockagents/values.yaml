@@ -17,9 +17,14 @@ multiReplica:
 
 image:
   # -- Container image to pull. Must contain the mockagents Go binary.
-  repository: mockagents/mockagents
+  # GHCR is the default because the project owns it through its GitHub
+  # organization; the Docker Hub name is not claimed yet (review O-01).
+  repository: ghcr.io/mockagents/mockagents
   # -- Image tag. Defaults to .Chart.AppVersion when empty.
   tag: ""
+  # -- Optional image digest (sha256:...). When set, the image is pulled by
+  # digest and the tag is ignored, so a moved tag cannot change what runs.
+  digest: ""
   # -- imagePullPolicy passed to the Deployment.
   pullPolicy: IfNotPresent
 
@@ -43,8 +48,13 @@ podLabels: {}
 # -- Pod-level security context.
 podSecurityContext:
   runAsNonRoot: true
-  runAsUser: 100
-  fsGroup: 100
+  # Matches the fixed UID/GID baked into the image (Dockerfile).
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  # Required by the Pod Security Standards "restricted" profile.
+  seccompProfile:
+    type: RuntimeDefault
 
 # -- Container security context.
 securityContext:

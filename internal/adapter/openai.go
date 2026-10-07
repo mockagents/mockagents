@@ -168,6 +168,7 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 	// Convert to engine request.
 	convertedMsgs, imageCount := convertOpenAIMessages(req.Messages)
 	inbound := &engine.InboundRequest{
+		WireProtocol:     ProtocolOpenAIChat,
 		Model:            req.Model,
 		SessionID:        extractSessionID(r),
 		Messages:         convertedMsgs,
@@ -205,7 +206,7 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 			return
 		}
 		status := engineErrorStatus(err)
-		writeError(w, status, "invalid_request_error", err.Error())
+		writeError(w, status, openAIEngineErrorType(status), err.Error())
 		return
 	}
 
@@ -220,6 +221,7 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 
 	setHallucinationHeader(w, resp)
+	setToolErrorsHeader(w, resp)
 	setStrictViolationHeader(w, resp)
 	setImageCountHeader(w, imageCount)
 
@@ -265,15 +267,27 @@ func (h *OpenAIHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, openAIResp)
 }
 
+// modelsCreated is the stable `created` timestamp /v1/models reports.
+var modelsCreated = time.Now().Unix()
+
 // HandleModels handles GET /v1/models.
 func (h *OpenAIHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
 	agents := h.Engine.Registry.ListForTenant(engine.TenantIDFromContext(r.Context()))
 	models := make([]map[string]any, 0, len(agents))
+	// One entry per distinct model id: agents sharing a model used to list it
+	// once each, an agent without a model listed id "", and `created` moved on
+	// every call (review E-20).
+	seen := make(map[string]bool, len(agents))
 	for _, a := range agents {
+		id := a.Spec.Model
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
 		models = append(models, map[string]any{
-			"id":       a.Spec.Model,
+			"id":       id,
 			"object":   "model",
-			"created":  time.Now().Unix(),
+			"created":  modelsCreated,
 			"owned_by": "mockagents",
 		})
 	}

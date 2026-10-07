@@ -202,3 +202,30 @@ func TestListTemplates_HasExpectedPacks(t *testing.T) {
 		assert.True(t, names[want], "expected template %q", want)
 	}
 }
+
+// TestScaffold_ForceNeverDeletesUserFiles is the regression for the
+// 2026-10-06 review C-03 / audit L-42: --force used to RemoveAll agents/ and
+// tests/, deleting files the user wrote.
+func TestScaffold_ForceNeverDeletesUserFiles(t *testing.T) {
+	dir := t.TempDir()
+	proj := filepath.Join(dir, "proj")
+
+	_, err := ScaffoldWithResult(ScaffoldOptions{ProjectName: "proj", TargetDir: proj, Template: "customer-support"})
+	require.NoError(t, err)
+	mine := filepath.Join(proj, "agents", "mine.yaml")
+	myTest := filepath.Join(proj, "tests", "mytest.yaml")
+	require.NoError(t, os.WriteFile(mine, []byte("# user agent\n"), 0o644))
+	require.NoError(t, os.WriteFile(myTest, []byte("# user test\n"), 0o644))
+	// An edited copy of a scaffold file from the previous template.
+	edited := filepath.Join(proj, "agents", "support-agent.yaml")
+	require.NoError(t, os.WriteFile(edited, []byte("# my edits\n"), 0o644))
+
+	res, err := ScaffoldWithResult(ScaffoldOptions{ProjectName: "proj", TargetDir: proj, Template: "basic", Force: true})
+	require.NoError(t, err)
+
+	assertFileExists(t, mine)
+	assertFileExists(t, myTest)
+	assertFileExists(t, edited)
+	assert.Contains(t, res.Kept, "agents/support-agent.yaml")
+	assertFileExists(t, filepath.Join(proj, "agents", "example-agent.yaml"))
+}

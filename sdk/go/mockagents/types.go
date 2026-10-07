@@ -16,9 +16,40 @@ type TokenUsage struct {
 
 // ToolCall is one tool invocation produced by the agent.
 type ToolCall struct {
-	ID        string         `json:"id"`
-	Name      string         `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Arguments holds the decoded arguments. It is nil when the wire
+	// arguments were missing, malformed or not a JSON object; check
+	// ArgumentsValid to tell that apart from a call with no arguments.
 	Arguments map[string]any `json:"arguments,omitempty"`
+	// RawArguments is the arguments exactly as they arrived on the wire
+	// (OpenAI sends a JSON string; for Anthropic it is the raw `input`
+	// object). Empty when the wire carried no arguments at all.
+	RawArguments string `json:"raw_arguments,omitempty"`
+	// ArgumentsValid reports whether RawArguments decoded to a JSON object.
+	// False on a malformed-arguments fault fixture, a bare array or scalar,
+	// or a missing field.
+	ArgumentsValid bool `json:"arguments_valid"`
+}
+
+// MessageToolCall returns tc in the OpenAI wire shape used by an assistant
+// ChatMessage, preferring the raw wire arguments so a round trip replays them
+// byte for byte.
+func (tc ToolCall) MessageToolCall() MessageToolCall {
+	args := tc.RawArguments
+	if args == "" {
+		args = "{}"
+		if tc.Arguments != nil {
+			if buf, err := json.Marshal(tc.Arguments); err == nil {
+				args = string(buf)
+			}
+		}
+	}
+	return MessageToolCall{
+		ID:       tc.ID,
+		Type:     "function",
+		Function: MessageToolCallFunction{Name: tc.Name, Arguments: args},
+	}
 }
 
 // ChatMessage is a single conversational turn in a request payload.
@@ -27,6 +58,39 @@ type ChatMessage struct {
 	Content    string `json:"content"`
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	Name       string `json:"name,omitempty"`
+	// ToolCalls carries an assistant turn's tool calls (OpenAI wire shape) so
+	// a tool round trip (assistant call, then a "tool" turn with ToolCallID)
+	// can be replayed, as strict-tools id validation requires.
+	ToolCalls []MessageToolCall `json:"tool_calls,omitempty"`
+}
+
+// MessageToolCall is one assistant tool call in OpenAI wire shape.
+type MessageToolCall struct {
+	ID       string                  `json:"id"`
+	Type     string                  `json:"type"`
+	Function MessageToolCallFunction `json:"function"`
+}
+
+// MessageToolCallFunction is the function part of a MessageToolCall.
+// Arguments is the JSON-encoded argument object, as OpenAI sends it.
+type MessageToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// AssistantMessage builds the assistant history turn for resp, including its
+// tool calls. Append it, then one Role "tool" message per call (ToolCallID
+// set), to continue a tool round trip.
+func AssistantMessage(resp *ChatResponse) ChatMessage {
+	msg := ChatMessage{Role: "assistant"}
+	if resp == nil {
+		return msg
+	}
+	msg.Content = resp.Content
+	for _, tc := range resp.ToolCalls {
+		msg.ToolCalls = append(msg.ToolCalls, tc.MessageToolCall())
+	}
+	return msg
 }
 
 // ChatResponse is the parsed response from either OpenAI Chat
@@ -108,12 +172,9 @@ func parseOpenAIResponse(raw json.RawMessage, status int, latencyMs float64) (*C
 		resp.Content = body.Choices[0].Message.Content
 		resp.FinishReason = body.Choices[0].FinishReason
 		for _, tc := range body.Choices[0].Message.ToolCalls {
-			args := decodeArgs(tc.Function.Arguments)
-			resp.ToolCalls = append(resp.ToolCalls, ToolCall{
-				ID:        tc.ID,
-				Name:      tc.Function.Name,
-				Arguments: args,
-			})
+			call := ToolCall{ID: tc.ID, Name: tc.Function.Name}
+			call.Arguments, call.RawArguments, call.ArgumentsValid = decodeArgs(tc.Function.Arguments)
+			resp.ToolCalls = append(resp.ToolCalls, call)
 		}
 	}
 	// Preserve the raw payload so callers can dip into provider-specific
@@ -163,11 +224,9 @@ func parseAnthropicResponse(raw json.RawMessage, status int, latencyMs float64) 
 		case "text":
 			textParts = append(textParts, block.Text)
 		case "tool_use":
-			resp.ToolCalls = append(resp.ToolCalls, ToolCall{
-				ID:        block.ID,
-				Name:      block.Name,
-				Arguments: decodeArgs(block.Input),
-			})
+			call := ToolCall{ID: block.ID, Name: block.Name}
+			call.Arguments, call.RawArguments, call.ArgumentsValid = decodeArgs(block.Input)
+			resp.ToolCalls = append(resp.ToolCalls, call)
 		}
 	}
 	resp.Content = joinNonEmpty(textParts, " ")
@@ -177,27 +236,26 @@ func parseAnthropicResponse(raw json.RawMessage, status int, latencyMs float64) 
 	return resp, nil
 }
 
-// decodeArgs unmarshals a tool-argument blob into a map, tolerating both
-// object-shaped arguments and JSON-encoded strings (OpenAI's "function"
-// schema uses the latter).
-func decodeArgs(raw json.RawMessage) map[string]any {
-	if len(raw) == 0 {
-		return nil
+// decodeArgs decodes a tool-argument blob, tolerating both object-shaped
+// arguments (Anthropic `input`) and JSON-encoded strings (OpenAI's
+// function.arguments). It returns the decoded object, the raw wire text and
+// whether that text was a JSON object. Malformed arguments are reported, not
+// silently collapsed, so a raw_arguments fault fixture stays observable.
+func decodeArgs(raw json.RawMessage) (map[string]any, string, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, "", false
 	}
-	// OpenAI's function.arguments can be either a JSON object or a JSON
-	// string containing an object. Try the string form first.
+	text := string(raw)
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		var obj map[string]any
-		if jerr := json.Unmarshal([]byte(s), &obj); jerr == nil {
-			return obj
-		}
+		// OpenAI form: a JSON string whose content is the argument object.
+		text = s
 	}
 	var obj map[string]any
-	if err := json.Unmarshal(raw, &obj); err == nil {
-		return obj
+	if err := json.Unmarshal([]byte(text), &obj); err != nil || obj == nil {
+		return nil, text, false
 	}
-	return nil
+	return obj, text, true
 }
 
 func joinNonEmpty(parts []string, sep string) string {

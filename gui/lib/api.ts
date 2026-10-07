@@ -11,6 +11,7 @@ import { cache } from "react";
 
 import { cookies } from "next/headers";
 
+import { boundDetail, errorCodeForStatus, sanitizeUpstreamDetail, type ErrorCode } from "./errors";
 import type { ReadinessCheck, ServerStatus } from "./serverState";
 
 export const AUTH_COOKIE = "mockagents_api_key";
@@ -194,10 +195,7 @@ async function fetchJSON<T>(path: string, opts: RequestOptions = {}): Promise<T>
     headers,
     body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
   });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new APIError(res.status, `${path}: ${res.status} ${body.slice(0, 200)}`);
-  }
+  if (!res.ok) throw await apiErrorFrom(res, path);
   // 204 No Content responses (DELETE) have no body to parse.
   if (res.status === 204) return undefined as T;
   const text = await res.text();
@@ -206,11 +204,34 @@ async function fetchJSON<T>(path: string, opts: RequestOptions = {}): Promise<T>
 
 export class APIError extends Error {
   public readonly status: number;
-  constructor(status: number, message: string) {
+  /** The upstream's own error message, bounded and sanitised (see
+   * sanitizeUpstreamDetail). null when the body was not the management API's
+   * JSON error envelope — an HTML proxy page or a stack trace is never kept. */
+  public readonly detail: string | null;
+  constructor(status: number, message: string, detail: string | null = null) {
     super(message);
     this.name = "APIError";
     this.status = status;
+    this.detail = detail;
   }
+}
+
+/** Read an upstream error body down to a bounded, sanitised detail. The raw
+ * body is never forwarded towards the browser (GUI-07). */
+async function upstreamDetail(res: Response): Promise<string | null> {
+  const text = await res.text().catch(() => "");
+  return sanitizeUpstreamDetail(text);
+}
+
+/** Build the APIError for a failed upstream response. */
+async function apiErrorFrom(res: Response, what: string): Promise<APIError> {
+  const detail = await upstreamDetail(res);
+  return new APIError(res.status, `${what}: ${res.status}${detail ? ` ${detail}` : ""}`, detail);
+}
+
+/** "Server returned 500." or "Server returned 409: <detail>" */
+function statusMessage(status: number, detail: string | null): string {
+  return detail ? `Server returned ${status}: ${detail}` : `Server returned ${status}.`;
 }
 
 /** Probe /api/v1/health. Returns null when the server is unreachable
@@ -754,10 +775,7 @@ export async function getPipelineWithVersion(
     headers,
   });
   if (res.status === 404) return null;
-  if (!res.ok) {
-    const body = await res.text();
-    throw new APIError(res.status, `/api/v1/pipelines/${name}: ${res.status} ${body.slice(0, 200)}`);
-  }
+  if (!res.ok) throw await apiErrorFrom(res, `/api/v1/pipelines/${name}`);
   const definition = (await res.json()) as PipelineDefinition;
   return { definition, version: stripQuotes(res.headers.get("ETag") ?? "") };
 }
@@ -797,7 +815,15 @@ export async function savePipeline(
       body: JSON.stringify(definition),
     });
   } catch (err) {
-    return { status: "error", message: err instanceof Error ? err.message : "network error" };
+    // The transport error can name the internal upstream host; log it here
+    // and give the browser a fixed message.
+    console.error("savePipeline: upstream request failed:", err);
+    return {
+      status: "error",
+      message:
+        "The server could not be reached, so it is unknown whether the pipeline was saved. " +
+        "Reload before trying again.",
+    };
   }
   if (res.status === 200) {
     return { status: "ok", version: stripQuotes(res.headers.get("ETag") ?? "") };
@@ -813,8 +839,7 @@ export async function savePipeline(
         "The pipeline changed on disk since you opened it. Reload to get the latest, then re-apply your edits.",
     };
   }
-  const text = await res.text();
-  return { status: "error", message: `Server returned ${res.status}: ${text.slice(0, 200)}` };
+  return { status: "error", message: statusMessage(res.status, await upstreamDetail(res)) };
 }
 
 /** Send a YAML document to the server validator. Returns the full
@@ -832,10 +857,7 @@ export async function validateYAML(yaml: string): Promise<ValidateResult> {
     headers,
     body: yaml,
   });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new APIError(res.status, `/api/v1/config/validate: ${res.status} ${body.slice(0, 200)}`);
-  }
+  if (!res.ok) throw await apiErrorFrom(res, "/api/v1/config/validate");
   return (await res.json()) as ValidateResult;
 }
 
@@ -1041,7 +1063,7 @@ export async function runPipeline(
     const status = body.code === "missing_dependency" ? "blocked" : "partial";
     return {
       status,
-      error: body.error ?? "A node could not execute.",
+      error: (typeof body.error === "string" ? boundDetail(body.error) : null) ?? "A node could not execute.",
       result: body.result ?? null,
     };
   }
@@ -1063,8 +1085,7 @@ export async function runPipeline(
   if (res.status === 404) {
     return { status: "invalid", message: `No pipeline named "${name}" is registered.` };
   }
-  const text = await res.text().catch(() => "");
-  return { status: "invalid", message: `Server returned ${res.status}: ${text.slice(0, 200)}` };
+  return { status: "invalid", message: statusMessage(res.status, await upstreamDetail(res)) };
 }
 
 // --- Agent revisions (UX-03) ----------------------------------------------
@@ -1100,10 +1121,7 @@ export async function getAgentSource(name: string): Promise<AgentSource | null> 
     headers,
   });
   if (res.status === 404) return null;
-  if (!res.ok) {
-    const body = await res.text();
-    throw new APIError(res.status, `GET agent ${name}: ${res.status} ${body.slice(0, 200)}`);
-  }
+  if (!res.ok) throw await apiErrorFrom(res, `GET agent ${name}`);
 
   const effective = res.headers.get("X-Mockagents-Revision-Effective") ?? "";
   const source = res.headers.get("X-Mockagents-Revision-Source");
@@ -1191,7 +1209,9 @@ export async function saveAgentConditional(
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     return {
       status: "conflict",
-      message: body.error ?? "The agent changed since it was loaded.",
+      message:
+        (typeof body.error === "string" ? boundDetail(body.error) : null) ??
+        "The agent changed since it was loaded.",
       currentRevision: stripQuotes(res.headers.get("ETag") ?? ""),
     };
   }
@@ -1204,8 +1224,7 @@ export async function saveAgentConditional(
           : "You do not have permission to change agents (this needs the editor role).",
     };
   }
-  const text = await res.text();
-  return { status: "error", message: `Server returned ${res.status}: ${text.slice(0, 200)}` };
+  return { status: "error", message: statusMessage(res.status, await upstreamDetail(res)) };
 }
 
 // --- Agent write API (FB-06: persist edits from the console via the FB-04 API) ---
@@ -1303,17 +1322,22 @@ export async function saveAgentYAML(yaml: string): Promise<SaveResult> {
       /* fall through to the generic message */
     }
   }
+  // Only the management API's own JSON error message is passed on, bounded.
+  // An arbitrary body (a proxy's HTML error page, a stack trace) is not.
+  const detail = sanitizeUpstreamDetail(text);
   return {
     ok: false,
     status: "error",
-    message: `Server rejected the save (HTTP ${res.status}): ${text.slice(0, 200)}`,
+    message: `Server rejected the save (HTTP ${res.status})${detail ? `: ${detail}` : "."}`,
   };
 }
 
 /** deleteAgentByName removes an agent via DELETE /api/v1/agents/{name}. The
  * upstream error detail is logged server-side; the browser sees a clean,
  * status-aware message (no raw upstream body — GUI-07). */
-export async function deleteAgentByName(name: string): Promise<{ ok: boolean; message: string }> {
+export async function deleteAgentByName(
+  name: string,
+): Promise<{ ok: boolean; message: string; code?: ErrorCode }> {
   try {
     await fetchJSON<void>(`/api/v1/agents/${encodeURIComponent(name)}`, { method: "DELETE" });
     return { ok: true, message: `Agent "${name}" deleted.` };
@@ -1326,8 +1350,16 @@ export async function deleteAgentByName(name: string): Promise<{ ok: boolean; me
           : err.status === 404
             ? "it no longer exists"
             : `the server returned HTTP ${err.status}`;
-      return { ok: false, message: `Could not delete "${name}": ${reason}.` };
+      return {
+        ok: false,
+        message: `Could not delete "${name}": ${reason}.`,
+        code: errorCodeForStatus(err.status),
+      };
     }
-    return { ok: false, message: `Could not delete "${name}": the server is unreachable.` };
+    return {
+      ok: false,
+      message: `Could not delete "${name}": the server is unreachable.`,
+      code: "unreachable",
+    };
   }
 }

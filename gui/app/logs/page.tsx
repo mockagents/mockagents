@@ -21,8 +21,14 @@ export default async function LogsPage({ searchParams }: PageProps) {
   }
   const filters = parseFilters(flat);
 
+  // Only the fetch is guarded: rendering the console is not something a
+  // try/catch can protect (react-hooks/error-boundaries).
+  let loaded:
+    | [Awaited<ReturnType<typeof listLogWindow>>, Awaited<ReturnType<typeof listAgents>>]
+    | null = null;
+  let status = 0;
   try {
-    const [window, allAgents] = await Promise.all([
+    loaded = await Promise.all([
       listLogWindow({
         // §9.1: metadata only. Bodies are fetched one row at a time when an
         // operator reveals one, so a window of captured payloads never crosses
@@ -38,49 +44,13 @@ export default async function LogsPage({ searchParams }: PageProps) {
       }),
       listAgents(),
     ]);
-
-    async function recoverAction(afterId: number | null, limit: number): Promise<InteractionLog[]> {
-      "use server";
-      // Bounded best-effort recovery after a dropped feed. There is no cursor
-      // API, so this refetches the newest `limit` rows under the same filters
-      // and lets the client work out what it had not seen. The client treats a
-      // FULL page as "cannot prove the gap is closed".
-      const rows = await listLogs({
-        metadataOnly: true,
-        limit,
-        agent: filters.agent || undefined,
-        session_id: filters.session_id || undefined,
-        session_prefix: filters.session_prefix || undefined,
-        since: filters.since || undefined,
-        until: filters.until || undefined,
-      });
-      if (afterId == null) return rows;
-      return rows.filter((r) => r.id > afterId);
-    }
-
-    // Fetching ONE row's bodies, on explicit reveal. Deliberately a per-row
-    // read rather than a re-fetch of the window: revealing one body must not
-    // pull back every other body with it.
-    async function revealAction(id: number): Promise<{ request?: string; response?: string } | null> {
-      "use server";
-      const row = await getLog(id);
-      if (!row) return null;
-      return { request: row.request_body, response: row.response_body };
-    }
-
-    return (
-      <LogsConsole
-        window={window}
-        agents={allAgents.map((a) => a.name)}
-        filters={filters}
-        recoverAction={recoverAction}
-        revealAction={revealAction}
-      />
-    );
   } catch (err) {
+    status = err instanceof APIError ? err.status : 0;
+  }
+
+  if (!loaded) {
     // A server that cannot be reached, or a rejected credential, must not
     // render as "no traffic" (epic §5: offline and empty are different states).
-    const status = err instanceof APIError ? err.status : 0;
     return (
       <div>
         <div className="page-head">
@@ -99,4 +69,45 @@ export default async function LogsPage({ searchParams }: PageProps) {
       </div>
     );
   }
+
+  const [window, allAgents] = loaded;
+
+  async function recoverAction(afterId: number | null, limit: number): Promise<InteractionLog[]> {
+    "use server";
+    // Bounded best-effort recovery after a dropped feed. There is no cursor
+    // API, so this refetches the newest `limit` rows under the same filters
+    // and lets the client work out what it had not seen. The client treats a
+    // FULL page as "cannot prove the gap is closed".
+    const rows = await listLogs({
+      metadataOnly: true,
+      limit,
+      agent: filters.agent || undefined,
+      session_id: filters.session_id || undefined,
+      session_prefix: filters.session_prefix || undefined,
+      since: filters.since || undefined,
+      until: filters.until || undefined,
+    });
+    if (afterId == null) return rows;
+    return rows.filter((r) => r.id > afterId);
+  }
+
+  // Fetching ONE row's bodies, on explicit reveal. Deliberately a per-row
+  // read rather than a re-fetch of the window: revealing one body must not
+  // pull back every other body with it.
+  async function revealAction(id: number): Promise<{ request?: string; response?: string } | null> {
+    "use server";
+    const row = await getLog(id);
+    if (!row) return null;
+    return { request: row.request_body, response: row.response_body };
+  }
+
+  return (
+    <LogsConsole
+      window={window}
+      agents={allAgents.map((a) => a.name)}
+      filters={filters}
+      recoverAction={recoverAction}
+      revealAction={revealAction}
+    />
+  );
 }

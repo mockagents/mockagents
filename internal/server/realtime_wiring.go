@@ -132,8 +132,12 @@ func realtimeTenantFor(r *http.Request, allowedOrigins []string) string {
 }
 
 // originAllowedForSocket reports whether origin is the server's own origin
-// (host[:port] match, scheme-agnostic) or one of the allow-listed origins.
-// A "*" entry allows every origin, matching the CORS middleware's reading.
+// (host[:port] match, scheme-agnostic) or one of the explicitly allow-listed
+// origins. A "*" entry does NOT count here: it decides whether a cookie-only
+// principal survives a cross-origin handshake, and browsers never let a
+// wildcard CORS policy carry credentials either. Honouring "*" re-opened the
+// cross-site WebSocket hijack audit H-04 closed for any deployment run with
+// --cors-origins '*' and SSO (2026-10-06 review S-05).
 func originAllowedForSocket(origin, host string, allowed []string) bool {
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" {
@@ -144,7 +148,7 @@ func originAllowedForSocket(origin, host string, allowed []string) bool {
 	}
 	for _, a := range allowed {
 		a = strings.TrimSpace(a)
-		if a == "*" || strings.EqualFold(a, origin) {
+		if a != "*" && strings.EqualFold(a, origin) {
 			return true
 		}
 	}

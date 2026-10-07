@@ -158,6 +158,19 @@ func (s *Server) Handle(req *Request) *Response {
 		return nil
 	}
 
+	// Envelope rules (review P-12): MCP forbids a null id, and a request
+	// without a method is not a request at all — both are Invalid Request
+	// (-32600), never "method not found".
+	if string(req.ID) == "null" {
+		return newError(json.RawMessage("null"), ErrInvalidRequest, "id must be a string or number, not null", nil)
+	}
+	if req.Method == "" {
+		if req.IsNotification() {
+			return nil
+		}
+		return newError(req.ID, ErrInvalidRequest, "method is required", nil)
+	}
+
 	resp := s.dispatch(req)
 	// JSON-RPC 2.0: a request with no id is a NOTIFICATION and must never
 	// receive a response — for any method, not just unknown ones. Previously
@@ -404,7 +417,7 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		if errResp := s.validateToolArgs(req.ID, params.Name, rt.spec.InputSchema, params.Arguments); errResp != nil {
 			return errResp
 		}
-		res, err := rt.handler(context.Background(), params.Arguments)
+		res, err := callToolHandler(rt.handler, params.Arguments)
 		if err != nil {
 			return newError(req.ID, ErrInternal, err.Error(), nil)
 		}
@@ -606,10 +619,40 @@ func (s *Server) handleResourcesSubscribe(req *Request) *Response {
 	if params.URI == "" {
 		return newError(req.ID, ErrInvalidParams, "uri is required", nil)
 	}
+	// Only declared resources can be subscribed to — the same -32002 that
+	// resources/read gives an unknown URI. Any URI used to be accepted into
+	// an unbounded set (review P-13).
+	if !s.hasResource(params.URI) {
+		return newError(req.ID, ErrResourceNotFound,
+			fmt.Sprintf("unknown resource %q", params.URI),
+			map[string]any{"uri": params.URI})
+	}
 	s.mu.Lock()
 	s.subscribed[params.URI] = true
 	s.mu.Unlock()
 	return newResult(req.ID, map[string]any{})
+}
+
+// hasResource reports whether uri is a declared resource.
+func (s *Server) hasResource(uri string) bool {
+	for _, r := range s.def.Spec.Resources {
+		if r.URI == uri {
+			return true
+		}
+	}
+	return false
+}
+
+// callToolHandler runs a programmatic tool handler, converting a panic into
+// an internal error. A panicking handler used to unwind through the
+// transport and end the whole stdio session (audit L-38).
+func callToolHandler(h ToolHandler, args map[string]any) (res ToolResult, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("tool handler panicked: %v", p)
+		}
+	}()
+	return h(context.Background(), args)
 }
 
 // handleResourcesUnsubscribe clears a previously recorded subscription

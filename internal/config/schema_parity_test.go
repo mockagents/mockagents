@@ -124,3 +124,22 @@ func sorted(in []string) []string {
 	sort.Strings(out)
 	return out
 }
+
+// The streaming timing bounds the validator enforces (review C-08) are the
+// schema's too.
+func TestSchemaParity_StreamingBounds(t *testing.T) {
+	doc := loadAgentSchema(t)
+	props := walk(t, doc, "$defs", "StreamingConfig", "properties")
+	for _, field := range []string{"chunk_delay_ms", "ttft_ms", "jitter_ms", "ttft_p50_ms", "ttft_p95_ms", "itl_p50_ms", "itl_p95_ms"} {
+		node := walk(t, props, field)
+		if got := numOf(t, node, "maximum"); got != maxChaosMs {
+			t.Errorf("streaming.%s maximum = %v, want %d", field, got, maxChaosMs)
+		}
+		if got := numOf(t, node, "minimum"); got != 0 {
+			t.Errorf("streaming.%s minimum = %v, want 0", field, got)
+		}
+	}
+	if got := numOf(t, walk(t, props, "chunk_size"), "minimum"); got != 1 {
+		t.Errorf("streaming.chunk_size minimum = %v, want 1", got)
+	}
+}

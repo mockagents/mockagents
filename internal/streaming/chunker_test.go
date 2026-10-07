@@ -3,6 +3,7 @@ package streaming
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -87,4 +88,20 @@ func TestChunkString(t *testing.T) {
 	assert.Equal(t, []string{"abcde", "fghij", "k"}, chunkString("abcdefghijk", 5))
 	assert.Equal(t, []string{"abc"}, chunkString("abc", 10))
 	assert.Equal(t, []string{""}, chunkString("", 5))
+}
+
+// ChunkArguments never cuts inside a UTF-8 sequence, at any alignment, and
+// the pieces reassemble byte-exactly (2026-10-06 review E-02).
+func TestChunkArguments_RuneSafeAtEveryOffset(t *testing.T) {
+	for pad := 0; pad < 25; pad++ {
+		s := `{"city":"` + strings.Repeat("Z", pad) + `ü日本😀é"}`
+		for _, size := range []int{1, 2, 3, 4, 5, 20} {
+			chunks := ChunkArguments(s, size)
+			assert.Equal(t, s, strings.Join(chunks, ""), "pad=%d size=%d", pad, size)
+			for _, c := range chunks {
+				assert.True(t, utf8.ValidString(c), "pad=%d size=%d chunk %q is not valid UTF-8", pad, size, c)
+			}
+		}
+	}
+	assert.Equal(t, []string{""}, ChunkArguments("", 20))
 }

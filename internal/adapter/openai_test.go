@@ -178,7 +178,7 @@ func TestOpenAI_StreamingResponse(t *testing.T) {
 	})
 
 	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+	assert.Equal(t, "text/event-stream; charset=utf-8", rec.Header().Get("Content-Type"))
 	assert.Contains(t, rec.Body.String(), "data: [DONE]")
 }
 

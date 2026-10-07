@@ -20,6 +20,9 @@ expect.extend({ toHaveNoAxeViolations });
 // assertions. Augmenting `Assertion` (what vitest 2 wanted) now collides with
 // vitest's own two declarations of it and fails with TS2428.
 declare module "vitest" {
+  // The type parameters must match vitest's own declaration to merge with it,
+  // even though this extension does not use them.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   interface Matchers<R extends void | Promise<void> = void | Promise<void>, T = unknown> {
     toHaveNoAxeViolations(): Promise<void>;
   }

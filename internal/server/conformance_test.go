@@ -111,7 +111,7 @@ func TestConformance_OpenAI_StreamingFormat(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+	assert.Equal(t, "text/event-stream; charset=utf-8", resp.Header.Get("Content-Type"))
 
 	// Parse SSE and verify format.
 	var chunks []map[string]any

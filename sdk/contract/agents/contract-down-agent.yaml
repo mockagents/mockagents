@@ -1,0 +1,23 @@
+# Cross-SDK contract fixture: an agent that ALWAYS fails with a 503.
+#
+# The `server-down` chaos preset makes every request return a provider-shaped
+# 503. Contract cases that target this model expect every SDK to RAISE rather
+# than hand an empty response to the assertions — an empty response would let
+# negative assertions (e.g. "no tool calls") pass on a server error.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: contract-down
+  description: Every request returns 503 (server-down preset) for the contract suite.
+  tags: [contract, sdk, chaos]
+
+spec:
+  protocol: openai-chat-completions
+  model: contract-down
+  behavior:
+    chaos:
+      preset: server-down
+    scenarios:
+      - name: default
+        response:
+          content: "You should never see this - the preset fails every request."

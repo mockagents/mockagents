@@ -11,8 +11,12 @@ real LLM tokens.
 npm install @mockagents/sdk
 ```
 
-Requires Node.js **18 or later** (uses the built-in `fetch`). The
-`mockagents` Go binary must be on your `PATH` or at `./mockagents` — install it
+Requires Node.js **18 or later** (uses the built-in `fetch`). The package is
+**ESM-only**: load it with `import` (or `await import()` from CommonJS);
+`require("@mockagents/sdk")` is not supported. The
+`mockagents` Go binary must be on your `PATH` or at `./mockagents`, or pointed
+to by `MOCKAGENTS_BINARY` / `MOCKAGENTS_BIN` (parent directories are not
+searched) — install it
 with `go install github.com/mockagents/mockagents/cmd/mockagents@latest`
 or build it from the repo with `make build`.
 
@@ -82,7 +86,9 @@ Linux stubborn-child test; mocked signal tests alone are insufficient.
 | Export | Purpose |
 | --- | --- |
 | `MockAgentServer` | Spawns the Go binary, picks a free port, polls `/api/v1/health`. |
-| `MockAgentClient` | `fetch`-based client for chat/messages, management APIs, and typed pipeline execution. |
+| `MockAgentClient` | `fetch`-based client for chat/messages, management APIs, and typed pipeline execution. `apiKey` authenticates every request, streams included; every call accepts an `AbortSignal`. |
+| `stream.stats`, `StreamError` | Streams report `truncated` / `malformedFrames` / `completed`; `idleTimeoutMs` and `failOnStreamFault` turn stalls and faults into a typed `StreamError`. |
+| `toAssistantMessage(response)` | Builds the assistant turn (with `tool_calls`) for replaying a tool round trip. `ToolCall.rawArguments` / `argumentsValid` expose the exact wire arguments. |
 | `Scenario`, `runScenario` | Declarative multi-turn scripts with automatic session scoping. |
 | `expect(target)` | Fluent response/tool assertions plus exact tool-call and pipeline-node trajectory assertions. |
 | `adapters.chatOpenAI(server)` | Returns a `@langchain/openai` `ChatOpenAI` pointed at the mock. |

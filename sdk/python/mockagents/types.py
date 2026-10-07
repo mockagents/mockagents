@@ -2,13 +2,26 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 
 @dataclass
 class ChatResponse:
-    """Represents a parsed response from a chat completion or messages API call."""
+    """Represents a parsed response from a chat completion or messages API call.
+
+    Attributes:
+        tool_errors: Simulated tool calls whose fixture resolved to an error,
+            read from the server's ``X-Mockagents-Tool-Errors`` header.
+        headers: Response headers, for the other ``X-Mockagents-*`` signals
+            (hallucination fixtures, strict-tools warnings).
+        truncated: Streamed responses only: the stream ended without its
+            terminal frame (``[DONE]`` / ``message_stop``), as an injected
+            ``truncateAfter`` fault does.
+        malformed_frames: Streamed responses only: data frames that were not
+            a JSON object and were skipped (an injected ``malformed`` fault).
+    """
 
     content: str = ""
     model: str = ""
@@ -18,6 +31,10 @@ class ChatResponse:
     raw: dict[str, Any] = field(default_factory=dict)
     status_code: int = 200
     latency_ms: float = 0.0
+    tool_errors: list[ToolError] = field(default_factory=list)
+    headers: dict[str, str] = field(default_factory=dict)
+    truncated: bool = False
+    malformed_frames: int = 0
 
     @property
     def has_tool_calls(self) -> bool:
@@ -26,46 +43,60 @@ class ChatResponse:
 
 @dataclass
 class ToolCall:
-    """Represents a tool call from an agent response."""
+    """Represents a tool call from an agent response.
+
+    Attributes:
+        arguments: The decoded arguments object. ``{}`` when the arguments
+            were absent or could not be decoded as a JSON object.
+        raw_arguments: The arguments exactly as they came over the wire (an
+            OpenAI arguments string, or the streamed fragments joined), so a
+            malformed-arguments fixture stays observable.
+        arguments_valid: False when ``raw_arguments`` is not a JSON object.
+    """
 
     id: str = ""
     name: str = ""
     arguments: dict[str, Any] = field(default_factory=dict)
+    raw_arguments: str = ""
+    arguments_valid: bool = True
+
+    @classmethod
+    def from_raw(cls, id: str, name: str, raw: Any) -> ToolCall:
+        """Build a ToolCall from wire arguments: a JSON string, an already
+        decoded object, or nothing."""
+        if raw is None or raw == "":
+            return cls(id=id, name=name)
+        if isinstance(raw, dict):
+            return cls(id=id, name=name, arguments=raw, raw_arguments=json.dumps(raw))
+        if not isinstance(raw, str):
+            return cls(id=id, name=name, raw_arguments=json.dumps(raw), arguments_valid=False)
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = None
+        if not isinstance(parsed, dict):
+            return cls(id=id, name=name, raw_arguments=raw, arguments_valid=False)
+        return cls(id=id, name=name, arguments=parsed, raw_arguments=raw)
 
     @classmethod
     def from_openai(cls, data: dict[str, Any]) -> ToolCall:
         """Parse from OpenAI tool_calls format."""
-        import json
-
-        func = data.get("function", {})
-        args = func.get("arguments", "{}")
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except (json.JSONDecodeError, TypeError):
-                args = {}
-        return cls(
-            id=data.get("id", ""),
-            name=func.get("name", ""),
-            arguments=args,
-        )
+        func = data.get("function") or {}
+        return cls.from_raw(data.get("id", ""), func.get("name", ""), func.get("arguments"))
 
     @classmethod
     def from_anthropic(cls, data: dict[str, Any]) -> ToolCall:
         """Parse from Anthropic tool_use content block."""
-        return cls(
-            id=data.get("id", ""),
-            name=data.get("name", ""),
-            arguments=data.get("input", {}),
-        )
+        return cls.from_raw(data.get("id", ""), data.get("name", ""), data.get("input"))
 
 
 @dataclass
 class ToolError:
-    """Represents a tool error from an agent response."""
+    """A simulated tool call whose fixture resolved to an error."""
 
     code: str = ""
     message: str = ""
+    tool: str = ""
 
 
 @dataclass

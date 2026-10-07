@@ -1,11 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 
 	"github.com/mockagents/mockagents/internal/types"
-	"gopkg.in/yaml.v3"
 )
 
 // ValidateReport is the result of ValidateBytes — the detected
@@ -40,6 +40,7 @@ type ValidateReport struct {
 // Agent also returns lint warnings. Unknown kinds return an error.
 func ValidateBytes(data []byte) *ValidateReport {
 	report := &ValidateReport{}
+	data = bytes.TrimPrefix(data, utf8BOM)
 	if len(strings.TrimSpace(string(data))) == 0 {
 		report.Errors = append(report.Errors, &ValidationError{
 			Field:   "document",
@@ -63,11 +64,12 @@ func ValidateBytes(data []byte) *ValidateReport {
 		data = converted
 	}
 
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	docPtr, err := parseSingleDocument(data)
+	if err != nil {
 		report.Errors = append(report.Errors, parseErrorAsValidationError(err))
 		return report
 	}
+	doc := *docPtr
 	report.Kind = peekKind(&doc)
 
 	switch report.Kind {

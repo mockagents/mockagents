@@ -14,6 +14,46 @@ import (
 
 var markdownLink = regexp.MustCompile(`\[[^]]+\]\(([^)]+)\)`)
 
+// inlineCode matches a single-backtick code span on one line.
+var inlineCode = regexp.MustCompile("`[^`\n]*`")
+
+// withoutCode blanks fenced code blocks and inline code spans, where Markdown
+// renders brackets and parentheses literally: a Go generic such as
+// New[K, V](cfg Config[K]) is code, not a link.
+func withoutCode(body string) string {
+	lines := strings.Split(body, "\n")
+	fence := ""
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if fence != "" {
+			if strings.HasPrefix(trimmed, fence) && strings.Trim(trimmed, fence[:1]) == "" {
+				fence = ""
+			}
+			lines[i] = ""
+			continue
+		}
+		if marker := fenceMarker(trimmed); marker != "" {
+			fence = marker
+			lines[i] = ""
+			continue
+		}
+		lines[i] = inlineCode.ReplaceAllString(line, "")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// fenceMarker returns the run of backticks or tildes (three or more) that
+// opens a fenced code block, or "".
+func fenceMarker(trimmed string) string {
+	for _, c := range []string{"`", "~"} {
+		n := len(trimmed) - len(strings.TrimLeft(trimmed, c))
+		if n >= 3 {
+			return strings.Repeat(c, n)
+		}
+	}
+	return ""
+}
+
 func main() {
 	files, err := trackedMarkdownFiles()
 	if err != nil {
@@ -28,7 +68,7 @@ func main() {
 			failed = true
 			continue
 		}
-		for _, match := range markdownLink.FindAllStringSubmatch(string(body), -1) {
+		for _, match := range markdownLink.FindAllStringSubmatch(withoutCode(string(body)), -1) {
 			target := strings.SplitN(match[1], "#", 2)[0]
 			if target == "" || strings.Contains(target, "://") || strings.HasPrefix(target, "mailto:") {
 				continue

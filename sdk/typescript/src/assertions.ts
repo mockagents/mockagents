@@ -177,6 +177,10 @@ function hasToolCall(
 
 function argsMatch(actual: Record<string, unknown>, expected: Record<string, unknown>): boolean {
   for (const [k, v] of Object.entries(expected)) {
+    // An absent argument never matches — not even an expected `undefined` —
+    // so "the call omitted `filter`" and "the call sent `filter: null`" stay
+    // distinguishable (review K-03).
+    if (!Object.prototype.hasOwnProperty.call(actual, k)) return false;
     if (!deepEqual(actual[k], v)) return false;
   }
   return true;

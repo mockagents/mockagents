@@ -1,3 +1,5 @@
+# Local demo: `make docker-up` builds the image and serves the shipped examples.
+# Point the agents volume at your own directory to serve your agents instead.
 services:
   mockagents:
     build: .
@@ -5,11 +7,20 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./agents:/agents:ro
+      # ./examples exists in the repository; the previous ./agents did not,
+      # so `make docker-up` served zero agents (review O-24).
+      - ./examples:/agents:ro
       - mockagents-data:/data
     environment:
       MOCKAGENTS_HOST: 0.0.0.0
-      MOCKAGENTS_LOG_LEVEL: debug
+      MOCKAGENTS_LOG_LEVEL: info
+    # Same hardening the Helm chart applies.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/v1/health"]
       interval: 10s

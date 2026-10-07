@@ -9,6 +9,25 @@ func TestMarkdownLinkExtraction(t *testing.T) {
 	}
 }
 
+// Brackets followed by parentheses inside code are not links: a Go generic
+// signature in a fenced block or an inline span must not be checked.
+func TestLinksInCodeAreIgnored(t *testing.T) {
+	body := "see [the guide](docs/guide.md)\r\n" +
+		"```go\r\n" +
+		"func New[K comparable, V any](cfg Config[K]) *Store[K, V]\r\n" +
+		"```\r\n" +
+		"~~~~\n[not](a/link.md)\n~~~~\n" +
+		"inline `m[k](x)` code, then [real](docs/real.md)\n" +
+		"````\n```\n[still](inside.md)\n````\n"
+	var got []string
+	for _, m := range markdownLink.FindAllStringSubmatch(withoutCode(body), -1) {
+		got = append(got, m[1])
+	}
+	if len(got) != 2 || got[0] != "docs/guide.md" || got[1] != "docs/real.md" {
+		t.Fatalf("links = %q, want [docs/guide.md docs/real.md]", got)
+	}
+}
+
 func TestTrackedMarkdownIncludesComponentGuides(t *testing.T) {
 	files, err := trackedMarkdownFiles()
 	if err != nil {

@@ -105,21 +105,21 @@ func TestIdleSessionsEvictedBeforeLiveOnes(t *testing.T) {
 	}
 }
 
-// TestSessionFIFOStillAppliesWhenNothingIsIdle keeps the existing cap behavior
-// honest: with every session in use, the oldest still goes.
-func TestSessionFIFOStillAppliesWhenNothingIsIdle(t *testing.T) {
+// TestSessionCapRefusesRatherThanEvictingLiveSessions: with every session in
+// use, a new one is refused instead of evicting the oldest live session, whose
+// client would otherwise get 404 mid-conversation (review P-16).
+func TestSessionCapRefusesRatherThanEvictingLiveSessions(t *testing.T) {
 	m, _ := newTestSessionManager(t, 2, time.Hour)
 	s1 := m.create()
 	s2 := m.create()
-	s3 := m.create()
-	if _, ok := m.get(s1.id); ok {
-		t.Errorf("s1 should have been evicted by the FIFO cap")
+	if s3 := m.create(); s3 != nil {
+		t.Fatalf("a third session was created past the cap of 2")
+	}
+	if _, ok := m.get(s1.id); !ok {
+		t.Errorf("s1 is live and must not be evicted")
 	}
 	if _, ok := m.get(s2.id); !ok {
-		t.Errorf("s2 should still be live")
-	}
-	if _, ok := m.get(s3.id); !ok {
-		t.Errorf("s3 should be live")
+		t.Errorf("s2 is live and must not be evicted")
 	}
 }
 

@@ -1,19 +1,28 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/mockagents/mockagents/internal/config"
 	"github.com/spf13/cobra"
 )
 
-// Exit codes:
-//   0 - all agent definitions valid
-//   1 - one or more validation errors found
-//   2 - unexpected error (file not found, permission denied, etc.)
+// Exit codes (the CI contract — pinned by validate_test.go):
+//
+//	0 - every document is valid
+//	1 - validation or load errors, or no documents were found
+//	2 - usage error: a path that does not exist, an unknown --format
+const (
+	exitValid   = 0
+	exitInvalid = 1
+	exitUsage   = 2
+)
 
 var validateCmd = &cobra.Command{
 	Use:   "validate [file|directory...]",
@@ -22,18 +31,44 @@ var validateCmd = &cobra.Command{
 the MockAgents schema. Reports all errors with file path, line number,
 field path, and actionable suggestions.
 
-If no arguments are given, validates files in the --agents-dir directory.`,
+If no arguments are given, validates files in the --agents-dir directory.
+
+Exit codes: 0 all valid; 1 errors found, or no documents found (unless
+--allow-empty); 2 a path does not exist or the flags are invalid.
+
+--format json writes exactly one JSON document to stdout:
+  {"valid": bool, "files": N, "errors": [...], "load_errors": [...], "warnings": [...]}`,
 	RunE: runValidate,
 }
 
 var (
 	outputFormat string
 	strictMode   bool
+	allowEmpty   bool
 )
 
 func init() {
 	validateCmd.Flags().StringVar(&outputFormat, "format", "text", "Output format: text or json")
 	validateCmd.Flags().BoolVar(&strictMode, "strict", false, "Treat warnings as errors")
+	validateCmd.Flags().BoolVar(&allowEmpty, "allow-empty", false, "Succeed when no documents are found")
+}
+
+// validateOptions are the inputs of one validate run.
+type validateOptions struct {
+	Paths      []string
+	Format     string
+	Strict     bool
+	AllowEmpty bool
+}
+
+// validateReport is the --format json output, and the data the text output is
+// rendered from.
+type validateReport struct {
+	Valid      bool                      `json:"valid"`
+	Files      int                       `json:"files"`
+	Errors     []*config.ValidationError `json:"errors"`
+	LoadErrors []string                  `json:"load_errors"`
+	Warnings   []*config.ValidationError `json:"warnings"`
 }
 
 func runValidate(cmd *cobra.Command, args []string) error {
@@ -42,192 +77,206 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		agentsDir, _ := cmd.Flags().GetString("agents-dir")
 		paths = []string{agentsDir}
 	}
+	code := executeValidate(validateOptions{
+		Paths: paths, Format: outputFormat, Strict: strictMode, AllowEmpty: allowEmpty,
+	}, os.Stdout, os.Stderr)
+	if code != exitValid {
+		osExit(code)
+	}
+	return nil
+}
 
-	var allAgentResults []*config.LoadResult
-	var allPipelineResults []*config.PipelineLoadResult
-	var allTestSuiteResults []*config.TestSuiteLoadResult
-	var allMCPServerResults []*config.MCPServerLoadResult
-	var allA2AServerResults []*config.A2AServerLoadResult
-	var allVectorResults []*config.VectorCollectionLoadResult
-	var allSearchServiceResults []*config.SearchServiceLoadResult
-	var allLoadErrors []error
+// executeValidate runs a validation and writes its report, returning the exit
+// code. In JSON mode stdout carries exactly one JSON document and nothing
+// else; in text mode diagnostics go to stderr and the success line to stdout.
+func executeValidate(opts validateOptions, stdout, stderr io.Writer) int {
+	format := strings.ToLower(strings.TrimSpace(opts.Format))
+	if format != "text" && format != "json" {
+		fmt.Fprintf(stderr, "Error: unknown --format %q (want text or json)\n", opts.Format)
+		return exitUsage
+	}
+
+	docs, loadErrs, usageErrs := loadValidateInputs(opts.Paths)
+	if len(usageErrs) > 0 {
+		if format == "json" {
+			writeValidateJSON(stdout, &validateReport{LoadErrors: errorStrings(usageErrs)})
+		} else {
+			for _, err := range usageErrs {
+				fmt.Fprintln(stderr, "Error:", err)
+			}
+		}
+		return exitUsage
+	}
+
+	errs, warnings := validateDocuments(docs)
+	if opts.Strict && len(warnings) > 0 {
+		errs = append(errs, warnings...)
+		warnings = nil
+	}
+
+	files := docs.Count() + len(loadErrs)
+	if files == 0 && !opts.AllowEmpty {
+		loadErrs = append(loadErrs, fmt.Errorf(
+			"no MockAgents documents found under %s (pass --allow-empty if that is expected)",
+			strings.Join(opts.Paths, ", ")))
+	}
+
+	report := &validateReport{
+		Valid:      len(errs) == 0 && len(loadErrs) == 0,
+		Files:      files,
+		Errors:     errs,
+		LoadErrors: errorStrings(loadErrs),
+		Warnings:   warnings,
+	}
+
+	if format == "json" {
+		writeValidateJSON(stdout, report)
+	} else {
+		for _, err := range loadErrs {
+			fmt.Fprintln(stderr, "Error:", err)
+		}
+		if len(errs) > 0 {
+			fmt.Fprintln(stderr, config.FormatErrors(errs, config.ErrorFormatText))
+		}
+		for _, w := range warnings {
+			fmt.Fprintln(stderr, "Warning:", w.Error())
+		}
+		fmt.Fprintln(stderr, config.FormatSummary(files, len(errs)+len(loadErrs)))
+		if report.Valid {
+			fmt.Fprintln(stdout, "All agent definitions are valid.")
+		}
+	}
+
+	if !report.Valid {
+		return exitInvalid
+	}
+	return exitValid
+}
+
+// loadValidateInputs loads every path. A path that cannot be accessed is a
+// usage error (exit 2); a file that fails to parse is a load error (exit 1).
+// A file reached twice — named directly and inside a named directory, or
+// through two spellings of one path — is loaded once, so it is not reported
+// as a duplicate of itself.
+func loadValidateInputs(paths []string) (*config.Documents, []error, []error) {
+	docs := &config.Documents{}
+	var loadErrs, usageErrs []error
+	seen := map[string]bool{}
+
+	loadFile := func(path string) {
+		key := fileIdentity(path)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		fileDocs, err := config.LoadDocumentFile(path)
+		if err != nil {
+			loadErrs = append(loadErrs, err)
+			return
+		}
+		docs.Merge(fileDocs)
+	}
 
 	for _, p := range paths {
 		absPath, err := filepath.Abs(p)
 		if err != nil {
-			allLoadErrors = append(allLoadErrors, fmt.Errorf("resolving path %s: %w", p, err))
+			usageErrs = append(usageErrs, fmt.Errorf("resolving path %s: %w", p, err))
 			continue
 		}
-
 		info, err := os.Stat(absPath)
 		if err != nil {
-			allLoadErrors = append(allLoadErrors, fmt.Errorf("accessing %s: %w", p, err))
+			usageErrs = append(usageErrs, fmt.Errorf("accessing %s: %w", p, err))
 			continue
 		}
+		if !info.IsDir() {
+			loadFile(absPath)
+			continue
+		}
+		files, err := config.ListDocumentPaths(absPath)
+		if err != nil {
+			loadErrs = append(loadErrs, err)
+			continue
+		}
+		for _, f := range files {
+			loadFile(f)
+		}
+	}
+	return docs, loadErrs, usageErrs
+}
 
-		if info.IsDir() {
-			// LoadAllDocuments returns every kind — agents,
-			// pipelines, testsuites, and mcp servers. We run the
-			// matching validator against each bucket.
-			docs, errs := config.LoadAllDocuments(absPath)
-			if docs != nil {
-				allAgentResults = append(allAgentResults, docs.Agents...)
-				allPipelineResults = append(allPipelineResults, docs.Pipelines...)
-				allTestSuiteResults = append(allTestSuiteResults, docs.TestSuites...)
-				allMCPServerResults = append(allMCPServerResults, docs.MCPServers...)
-				allA2AServerResults = append(allA2AServerResults, docs.A2AServers...)
-				allVectorResults = append(allVectorResults, docs.Vectors...)
-				allSearchServiceResults = append(allSearchServiceResults, docs.SearchServices...)
-			}
-			allLoadErrors = append(allLoadErrors, errs...)
-		} else {
-			// Single-file mode: dispatch on kind by trying each
-			// loader in turn. LoadFile only accepts Agents so we
-			// fall back through the other three loaders before
-			// surfacing the original error.
-			result, err := config.LoadFile(absPath)
-			if err == nil {
-				allAgentResults = append(allAgentResults, result)
-				continue
-			}
-			if pipelineResult, perr := config.LoadPipelineFile(absPath); perr == nil {
-				allPipelineResults = append(allPipelineResults, pipelineResult)
-				continue
-			}
-			if suiteResult, serr := config.LoadTestSuiteFile(absPath); serr == nil {
-				allTestSuiteResults = append(allTestSuiteResults, suiteResult)
-				continue
-			}
-			if mcpResult, merr := config.LoadMCPServerFile(absPath); merr == nil {
-				allMCPServerResults = append(allMCPServerResults, mcpResult)
-				continue
-			}
-			if a2aResult, aerr := config.LoadA2AServerFile(absPath); aerr == nil {
-				allA2AServerResults = append(allA2AServerResults, a2aResult)
-				continue
-			}
-			if vectorResult, verr := config.LoadVectorCollectionFile(absPath); verr == nil {
-				allVectorResults = append(allVectorResults, vectorResult)
-				continue
-			}
-			if searchResult, serr := config.LoadSearchServiceFile(absPath); serr == nil {
-				allSearchServiceResults = append(allSearchServiceResults, searchResult)
-				continue
-			}
-			allLoadErrors = append(allLoadErrors, err)
+// fileIdentity is the key two spellings of one file share: the cleaned
+// absolute path, case-folded on the case-insensitive filesystems Windows and
+// macOS use by default.
+func fileIdentity(path string) string {
+	p := filepath.Clean(path)
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		p = strings.ToLower(p)
+	}
+	return p
+}
+
+// validateDocuments runs every per-kind validator and the cross-document pass,
+// returning errors and non-fatal lint warnings.
+func validateDocuments(docs *config.Documents) ([]*config.ValidationError, []*config.ValidationError) {
+	var errs, warnings []*config.ValidationError
+	collect := func(l *config.ValidationErrorList) {
+		if l != nil {
+			errs = append(errs, l.Errors...)
 		}
 	}
 
-	var allValidationErrors []*config.ValidationError
-	var allWarnings []*config.ValidationError
 	validator := &config.Validator{}
-
-	for _, result := range allAgentResults {
-		config.ApplyDefaults(result.Definition)
-		if errList := validator.Validate(result.Definition, result.FilePath, result.Node); errList != nil {
-			allValidationErrors = append(allValidationErrors, errList.Errors...)
-		}
-		// Non-fatal lint findings (round-11); --strict upgrades them.
-		allWarnings = append(allWarnings, validator.Lint(result.Definition, result.FilePath, result.Node)...)
+	for _, r := range docs.Agents {
+		config.ApplyDefaults(r.Definition)
+		collect(validator.Validate(r.Definition, r.FilePath, r.Node))
+		warnings = append(warnings, validator.Lint(r.Definition, r.FilePath, r.Node)...)
 	}
-	for _, result := range allPipelineResults {
-		if errList := config.ValidatePipeline(result.Definition, result.FilePath, result.Node); errList != nil {
-			allValidationErrors = append(allValidationErrors, errList.Errors...)
-		}
+	for _, r := range docs.Pipelines {
+		collect(config.ValidatePipeline(r.Definition, r.FilePath, r.Node))
 	}
-	for _, result := range allTestSuiteResults {
-		if errList := config.ValidateTestSuite(result.Definition, result.FilePath, result.Node); errList != nil {
-			allValidationErrors = append(allValidationErrors, errList.Errors...)
-		}
+	for _, r := range docs.TestSuites {
+		collect(config.ValidateTestSuite(r.Definition, r.FilePath, r.Node))
 	}
-	for _, result := range allMCPServerResults {
-		if errList := config.ValidateMCPServer(result.Definition, result.FilePath, result.Node); errList != nil {
-			allValidationErrors = append(allValidationErrors, errList.Errors...)
-		}
+	for _, r := range docs.MCPServers {
+		collect(config.ValidateMCPServer(r.Definition, r.FilePath, r.Node))
 	}
-	for _, result := range allA2AServerResults {
-		if errList := config.ValidateA2AServer(result.Definition, result.FilePath, result.Node); errList != nil {
-			allValidationErrors = append(allValidationErrors, errList.Errors...)
-		}
+	for _, r := range docs.A2AServers {
+		collect(config.ValidateA2AServer(r.Definition, r.FilePath, r.Node))
 	}
-	for _, result := range allVectorResults {
-		if errList := config.ValidateVectorCollection(result.Definition, result.FilePath, result.Node); errList != nil {
-			allValidationErrors = append(allValidationErrors, errList.Errors...)
-		}
+	for _, r := range docs.Vectors {
+		collect(config.ValidateVectorCollection(r.Definition, r.FilePath, r.Node))
 	}
-	for _, result := range allSearchServiceResults {
-		if errList := config.ValidateSearchService(result.Definition, result.FilePath, result.Node); errList != nil {
-			allValidationErrors = append(allValidationErrors, errList.Errors...)
-		}
+	for _, r := range docs.SearchServices {
+		collect(config.ValidateSearchService(r.Definition, r.FilePath, r.Node))
 	}
 
-	// Cross-document checks: every pipeline's agent refs and every testsuite's
-	// target must resolve against the other documents in the same run, and no
-	// two agents may claim one metadata.name.
-	//
-	// This used to be skipped for a directory holding only agents, on the
-	// reasoning that a pure agent directory has no refs to resolve. The
-	// duplicate-name check made that wrong — a name collision needs no
-	// pipelines at all, and skipping the pass is precisely how
-	// `mockagents validate` reported "all valid" for a tree where one agent
-	// silently replaced another. The pass costs one map build over the agents
-	// when there is nothing else to check.
-	if len(allAgentResults) > 0 || len(allPipelineResults) > 0 || len(allTestSuiteResults) > 0 || len(allVectorResults) > 0 || len(allSearchServiceResults) > 0 {
-		crossDocs := &config.Documents{
-			Agents:         allAgentResults,
-			Pipelines:      allPipelineResults,
-			TestSuites:     allTestSuiteResults,
-			MCPServers:     allMCPServerResults,
-			A2AServers:     allA2AServerResults,
-			Vectors:        allVectorResults,
-			SearchServices: allSearchServiceResults,
-		}
-		if errList := config.ValidateDocuments(crossDocs); errList != nil {
-			allValidationErrors = append(allValidationErrors, errList.Errors...)
-		}
+	// Cross-document checks: refs resolve, and no two documents of one kind
+	// claim one name. Run even for an agents-only tree — a name collision
+	// needs no pipelines at all.
+	collect(config.ValidateDocuments(docs))
+	warnings = append(warnings, config.LintDocuments(docs)...)
+	return errs, warnings
+}
+
+func writeValidateJSON(w io.Writer, report *validateReport) {
+	if report.Errors == nil {
+		report.Errors = []*config.ValidationError{}
 	}
-
-	// Determine output format.
-	var format config.ErrorFormat
-	switch strings.ToLower(outputFormat) {
-	case "json":
-		format = config.ErrorFormatJSON
-	default:
-		format = config.ErrorFormatText
+	if report.Warnings == nil {
+		report.Warnings = []*config.ValidationError{}
 	}
-
-	// --strict upgrades lint warnings to errors.
-	if strictMode && len(allWarnings) > 0 {
-		allValidationErrors = append(allValidationErrors, allWarnings...)
-		allWarnings = nil
+	if report.LoadErrors == nil {
+		report.LoadErrors = []string{}
 	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(report)
+}
 
-	totalFiles := len(allAgentResults) + len(allPipelineResults) +
-		len(allTestSuiteResults) + len(allMCPServerResults) +
-		len(allA2AServerResults) + len(allVectorResults) + len(allLoadErrors)
-	hasErrors := len(allLoadErrors) > 0 || len(allValidationErrors) > 0
-
-	// Print load errors.
-	for _, err := range allLoadErrors {
-		fmt.Fprintln(os.Stderr, "Error:", err)
+func errorStrings(errs []error) []string {
+	out := make([]string, 0, len(errs))
+	for _, err := range errs {
+		out = append(out, err.Error())
 	}
-
-	// Print validation errors, then non-fatal warnings.
-	if len(allValidationErrors) > 0 {
-		fmt.Fprintln(os.Stderr, config.FormatErrors(allValidationErrors, format))
-	}
-	for _, w := range allWarnings {
-		fmt.Fprintln(os.Stderr, "Warning:", w.Error())
-	}
-
-	// Summary.
-	totalErrors := len(allLoadErrors) + len(allValidationErrors)
-	fmt.Fprintln(os.Stderr, config.FormatSummary(totalFiles, totalErrors))
-
-	if hasErrors {
-		os.Exit(1)
-	}
-
-	fmt.Println("All agent definitions are valid.")
-	return nil
+	return out
 }

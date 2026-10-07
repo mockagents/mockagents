@@ -153,3 +153,28 @@ func TestAuditHandlers_UnknownKindErrorListsAllKinds(t *testing.T) {
 		}
 	}
 }
+
+// The platform operator reads the whole trail, including tenant-less
+// auth.denied events that no tenant scope can match (audit L-10).
+func TestAuditHandlers_PlatformSeesEverything(t *testing.T) {
+	h := &AuditHandlers{Store: newAuditTestStore(t)}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/audit", h.ListEvents)
+	platform := &tenancy.Principal{TenantID: "ten_ops", KeyID: "k_p", Role: tenancy.RolePlatform}
+
+	rec := httptest.NewRecorder()
+	servePrincipal(platform, mux).ServeHTTP(rec, httptest.NewRequest("GET", "/api/v1/audit", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var events []*audit.Event
+	if err := json.Unmarshal(rec.Body.Bytes(), &events); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(events) != 4 {
+		t.Fatalf("platform saw %d events, want all 4", len(events))
+	}
+	if !strings.Contains(rec.Body.String(), string(audit.EventAuthDenied)) {
+		t.Fatal("auth.denied must be visible to the platform operator")
+	}
+}

@@ -244,3 +244,13 @@ func TestDiffInfoModelChange(t *testing.T) {
 		t.Errorf("expected info-severity model change, got %+v", changes)
 	}
 }
+
+// Comparing two different agents must not report "no changes" (review P-18).
+func TestDiff_DifferentNamesAreBreaking(t *testing.T) {
+	a := &Contract{Name: "agent-a", Protocol: "openai-chat-completions"}
+	b := &Contract{Name: "agent-b", Protocol: "openai-chat-completions"}
+	changes := Diff(a, b)
+	if !HasBreaking(changes) || changes[0].Path != "name" {
+		t.Fatalf("changes = %+v, want a breaking name change", changes)
+	}
+}

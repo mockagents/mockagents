@@ -32,6 +32,7 @@ import {
 } from "@xyflow/react";
 
 import { Icon } from "@/lib/icons";
+import { useUnsavedChangesGuard } from "@/lib/useUnsavedChanges";
 import type {
   PipelineDefinition,
   PipelineEdge,
@@ -247,10 +248,8 @@ export function PipelineEditor({
     );
     if (topology === "sequential") {
       // Keep the implicit chain in sync with the new tail node.
-      setEdges((eds) => {
-        const ids = nodes.map((n) => n.id).concat(id);
-        return deriveEdges("sequential", ids, []).map(toFlowEdge);
-      });
+      const ids = nodes.map((n) => n.id).concat(id);
+      setEdges(deriveEdges("sequential", ids, []).map(toFlowEdge));
     }
     setNewId("");
   }, [newId, newRef, nodes, topology, setNodes, setEdges]);
@@ -303,9 +302,18 @@ export function PipelineEditor({
 
   const definitionJSON = useMemo(() => JSON.stringify(definition, null, 2), [definition]);
 
+  // What the server last confirmed holding. Node positions are not part of the
+  // definition, so dragging nodes around does not count as an unsaved change.
+  const [savedJSON, setSavedJSON] = useState(definitionJSON);
+  useUnsavedChangesGuard(definitionJSON !== savedJSON);
+
   // --- Live validation (debounced) + save -------------------------------
   const [version, setVersion] = useState(initialVersion);
-  const [validating, setValidating] = useState(false);
+  // The document the last finished validation was for. While it differs from
+  // the current one a validation is pending, so `validating` is derived rather
+  // than set from inside the effect.
+  const [validatedJSON, setValidatedJSON] = useState<string | null>(null);
+  const validating = validatedJSON !== definitionJSON;
   const [errors, setErrors] = useState<ValidationError[]>([]);
   const [saving, setSaving] = useState(false);
   const [banner, setBanner] = useState<Banner | null>(null);
@@ -314,12 +322,11 @@ export function PipelineEditor({
   // so the same /config/validate endpoint the YAML editor uses applies here.
   useEffect(() => {
     let cancelled = false;
-    setValidating(true);
     const handle = window.setTimeout(() => {
       void validateAction(definitionJSON).then((res) => {
         if (cancelled) return;
         setErrors(res.ok ? [] : res.errors);
-        setValidating(false);
+        setValidatedJSON(definitionJSON);
       });
     }, 400);
     return () => {
@@ -333,11 +340,13 @@ export function PipelineEditor({
   const save = useCallback(() => {
     setSaving(true);
     setBanner(null);
+    const submitted = definitionJSON;
     void saveAction(definition, version).then((res) => {
       setSaving(false);
       switch (res.status) {
         case "ok":
           setVersion(res.version);
+          setSavedJSON(submitted);
           setErrors([]);
           setBanner({ kind: "success", message: "Saved to disk." });
           break;
@@ -352,7 +361,7 @@ export function PipelineEditor({
           setBanner({ kind: "error", message: res.message });
       }
     });
-  }, [definition, version, saveAction]);
+  }, [definition, definitionJSON, version, saveAction]);
 
   const [copied, setCopied] = useState(false);
   const copyDefinition = useCallback(() => {

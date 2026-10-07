@@ -39,7 +39,9 @@ func TestRealtimeTenantFor_CookiePrincipalCrossOrigin(t *testing.T) {
 		{"cookie + same origin", mk("http://api.example:8080", true, false), nil, "ten_acme"},
 		{"cookie + same origin, https scheme", mk("https://api.example:8080", true, false), nil, "ten_acme"},
 		{"cookie + allow-listed origin", mk("https://console.example", true, false), []string{"https://console.example"}, "ten_acme"},
-		{"cookie + wildcard allowlist", mk("https://anything.example", true, false), []string{"*"}, "ten_acme"},
+		// A wildcard never vouches for a cookie: see originAllowedForSocket.
+		{"cookie + wildcard allowlist", mk("https://anything.example", true, false), []string{"*"}, ""},
+		{"cookie + wildcard plus listed origin", mk("https://console.example", true, false), []string{"*", "https://console.example"}, "ten_acme"},
 		{"cookie + no origin (non-browser)", mk("", true, false), nil, "ten_acme"},
 		{"bearer + foreign origin", mk("https://evil.example", false, true), nil, "ten_acme"},
 		{"bearer and cookie + foreign origin", mk("https://evil.example", true, true), nil, "ten_acme"},

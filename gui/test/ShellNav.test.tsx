@@ -117,3 +117,22 @@ describe("instrument slot", () => {
     expect(screen.getByText("content")).toBeInTheDocument();
   });
 });
+
+// Review 6.6: an anonymous visitor of a multi-tenant deployment (e.g. /login)
+// must not be shown the internal management-API address.
+describe("server address in the sidebar", () => {
+  it("shows the host when the layout passes one", () => {
+    renderShell(EVERYTHING);
+    expect(screen.getByText("localhost:8080")).toBeInTheDocument();
+  });
+
+  it("withholds it when the layout passes null", () => {
+    render(
+      <Shell apiUrl={null} auth={null} capabilities={null} logoutAction={async () => {}}>
+        <div>content</div>
+      </Shell>,
+    );
+    expect(screen.getByText(/sign in to view/i)).toBeInTheDocument();
+    expect(screen.queryByText(/localhost/)).toBeNull();
+  });
+});

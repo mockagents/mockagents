@@ -41,3 +41,26 @@ func engineErrorStatus(err error) int {
 func engineErrorIsNotFound(err error) bool {
 	return errors.Is(err, engine.ErrAgentNotFound)
 }
+
+// openAIEngineErrorType is the OpenAI error `type` for an engine failure of
+// the given status. A 500 used to say invalid_request_error, which SDK retry
+// logic reads as the caller's mistake and never retries (review E-14).
+func openAIEngineErrorType(status int) string {
+	if status >= http.StatusInternalServerError {
+		return "server_error"
+	}
+	return "invalid_request_error"
+}
+
+// anthropicEngineErrorType is the Anthropic counterpart: api_error for 5xx,
+// not_found_error for 404, invalid_request_error otherwise.
+func anthropicEngineErrorType(status int) string {
+	switch {
+	case status >= http.StatusInternalServerError:
+		return "api_error"
+	case status == http.StatusNotFound:
+		return "not_found_error"
+	default:
+		return "invalid_request_error"
+	}
+}

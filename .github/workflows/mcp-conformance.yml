@@ -35,7 +35,9 @@ permissions:
 # Cancel superseded runs on the same branch/PR to save runner minutes.
 concurrency:
   group: mcp-conformance-${{ github.ref }}
-  cancel-in-progress: true
+  # Only superseded pull-request runs are cancelled; a run on main must
+  # finish (readiness audit M-37, applied here as in ci.yml).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CONFORMANCE_VERSION: "0.1.16"
@@ -44,6 +46,7 @@ jobs:
   conformance:
     name: MCP Streamable-HTTP conformance
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

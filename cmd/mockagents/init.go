@@ -55,6 +55,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	printSuccess(fmt.Sprintf("Project scaffolded at %s (template: %s)", res.Dir, res.Template))
+	for _, k := range res.Kept {
+		fmt.Printf("  kept %s: it came from another template but has been edited\n", k)
+	}
 	fmt.Println("\nNext steps:")
 	if projectName != "." {
 		fmt.Println("  1. cd", projectName)

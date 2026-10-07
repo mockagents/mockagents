@@ -56,6 +56,10 @@ type RealtimeHandler struct {
 	// keeps the mock's permissive default. Non-browser clients send no
 	// Origin and are never affected.
 	AllowedOrigins []string
+	// SessionTTL is the maximum session duration, advertised as
+	// session.expires_at and enforced. Zero means the GA default of 60
+	// minutes (defaultRealtimeSessionTTL).
+	SessionTTL time.Duration
 	// TenantForConnection, when set, decides which tenant a new socket is
 	// scoped to instead of reading the request context directly. The server
 	// uses it to refuse to honour a cookie-derived principal on a
@@ -406,7 +410,7 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 		tenant = h.TenantForConnection(r)
 	}
 	sess := realtime.NewSession("sess_"+generateID(), r.URL.Query().Get("model"), h.generator(tenant))
-	sess.SetExpiry(time.Now().Add(time.Hour).Unix()) // reported as session.expires_at
+	sess.SetExpiry(time.Now().Add(h.sessionTTL()).Unix()) // reported as session.expires_at
 	// ?intent=transcription connects an input-transcription-only session (a
 	// session.update {type:"transcription"} reaches the same state).
 	if r.URL.Query().Get("intent") == "transcription" {
@@ -461,6 +465,13 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 		}
 	}()
 
+	// The session's advertised expires_at is enforced: the session ends with
+	// the GA session_expired error and a normal close. It used to be
+	// reported but never applied, so one socket could live forever (review
+	// P-07).
+	expiry := time.NewTimer(h.sessionTTL())
+	defer expiry.Stop()
+
 	for {
 		var timerC <-chan time.Time
 		var timer *time.Timer
@@ -485,6 +496,15 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 			}
 		case now := <-timerC:
 			events = sess.Tick(ctx, now)
+		case <-expiry.C:
+			if timer != nil {
+				timer.Stop()
+			}
+			_ = writeEvent(ctx, c, realtime.Event{"type": "error", "event_id": "event_" + generateID(), "error": map[string]any{
+				"type": "invalid_request_error", "code": "session_expired",
+				"message": "Your session hit the maximum duration of 60 minutes.", "param": nil, "event_id": nil}})
+			_ = c.Close(websocket.StatusNormalClosure, "session expired")
+			return
 		case <-readErr:
 			if timer != nil {
 				timer.Stop()
@@ -505,6 +525,19 @@ func (h *RealtimeHandler) HandleConnect(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 	}
+}
+
+// defaultRealtimeSessionTTL is the GA maximum session duration.
+const defaultRealtimeSessionTTL = time.Hour
+
+// sessionTTL is the configured SessionTTL, or the GA default. A per-handler
+// field rather than a package variable, so a test can shorten it without
+// racing other handlers' connections.
+func (h *RealtimeHandler) sessionTTL() time.Duration {
+	if h.SessionTTL > 0 {
+		return h.SessionTTL
+	}
+	return defaultRealtimeSessionTTL
 }
 
 // generator adapts the engine to the realtime.Generator signature, pinning the

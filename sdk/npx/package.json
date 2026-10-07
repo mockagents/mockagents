@@ -11,7 +11,9 @@
   "files": [
     "bin",
     "lib",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "NOTICE"
   ],
   "keywords": [
     "openai",
@@ -31,5 +33,8 @@
     "url": "https://github.com/mockagents/mockagents.git",
     "directory": "sdk/npx"
   },
-  "homepage": "https://github.com/mockagents/mockagents"
+  "homepage": "https://github.com/mockagents/mockagents",
+  "bugs": {
+    "url": "https://github.com/mockagents/mockagents/issues"
+  }
 }

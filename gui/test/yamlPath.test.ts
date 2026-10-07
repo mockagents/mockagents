@@ -311,3 +311,118 @@ describe("encodeScalar", () => {
     expect(encodeScalar('say "hi"')).toBe('"say \\"hi\\""');
   });
 });
+
+// Review K-17 and the carried yamlPath bullet: comments, quoted keys and
+// number-like strings.
+describe("comments", () => {
+  it("does not read a trailing comment as part of the value (K-17)", () => {
+    const doc = "spec:\n  model: gpt-4o  # prod model\n";
+    expect(readScalar(doc, "spec.model")).toEqual({ ok: true, value: "gpt-4o" });
+  });
+
+  it("writes back without duplicating or swallowing the comment (K-17)", () => {
+    const doc = "spec:\n  model: gpt-4o  # prod model\n";
+    const r = writeScalar(doc, "spec.model", "gpt-4o-mini");
+    expect(r).toEqual({ ok: true, value: "spec:\n  model: gpt-4o-mini # prod model\n" });
+  });
+
+  it("keeps a # that is not preceded by whitespace as part of a plain value", () => {
+    expect(readScalar("a: issue#42\n", "a")).toEqual({ ok: true, value: "issue#42" });
+  });
+
+  it("reads a quoted value followed by a comment", () => {
+    expect(readScalar('a: "x # y"  # real comment\n', "a")).toEqual({ ok: true, value: "x # y" });
+    expect(readScalar("a: 'it''s' # note\n", "a")).toEqual({ ok: true, value: "it's" });
+  });
+
+  it("does not treat a # inside the old quoted value as a comment on rewrite", () => {
+    const r = writeScalar('a: "x # y"\n', "a", "z");
+    expect(r).toEqual({ ok: true, value: "a: z\n" });
+  });
+
+  it("treats `key:  # comment` as a mapping parent, not a scalar", () => {
+    const doc = "spec:  # the spec\n  model: gpt-4o\n";
+    expect(readScalar(doc, "spec.model")).toEqual({ ok: true, value: "gpt-4o" });
+    const w = writeScalar(doc, "spec.model", "m2");
+    expect(w).toEqual({ ok: true, value: "spec:  # the spec\n  model: m2\n" });
+  });
+
+  it("reads a comment-only value as empty", () => {
+    expect(readScalar("a:  # nothing here\n", "a")).toEqual({ ok: true, value: "" });
+  });
+});
+
+describe("quoted keys", () => {
+  it("reads a double- or single-quoted key", () => {
+    expect(readScalar('"name": a\n', "name")).toEqual({ ok: true, value: "a" });
+    expect(readScalar("'name': b\n", "name")).toEqual({ ok: true, value: "b" });
+    expect(readScalar('meta:\n  "name": c\n', "meta.name")).toEqual({ ok: true, value: "c" });
+  });
+
+  it("descends through a quoted mapping key", () => {
+    expect(readScalar('"spec":\n  model: m\n', "spec.model")).toEqual({ ok: true, value: "m" });
+  });
+
+  it("keeps the key's original quoting when rewriting", () => {
+    expect(writeScalar('"name": a\n', "name", "b")).toEqual({ ok: true, value: '"name": b\n' });
+  });
+
+  it("does not split on a colon inside a quoted key", () => {
+    expect(readScalar('"a: b": c\n', "a: b")).toEqual({ ok: true, value: "c" });
+  });
+
+  it("treats quoted and plain spellings of the same key as a duplicate", () => {
+    const r = writeScalar('"model": a\nmodel: b\n', "model", "c");
+    expect(r.ok).toBe(false);
+  });
+
+  it("reads a quoted key on a list item's dash line", () => {
+    expect(readScalar('items:\n  - "name": first\n', "items.0.name")).toEqual({
+      ok: true,
+      value: "first",
+    });
+  });
+});
+
+describe("encodeScalar quotes strings YAML would resolve to non-strings", () => {
+  const NON_STRINGS = [
+    // YAML 1.2 core schema
+    "null", "Null", "NULL", "~",
+    "true", "True", "TRUE", "false", "False",
+    "0", "123", "-7", "+12",
+    "0o17", "0x1F", "0xff",
+    "1.5", ".5", "1e3", "1E-3", "-2.5e+10",
+    ".inf", ".Inf", "-.inf", "+.inf", ".nan", ".NaN", ".NAN",
+    // YAML 1.1 pitfalls many loaders still apply
+    "yes", "Yes", "no", "NO", "on", "On", "off", "OFF", "y", "Y", "n", "N",
+    "1_000", "0b1010", "1:20", "017",
+  ];
+
+  it.each(NON_STRINGS)("quotes %j", (v) => {
+    expect(encodeScalar(v).startsWith('"')).toBe(true);
+  });
+
+  it.each(NON_STRINGS)("round-trips %j through write and read", (v) => {
+    const w = writeScalar(RICH, "metadata.description", v);
+    expect(w.ok).toBe(true);
+    if (w.ok) expect(readScalar(w.value, "metadata.description")).toEqual({ ok: true, value: v });
+  });
+
+  it("still leaves ordinary words alone", () => {
+    for (const v of ["gpt-4o", "nano", "yesterday", "information", "inf", "nanny", "Tier-1"]) {
+      expect(encodeScalar(v)).toBe(v);
+    }
+  });
+
+  it("escapes control characters so the value stays on one line", () => {
+    expect(encodeScalar("a\nb")).toBe('"a\\nb"');
+    expect(encodeScalar("a\tb")).toBe('"a\\tb"');
+    for (const v of ["line one\nline two", "tab\there", 'back\\slash "q"']) {
+      const w = writeScalar(RICH, "metadata.description", v);
+      expect(w.ok).toBe(true);
+      if (!w.ok) continue;
+      expect(w.value.split("\n").length).toBe(RICH.split("\n").length);
+      expect(readScalar(w.value, "metadata.description")).toEqual({ ok: true, value: v });
+    }
+  });
+});

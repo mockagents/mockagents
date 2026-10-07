@@ -31,9 +31,9 @@ this version.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `MOCKAGENTS_LOG_BODIES` | `full` | `full` stores request/response bodies verbatim, `sanitized` masks them, `none` drops them but keeps per-agent grouping. Anything else is treated as `full`. |
+| `MOCKAGENTS_LOG_BODIES` | `full` | `full` stores request/response bodies verbatim, `sanitized` masks them, `none` drops them but keeps per-agent grouping. Case-insensitive; any other value is a startup error. The effective mode is logged at startup. |
 | `MOCKAGENTS_LOG_MAX_ROWS` | `0` (unlimited) | Keeps only the newest N interaction rows; a background pruner enforces it. |
-| `MOCKAGENTS_AUDIT_MAX_ROWS` | `0` (unlimited) | Same retention bound for the audit log. |
+| `MOCKAGENTS_AUDIT_MAX_ROWS` | `0` (unlimited) | Same retention bound for the audit log. Must be a non-negative integer; an invalid value fails startup. |
 | `MOCKAGENTS_PRICING` | unset | Path to a YAML file of per-model prices that overrides the built-in cost table. |
 
 ## Multi-tenancy and authentication
@@ -47,7 +47,7 @@ unauthenticated local-development tool.
 | `MOCKAGENTS_TENANCY_DSN` | unset (SQLite) | Postgres connection string for shared tenancy records and spend. It does not share engine sessions, catalogs, provider resources, local logs or rate buckets. |
 | `MOCKAGENTS_BOOTSTRAP_KEY` | unset | Supplies the platform key's plaintext instead of having one generated, so it can come from a Secret. |
 | `MOCKAGENTS_BOOTSTRAP_KEY_FILE` | `<data dir>/bootstrap-admin.key` | Where a generated platform key is written on first boot. |
-| `MOCKAGENTS_AUTH_FAILURES_PER_MINUTE` | `30` | Failed authentications per client IP before `429`. `0` disables the limiter. |
+| `MOCKAGENTS_AUTH_FAILURES_PER_MINUTE` | `30` | Failed authentications per client IP before `429`. `0` disables the limiter. Must be a non-negative integer; an invalid value fails startup. |
 | `MOCKAGENTS_TRUSTED_PROXIES` | unset | Comma-separated CIDRs whose `X-Forwarded-For` is believed. Without it the direct peer address is the client IP. |
 
 ## Quotas
@@ -93,8 +93,8 @@ initialization errors fail startup. Single-tenant startup does not initialize SS
 | `MOCKAGENTS_CHAOS_SEED` | `--chaos-seed` | unset | Fixed seed, so injected faults repeat run to run. |
 | `MOCKAGENTS_STRICT_TOOLS` | — | `off` | Fleet default for strict tool validation: `off`, `warn`, `strict`. Per-agent `spec.behavior.strict_tools` overrides it. |
 | `MOCKAGENTS_REALTIME_STRICT` | — | `0` | Rejects Realtime API events that the real service would reject. |
-| `MOCKAGENTS_SESSION_MAX` | — | `100000` | Live conversation sessions kept in memory before the oldest are evicted. |
-| `MOCKAGENTS_SESSION_HISTORY` | — | `256` | Messages retained per session. |
+| `MOCKAGENTS_SESSION_MAX` | — | `100000` | Live conversation sessions kept in memory before the oldest are evicted. `0` means unlimited; must be a non-negative integer, and an invalid value fails startup. |
+| `MOCKAGENTS_SESSION_HISTORY` | — | `256` | Messages retained per session. `0` means unlimited; must be a non-negative integer, and an invalid value fails startup. |
 
 ## Tracing
 
@@ -115,3 +115,9 @@ layer is not even wrapped, so tracing costs nothing. See
 | `MOCKAGENTS_SERVER` | `--server` | `http://localhost:8080` | Base URL used by `mockagents add` / `mockagents rm`. |
 | `MOCKAGENTS_API_KEY` | `--api-key` | unset | API key those commands send to a multi-tenant server. |
 | `NO_COLOR` | — | unset | Any value disables colored CLI output. |
+
+## SDKs and the npx launcher
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `MOCKAGENTS_BINARY` | unset | Path to the `mockagents` binary that the Python, TypeScript and Go SDK server helpers and the `npx mockagents` launcher run. `MOCKAGENTS_BIN` is accepted as an alias; `MOCKAGENTS_BINARY` wins when both are set. Unset, the TypeScript and Go helpers try `./mockagents` and then `PATH`, the Python SDK tries `PATH` and then its versioned download cache, and the npx launcher uses its cache (never `PATH`, which holds the launcher itself). |

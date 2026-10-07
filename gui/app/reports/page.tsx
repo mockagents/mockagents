@@ -47,6 +47,9 @@ export default async function ReportsPage({
 }) {
   const { window: windowParam } = await searchParams;
   const win = WINDOWS.find((w) => w.id === windowParam) ?? WINDOWS[1]; // default 24h
+  // A server component renders once per request, so reading the clock here is
+  // the point: the window is relative to when the page was asked for.
+  // eslint-disable-next-line react-hooks/purity
   const since = new Date(Date.now() - win.hours * 3_600_000).toISOString();
 
   const status = await getServerStatus();

@@ -26,14 +26,19 @@ representing the project in public.
 
 ## Enforcement
 
-Violations may be reported privately to the project maintainers. Until a dedicated
-contact address is published, please use GitHub's
-[private vulnerability/abuse reporting](https://github.com/mockagents/mockagents/security/advisories/new)
-to reach the maintainers confidentially, or contact a maintainer directly.
+Report a violation to a maintainer listed in [MAINTAINERS.md](MAINTAINERS.md),
+using the contact details on their GitHub profile. A dedicated conduct address
+is not yet set up; this section will name it when it is. Please do **not** use
+the security advisory form for conduct reports — it is reserved for
+vulnerabilities.
 
-All reports will be reviewed and investigated promptly and fairly. Maintainers are
-obligated to respect the privacy and security of the reporter of any incident, and
-will apply the Contributor Covenant's
+If the report concerns a maintainer, contact a different maintainer. Until the
+project has more than one, say so in your report and it will be handled with
+the same confidentiality.
+
+All reports will be reviewed and investigated promptly and fairly. Maintainers
+are obligated to respect the privacy and security of the reporter of any
+incident, and will apply the Contributor Covenant's
 [enforcement guidelines](https://www.contributor-covenant.org/version/2/1/code_of_conduct/#enforcement-guidelines)
 when determining consequences.
 

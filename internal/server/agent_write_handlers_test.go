@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mockagents/mockagents/internal/config"
 	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/engine/state"
 )
@@ -219,5 +220,62 @@ func TestCreateAgent_NoPersistenceWhenNoDir(t *testing.T) {
 	}
 	if h.Engine.Registry.GetForTenant("mem-bot", "") == nil {
 		t.Error("in-memory agent not registered")
+	}
+}
+
+// keep_file=true takes an agent out of service without destroying the file it
+// was loaded from (2026-10-06 review C-07); a real delete reports persisted.
+func TestDeleteAgent_KeepFileAndPersistedFlag(t *testing.T) {
+	dir := t.TempDir()
+	srv, h := newAgentWriteServer(t, dir)
+	doReq(t, "POST", srv.URL+"/api/v1/agents", "application/yaml", agentYAML("keep-bot", "km"))
+	doReq(t, "POST", srv.URL+"/api/v1/agents", "application/yaml", agentYAML("gone-bot", "gm"))
+
+	code, body := doReq(t, "DELETE", srv.URL+"/api/v1/agents/keep-bot?keep_file=true", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("delete status = %d, want 200", code)
+	}
+	if h.Engine.Registry.GetForTenant("keep-bot", "") != nil {
+		t.Error("agent still registered after delete")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "keep-bot.yaml")); err != nil {
+		t.Errorf("keep_file=true must leave the file: %v", err)
+	}
+	if !strings.Contains(body, `"persisted":false`) {
+		t.Errorf("nothing reached disk, body=%s", body)
+	}
+
+	_, body = doReq(t, "DELETE", srv.URL+"/api/v1/agents/gone-bot", "", "")
+	if !strings.Contains(body, `"persisted":true`) {
+		t.Errorf("a removed file is a persisted change, body=%s", body)
+	}
+}
+
+// Updating an agent whose source is a .json file keeps that file loadable:
+// it used to be overwritten with YAML (review P-10).
+func TestPutAgent_JSONSourceStaysJSON(t *testing.T) {
+	dir := t.TempDir()
+	srv, h := newAgentWriteServer(t, dir)
+	src := filepath.Join(dir, "support.json")
+	body := `{"apiVersion":"mockagents/v1","kind":"Agent","metadata":{"name":"support"},"spec":{"protocol":"openai-chat-completions","model":"sm","behavior":{"scenarios":[{"name":"default","response":{"content":"v1"}}]}}}`
+	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := config.LoadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Engine.Registry.RegisterWithSource(res.Definition, src)
+
+	code, out := doReq(t, "PUT", srv.URL+"/api/v1/agents/support", "application/yaml", agentYAML("support", "sm"))
+	if code != http.StatusOK {
+		t.Fatalf("PUT status = %d body=%s", code, out)
+	}
+	reloaded, err := config.LoadFile(src)
+	if err != nil {
+		t.Fatalf("the JSON source no longer loads after the update: %v", err)
+	}
+	if got := reloaded.Definition.Spec.Behavior.Scenarios[0].Response.Content; got != "hi from support" {
+		t.Fatalf("reloaded content = %q", got)
 	}
 }

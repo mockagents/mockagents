@@ -36,6 +36,7 @@ const (
 //     non-empty names
 func ValidateMCPServer(def *types.MCPServerDefinition, filePath string, node *yaml.Node) *ValidationErrorList {
 	ctx := &validationContext{file: filePath, node: node}
+	ctx.errors = append(ctx.errors, unknownFieldErrors(filePath, node, def)...)
 
 	if def.APIVersion == "" {
 		ctx.addError("apiVersion", "required field missing",

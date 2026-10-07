@@ -16,17 +16,36 @@ import (
 // doesn't override it.
 const DefaultTimeout = 30 * time.Second
 
+// DefaultOpenAIModel is the model sent on OpenAI-protocol calls when none is
+// given.
+const DefaultOpenAIModel = "gpt-4o"
+
+// DefaultAnthropicModel is the model sent on Anthropic-protocol calls when
+// none is given. It is identical across the Python, TypeScript and Go SDKs,
+// so one script routes to the same agent in every language.
+const DefaultAnthropicModel = "claude-sonnet-4-20250514"
+
+// anthropicPlaceholderKey is the X-Api-Key sent on Anthropic calls when no
+// APIKey is configured.
+const anthropicPlaceholderKey = "mock-api-key"
+
 // ClientOptions configures a Client.
 type ClientOptions struct {
 	BaseURL    string
 	Timeout    time.Duration
 	HTTPClient *http.Client
+	// APIKey authenticates against a multi-tenant deployment. It is sent as
+	// "Authorization: Bearer <key>" on every request (chat, messages,
+	// streams and management calls) and as X-Api-Key on Anthropic calls in
+	// place of the placeholder.
+	APIKey string
 }
 
 // Client is an HTTP client for the MockAgents server.
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
+	apiKey     string
 }
 
 // NewClient returns a Client for the given base URL. A nil or empty
@@ -45,7 +64,7 @@ func NewClient(opts ClientOptions) *Client {
 	if hc == nil {
 		hc = &http.Client{Timeout: timeout}
 	}
-	return &Client{baseURL: base, httpClient: hc}
+	return &Client{baseURL: base, httpClient: hc, apiKey: opts.APIKey}
 }
 
 // BaseURL returns the server URL the client is configured against.
@@ -66,7 +85,7 @@ type ChatOptions struct {
 func (c *Client) Chat(ctx context.Context, messages []ChatMessage, opts ChatOptions) (*ChatResponse, error) {
 	model := opts.Model
 	if model == "" {
-		model = "gpt-4o"
+		model = DefaultOpenAIModel
 	}
 	payload := map[string]any{
 		"model":    model,
@@ -117,7 +136,7 @@ type MessageOptions struct {
 func (c *Client) Message(ctx context.Context, messages []ChatMessage, opts MessageOptions) (*ChatResponse, error) {
 	model := opts.Model
 	if model == "" {
-		model = "claude-3-5-sonnet-latest"
+		model = DefaultAnthropicModel
 	}
 	max := opts.MaxTokens
 	if max == 0 {
@@ -139,14 +158,7 @@ func (c *Client) Message(ctx context.Context, messages []ChatMessage, opts Messa
 		payload[k] = v
 	}
 
-	headers := map[string]string{
-		"Content-Type":      "application/json",
-		"X-Api-Key":         "mock-api-key",
-		"Anthropic-Version": "2023-06-01",
-	}
-	if opts.SessionID != "" {
-		headers["X-Session-Id"] = opts.SessionID
-	}
+	headers := c.anthropicHeaders(opts.SessionID)
 
 	start := time.Now()
 	status, body, err := c.do(ctx, http.MethodPost, "/v1/messages", headers, payload)
@@ -249,6 +261,7 @@ func (c *Client) do(ctx context.Context, method, path string, headers map[string
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	c.applyAuth(req)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return 0, nil, err
@@ -262,4 +275,33 @@ func (c *Client) do(ctx context.Context, method, path string, headers map[string
 		return resp.StatusCode, nil, &HTTPError{Status: resp.StatusCode, Body: string(body)}
 	}
 	return resp.StatusCode, body, nil
+}
+
+// anthropicHeaders builds the Anthropic request headers. A configured APIKey
+// IS the Anthropic credential; the placeholder only satisfies servers that
+// insist on the header being present.
+func (c *Client) anthropicHeaders(sessionID string) map[string]string {
+	key := c.apiKey
+	if key == "" {
+		key = anthropicPlaceholderKey
+	}
+	headers := map[string]string{
+		"Content-Type":      "application/json",
+		"X-Api-Key":         key,
+		"Anthropic-Version": "2023-06-01",
+	}
+	if sessionID != "" {
+		headers["X-Session-Id"] = sessionID
+	}
+	return headers
+}
+
+// applyAuth is the single place a request gains the credential. Both request
+// paths (do and requestSSE) call it, so no call silently goes out anonymous:
+// in multi-tenant mode an anonymous LLM call reaches a DIFFERENT agent rather
+// than failing (review K-01).
+func (c *Client) applyAuth(req *http.Request) {
+	if c.apiKey != "" && req.Header.Get("Authorization") == "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 }

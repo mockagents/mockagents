@@ -264,7 +264,7 @@ func TestResponses_StreamingTextEvents(t *testing.T) {
 	rec := doResponses(t, h, `{"model":"gpt-4o","input":"hello","stream":true}`)
 
 	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+	assert.Equal(t, "text/event-stream; charset=utf-8", rec.Header().Get("Content-Type"))
 
 	events := parseSSE(t, rec.Body.String())
 	require.NotEmpty(t, events)
@@ -345,9 +345,9 @@ func TestResponses_StoreEvictionBounded(t *testing.T) {
 	// is evicted (returns not-found) while the newest is retained.
 	s := newResponseStore()
 	first := "resp_first"
-	s.put("tenant-a", first, []engine.RequestMessage{{Role: "user", Content: "x"}})
+	s.put("tenant-a", first, storedResponse{msgs: []engine.RequestMessage{{Role: "user", Content: "x"}}, turns: 1})
 	for i := 0; i < maxStoredResponses; i++ {
-		s.put("tenant-b", "resp_fill_"+strings.Repeat("a", i%5)+"_"+itoa(i), nil)
+		s.put("tenant-b", "resp_fill_"+strings.Repeat("a", i%5)+"_"+itoa(i), storedResponse{})
 	}
 	_, ok := s.get("tenant-a", first)
 	assert.False(t, ok, "oldest entry should have been evicted")
@@ -407,8 +407,8 @@ func TestResponseStore_ConcurrentTenantKeys(t *testing.T) {
 			tenant := fmt.Sprint(i)
 			for j := 0; j < 100; j++ {
 				id := fmt.Sprint(j)
-				s.put(tenant, id, []engine.RequestMessage{{Content: tenant}})
-				if msgs, ok := s.get(tenant, id); ok && msgs[0].Content != tenant {
+				s.put(tenant, id, storedResponse{msgs: []engine.RequestMessage{{Content: tenant}}})
+				if got, ok := s.get(tenant, id); ok && got.msgs[0].Content != tenant {
 					t.Errorf("wrong tenant history")
 				}
 			}
@@ -430,4 +430,165 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return string(b)
+}
+
+// turnAgent answers by turn number, so a chain that does not advance turns is
+// visible in the content (review E-01).
+func turnAgent() *types.AgentDefinition {
+	a := testOpenAIAgent()
+	one, two, three := 1, 2, 3
+	a.Spec.Behavior.Scenarios = []types.Scenario{
+		{Name: "t1", Match: &types.MatchRule{TurnNumber: &one}, Response: types.ScenarioResponse{Content: "FIRST"}},
+		{Name: "t2", Match: &types.MatchRule{TurnNumber: &two}, Response: types.ScenarioResponse{Content: "SECOND"}},
+		{Name: "t3", Match: &types.MatchRule{TurnNumber: &three}, Response: types.ScenarioResponse{Content: "THIRD"}},
+	}
+	return a
+}
+
+func responsesText(t *testing.T, rec *httptest.ResponseRecorder) (id, text string) {
+	t.Helper()
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var out struct {
+		ID     string `json:"id"`
+		Output []struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	require.NotEmpty(t, out.Output)
+	require.NotEmpty(t, out.Output[0].Content)
+	return out.ID, out.Output[0].Content[0].Text
+}
+
+// A previous_response_id chain advances turn_number on every hop, and no
+// engine session is stored for header-less calls (review E-01).
+func TestResponses_ChainAdvancesTurnsWithoutStoringSessions(t *testing.T) {
+	eng := testEngine(turnAgent())
+	h := NewResponsesHandler(eng, nil)
+
+	id, text := responsesText(t, doResponses(t, h, `{"model":"gpt-4o","input":"one"}`))
+	assert.Equal(t, "FIRST", text)
+	id, text = responsesText(t, doResponses(t, h, `{"model":"gpt-4o","input":"two","previous_response_id":"`+id+`"}`))
+	assert.Equal(t, "SECOND", text)
+	_, text = responsesText(t, doResponses(t, h, `{"model":"gpt-4o","input":"three","previous_response_id":"`+id+`"}`))
+	assert.Equal(t, "THIRD", text)
+
+	for i := 0; i < 20; i++ {
+		doResponses(t, h, `{"model":"gpt-4o","input":"one-shot"}`)
+	}
+	assert.Zero(t, eng.States.Count(), "header-less Responses calls must not pin engine sessions")
+}
+
+// The same holds for a conversation referenced across turns.
+func TestResponses_ConversationAdvancesTurns(t *testing.T) {
+	conv := newConversationStore()
+	eng := testEngine(turnAgent())
+	h := NewResponsesHandler(eng, conv)
+	ch := NewConversationsHandler(conv)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/conversations", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	ch.HandleCreate(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var created struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+
+	for _, want := range []string{"FIRST", "SECOND", "THIRD"} {
+		_, text := responsesText(t, doResponses(t, h, `{"model":"gpt-4o","input":"next","conversation":"`+created.ID+`"}`))
+		assert.Equal(t, want, text)
+	}
+	assert.Zero(t, eng.States.Count())
+}
+
+// An unmodelled input item (a replayed reasoning item) is skipped rather than
+// becoming an empty user turn that shadows the real one (review E-10).
+func TestResponses_UnknownInputItemsAreSkipped(t *testing.T) {
+	h := NewResponsesHandler(testEngine(responsesAgent()), nil)
+	rec := doResponses(t, h, `{"model":"gpt-4o","input":[
+		{"role":"user","content":"hello"},
+		{"type":"reasoning","id":"rs_1","summary":[]},
+		{"type":"item_reference","id":"msg_1"}]}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
+// /v1/models lists each model once, skips agents without a model, and keeps
+// a stable created timestamp (review E-20).
+func TestModels_DeduplicatedAndStable(t *testing.T) {
+	a, b, c := testOpenAIAgent(), testOpenAIAgent(), testOpenAIAgent()
+	a.Metadata.Name, b.Metadata.Name, c.Metadata.Name = "a", "b", "c"
+	a.Spec.Model, b.Spec.Model, c.Spec.Model = "gpt-4o", "gpt-4o", ""
+	h := &OpenAIHandler{Engine: testEngine(a, b, c)}
+	list := func() []map[string]any {
+		rec := httptest.NewRecorder()
+		h.HandleModels(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+		var out struct {
+			Data []map[string]any `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+		return out.Data
+	}
+	first := list()
+	require.Len(t, first, 1)
+	assert.Equal(t, "gpt-4o", first[0]["id"])
+	assert.Equal(t, first[0]["created"], list()[0]["created"])
+}
+
+// The warn-mode strict header is bounded (review E-22).
+func TestStrictViolationHeader_IsBounded(t *testing.T) {
+	rec := httptest.NewRecorder()
+	warnings := make([]string, 0, 2000)
+	for i := 0; i < 2000; i++ {
+		warnings = append(warnings, "tool result references unknown id call_"+itoa(i))
+	}
+	setStrictViolationHeader(rec, &engine.Response{StrictWarnings: warnings})
+	v := rec.Header().Get(HeaderStrictViolation)
+	assert.LessOrEqual(t, len(v), maxStrictViolationHeader+64)
+	assert.Contains(t, v, "truncated")
+}
+
+// Every conversation route answers an oversized body with 413 (review E-21).
+func TestConversations_OversizedBodyIs413(t *testing.T) {
+	store := newConversationStore()
+	ch := NewConversationsHandler(store)
+	rec := httptest.NewRecorder()
+	ch.HandleCreate(rec, httptest.NewRequest(http.MethodPost, "/v1/conversations", strings.NewReader(`{}`)))
+	var created struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+
+	big := `{"metadata":{"k":"` + strings.Repeat("x", maxDecodeBodyBytes+1) + `"}}`
+	for name, call := range map[string]http.HandlerFunc{
+		"update":       ch.HandleUpdate,
+		"create-items": ch.HandleCreateItems,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/conversations/"+created.ID, strings.NewReader(big))
+		req.SetPathValue("id", created.ID)
+		rec := httptest.NewRecorder()
+		call(rec, req)
+		assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code, name)
+	}
+}
+
+// instructions apply per request: a chained call replays the earlier turns
+// but not the earlier instructions, and the new ones take effect (E-11).
+func TestResponses_InstructionsAreNotCarriedOver(t *testing.T) {
+	h := NewResponsesHandler(testEngine(responsesAgent()), nil)
+	id, _ := responsesText(t, doResponses(t, h, `{"model":"gpt-4o","input":"hello","instructions":"OLD RULES"}`))
+	id2, _ := responsesText(t, doResponses(t, h, `{"model":"gpt-4o","input":"hello again","instructions":"NEW RULES","previous_response_id":"`+id+`"}`))
+
+	stored, ok := h.store.get("", id2)
+	require.True(t, ok)
+	var systems []string
+	for _, m := range stored.msgs {
+		if m.Role == "system" {
+			systems = append(systems, m.Content)
+		}
+	}
+	assert.Equal(t, []string{"NEW RULES"}, systems)
+	assert.Equal(t, 2, stored.turns)
 }

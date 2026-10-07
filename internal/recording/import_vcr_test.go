@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/base64"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -336,5 +338,49 @@ interactions:
 	}
 	if len(res.SkipReasons) == 0 || !strings.Contains(res.SkipReasons[0], "bomb") {
 		t.Errorf("skip reason should mention the bomb: %v", res.SkipReasons)
+	}
+}
+
+// An imported gzip vcrpy body replays as the decoded JSON it was stored as:
+// the original Content-Encoding and Content-Length are not replayed (P-02).
+func TestVCRImportGzippedBodyReplaysDecoded(t *testing.T) {
+	yaml := `
+interactions:
+- request:
+    method: POST
+    uri: https://api.openai.com/v1/chat/completions
+    body: '{"model":"x"}'
+  response:
+    status: {code: 200}
+    headers:
+      Content-Type: [application/json]
+      Content-Encoding: [gzip]
+      Content-Length: ['37']
+    body: {base64_string: '` + gzipBodyB64 + `'}
+`
+	its, _, err := ImportVCR(strings.NewReader(yaml), ImportVCROpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cass := New("")
+	if err := cass.AppendAll(its); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewReplay(cass))
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"x"}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read replayed body: %v", err)
+	}
+	if !strings.Contains(string(body), "from gzip") {
+		t.Fatalf("replayed body = %q, want the decoded JSON", body)
+	}
+	if ce := resp.Header.Get("Content-Encoding"); ce != "" {
+		t.Fatalf("replay sent Content-Encoding %q for a decoded body", ce)
 	}
 }

@@ -79,3 +79,48 @@ test('versioned cache layout includes release and platform', () => {
     assert.strictEqual(location, path.join('cache', 'mockagents', '0.5.0', 'linux-amd64', 'mockagents'));
   });
 });
+
+test('findBinary accepts MOCKAGENTS_BINARY and MOCKAGENTS_BIN, BINARY first', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ma-npx-env-'));
+  const a = path.join(tmp, 'fake-a');
+  const b = path.join(tmp, 'fake-b');
+  fs.writeFileSync(a, 'x');
+  fs.writeFileSync(b, 'x');
+  const saved = { BINARY: process.env.MOCKAGENTS_BINARY, BIN: process.env.MOCKAGENTS_BIN };
+  const set = (binary, bin) => {
+    if (binary === undefined) delete process.env.MOCKAGENTS_BINARY;
+    else process.env.MOCKAGENTS_BINARY = binary;
+    if (bin === undefined) delete process.env.MOCKAGENTS_BIN;
+    else process.env.MOCKAGENTS_BIN = bin;
+  };
+  try {
+    set(a, undefined);
+    assert.strictEqual(bin.findBinary(), a);
+    set(undefined, b);
+    assert.strictEqual(bin.findBinary(), b);
+    set(a, b);
+    assert.strictEqual(bin.findBinary(), a);
+    set(path.join(tmp, 'missing'), b);
+    assert.strictEqual(bin.findBinary(), b);
+    set(undefined, undefined);
+    assert.strictEqual(bin.findBinary(), null);
+  } finally {
+    set(saved.BINARY, saved.BIN);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('tarCommand uses System32 bsdtar by absolute path on Windows', () => {
+  assert.strictEqual(
+    bin.tarCommand('win32', { SystemRoot: 'D:' + path.win32.sep + 'Win' }),
+    path.win32.join('D:' + path.win32.sep + 'Win', 'System32', 'tar.exe'),
+  );
+  // Falls back to the default Windows root when SystemRoot is unset.
+  assert.strictEqual(
+    bin.tarCommand('win32', {}),
+    path.win32.join('C:' + path.win32.sep + 'Windows', 'System32', 'tar.exe'),
+  );
+  assert.ok(path.win32.isAbsolute(bin.tarCommand('win32', {})), 'never a PATH lookup on Windows');
+  assert.strictEqual(bin.tarCommand('linux', {}), 'tar');
+  assert.strictEqual(bin.tarCommand('darwin', {}), 'tar');
+});

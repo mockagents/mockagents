@@ -208,6 +208,7 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 	// Convert to engine request.
 	convertedMsgs, imageCount := convertAnthropicMessages(req.Messages, req.System)
 	inbound := &engine.InboundRequest{
+		WireProtocol:     ProtocolAnthropicMessages,
 		Model:            req.Model,
 		SessionID:        extractSessionID(r),
 		Messages:         convertedMsgs,
@@ -242,7 +243,7 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 			return
 		}
 		status := engineErrorStatus(err)
-		writeAnthropicError(w, status, "invalid_request_error", err.Error())
+		writeAnthropicError(w, status, anthropicEngineErrorType(status), err.Error())
 		return
 	}
 
@@ -257,15 +258,32 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 	}
 
 	setHallucinationHeader(w, resp)
+	setToolErrorsHeader(w, resp)
 	setStrictViolationHeader(w, resp)
 	setImageCountHeader(w, imageCount)
 
+	// Compute provider-specific response metadata before the transport split so
+	// JSON and SSE expose identical thinking and prompt-cache behavior. Count
+	// prompt tokens from the already-flattened messages, including system text.
+	inputTokens := sumMessageTokens(inbound.Messages)
+	outputTokens := EstimateTokens(resp.Content)
+	// Cache-marked message tokens move from input_tokens to cache usage; marked
+	// tool tokens were never in the input-token base and are not subtracted.
+	markedTokens, markedFromMessages, contentHash := cacheMarkedTokens(&req)
+	tenantID := engine.TenantIDFromContext(r.Context())
+	cacheCreation, cacheRead := h.cacheUsageFields(markedTokens, anthropicCacheKey{tenant: tenantID, hash: contentHash})
+	if inputTokens -= markedFromMessages; inputTokens < 0 {
+		inputTokens = 0
+	}
+	// Thinking leads the response content and contributes to output usage.
+	var thinkingText, thinkingSig string
+	if thinkingEnabled(&req) {
+		thinkingText, thinkingSig = synthesizeThinking(&req)
+		outputTokens += EstimateTokens(thinkingText)
+	}
+
 	// Stream or JSON.
 	if req.Stream {
-		// TODO(A-04 streaming): the streaming path does not yet emit synthesized
-		// thinking blocks or cache_creation/cache_read usage — those A-04
-		// additions are non-streaming only for now.
-		tenantID := engine.TenantIDFromContext(r.Context())
 		agent := h.Engine.Registry.GetByModelForTenant(req.Model, tenantID)
 		if agent == nil {
 			agents := h.Engine.Registry.ListForTenant(tenantID)
@@ -277,42 +295,21 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 		if agent != nil {
 			streamCfg = agent.Spec.Behavior.Streaming
 		}
-		// Same input and output estimates as the non-streaming path below, so
-		// usage (and therefore cost + spend) does not depend on stream:true.
 		if err := streaming.StreamAnthropic(r.Context(), w, resp, streamCfg,
-			sumMessageTokens(inbound.Messages), EstimateTokens(resp.Content)); err != nil {
+			streaming.AnthropicStreamOptions{
+				InputTokens:              inputTokens,
+				OutputTokens:             outputTokens,
+				Thinking:                 thinkingText,
+				ThinkingSignature:        thinkingSig,
+				CacheCreationInputTokens: cacheCreation,
+				CacheReadInputTokens:     cacheRead,
+			}); err != nil {
 			return
 		}
 		return
 	}
 
-	// Non-streaming response. Count prompt tokens off the already-flattened
-	// inbound.Messages (the system message is prepended there) rather than
-	// re-extracting req.Messages + req.System (PERF-19).
-	inputTokens := sumMessageTokens(inbound.Messages)
-	outputTokens := EstimateTokens(resp.Content)
-
-	// Prompt caching (A-04): cache_control-marked tokens are billed as
-	// cache_creation (first sight) or cache_read (repeat), scoped per tenant.
-	// Only the message/system marked tokens are removed from input_tokens — tool
-	// tokens were never part of the input_tokens base, so subtracting them would
-	// under-report.
-	markedTokens, markedFromMessages, contentHash := cacheMarkedTokens(&req)
-	tenantID := engine.TenantIDFromContext(r.Context())
-	cacheCreation, cacheRead := h.cacheUsageFields(markedTokens, anthropicCacheKey{tenant: tenantID, hash: contentHash})
-	if inputTokens -= markedFromMessages; inputTokens < 0 {
-		inputTokens = 0
-	}
-
-	// Extended thinking (A-04): when enabled (the thinking request param), a
-	// synthesized thinking block leads the content and its tokens count toward
-	// output.
-	var thinkingText, thinkingSig string
-	if thinkingEnabled(&req) {
-		thinkingText, thinkingSig = synthesizeThinking(&req)
-		outputTokens += EstimateTokens(thinkingText)
-	}
-
+	// Non-streaming response.
 	anthropicResp := formatAnthropicResponse(resp, inputTokens, outputTokens, cacheCreation, cacheRead, thinkingText, thinkingSig)
 	writeJSON(w, http.StatusOK, anthropicResp)
 }
@@ -499,7 +496,10 @@ func extractAnthropicContent(content any) string {
 }
 
 func formatAnthropicResponse(resp *engine.Response, inputTokens, outputTokens int, cacheCreation, cacheRead *int, thinkingText, thinkingSig string) *AnthropicResponse {
-	var content []AnthropicContent
+	// Always an array, never null: the real API returns [] when there is
+	// nothing to say (tool_choice none, the tool-loop exit turn), and both
+	// official SDKs iterate it unconditionally (review E-03).
+	content := []AnthropicContent{}
 
 	// Extended-thinking block leads the content array (A-04).
 	if thinkingText != "" {

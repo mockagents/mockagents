@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -79,8 +80,8 @@ func envFloat(name string, min float64) (float64, bool, error) {
 		return 0, false, nil
 	}
 	f, err := strconv.ParseFloat(v, 64)
-	if err != nil {
-		return 0, true, fmt.Errorf("%s=%q is not a number", name, v)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, true, fmt.Errorf("%s=%q is not a finite number", name, v)
 	}
 	if f < min {
 		return 0, true, fmt.Errorf("%s=%v must be >= %v", name, f, min)

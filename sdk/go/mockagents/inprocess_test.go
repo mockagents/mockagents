@@ -145,7 +145,9 @@ spec:
 }
 
 // writeTempAgent drops a minimal agent YAML into a temp dir and returns
-// the directory path. The agent replies with "pong" on any message.
+// the directory path. The agent replies with "pong" on any message (a
+// scenario without a match rule is the default; `match: {default: true}`
+// is not a valid key and is rejected now that the client validates).
 func writeTempAgent(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -159,8 +161,6 @@ spec:
   behavior:
     scenarios:
       - name: default
-        match:
-          default: true
         response:
           content: "pong"
 `

@@ -38,7 +38,9 @@ permissions:
 
 concurrency:
   group: perf-guard-${{ github.ref }}
-  cancel-in-progress: true
+  # Only superseded pull-request runs are cancelled; a run on main must
+  # finish (readiness audit M-37, applied here as in ci.yml).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   benchmark-guard:

@@ -1,11 +1,13 @@
 package adapter
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"hash/crc32"
+	"net"
 	"net/http"
 	"strings"
 
@@ -121,7 +123,7 @@ func (h *BedrockHandler) HandleConverse(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	messages, images := convertBedrockMessages(req.System, req.Messages)
-	inbound := &engine.InboundRequest{Model: model, SessionID: extractSessionID(r), Messages: messages, RequestToolNames: bedrockToolNames(req.ToolConfig)}
+	inbound := &engine.InboundRequest{WireProtocol: ProtocolBedrockConverse, Model: model, SessionID: extractSessionID(r), Messages: messages, RequestToolNames: bedrockToolNames(req.ToolConfig)}
 	if meta := engine.RequestMetaFromContext(r.Context()); meta != nil {
 		meta.SessionID = inbound.SessionID
 	}
@@ -160,6 +162,7 @@ func (h *BedrockHandler) HandleConverse(w http.ResponseWriter, r *http.Request) 
 		meta.AgentName, meta.ScenarioName, meta.ToolCallsCount = resp.AgentName, resp.ScenarioName, len(resp.ToolCalls)
 	}
 	setHallucinationHeader(w, resp)
+	setToolErrorsHeader(w, resp)
 	setStrictViolationHeader(w, resp)
 	setImageCountHeader(w, images)
 	content := []BedrockContentBlock{}
@@ -267,6 +270,23 @@ type bedrockCapture struct {
 	header http.Header
 	body   bytes.Buffer
 	status int
+	// real is the client's writer. A connection-layer chaos fault must reach
+	// the real socket: through an in-memory capture it could not be hijacked
+	// and always fell back to a 502 JSON body (review E-12).
+	real     http.ResponseWriter
+	hijacked bool
+}
+
+// Hijack hands the client's connection to a connection-layer fault.
+func (c *bedrockCapture) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if c.real == nil {
+		return nil, nil, http.ErrNotSupported
+	}
+	conn, rw, err := http.NewResponseController(c.real).Hijack()
+	if err == nil {
+		c.hijacked = true
+	}
+	return conn, rw, err
 }
 
 func (c *bedrockCapture) Header() http.Header    { return c.header }
@@ -287,10 +307,13 @@ func (h *BedrockHandler) HandleConverseStream(w http.ResponseWriter, r *http.Req
 		writeBedrockError(w, http.StatusBadRequest, "ValidationException", "modelId is required")
 		return
 	}
-	capture := &bedrockCapture{header: make(http.Header)}
+	capture := &bedrockCapture{header: make(http.Header), real: w}
 	inner := r.Clone(r.Context())
 	inner.SetPathValue("modelId", model)
 	h.HandleConverse(capture, inner)
+	if capture.hijacked {
+		return // a connection fault already took the socket
+	}
 	for key, values := range capture.header {
 		for _, value := range values {
 			w.Header().Add(key, value)

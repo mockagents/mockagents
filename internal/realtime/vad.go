@@ -11,7 +11,6 @@ package realtime
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -190,32 +189,112 @@ func (s *Session) refreshVAD() {
 // "a higher threshold requires louder audio".
 const vadAmplitudeScale = 0.1
 
-// audioEnergy decodes a base64 PCM16LE append payload and returns its duration
-// (ms at 24 kHz mono: 48 bytes/ms) and normalized mean-absolute energy (0..1).
-// Payloads that don't decode as base64 count as full-energy speech of an
-// estimated duration — a mock shouldn't punish synthetic test audio, and only
-// near-zero PCM16 should read as silence.
-func audioEnergy(b64 string) (ms, energy float64) {
-	raw, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil {
-		return float64(len(b64)) * 0.75 / 48, 1.0
+// audioCodec describes an input audio format: how many bytes one millisecond
+// takes and how to read a sample's amplitude. Every format used to be read as
+// PCM16 at 24 kHz, so a valid 500 ms G.711 commit (8 bytes/ms) measured
+// 83 ms and was rejected as too small, and VAD read μ-law bytes as int16
+// samples (review P-08).
+type audioCodec struct {
+	bytesPerMs float64
+	// sampleBytes is the width of one sample (2 for PCM16, 1 for G.711).
+	sampleBytes int
+	// amplitude returns |sample| / 32768 for the sample starting at b.
+	amplitude func(b []byte) float64
+}
+
+var (
+	codecPCM16 = audioCodec{bytesPerMs: 48, sampleBytes: 2, amplitude: func(b []byte) float64 {
+		sample := int16(uint16(b[0]) | uint16(b[1])<<8)
+		v := float64(sample)
+		if v < 0 {
+			v = -v // float64 avoids the int16(-32768) negation overflow
+		}
+		return v / 32768
+	}}
+	codecPCMU = audioCodec{bytesPerMs: 8, sampleBytes: 1, amplitude: func(b []byte) float64 {
+		return absFloat(float64(ulawDecode(b[0]))) / 32768
+	}}
+	codecPCMA = audioCodec{bytesPerMs: 8, sampleBytes: 1, amplitude: func(b []byte) float64 {
+		return absFloat(float64(alawDecode(b[0]))) / 32768
+	}}
+)
+
+// codecFor maps a session's audio.input.format to its codec. Unknown or
+// unset formats are PCM16 (the GA default).
+func codecFor(format json.RawMessage) audioCodec {
+	var f struct {
+		Type string `json:"type"`
 	}
-	ms = float64(len(raw)) / 48
-	n := len(raw) / 2
+	if len(format) > 0 && json.Unmarshal(format, &f) == nil {
+		switch f.Type {
+		case "audio/pcmu":
+			return codecPCMU
+		case "audio/pcma":
+			return codecPCMA
+		}
+	}
+	return codecPCM16
+}
+
+// audioEnergy returns an append payload's duration in ms and its normalized
+// mean-absolute energy (0..1) under codec. raw is the base64-decoded payload
+// (decoded once by the caller — it used to be decoded twice per frame, audit
+// L-44); decodeErr reports a payload that was not valid base64, which counts
+// as full-energy speech of an estimated duration: a mock shouldn't punish
+// synthetic test audio, and only near-silent samples should read as silence.
+func audioEnergy(raw []byte, decodeErr error, b64Len int, codec audioCodec) (ms, energy float64) {
+	if decodeErr != nil {
+		return float64(b64Len) * 0.75 / codec.bytesPerMs, 1.0
+	}
+	ms = float64(len(raw)) / codec.bytesPerMs
+	n := len(raw) / codec.sampleBytes
 	if n == 0 {
 		return ms, 0
 	}
 	var sum float64
 	for i := 0; i < n; i++ {
-		sample := int16(uint16(raw[2*i]) | uint16(raw[2*i+1])<<8)
-		if sample < 0 {
-			// Avoid the int16(-32768) negation overflow.
-			sum -= float64(sample)
-		} else {
-			sum += float64(sample)
-		}
+		sum += codec.amplitude(raw[i*codec.sampleBytes:])
 	}
-	return ms, sum / float64(n) / 32768
+	return ms, sum / float64(n)
+}
+
+func absFloat(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// ulawDecode expands one G.711 μ-law byte to a linear PCM16 sample.
+func ulawDecode(u byte) int16 {
+	u = ^u
+	sign := u & 0x80
+	exponent := (u >> 4) & 0x07
+	mantissa := u & 0x0F
+	sample := ((int32(mantissa) << 3) + 0x84) << exponent
+	sample -= 0x84
+	if sign != 0 {
+		return int16(-sample)
+	}
+	return int16(sample)
+}
+
+// alawDecode expands one G.711 A-law byte to a linear PCM16 sample.
+func alawDecode(a byte) int16 {
+	a ^= 0x55
+	sign := a & 0x80
+	exponent := (a >> 4) & 0x07
+	mantissa := int32(a & 0x0F)
+	var sample int32
+	if exponent == 0 {
+		sample = (mantissa << 4) + 8
+	} else {
+		sample = ((mantissa << 4) + 0x108) << (exponent - 1)
+	}
+	if sign == 0 {
+		return int16(-sample)
+	}
+	return int16(sample)
 }
 
 // vadAppend advances the turn-detection state machine with one append payload

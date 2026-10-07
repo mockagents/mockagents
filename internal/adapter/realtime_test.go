@@ -19,7 +19,11 @@ import (
 // returns the ws:// base URL.
 func realtimeServer(t *testing.T) (string, func()) {
 	t.Helper()
-	h := &RealtimeHandler{Engine: testEngine(testOpenAIAgent())}
+	return realtimeServerWith(t, &RealtimeHandler{Engine: testEngine(testOpenAIAgent())})
+}
+
+func realtimeServerWith(t *testing.T, h *RealtimeHandler) (string, func()) {
+	t.Helper()
 	mux := http.NewServeMux()
 	for _, rt := range h.Routes() {
 		mux.HandleFunc(rt.Pattern, rt.Handler)
@@ -447,4 +451,28 @@ func TestRealtime_ClientSecret(t *testing.T) {
 	require.Nil(t, sess["voice"])
 	audioOut := sess["audio"].(map[string]any)["output"].(map[string]any)
 	require.Equal(t, "verse", audioOut["voice"])
+}
+
+// The advertised expires_at is enforced: the session ends with the GA
+// session_expired error and a close (review P-07).
+func TestRealtime_SessionExpires(t *testing.T) {
+	base, closeFn := realtimeServerWith(t, &RealtimeHandler{
+		Engine:     testEngine(testOpenAIAgent()),
+		SessionTTL: 300 * time.Millisecond,
+	})
+	defer closeFn()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/v1/realtime?model=gpt-4o",
+		&websocket.DialOptions{Subprotocols: []string{"realtime"}})
+	require.NoError(t, err)
+	defer c.CloseNow()
+
+	require.Equal(t, "session.created", wsRead(t, ctx, c)["type"])
+	require.Equal(t, "conversation.created", wsRead(t, ctx, c)["type"])
+	ev := wsRead(t, ctx, c)
+	require.Equal(t, "error", ev["type"])
+	require.Equal(t, "session_expired", ev["error"].(map[string]any)["code"])
+	_, _, err = c.Read(ctx)
+	require.Error(t, err, "the socket must be closed after expiry")
 }

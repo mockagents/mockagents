@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -195,6 +196,7 @@ func columnExists(db *sql.DB, table, column string) (bool, error) {
 
 // Log inserts a single interaction log record.
 func (s *SQLiteStore) Log(ctx context.Context, entry *InteractionLog) error {
+	entry.Timestamp = NormalizeTimestamp(entry.Timestamp)
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO interaction_logs
 			(timestamp, tenant_id, agent_name, session_id, protocol, request_method, request_path,
@@ -252,11 +254,11 @@ func (s *SQLiteStore) Query(ctx context.Context, filter InteractionFilter) ([]In
 	}
 	if filter.Since != "" {
 		query += " AND timestamp >= ?"
-		args = append(args, filter.Since)
+		args = append(args, NormalizeTimestamp(filter.Since))
 	}
 	if filter.Until != "" {
 		query += " AND timestamp <= ?"
-		args = append(args, filter.Until)
+		args = append(args, NormalizeTimestamp(filter.Until))
 	}
 
 	query += " ORDER BY id DESC"
@@ -477,14 +479,69 @@ func SanitizeBody(body string) string {
 				}
 			}
 			end := valStart
-			for end < len(sanitized) && sanitized[end] != '"' && sanitized[end] != ' ' && sanitized[end] != ',' {
-				end++
+			if pattern == "key-" {
+				// A "key-" value is the run of key characters after the prefix.
+				// Scanning to the next quote, space or comma instead made a key
+				// followed by other punctuation ("key-abc…; rest") fail the
+				// key-shape check below and stay in the clear.
+				for end < len(sanitized) && isKeyChar(sanitized[end]) {
+					end++
+				}
+			} else {
+				for end < len(sanitized) && sanitized[end] != '"' && sanitized[end] != ' ' && sanitized[end] != ',' {
+					end++
+				}
+			}
+			// "sk-" and "key-" only start a credential at a word boundary and
+			// when a credential-shaped value follows. Matching them anywhere
+			// turned prose such as "risk-based" and "turkey-dinner" into
+			// "risk-***" and "turkey-***", silently altering logged and
+			// recorded content (review P-14). "Bearer " always precedes a token.
+			if pattern != "Bearer " && !looksLikeKey(sanitized, offset+idx, valStart, end) {
+				offset = valStart
+				continue
 			}
 			sanitized = sanitized[:valStart] + "***" + sanitized[end:]
 			offset = valStart + 3 // advance past the inserted "***"
 		}
 	}
 	return sanitized
+}
+
+// minKeyDashValueLen is the shortest value after "key-" treated as a key
+// (Mailgun-style keys are 32 hex characters); "key-value" in prose is not.
+const minKeyDashValueLen = 16
+
+// looksLikeKey reports whether the prefix at prefixStart begins a credential.
+// Both prefixes must start a word (the preceding byte is not a letter or
+// digit). "key-" is an ordinary English compound, so it additionally needs a
+// credential-shaped value (letters, digits, '_' or '-', at least
+// minKeyDashValueLen bytes); "sk-" at a word start is always treated as a key.
+func looksLikeKey(s string, prefixStart, valStart, end int) bool {
+	if prefixStart > 0 && isAlnum(s[prefixStart-1]) {
+		return false
+	}
+	if !strings.HasPrefix(s[prefixStart:], "key-") {
+		return true
+	}
+	if end-valStart < minKeyDashValueLen {
+		return false
+	}
+	for i := valStart; i < end; i++ {
+		if !isKeyChar(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// isKeyChar reports whether c can appear in a "key-" credential value.
+func isKeyChar(c byte) bool {
+	return isAlnum(c) || c == '_' || c == '-'
+}
+
+func isAlnum(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 // escapeLikePrefix makes a caller-supplied string safe as a LIKE prefix: the
@@ -506,4 +563,25 @@ func defaultSource(source string) string {
 		return SourceHTTP
 	}
 	return source
+}
+
+// TimestampLayout is how interaction-log timestamps are stored: RFC3339 with
+// a fixed nine-digit fraction, always UTC, so the Since/Until string
+// comparisons order rows by time. Callers wrote three formats into one column
+// (RFC3339, RFC3339Nano, SQLite's datetime default) and the lexical filters
+// misordered rows at sub-second boundaries (review P-19).
+const TimestampLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+// NormalizeTimestamp rewrites an RFC3339 timestamp into TimestampLayout. An
+// empty value becomes the current time (a blank timestamp used to be stored
+// as ”, audit L-34); a value that does not parse is kept as given.
+func NormalizeTimestamp(ts string) string {
+	if strings.TrimSpace(ts) == "" {
+		return time.Now().UTC().Format(TimestampLayout)
+	}
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return ts
+	}
+	return t.UTC().Format(TimestampLayout)
 }
