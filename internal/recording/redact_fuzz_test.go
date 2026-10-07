@@ -162,6 +162,13 @@ func FuzzRedactorApply(f *testing.F) {
 		if bytes.Contains(doc, []byte(secret)) {
 			t.Skip() // the fuzzer reproduced the secret itself; not an injection
 		}
+		// The credential starts a word: "sk-" and "key-" are only masked at a
+		// word boundary, so prose such as "turkey-dinner" survives (P-14).
+		if n := len(before); n > 0 {
+			if c := before[n-1]; (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+				before += " "
+			}
+		}
 		value := before + secret + after
 
 		// Request body: the credential as a string value inside the fuzzed

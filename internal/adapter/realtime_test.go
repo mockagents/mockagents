@@ -19,7 +19,11 @@ import (
 // returns the ws:// base URL.
 func realtimeServer(t *testing.T) (string, func()) {
 	t.Helper()
-	h := &RealtimeHandler{Engine: testEngine(testOpenAIAgent())}
+	return realtimeServerWith(t, &RealtimeHandler{Engine: testEngine(testOpenAIAgent())})
+}
+
+func realtimeServerWith(t *testing.T, h *RealtimeHandler) (string, func()) {
+	t.Helper()
 	mux := http.NewServeMux()
 	for _, rt := range h.Routes() {
 		mux.HandleFunc(rt.Pattern, rt.Handler)
@@ -452,11 +456,10 @@ func TestRealtime_ClientSecret(t *testing.T) {
 // The advertised expires_at is enforced: the session ends with the GA
 // session_expired error and a close (review P-07).
 func TestRealtime_SessionExpires(t *testing.T) {
-	orig := realtimeSessionTTL
-	realtimeSessionTTL = 300 * time.Millisecond
-	t.Cleanup(func() { realtimeSessionTTL = orig })
-
-	base, closeFn := realtimeServer(t)
+	base, closeFn := realtimeServerWith(t, &RealtimeHandler{
+		Engine:     testEngine(testOpenAIAgent()),
+		SessionTTL: 300 * time.Millisecond,
+	})
 	defer closeFn()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

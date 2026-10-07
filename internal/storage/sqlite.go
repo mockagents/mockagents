@@ -479,8 +479,18 @@ func SanitizeBody(body string) string {
 				}
 			}
 			end := valStart
-			for end < len(sanitized) && sanitized[end] != '"' && sanitized[end] != ' ' && sanitized[end] != ',' {
-				end++
+			if pattern == "key-" {
+				// A "key-" value is the run of key characters after the prefix.
+				// Scanning to the next quote, space or comma instead made a key
+				// followed by other punctuation ("key-abc…; rest") fail the
+				// key-shape check below and stay in the clear.
+				for end < len(sanitized) && isKeyChar(sanitized[end]) {
+					end++
+				}
+			} else {
+				for end < len(sanitized) && sanitized[end] != '"' && sanitized[end] != ' ' && sanitized[end] != ',' {
+					end++
+				}
 			}
 			// "sk-" and "key-" only start a credential at a word boundary and
 			// when a credential-shaped value follows. Matching them anywhere
@@ -518,11 +528,16 @@ func looksLikeKey(s string, prefixStart, valStart, end int) bool {
 		return false
 	}
 	for i := valStart; i < end; i++ {
-		if c := s[i]; !isAlnum(c) && c != '_' && c != '-' {
+		if !isKeyChar(s[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+// isKeyChar reports whether c can appear in a "key-" credential value.
+func isKeyChar(c byte) bool {
+	return isAlnum(c) || c == '_' || c == '-'
 }
 
 func isAlnum(c byte) bool {

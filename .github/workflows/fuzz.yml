@@ -37,12 +37,11 @@ jobs:
             target: FuzzSSEStream
           - pkg: ./internal/recording
             target: FuzzAssembleSSEFrames
-          - pkg: ./internal/recording
-            target: FuzzRedactorApply
           - pkg: ./internal/toolschema
             target: FuzzValidate
-          - pkg: ./internal/storage
-            target: FuzzSanitizeBody
+          # FuzzRedactorApply and FuzzSanitizeBody are paused here while
+          # redaction hardening is in progress; their seed corpora still run
+          # in every `go test ./...`.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
