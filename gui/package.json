@@ -2,7 +2,7 @@
   "name": "mockagents-gui",
   "version": "0.1.0",
   "private": true,
-  "description": "Web GUI for browsing MockAgents \u2014 agent catalog, agent detail, and interaction logs.",
+  "description": "Web GUI for browsing MockAgents — agent catalog, agent detail, and interaction logs.",
   "scripts": {
     "dev": "next dev --port 3001",
     "build": "next build",
@@ -14,29 +14,29 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "@xyflow/react": "^12.11.6",
+    "@xyflow/react": "^12.12.0",
     "next": "^16.3.8",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.63.0",
-    "@testing-library/dom": "^10.4.1",
+    "@testing-library/dom": "^10.4.2",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.7",
-    "@types/node": "^26.4.1",
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.7",
+    "@types/node": "^26.6.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@typescript/typescript6": "^6.0.2",
     "@vitejs/plugin-react": "^6.1.1",
     "axe-core": "^4.13.0",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.3.8",
-    "jsdom": "^30.0.1",
+    "jsdom": "^30.1.1",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.3"
   },
   "overrides": {
     "postcss": "^8.5.28",
