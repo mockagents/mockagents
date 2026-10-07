@@ -46,6 +46,12 @@ type anthropicTextBlock struct {
 	Text string `json:"text"`
 }
 
+type anthropicThinkingBlock struct {
+	Type      string `json:"type"`
+	Thinking  string `json:"thinking"`
+	Signature string `json:"signature"`
+}
+
 type anthropicToolUseBlock struct {
 	Type  string         `json:"type"`
 	ID    string         `json:"id"`
@@ -62,6 +68,16 @@ type anthropicContentBlockDelta struct {
 type anthropicTextDelta struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+}
+
+type anthropicThinkingDelta struct {
+	Type     string `json:"type"`
+	Thinking string `json:"thinking"`
+}
+
+type anthropicSignatureDelta struct {
+	Type      string `json:"type"`
+	Signature string `json:"signature"`
 }
 
 type anthropicInputJSONDelta struct {
@@ -86,26 +102,35 @@ type anthropicMessageDelta struct {
 
 // anthropicDeltaUsage is message_delta's cumulative output count.
 type anthropicDeltaUsage struct {
-	OutputTokens int `json:"output_tokens"`
+	OutputTokens             int  `json:"output_tokens"`
+	CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`
 }
 
 type anthropicMessageStop struct {
 	Type string `json:"type"`
 }
 
+// AnthropicStreamOptions carries adapter-computed Anthropic response metadata.
+// Omitted, StreamAnthropic keeps deterministic defaults for direct callers.
+type AnthropicStreamOptions struct {
+	InputTokens              int
+	OutputTokens             int
+	Thinking                 string
+	ThinkingSignature        string
+	CacheCreationInputTokens *int
+	CacheReadInputTokens     *int
+}
+
 // StreamAnthropic writes an engine Response as an Anthropic-format SSE
-// stream. The optional tokens are the adapter-computed usage counts —
-// tokens[0] the input-token count for message_start's usage (round-9 R9-10),
-// tokens[1] the output-token count for message_delta's usage (audit M-18: a
-// local formula billed the same scenario differently under stream:true, so
-// cost dashboards and the spend quota disagreed by transport). Omitted, a
-// deterministic default applies for direct callers.
+// stream. Optional metadata carries adapter-computed usage and thinking data.
+// Omitted, deterministic defaults apply for direct callers.
 func StreamAnthropic(
 	ctx context.Context,
 	w http.ResponseWriter,
 	resp *engine.Response,
 	streamCfg *types.StreamingConfig,
-	tokens ...int,
+	metadata ...AnthropicStreamOptions,
 ) error {
 	sse, err := NewSSEWriter(w)
 	if err != nil {
@@ -134,22 +159,51 @@ func StreamAnthropic(
 	}
 
 	// 1. message_start
-	inputTokens := 25 // deterministic default for direct callers
-	if len(tokens) > 0 {
-		inputTokens = tokens[0]
+	opts := AnthropicStreamOptions{
+		InputTokens:  25,
+		OutputTokens: len(resp.Content)/4 + 1,
+	}
+	if len(metadata) > 0 {
+		opts = metadata[0]
 	}
 	if err := sse.WriteEvent("message_start", anthropicMessageStart{
 		Type: "message_start",
 		Message: anthropicMessageHeader{
 			ID: msgID, Type: "message", Role: "assistant",
 			Content: []any{}, Model: resp.Model,
-			Usage: anthropicUsage{InputTokens: inputTokens, OutputTokens: 1},
+			Usage: anthropicUsage{InputTokens: opts.InputTokens, OutputTokens: 1},
 		},
 	}); err != nil {
 		return err
 	}
 
 	blockIndex := 0
+	if opts.Thinking != "" {
+		if err := sse.WriteEvent("content_block_start", anthropicContentBlockStart{
+			Type: "content_block_start", Index: blockIndex,
+			ContentBlock: anthropicThinkingBlock{Type: "thinking", Thinking: "", Signature: ""},
+		}); err != nil {
+			return err
+		}
+		if err := sse.WriteEvent("content_block_delta", anthropicContentBlockDelta{
+			Type: "content_block_delta", Index: blockIndex,
+			Delta: anthropicThinkingDelta{Type: "thinking_delta", Thinking: opts.Thinking},
+		}); err != nil {
+			return err
+		}
+		if err := sse.WriteEvent("content_block_delta", anthropicContentBlockDelta{
+			Type: "content_block_delta", Index: blockIndex,
+			Delta: anthropicSignatureDelta{Type: "signature_delta", Signature: opts.ThinkingSignature},
+		}); err != nil {
+			return err
+		}
+		if err := sse.WriteEvent("content_block_stop", anthropicContentBlockStop{
+			Type: "content_block_stop", Index: blockIndex,
+		}); err != nil {
+			return err
+		}
+		blockIndex++
+	}
 
 	// 2. Text content blocks (with stream-timing physics + fault injection).
 	// The content and the refusal (FB-03) each stream as their own text
@@ -274,16 +328,16 @@ func StreamAnthropic(
 	if resp.FinishReason != "" {
 		stopReason = AnthropicStopReason(resp.FinishReason)
 	}
-	outputTokens := len(resp.Content)/4 + 1 // direct-caller default only
-	if len(tokens) > 1 {
-		outputTokens = tokens[1] // the adapter's count — identical to non-streaming
-	}
 	if err := sse.WriteEvent("message_delta", anthropicMessageDelta{
 		Type: "message_delta",
 		Delta: struct {
 			StopReason string `json:"stop_reason"`
 		}{StopReason: stopReason},
-		Usage: anthropicDeltaUsage{OutputTokens: outputTokens},
+		Usage: anthropicDeltaUsage{
+			OutputTokens:             opts.OutputTokens,
+			CacheCreationInputTokens: opts.CacheCreationInputTokens,
+			CacheReadInputTokens:     opts.CacheReadInputTokens,
+		},
 	}); err != nil {
 		return err
 	}
