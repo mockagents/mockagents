@@ -18,6 +18,12 @@ updates:
     schedule: { interval: weekly }
     groups:
       gui-deps: { patterns: ["*"] }
+    ignore:
+      # ESLint 10 removed context.getFilename, which the React plugin bundled
+      # in eslint-config-next still calls ("react/display-name" fails to load).
+      # Lift this once eslint-config-next supports ESLint 10.
+      - dependency-name: eslint
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: npm
     directory: /sdk/typescript
     schedule: { interval: weekly }
