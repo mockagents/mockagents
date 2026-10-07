@@ -66,9 +66,21 @@ func NewInProcessClient(opts InProcessOptions) (*InProcessClient, error) {
 
 	registry := engine.NewAgentRegistry()
 	results, errs := config.LoadDir(opts.AgentsDir)
+	validator := &config.Validator{}
 	var loaded int
 	for _, r := range results {
 		if r == nil || r.Definition == nil {
+			continue
+		}
+		// Same order as `mockagents start`: fill defaults first (this is
+		// where a chaos.preset expands into concrete faults and streaming
+		// gets its chunk defaults), then validate the effective definition.
+		// Skipping either made in-process agents behave differently from
+		// the server, e.g. a `preset: rate-limited` agent never returned 429.
+		config.ApplyDefaults(r.Definition)
+		if verr := validator.Validate(r.Definition, r.FilePath, r.Node); verr != nil {
+			logger.Warn("mockagents: skipping invalid agent", "file", r.FilePath, "errors", verr.Error())
+			errs = append(errs, verr)
 			continue
 		}
 		registry.Register(r.Definition)
