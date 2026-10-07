@@ -171,7 +171,7 @@ func runTest(cmd *cobra.Command, args []string) error {
 	}
 
 	if totalFailed > 0 {
-		os.Exit(1)
+		osExit(1)
 	}
 	return nil
 }

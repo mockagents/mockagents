@@ -119,6 +119,9 @@ func runContractExtract(cmd *cobra.Command, args []string) error {
 }
 
 func runContractDiff(cmd *cobra.Command, args []string) error {
+	if contractDiffFormat != "text" && contractDiffFormat != "json" {
+		return fmt.Errorf("unknown --format %q (want text or json)", contractDiffFormat)
+	}
 	oldC, err := loadContract(args[0])
 	if err != nil {
 		return err
@@ -145,7 +148,7 @@ func runContractDiff(cmd *cobra.Command, args []string) error {
 
 	if contract.HasBreaking(changes) {
 		fmt.Fprintln(os.Stderr, "\nbreaking changes detected")
-		os.Exit(1)
+		osExit(1)
 	}
 	return nil
 }

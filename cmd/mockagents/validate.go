@@ -81,7 +81,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		Paths: paths, Format: outputFormat, Strict: strictMode, AllowEmpty: allowEmpty,
 	}, os.Stdout, os.Stderr)
 	if code != exitValid {
-		os.Exit(code)
+		osExit(code)
 	}
 	return nil
 }
