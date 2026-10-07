@@ -43,6 +43,7 @@ jobs:
     outputs:
       tag: ${{ steps.target.outputs.tag }}
       version: ${{ steps.target.outputs.version }}
+      revision: ${{ steps.target.outputs.revision }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -78,8 +79,11 @@ jobs:
               [[ ! "$identifier" =~ ^0[0-9]+$ ]] || { echo "invalid release tag: $tag"; exit 1; }
             done
           fi
+          revision=$(git rev-list -n 1 "$tag")
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid tag revision: $revision"; exit 1; }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
 
   linux:
     name: Check (Linux)
@@ -176,11 +180,16 @@ jobs:
             bash -c 'python -m venv /tmp/probe-venv && /tmp/probe-venv/bin/pip install --quiet "mockagents==$TARGET_VERSION" && /tmp/probe-venv/bin/python -c "import mockagents; print(mockagents.__version__)"'
 
           echo "--- results ---"; cat "$out"
+          printf '{"os":"%s","arch":"%s","checkedAt":"%s"}\n' \
+            "$RUNNER_OS" "$RUNNER_ARCH" "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+            > platform-linux.json
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: results-linux
-          path: results-linux.txt
+          path: |
+            results-linux.txt
+            platform-linux.json
 
   macos:
     name: Check (macOS)
@@ -202,11 +211,16 @@ jobs:
             tail -n 20 /tmp/brew.log || true
           fi
           cat results-macos.txt
+          printf '{"os":"%s","arch":"%s","checkedAt":"%s"}\n' \
+            "$RUNNER_OS" "$RUNNER_ARCH" "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+            > platform-macos.json
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: results-macos
-          path: results-macos.txt
+          path: |
+            results-macos.txt
+            platform-macos.json
 
   report:
     name: Report
@@ -215,6 +229,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
         with:
           path: artifacts
@@ -238,3 +255,47 @@ jobs:
             .github/install-paths-required.txt \
             "${{ needs.target.outputs.version }}" \
             "$GITHUB_STEP_SUMMARY"
+
+      - name: Build redacted website evidence review candidate
+        if: always()
+        env:
+          TARGET_TAG: ${{ needs.target.outputs.tag }}
+          TARGET_VERSION: ${{ needs.target.outputs.version }}
+          TARGET_REVISION: ${{ needs.target.outputs.revision }}
+        run: |
+          set -euo pipefail
+          collected_at=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+          snapshot="website/manifests/install-evidence/candidates/${TARGET_VERSION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          cat > install-evidence-metadata.json <<EOF
+          {
+            "schemaVersion": 1,
+            "target": {
+              "tag": "$TARGET_TAG",
+              "version": "$TARGET_VERSION",
+              "revision": "$TARGET_REVISION"
+            },
+            "collectedAt": "$collected_at",
+            "snapshotPath": "$snapshot",
+            "runs": [
+              {
+                "resultPath": "artifacts/results-linux.txt",
+                "platformPath": "artifacts/platform-linux.json"
+              },
+              {
+                "resultPath": "artifacts/results-macos.txt",
+                "platformPath": "artifacts/platform-macos.json"
+              }
+            ]
+          }
+          EOF
+          node website/scripts/collect-install-evidence.mjs \
+            --metadata install-evidence-metadata.json \
+            --output "$snapshot"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: install-evidence-review-${{ needs.target.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: website/manifests/install-evidence/candidates/*.json
+          if-no-files-found: error
+          retention-days: 7
