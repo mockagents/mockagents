@@ -1,0 +1,28 @@
+# Fixture contract: the researcher's first turn issues the expected parallel
+# tool calls for each topic family.
+apiVersion: mockagents/v1
+kind: TestSuite
+metadata:
+  name: pg-researcher-suite
+  description: Topic-keyed tool routing for the research-brief researcher.
+spec:
+  target:
+    agent: pg-researcher
+  cases:
+    - name: retry-topic-calls-search-and-calculator
+      steps:
+        - { role: user, content: "Task: research\nTopic: retry strategies for LLM APIs" }
+      assertions:
+        - { type: tool_call_sequence, sequence: [search_kb, calculator] }
+        - { type: tool_call_args, tool: calculator, arguments: { expression: "200 * 2^4" } }
+    - name: routing-topic
+      steps:
+        - { role: user, content: "Task: research\nTopic: SLM vs LLM routing" }
+      assertions:
+        - { type: tool_call_args, tool: search_kb, arguments: { query: "slm llm routing cost" } }
+    - name: grounding-topic-searches-only
+      steps:
+        - { role: user, content: "Task: research\nTopic: hallucination guards" }
+      assertions:
+        - { type: tool_call_count, count: 1 }
+        - { type: tool_call, tool: search_kb }

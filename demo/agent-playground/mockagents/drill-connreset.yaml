@@ -1,0 +1,22 @@
+# Resilience drill: CONNECTION RESET. The first request has its TCP connection reset
+# before any HTTP response is written (a transport error, not an HTTP status), then it
+# recovers. Proves transport errors are classified as retryable.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-drill-connreset
+  description: "Drill: the first request's connection is reset, then it recovers."
+  tags: [agent-playground, chaos, retry]
+
+spec:
+  protocol: openai-chat-completions
+  model: llm-connreset
+  behavior:
+    chaos:
+      connection:
+        mode: reset
+        fail_first: 1
+    scenarios:
+      - name: default
+        response:
+          content: "Recovered after a connection reset."

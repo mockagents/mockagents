@@ -1,0 +1,25 @@
+# Agent Playground fixture: REVISION EDITOR (SLM tier, OpenAI wire format).
+# When a human reviewer chooses "revise" at a review gate, the playground sends
+# "Task: revise\nReviewer feedback: <text>\nDraft:\n<draft>". This fixture captures both
+# with named regex groups and returns the draft with the feedback applied as a note.
+# That is enough to show the revise -> re-review loop end to end.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-editor
+  description: Applies human reviewer feedback to a draft (revise loop).
+  tags: [agent-playground, human-in-the-loop, slm]
+
+spec:
+  protocol: openai-chat-completions
+  model: slm-editor
+  systemPrompt: You revise drafts according to reviewer feedback.
+  behavior:
+    scenarios:
+      - name: revise
+        match: { content_regex: "(?s)Reviewer feedback:\\s*(?P<fb>[^\\n]*)\\nDraft:\\n(?P<draft>.*)" }
+        response:
+          content: "{{ index .Match \"draft\" }}\n\n[Revised per reviewer feedback: {{ index .Match \"fb\" }}]"
+      - name: default
+        response:
+          content: "No draft was supplied to revise."

@@ -1,0 +1,34 @@
+# Agent Playground fixture: PROPOSER B (LLM tier, Anthropic wire format).
+# See proposer-a.yaml for the three demo paths.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-proposer-b
+  description: Independent proposer B for multi-agent arbitration (different provider).
+  tags: [agent-playground, arbitration, llm]
+
+spec:
+  protocol: anthropic-messages
+  model: llm-proposer-b
+  systemPrompt: You propose a decision with a rationale. Answer with JSON.
+  behavior:
+    scenarios:
+      - name: storage
+        match: { content_regex: "(?im)^question:.*(sqlite|storage|database)" }
+        response:
+          content: |
+            {"decision": "adopt-sqlite", "confidence": 0.79, "rationale": "Zero operational overhead for one node; revisit when a second replica is planned.", "risks": ["No concurrent writers across processes."]}
+      - name: rewrite
+        match: { content_regex: "(?im)^question:.*(rewrite|migrat)" }
+        response:
+          content: |
+            {"decision": "defer", "confidence": 0.77, "rationale": "The module has no failing tests and the team is at capacity; schedule the rewrite after the release.", "risks": ["Debt keeps growing for one more quarter."]}
+      - name: launch
+        match: { content_regex: "(?im)^question:.*(launch|ship|release)" }
+        response:
+          content: |
+            {"decision": "delay", "confidence": 0.61, "rationale": "Peak-load behaviour is unverified, and a failed launch costs more than a short delay.", "risks": ["The beta cohort may churn."]}
+      - name: default
+        response:
+          content: |
+            {"decision": "proceed", "confidence": 0.66, "rationale": "No blocking concerns were identified.", "risks": []}

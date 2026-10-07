@@ -1,0 +1,1375 @@
+openapi: 3.1.0
+info:
+  title: mockagents Agent Playground API
+  version: 1.0.0
+  summary: Multi-agent workflows, agents, tools, human review and traces, running entirely against mockagents.
+  description: |
+    The Agent Playground is a demo application for [mockagents](https://github.com/mockagents/mockagents).
+    It runs multi-agent workflows (orchestrator, router, arbitration, resilience drill) whose model calls go to a
+    mockagents server over the real OpenAI, Anthropic and Gemini wire formats.
+
+    **Run lifecycle.** A run's `status` is always one of `in_progress`, `completed` or `failed`. Every run has a hard
+    deadline, every model call is bounded by retries (at most 5) and per-attempt timeouts, every human wait has a review
+    timeout, and a watchdog fails stalled runs, so no run can stay `in_progress` forever. `phase` tells you what an
+    in-progress run is doing (`running`, `awaiting_review`, `awaiting_approval`).
+
+    **Human review.** Every AI-generated output is recorded as an `output_audit` review item. Final outputs pass a
+    blocking `output_gate`, and side-effecting tools wait on a `tool_approval`. Decide them with
+    `POST /api/reviews/{id}/decision`.
+
+    **Errors** use one envelope: `{"error": {"code": "...", "message": "...", "details": ...}}`.
+
+    **Auth.** Optional. When the server runs with `--token`, mutating `/api` requests need `Authorization: Bearer <token>`.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+servers:
+  - url: http://127.0.0.1:7070
+    description: Local playground (`playground serve`)
+security:
+  - {}
+  - bearerAuth: []
+tags:
+  - name: system
+    description: Health, readiness, metrics and service info.
+  - name: workflows
+    description: Workflow catalog and run launch.
+  - name: runs
+    description: Run status, traces, live events and cancellation.
+  - name: reviews
+    description: Human-review checkpoints (gates, tool approvals, audit items).
+  - name: agents
+    description: Agent catalog, runtime configuration and direct invocation.
+  - name: tools
+    description: Tools that agents can call.
+  - name: config
+    description: Runtime configuration (retry defaults, routing policy, review policy, thresholds, pricing).
+  - name: mock
+    description: Proxied mockagents management API (logs, costs, pipelines, fixture authoring).
+
+paths:
+  /healthz:
+    get:
+      tags: [system]
+      operationId: health
+      summary: Liveness probe
+      responses:
+        "200":
+          description: The process is up.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+  /readyz:
+    get:
+      tags: [system]
+      operationId: ready
+      summary: Readiness probe (the mock is reachable)
+      responses:
+        "200":
+          description: Ready.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ready" }
+        "503":
+          description: The mock is unreachable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ready" }
+  /metrics:
+    get:
+      tags: [system]
+      operationId: metrics
+      summary: Prometheus metrics
+      description: Runs started and finished, LLM calls by tier, attempts, retries by reason, fallbacks, escalations, tool executions, review decisions, watchdog kills, guard violations, tokens and cost.
+      responses:
+        "200":
+          description: Prometheus text exposition format.
+          content:
+            text/plain:
+              schema: { type: string }
+  /openapi.yaml:
+    get:
+      tags: [system]
+      operationId: openapiYaml
+      summary: This document (YAML)
+      responses:
+        "200":
+          description: OpenAPI document.
+          content:
+            application/yaml:
+              schema: { type: string }
+  /openapi.json:
+    get:
+      tags: [system]
+      operationId: openapiJson
+      summary: This document (JSON)
+      responses:
+        "200":
+          description: OpenAPI document.
+          content:
+            application/json:
+              schema: { type: object }
+  /api/info:
+    get:
+      tags: [system]
+      operationId: getInfo
+      summary: Service info and counters
+      responses:
+        "200":
+          description: Service info.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Info" }
+
+  /api/workflows:
+    get:
+      tags: [workflows]
+      operationId: listWorkflows
+      summary: List workflows
+      responses:
+        "200":
+          description: Workflow catalog with input schemas and runnable examples.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowList" }
+  /api/workflows/{name}:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowName"
+    get:
+      tags: [workflows]
+      operationId: getWorkflow
+      summary: Describe a workflow
+      responses:
+        "200":
+          description: Workflow description.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowInfo" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/workflows/{name}/runs:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowName"
+    post:
+      tags: [workflows]
+      operationId: startRun
+      summary: Start a workflow run
+      description: |
+        Validates the input, creates a run (`status: in_progress`) and executes it in the background.
+        With `?wait=N` the response is delayed up to N seconds (capped at 120) until the run is terminal or blocked on
+        a human (`awaiting_review` / `awaiting_approval`).
+      parameters:
+        - name: wait
+          in: query
+          required: false
+          description: Seconds to wait for the run to settle (0-120).
+          schema: { type: number, minimum: 0 }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StartRunRequest" }
+            examples:
+              research:
+                summary: Research brief
+                value: { input: { topic: "retry strategies for LLM APIs" } }
+              hallucination:
+                summary: Catch a planted hallucination
+                value: { input: { topic: "retry strategies", simulate_hallucination: true }, options: { review_mode: auto } }
+              triage:
+                summary: Billing ticket with an approval-gated refund
+                value: { input: { ticket: "I was charged twice for order ORD-1001. Please refund the duplicate charge." } }
+              drill:
+                summary: Resilience drill, auto-approved
+                value: { input: {}, options: { review_mode: auto } }
+      responses:
+        "201":
+          description: Run created. The `Location` header points at the run.
+          headers:
+            Location:
+              schema: { type: string }
+              description: /api/runs/{id}
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Run" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/runs:
+    get:
+      tags: [runs]
+      operationId: listRuns
+      summary: List runs (newest first)
+      parameters:
+        - name: workflow
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/RunStatus" }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+      responses:
+        "200":
+          description: Runs (without their event logs) and counts per status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/runs/{id}:
+    parameters:
+      - $ref: "#/components/parameters/RunID"
+    get:
+      tags: [runs]
+      operationId: getRun
+      summary: Get a run
+      responses:
+        "200":
+          description: The run, including steps, stats, events, output and error.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Run" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/runs/{id}/trace:
+    parameters:
+      - $ref: "#/components/parameters/RunID"
+    get:
+      tags: [runs]
+      operationId: getTrace
+      summary: Get a run's span tree
+      responses:
+        "200":
+          description: Spans for workflow, steps, agents, routing, model calls, attempts, tools, guards and reviews.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trace" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/runs/{id}/events:
+    parameters:
+      - $ref: "#/components/parameters/RunID"
+    get:
+      tags: [runs]
+      operationId: streamRunEvents
+      summary: Live run updates (Server-Sent Events)
+      description: |
+        Emits `event: run` with a full Run snapshot on every change (throttled), then `event: done` when the run
+        is terminal, and closes. Keep-alive comments are sent every 15 s.
+      responses:
+        "200":
+          description: SSE stream.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/runs/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/RunID"
+    post:
+      tags: [runs]
+      operationId: cancelRun
+      summary: Cancel a run
+      description: Moves an in-progress run to `failed` with code `cancelled`, and expires its pending blocking reviews.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CancelRequest" }
+      responses:
+        "200":
+          description: The cancelled run.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Run" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The run already finished.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/reviews:
+    get:
+      tags: [reviews]
+      operationId: listReviews
+      summary: List review items (newest first)
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/ReviewStatus" }
+        - name: run_id
+          in: query
+          schema: { type: string }
+        - name: kind
+          in: query
+          schema: { $ref: "#/components/schemas/ReviewKind" }
+        - name: blocking
+          in: query
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Review items.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReviewList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/reviews/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ReviewID"
+    get:
+      tags: [reviews]
+      operationId: getReview
+      summary: Get a review item
+      responses:
+        "200":
+          description: The review item.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReviewItem" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/reviews/{id}/decision:
+    parameters:
+      - $ref: "#/components/parameters/ReviewID"
+    post:
+      tags: [reviews]
+      operationId: decideReview
+      summary: Decide a review item
+      description: |
+        `approve` / `reject` / `revise` for output gates (revise needs a comment and is offered while revisions remain),
+        `approve` / `reject` for tool approvals, `approve` / `flag` for audit items. Each item takes exactly one decision.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DecisionRequest" }
+            examples:
+              approve: { value: { action: approve, reviewer: dana } }
+              revise: { value: { action: revise, comment: "Add an apology for the delay.", reviewer: dana } }
+      responses:
+        "200":
+          description: The decided review item.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReviewItem" }
+        "400":
+          description: Invalid body, or an action this item does not allow (`action_not_allowed`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The item was already decided or expired (`not_pending`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/agents:
+    get:
+      tags: [agents]
+      operationId: listAgents
+      summary: List agents
+      responses:
+        "200":
+          description: Agents with their effective routing decision and retry policy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentList" }
+  /api/agents/{name}:
+    parameters:
+      - $ref: "#/components/parameters/AgentName"
+    get:
+      tags: [agents]
+      operationId: getAgent
+      summary: Get an agent
+      responses:
+        "200":
+          description: The agent, including tool details.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [agents]
+      operationId: patchAgent
+      summary: Reconfigure an agent (JSON merge patch, RFC 7386)
+      description: |
+        Merge-patches the agent's configuration: tier, models, prompt, temperature, tools, fallback chain, retry policy,
+        timeouts or streaming. `null` removes an optional field (for example `"retry": null` restores the default policy).
+        The whole configuration is re-validated, and an invalid change is rejected with field-level details while the
+        previous configuration stays active. Changes apply to the next agent call.
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: "#/components/schemas/AgentPatch" }
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentPatch" }
+            examples:
+              pinLLM: { summary: Pin the summarizer to the LLM tier, value: { tier: llm } }
+              retries: { summary: Five retries with a slower backoff, value: { retry: { max_retries: 5, initial_backoff_ms: 500, max_backoff_ms: 8000, multiplier: 2, jitter: 0.2 } } }
+      responses:
+        "200":
+          description: The updated agent. `X-Config-Version` carries the new config version.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentView" }
+        "400": { $ref: "#/components/responses/InvalidConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/agents/{name}/invoke:
+    parameters:
+      - $ref: "#/components/parameters/AgentName"
+    post:
+      tags: [agents]
+      operationId: invokeAgent
+      summary: Invoke one agent
+      description: |
+        Runs one agent call as a single-step run, with the same routing, retries, fallback, tool loop, tracing and audit
+        review as workflows. Without streaming the response arrives when the call finishes (200), or with 202 if a
+        side-effecting tool is waiting for human approval.
+
+        With `"stream": true`, `?stream=true` or `Accept: text/event-stream`, the response is an SSE stream of agent
+        events: `run`, `route`, `delta` (text), `reset` (a broken stream is being retried without streaming), `retry`,
+        `fallback`, `tool_call`, `tool_result`, `approval_requested`, `continuation`, `escalation`, review events, and
+        finally `done` (an InvokeResponse).
+      parameters:
+        - name: stream
+          in: query
+          schema: { type: boolean }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InvokeRequest" }
+            examples:
+              chat: { value: { input: "What can you do?" } }
+              slm: { summary: Force the SLM tier, value: { input: "Task: summarize\nTopic: retry strategies\nFindings:\n...", tier: slm } }
+      responses:
+        "200":
+          description: Finished call (`status` completed or failed). An SSE stream when streaming was requested.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvokeResponse" }
+            text/event-stream:
+              schema: { type: string }
+        "202":
+          description: Waiting on a human (see `pending_reviews`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvokeResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/tools:
+    get:
+      tags: [tools]
+      operationId: listTools
+      summary: List tools
+      responses:
+        "200":
+          description: Tools with their JSON-schema parameters.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ToolList" }
+  /api/tools/{name}/execute:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string, examples: [search_kb, calculator, lookup_order] }
+    post:
+      tags: [tools]
+      operationId: executeTool
+      summary: Execute a read-only tool directly
+      description: Arguments are validated against the tool schema. Side-effecting tools (`issue_refund`) return 403, because they only run inside an agent loop behind a human approval.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExecuteToolRequest" }
+            examples:
+              calculator: { value: { arguments: { expression: "200 * 2^4" } } }
+      responses:
+        "200":
+          description: Tool result.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExecuteToolResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: The tool requires human approval (`approval_required`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422":
+          description: The tool ran and failed (`tool_error`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/config:
+    get:
+      tags: [config]
+      operationId: getConfig
+      summary: Get the live configuration
+      responses:
+        "200":
+          description: Configuration and version (also in `X-Config-Version`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConfigEnvelope" }
+    patch:
+      tags: [config]
+      operationId: patchConfig
+      summary: Change defaults, routing, workflow thresholds or pricing (JSON merge patch)
+      description: Agents are changed with `PATCH /api/agents/{name}`. Invalid changes are rejected and the previous configuration stays active.
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: "#/components/schemas/ConfigPatch" }
+          application/json:
+            schema: { $ref: "#/components/schemas/ConfigPatch" }
+            examples:
+              autoReview: { value: { defaults: { review: { mode: auto } } } }
+              slmThreshold: { value: { router: { escalation_threshold: 0.8 } } }
+      responses:
+        "200":
+          description: The new configuration.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConfigEnvelope" }
+        "400": { $ref: "#/components/responses/InvalidConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/config/reset:
+    post:
+      tags: [config]
+      operationId: resetConfig
+      summary: Restore the startup configuration
+      responses:
+        "200":
+          description: The restored configuration.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConfigEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/mock/status:
+    get:
+      tags: [mock]
+      operationId: mockStatus
+      summary: mockagents health and agent catalog
+      responses:
+        "200":
+          description: Mock status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MockStatus" }
+        "502": { $ref: "#/components/responses/MockUnreachable" }
+  /api/mock/logs:
+    get:
+      tags: [mock]
+      operationId: mockLogs
+      summary: mockagents interaction log (proxy of GET /api/v1/logs)
+      description: Every request the mock served, with the matched scenario, tokens and `cost_usd`. Filter one run's traffic with `session_prefix=<run id>`; the playground prefixes every X-Session-Id with the run id.
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 50 } }
+        - { name: offset, in: query, schema: { type: integer } }
+        - { name: agent, in: query, schema: { type: string }, description: "mockagents agent name, e.g. pg-researcher" }
+        - { name: session_id, in: query, schema: { type: string } }
+        - { name: session_prefix, in: query, schema: { type: string } }
+        - { name: since, in: query, schema: { type: string } }
+        - { name: until, in: query, schema: { type: string } }
+        - { name: fields, in: query, schema: { type: string, enum: [meta] } }
+      responses:
+        "200":
+          description: Passthrough of the mockagents response.
+          content:
+            application/json:
+              schema: { type: array, items: { type: object } }
+        "502": { $ref: "#/components/responses/MockUnreachable" }
+  /api/mock/costs:
+    get:
+      tags: [mock]
+      operationId: mockCosts
+      summary: mockagents cost rollup (proxy of GET /api/v1/costs)
+      responses:
+        "200":
+          description: Totals by model and agent, priced with config/mock-pricing.yaml.
+          content:
+            application/json:
+              schema: { type: object }
+        "502": { $ref: "#/components/responses/MockUnreachable" }
+  /api/mock/pipelines:
+    get:
+      tags: [mock]
+      operationId: mockPipelines
+      summary: Native mockagents pipelines (proxy of GET /api/v1/pipelines)
+      responses:
+        "200":
+          description: Passthrough.
+          content:
+            application/json:
+              schema: { type: object }
+        "502": { $ref: "#/components/responses/MockUnreachable" }
+  /api/mock/pipelines/{name}/run:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string, examples: [pg-native-brief] }
+    post:
+      tags: [mock]
+      operationId: mockRunPipeline
+      summary: Run a native mockagents pipeline
+      description: The mock executes the pipeline topology itself, a contract simulation with no tools, retries or reviews. Compare it with the playground's own research-brief orchestrator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [input]
+              properties:
+                input: { type: string }
+                session_id: { type: string }
+            example: { input: "Task: plan a research brief\nTopic: retry strategies" }
+      responses:
+        "200":
+          description: Node-by-node result.
+          content:
+            application/json:
+              schema: { type: object }
+        "422":
+          description: A node failed (passthrough).
+          content:
+            application/json:
+              schema: { type: object }
+        "502": { $ref: "#/components/responses/MockUnreachable" }
+  /api/mock/agents/{name}:
+    parameters:
+      - $ref: "#/components/parameters/MockAgentName"
+    get:
+      tags: [mock]
+      operationId: mockGetAgent
+      summary: Get a mock fixture definition
+      description: The complete definition mockagents is serving. With `?format=yaml` (or `Accept application/yaml`) it is the canonical YAML that a `PUT` can store unchanged.
+      parameters:
+        - name: format
+          in: query
+          schema: { type: string, enum: [json, yaml] }
+      responses:
+        "200":
+          description: Passthrough.
+          content:
+            application/json:
+              schema: { type: object }
+            application/yaml:
+              schema: { type: string }
+        "404":
+          description: Unknown fixture (passthrough).
+          content:
+            application/json:
+              schema: { type: object }
+        "502": { $ref: "#/components/responses/MockUnreachable" }
+    put:
+      tags: [mock]
+      operationId: mockPutAgent
+      summary: Create or replace a mock fixture at runtime (mockagents write API)
+      description: "The body is a `kind: Agent` YAML (or JSON) document. mockagents validates it and swaps it into the live registry."
+      requestBody:
+        required: true
+        content:
+          application/yaml:
+            schema: { type: string }
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Replaced (passthrough).
+          content:
+            application/json:
+              schema: { type: object }
+        "201":
+          description: Created (passthrough).
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: Invalid definition (passthrough).
+          content:
+            application/json:
+              schema: { type: object }
+        "502": { $ref: "#/components/responses/MockUnreachable" }
+  /api/mock/agents/{name}/reload:
+    parameters:
+      - $ref: "#/components/parameters/MockAgentName"
+    post:
+      tags: [mock]
+      operationId: mockReloadAgent
+      summary: Reload a fixture from disk (also re-arms fail_first chaos counters)
+      responses:
+        "200":
+          description: Reloaded (passthrough).
+          content:
+            application/json:
+              schema: { type: object }
+        "404":
+          description: Unknown fixture (passthrough).
+          content:
+            application/json:
+              schema: { type: object }
+        "502": { $ref: "#/components/responses/MockUnreachable" }
+  /api/mock/validate:
+    post:
+      tags: [mock]
+      operationId: mockValidate
+      summary: Validate a mockagents document without loading it
+      requestBody:
+        required: true
+        content:
+          application/yaml:
+            schema: { type: string }
+      responses:
+        "200":
+          description: Validation report (passthrough).
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: Invalid (passthrough).
+          content:
+            application/json:
+              schema: { type: object }
+        "502": { $ref: "#/components/responses/MockUnreachable" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Only enforced when the server runs with --token; then required on mutating /api requests.
+
+  parameters:
+    WorkflowName:
+      name: name
+      in: path
+      required: true
+      schema: { type: string, enum: [research-brief, support-triage, decision-review, resilience-drill, agent] }
+    RunID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, examples: [run_142233_0001] }
+    ReviewID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, examples: [rev_0007] }
+    AgentName:
+      name: name
+      in: path
+      required: true
+      schema: { type: string, examples: [summarizer, researcher, assistant] }
+    MockAgentName:
+      name: name
+      in: path
+      required: true
+      schema: { type: string, examples: [pg-drill-flaky] }
+
+  responses:
+    BadRequest:
+      description: Invalid request or input (`invalid_request`, `invalid_input`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InvalidConfig:
+      description: The configuration change was rejected (`invalid_config`); `details` lists field errors.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Not found.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: A bearer token is required (only when the server runs with --token).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    MockUnreachable:
+      description: The mockagents server could not be reached (`mock_unreachable`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, examples: [invalid_input, not_found, invalid_config, not_pending] }
+            message: { type: string }
+            details: {}
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, const: ok }
+    Ready:
+      type: object
+      required: [status, mock]
+      properties:
+        status: { type: string, enum: [ready, not_ready] }
+        mock:
+          type: object
+          properties:
+            url: { type: string }
+            health: { type: object }
+            error: { type: string }
+    Info:
+      type: object
+      additionalProperties: false
+      required: [name, version, mock, config_version, review_mode, agents, workflows, runs, pending_reviews, auth_required, links]
+      properties:
+        name: { type: string }
+        version: { type: string }
+        mock:
+          type: object
+          properties:
+            url: { type: string }
+            mode: { type: string, enum: [embedded, external] }
+        config_version: { type: integer }
+        review_mode: { type: string, enum: [manual, auto] }
+        agents: { type: integer }
+        workflows: { type: integer }
+        runs: { type: object, additionalProperties: { type: integer } }
+        pending_reviews: { type: integer }
+        auth_required: { type: boolean }
+        links: { type: object, additionalProperties: { type: string } }
+
+    RetryPolicy:
+      type: object
+      additionalProperties: false
+      description: Exponential backoff. Delay before retry n = initial_backoff_ms * multiplier^(n-1), capped at max_backoff_ms, ±jitter; a Retry-After header raises the delay (up to 30 s).
+      properties:
+        max_retries: { type: integer, minimum: 0, maximum: 5 }
+        initial_backoff_ms: { type: integer, minimum: 0, maximum: 60000 }
+        max_backoff_ms: { type: integer, minimum: 0, maximum: 120000 }
+        multiplier: { type: number, minimum: 0, maximum: 10, description: "1-10; 0 = default (2)" }
+        jitter: { type: number, minimum: 0, maximum: 1 }
+
+    RunStatus:
+      type: string
+      enum: [in_progress, completed, failed]
+    RunOptions:
+      type: object
+      additionalProperties: false
+      properties:
+        review_mode: { type: string, enum: [manual, auto] }
+        review_timeout_ms: { type: integer, minimum: 1000 }
+        run_timeout_ms: { type: integer, minimum: 1000 }
+        retry: { $ref: "#/components/schemas/RetryPolicy" }
+        tiers:
+          type: object
+          description: Pin agents to a tier for this run, e.g. {"summarizer":"llm"}.
+          additionalProperties: { type: string, enum: [slm, llm, auto] }
+        stream: { type: boolean }
+    StartRunRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        input:
+          type: object
+          description: Workflow-specific input; see the workflow's input_schema.
+        options: { $ref: "#/components/schemas/RunOptions" }
+    RunError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [agent_failed, guard_failed, review_rejected, review_timeout, deadline_exceeded, watchdog_stalled, cancelled, panic, interrupted, step_failed, drill_failed, shutdown]
+        message: { type: string }
+        step: { type: string }
+    Step:
+      type: object
+      additionalProperties: false
+      required: [id, name, kind, status, started_at, duration_ms]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [agent, guard, review, logic] }
+        status: { type: string, enum: [running, completed, failed, skipped] }
+        agent: { type: string }
+        tier: { type: string, enum: [slm, llm] }
+        model: { type: string }
+        attempts: { type: integer }
+        retries: { type: integer }
+        fallback: { type: boolean }
+        escalated: { type: boolean }
+        cost_usd: { type: number }
+        started_at: { type: string, format: date-time }
+        ended_at: { type: string, format: date-time }
+        duration_ms: { type: integer }
+        output: {}
+        error: { type: string }
+        notes: { type: array, items: { type: string } }
+    Stats:
+      type: object
+      additionalProperties: false
+      properties:
+        llm_calls: { type: integer }
+        attempts: { type: integer }
+        retries: { type: integer }
+        fallbacks: { type: integer }
+        escalations: { type: integer }
+        tool_calls: { type: integer }
+        tokens_in: { type: integer }
+        tokens_out: { type: integer }
+        cost_usd: { type: number }
+        slm_calls: { type: integer }
+        llm_tier_calls: { type: integer }
+    RunEvent:
+      type: object
+      additionalProperties: false
+      required: [time, type]
+      properties:
+        time: { type: string, format: date-time }
+        type: { type: string, examples: [route, retry, fallback, tool_call, escalation, review_requested] }
+        data: { type: object }
+    Run:
+      type: object
+      additionalProperties: false
+      required: [id, workflow, status, phase, input, options, steps, review_ids, stats, created_at, updated_at, heartbeat_at, deadline, duration_ms]
+      properties:
+        id: { type: string }
+        workflow: { type: string }
+        status: { $ref: "#/components/schemas/RunStatus" }
+        phase: { type: string, enum: [starting, running, awaiting_review, awaiting_approval, done] }
+        current_step: { type: string }
+        input: { type: object }
+        options: { $ref: "#/components/schemas/RunOptions" }
+        output: {}
+        error: { $ref: "#/components/schemas/RunError" }
+        steps: { type: array, items: { $ref: "#/components/schemas/Step" } }
+        review_ids: { type: array, items: { type: string } }
+        stats: { $ref: "#/components/schemas/Stats" }
+        events: { type: array, items: { $ref: "#/components/schemas/RunEvent" } }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        heartbeat_at: { type: string, format: date-time }
+        deadline: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+        duration_ms: { type: integer }
+    RunList:
+      type: object
+      additionalProperties: false
+      required: [runs, counts]
+      properties:
+        runs: { type: array, items: { $ref: "#/components/schemas/Run" } }
+        counts:
+          type: object
+          additionalProperties: false
+          properties:
+            in_progress: { type: integer }
+            completed: { type: integer }
+            failed: { type: integer }
+    CancelRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason: { type: string }
+
+    Span:
+      type: object
+      additionalProperties: false
+      required: [id, name, kind, start, status]
+      properties:
+        id: { type: string }
+        parent_id: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [workflow, step, agent, router, llm, attempt, tool, guard, review] }
+        start: { type: string, format: date-time }
+        end: { type: string, format: date-time }
+        status: { type: string, enum: [running, ok, error] }
+        error: { type: string }
+        attrs: { type: object }
+        events:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [time, name]
+            properties:
+              time: { type: string, format: date-time }
+              name: { type: string }
+              attrs: { type: object }
+    Trace:
+      type: object
+      additionalProperties: false
+      required: [run_id, spans]
+      properties:
+        run_id: { type: string }
+        spans: { type: array, items: { $ref: "#/components/schemas/Span" } }
+
+    WorkflowExample:
+      type: object
+      additionalProperties: false
+      required: [name, description, input]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        input: { type: object }
+        options: { $ref: "#/components/schemas/RunOptions" }
+    WorkflowInfo:
+      type: object
+      additionalProperties: false
+      required: [name, title, summary, patterns, agents, input_schema, examples]
+      properties:
+        name: { type: string }
+        title: { type: string }
+        summary: { type: string }
+        patterns: { type: array, items: { type: string } }
+        agents: { type: array, items: { type: string } }
+        input_schema: { type: object, description: JSON Schema of the workflow input. }
+        examples: { type: [array, "null"], items: { $ref: "#/components/schemas/WorkflowExample" } }
+        hidden: { type: boolean }
+    WorkflowList:
+      type: object
+      additionalProperties: false
+      required: [workflows]
+      properties:
+        workflows: { type: array, items: { $ref: "#/components/schemas/WorkflowInfo" } }
+
+    ReviewKind:
+      type: string
+      enum: [output_gate, tool_approval, output_audit]
+    ReviewStatus:
+      type: string
+      enum: [pending, approved, rejected, revised, flagged, expired, auto_approved]
+    Decision:
+      type: object
+      additionalProperties: false
+      required: [action, decided_at]
+      properties:
+        action: { type: string, enum: [approve, reject, revise, flag, expire] }
+        comment: { type: string }
+        reviewer: { type: string }
+        decided_at: { type: string, format: date-time }
+        auto: { type: boolean, description: Decided by policy (auto mode, timeout policy or expiry). }
+    ReviewItem:
+      type: object
+      additionalProperties: false
+      required: [id, run_id, workflow, kind, blocking, title, content, status, allowed_actions, created_at]
+      properties:
+        id: { type: string }
+        run_id: { type: string }
+        workflow: { type: string }
+        kind: { $ref: "#/components/schemas/ReviewKind" }
+        blocking: { type: boolean }
+        title: { type: string }
+        agent: { type: string }
+        content: { type: string }
+        context: { type: object }
+        status: { $ref: "#/components/schemas/ReviewStatus" }
+        allowed_actions: { type: array, items: { type: string, enum: [approve, reject, revise, flag] } }
+        decision: { $ref: "#/components/schemas/Decision" }
+        created_at: { type: string, format: date-time }
+        deadline: { type: string, format: date-time }
+    ReviewList:
+      type: object
+      additionalProperties: false
+      required: [reviews, count]
+      properties:
+        reviews: { type: array, items: { $ref: "#/components/schemas/ReviewItem" } }
+        count: { type: integer }
+    DecisionRequest:
+      type: object
+      additionalProperties: false
+      required: [action]
+      properties:
+        action: { type: string, enum: [approve, reject, revise, flag] }
+        comment: { type: string, maxLength: 2000 }
+        reviewer: { type: string, maxLength: 80 }
+
+    ModelRef:
+      type: object
+      additionalProperties: false
+      required: [provider, model]
+      properties:
+        provider: { type: string, enum: [openai, anthropic, gemini] }
+        model: { type: string, description: The model id; against mockagents it selects the fixture. }
+    Agent:
+      type: object
+      required: [name, description, role, tier, models, system_prompt]
+      properties:
+        name: { type: string, pattern: "^[a-z][a-z0-9-]{0,62}$" }
+        description: { type: string }
+        role: { type: string, enum: [plan, reason, verify, judge, generate, summarize, classify, extract, chat] }
+        tier: { type: string, enum: [auto, slm, llm] }
+        models:
+          type: object
+          description: Model per tier (keys slm and/or llm).
+          additionalProperties: { $ref: "#/components/schemas/ModelRef" }
+        system_prompt: { type: string, maxLength: 8000 }
+        temperature: { type: number, minimum: 0, maximum: 2 }
+        max_tokens: { type: integer, minimum: 0, maximum: 32000 }
+        tools: { type: array, items: { type: string } }
+        fallback: { type: array, items: { $ref: "#/components/schemas/ModelRef" } }
+        retry: { $ref: "#/components/schemas/RetryPolicy" }
+        attempt_timeout_ms: { type: integer, minimum: 0, maximum: 300000 }
+        stream: { type: boolean }
+        mock: { type: array, items: { type: string }, description: mockagents fixture(s) behind this agent. }
+    RouteDecision:
+      type: object
+      additionalProperties: false
+      properties:
+        tier: { type: string, enum: [slm, llm] }
+        model: { $ref: "#/components/schemas/ModelRef" }
+        reason: { type: string }
+        override: { type: boolean }
+        error: { type: string }
+    AgentView:
+      allOf:
+        - $ref: "#/components/schemas/Agent"
+        - type: object
+          required: [effective_route, effective_retry]
+          properties:
+            effective_route: { $ref: "#/components/schemas/RouteDecision" }
+            effective_retry: { $ref: "#/components/schemas/RetryPolicy" }
+            tool_details: { type: [array, "null"], items: { $ref: "#/components/schemas/ToolInfo" } }
+    AgentList:
+      type: object
+      additionalProperties: false
+      required: [agents]
+      properties:
+        agents: { type: array, items: { $ref: "#/components/schemas/AgentView" } }
+    AgentPatch:
+      type: object
+      description: JSON merge patch (RFC 7386) over Agent. `name` cannot change.
+      properties:
+        description: { type: string }
+        role: { type: string }
+        tier: { type: string, enum: [auto, slm, llm] }
+        models: { type: object }
+        system_prompt: { type: string }
+        temperature: { type: [number, "null"] }
+        max_tokens: { type: integer }
+        tools: { type: [array, "null"], items: { type: string } }
+        fallback: { type: [array, "null"], items: { $ref: "#/components/schemas/ModelRef" } }
+        retry:
+          oneOf:
+            - $ref: "#/components/schemas/RetryPolicy"
+            - type: "null"
+        attempt_timeout_ms: { type: integer }
+        stream: { type: boolean }
+
+    ToolExecution:
+      type: object
+      additionalProperties: false
+      required: [call_id, tool, arguments, outcome, duration_ms]
+      properties:
+        call_id: { type: string }
+        tool: { type: string }
+        arguments: { type: string, description: Raw arguments exactly as the model produced them. }
+        result: {}
+        error: { type: string }
+        outcome: { type: string, enum: [ok, error, invalid_arguments, declined, unknown_tool] }
+        approval:
+          type: object
+          additionalProperties: false
+          required: [approved]
+          properties:
+            approved: { type: boolean }
+            comment: { type: string }
+            reviewer: { type: string }
+        duration_ms: { type: integer }
+    ModelCall:
+      type: object
+      additionalProperties: false
+      required: [model, fallback, attempts, outcome]
+      properties:
+        model: { $ref: "#/components/schemas/ModelRef" }
+        fallback: { type: boolean }
+        attempts: { type: integer }
+        outcome: { type: string, enum: [ok, failed] }
+        error: { type: string }
+    AgentResult:
+      type: object
+      additionalProperties: false
+      required: [agent, output, tier, model, route_reason, finish_reason, attempts, retries, fallback_used, model_calls, turns, usage, cost_usd, latency_ms, session_id]
+      properties:
+        agent: { type: string }
+        output: { type: string }
+        tier: { type: string, enum: [slm, llm] }
+        model: { $ref: "#/components/schemas/ModelRef" }
+        route_reason: { type: string }
+        finish_reason: { type: string }
+        refused: { type: boolean }
+        attempts: { type: integer }
+        retries: { type: integer }
+        fallback_used: { type: boolean }
+        model_calls: { type: array, items: { $ref: "#/components/schemas/ModelCall" } }
+        tool_executions: { type: array, items: { $ref: "#/components/schemas/ToolExecution" } }
+        continuations: { type: integer }
+        stream_fallback: { type: boolean }
+        turns: { type: integer }
+        usage:
+          type: object
+          additionalProperties: false
+          properties:
+            input_tokens: { type: integer }
+            output_tokens: { type: integer }
+        cost_usd: { type: number }
+        latency_ms: { type: integer }
+        mock_headers:
+          type: object
+          description: X-Mockagents-* response headers (fixture metadata such as X-Mockagents-Hallucination).
+          additionalProperties: { type: string }
+        session_id: { type: string }
+    InvokeRequest:
+      type: object
+      additionalProperties: false
+      required: [input]
+      properties:
+        input: { type: string, maxLength: 8000 }
+        tier: { type: string, enum: [auto, slm, llm] }
+        stream: { type: boolean }
+        options: { $ref: "#/components/schemas/RunOptions" }
+    InvokeResponse:
+      type: object
+      additionalProperties: false
+      required: [run_id, status, phase, links]
+      properties:
+        run_id: { type: string }
+        status: { $ref: "#/components/schemas/RunStatus" }
+        phase: { type: string }
+        result:
+          oneOf:
+            - $ref: "#/components/schemas/AgentResult"
+            - type: "null"
+        error: { $ref: "#/components/schemas/RunError" }
+        pending_reviews: { type: array, items: { $ref: "#/components/schemas/ReviewItem" } }
+        links: { type: object, additionalProperties: { type: string } }
+
+    ToolInfo:
+      type: object
+      additionalProperties: false
+      required: [name, description, parameters, requires_approval, side_effects]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        parameters: { type: object, description: JSON Schema of the arguments. }
+        requires_approval: { type: boolean }
+        side_effects: { type: boolean }
+    ToolList:
+      type: object
+      additionalProperties: false
+      required: [tools]
+      properties:
+        tools: { type: array, items: { $ref: "#/components/schemas/ToolInfo" } }
+    ExecuteToolRequest:
+      type: object
+      additionalProperties: false
+      required: [arguments]
+      properties:
+        arguments: { type: object }
+    ExecuteToolResponse:
+      type: object
+      additionalProperties: false
+      required: [tool, result, duration_ms]
+      properties:
+        tool: { type: string }
+        result: {}
+        duration_ms: { type: integer }
+
+    Config:
+      type: object
+      additionalProperties: false
+      required: [defaults, router, workflows, agents, pricing]
+      properties:
+        defaults:
+          type: object
+          additionalProperties: false
+          properties:
+            retry: { $ref: "#/components/schemas/RetryPolicy" }
+            attempt_timeout_ms: { type: integer, minimum: 100, maximum: 300000 }
+            run_timeout_ms: { type: integer, minimum: 1000 }
+            max_tool_turns: { type: integer, minimum: 1, maximum: 20 }
+            review:
+              type: object
+              additionalProperties: false
+              properties:
+                mode: { type: string, enum: [manual, auto] }
+                timeout_ms: { type: integer, minimum: 1000 }
+                on_timeout: { type: string, enum: [fail, approve] }
+                max_revisions: { type: integer, minimum: 0, maximum: 5 }
+        router:
+          type: object
+          additionalProperties: false
+          properties:
+            policy: { type: object, additionalProperties: { type: string, enum: [slm, llm] } }
+            escalation_threshold: { type: number, minimum: 0, maximum: 1 }
+            escalate_on_guard_failure: { type: boolean }
+        workflows:
+          type: object
+          additionalProperties: false
+          properties:
+            arbitration_threshold: { type: number, minimum: 0, maximum: 1 }
+            max_grounding_regenerations: { type: integer, minimum: 0, maximum: 3 }
+            watchdog_stall_ms: { type: integer, minimum: 1000 }
+        agents: { type: array, items: { $ref: "#/components/schemas/Agent" } }
+        pricing:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties: false
+            properties:
+              input_per_1k: { type: number }
+              output_per_1k: { type: number }
+    ConfigEnvelope:
+      type: object
+      additionalProperties: false
+      required: [version, config]
+      properties:
+        version: { type: integer }
+        config: { $ref: "#/components/schemas/Config" }
+    ConfigPatch:
+      type: object
+      description: JSON merge patch over Config (excluding agents).
+      properties:
+        defaults: { type: object }
+        router: { type: object }
+        workflows: { type: object }
+        pricing: { type: object }
+
+    MockStatus:
+      type: object
+      required: [url, mode, health, agents]
+      properties:
+        url: { type: string }
+        mode: { type: string, enum: [embedded, external] }
+        health: { type: object }
+        agents:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              model: { type: string }
+              protocol: { type: string }

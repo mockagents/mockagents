@@ -1,0 +1,22 @@
+# Resilience drill: SLOW upstream. Adds 2.5 s of latency to every response, longer than
+# the drill's 800 ms per-attempt timeout. Every attempt times out (and is cancelled
+# client-side), so the step recovers through the fallback chain.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-drill-slow
+  description: "Drill: 2.5 s of latency, longer than the per-attempt timeout."
+  tags: [agent-playground, chaos, timeout]
+
+spec:
+  protocol: openai-chat-completions
+  model: llm-slow
+  behavior:
+    chaos:
+      latency:
+        distribution: fixed
+        min_ms: 2500
+    scenarios:
+      - name: default
+        response:
+          content: "This answer arrives too late to be used."

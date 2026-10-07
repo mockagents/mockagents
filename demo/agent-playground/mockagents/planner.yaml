@@ -1,0 +1,26 @@
+# Agent Playground fixture: the research-brief PLANNER (LLM tier, Anthropic wire format).
+# The playground sends "Task: plan a research brief\nTopic: <topic>\n..." and expects
+# a JSON plan back. The topic is captured with a named regex group and echoed so the
+# plan follows the user's input.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-planner
+  description: Research-brief planner. Returns a JSON plan for the requested topic.
+  tags: [agent-playground, orchestrator, llm]
+
+spec:
+  protocol: anthropic-messages
+  model: llm-planner
+  systemPrompt: You plan research briefs and answer with a JSON plan.
+  behavior:
+    scenarios:
+      - name: plan
+        match: { content_regex: "(?im)^topic:\\s*(?P<topic>[^\\n]+)$" }
+        response:
+          content: |
+            {"topic": "{{ index .Match "topic" }}", "objective": "Produce a grounded, reviewable brief on {{ index .Match "topic" }}.", "steps": [{"id": 1, "agent": "researcher", "goal": "Gather evidence with search_kb and calculator"}, {"id": 2, "agent": "summarizer", "goal": "Condense the findings for an engineering audience (SLM tier)"}, {"id": 3, "agent": "verifier", "goal": "Check every figure and citation against the evidence"}], "risks": ["Unsupported figures in the summary", "Stale knowledge-base articles"]}
+      - name: default
+        response:
+          content: |
+            {"topic": "general", "objective": "Produce a grounded brief.", "steps": [{"id": 1, "agent": "researcher", "goal": "Gather evidence"}, {"id": 2, "agent": "summarizer", "goal": "Summarize"}, {"id": 3, "agent": "verifier", "goal": "Verify"}], "risks": []}

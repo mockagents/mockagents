@@ -1,6 +1,6 @@
 .PHONY: build test test-verbose test-coverage test-python test-examples test-typescript test-all \
        lint drift liquidcheck docs-check fmt clean validate docker docker-up docker-down \
-       gui-dev gui-build gui-typecheck gui-test gui-test-e2e gui-verify \
+       gui-dev gui-build gui-typecheck gui-test gui-test-e2e gui-verify playground playground-verify \
        helm-lint helm-template helm-package \
        bench bench-report \
        release changelog-finalize run setup hooks help
@@ -78,6 +78,13 @@ fmt:                            ## Format Go code
 ## Validation
 validate: build                 ## Validate example agent definitions
 	./$(BIN_OUT) validate examples/
+
+## Demo
+playground:                     ## Run the Agent Playground demo (embedded mock) on :7070
+	$(GO) run ./demo/agent-playground/cmd/playground serve
+
+playground-verify:              ## End-to-end self-check of the Agent Playground (52 checks)
+	$(GO) run ./demo/agent-playground/cmd/playground verify --embedded
 
 ## GUI
 gui-dev:                        ## Run the web console in dev mode on :3001

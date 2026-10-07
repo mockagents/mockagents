@@ -1,0 +1,4 @@
+bin/
+runs.json
+runs.json.tmp
+*.state.json

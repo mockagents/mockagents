@@ -1,0 +1,46 @@
+# Resilience drill: MALFORMED TOOL ARGUMENTS. Turn 1 emits a tool call whose arguments
+# are invalid JSON (raw_arguments). The playground validates arguments before running
+# any tool, sends the model a structured error result, and turn 2 retries with valid
+# arguments, which then execute. Turn 3 is the final answer: a tool-error self-correction
+# loop.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-drill-badargs
+  description: "Drill: malformed tool-call arguments followed by self-correction."
+  tags: [agent-playground, semantic-errors, tools]
+
+spec:
+  protocol: openai-chat-completions
+  model: llm-badargs
+  tools:
+    - name: lookup_order
+      description: Fetch an order by id.
+      parameters:
+        type: object
+        properties:
+          order_id: { type: string }
+        required: [order_id]
+  behavior:
+    scenarios:
+      - name: malformed-call
+        match: { turn_number: 1 }
+        response:
+          content: "Looking up the order."
+          tool_calls:
+            - name: lookup_order
+              raw_arguments: '{"order_id": "ORD-1001"'
+      - name: corrected-call
+        match: { turn_number: 2 }
+        response:
+          content: "My previous arguments were invalid; retrying with valid JSON."
+          tool_calls:
+            - name: lookup_order
+              arguments: { order_id: "ORD-1001" }
+      - name: answer
+        match: { turn_number: 3 }
+        response:
+          content: "Order ORD-1001 was found after correcting the tool arguments."
+      - name: default
+        response:
+          content: "Order lookup complete."

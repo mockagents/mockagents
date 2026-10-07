@@ -1,0 +1,47 @@
+# Agent Playground fixture: SUMMARIZER on the LLM tier (Anthropic wire format).
+# The router escalates here when the SLM summary fails the grounding guard, or when a
+# user pins the summarizer to the LLM tier. It has no hallucination fixture.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-summarizer-llm
+  description: LLM-tier summarizer used for escalation and strict-grounding regeneration.
+  tags: [agent-playground, llm]
+
+spec:
+  protocol: anthropic-messages
+  model: llm-summarizer
+  systemPrompt: You write strictly grounded summaries.
+  behavior:
+    scenarios:
+      - name: retry-summary
+        match: { content_regex: "(?im)^topic:[^\\n]*retr" }
+        response:
+          content: >-
+            Retry transient failures (429, 503, connection resets) with exponential backoff that
+            starts at 200 ms and reaches 3200 ms by the fifth retry; cap retries at 5, apply 20%
+            jitter, honour Retry-After, and fall back to a backup model once retries run out
+            [KB-101][KB-102].
+      - name: routing-summary
+        match: { content_regex: "(?im)^topic:[^\\n]*(rout|slm|llm|model)" }
+        response:
+          content: >-
+            Use the SLM tier (about 0.6 USD per million output tokens) for summarization,
+            classification and extraction, keep the 10 USD LLM tier for planning and judging,
+            a 0.06 cost ratio, and escalate when confidence falls below 0.6 [KB-103].
+      - name: grounding-summary
+        match: { content_regex: "(?im)^topic:[^\\n]*(halluc|ground|guard)" }
+        response:
+          content: >-
+            Verify each figure and citation against retrieved evidence, regenerate ungrounded
+            output once with a strict-grounding instruction, and route it to a human reviewer
+            who may request at most 2 revisions [KB-104][KB-106].
+      - name: generic-summary
+        match: { content_regex: "(?im)^topic:\\s*(?P<topic>[^\\n]+)$" }
+        response:
+          content: >-
+            For {{ index .Match "topic" }}: scripted mock scenarios let 120 agent calls run in
+            under 2 seconds with zero token spend, and the first matching rule wins [KB-100].
+      - name: default
+        response:
+          content: "Scripted mock scenarios run with zero token spend [KB-100]."

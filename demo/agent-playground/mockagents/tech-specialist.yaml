@@ -1,0 +1,40 @@
+# Agent Playground fixture: TECHNICAL specialist (LLM tier, OpenAI wire format, tools).
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-tech-specialist
+  description: Technical support agent that searches the knowledge base before answering.
+  tags: [agent-playground, tools, llm]
+
+spec:
+  protocol: openai-chat-completions
+  model: llm-tech
+  systemPrompt: You resolve technical tickets. Search the knowledge base first.
+  tools:
+    - name: search_kb
+      description: Search the internal knowledge base.
+      parameters:
+        type: object
+        properties:
+          query: { type: string }
+        required: [query]
+  behavior:
+    scenarios:
+      - name: search
+        match: { turn_number: 1 }
+        response:
+          content: "Checking the troubleshooting guide."
+          tool_calls:
+            - name: search_kb
+              arguments: { query: "timeout 504 troubleshooting" }
+      - name: answer
+        match: { turn_number: 2 }
+        response:
+          content: >-
+            The crash comes from a 504 Gateway Timeout: an upstream call took longer than 30
+            seconds [KB-105]. We have lowered the per-attempt timeout to 15 seconds and added
+            retries with backoff; if it happens again after 3 retries, on-call is paged
+            automatically [KB-105].
+      - name: default
+        response:
+          content: "Please share the exact error message so I can look it up [KB-105]."

@@ -1,0 +1,36 @@
+# Agent Playground fixture: ticket CLASSIFIER on the SLM tier (Google Gemini wire format).
+# Answers with JSON {category, confidence, urgency}. A ticket that mixes billing and
+# technical signals comes back with LOW confidence, which makes the router escalate the
+# classification to the LLM tier (the "SLM-first, LLM-on-doubt" pattern).
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-classifier-slm
+  description: SLM-tier ticket classifier (Gemini protocol). Low confidence on mixed tickets.
+  tags: [agent-playground, slm, router]
+
+spec:
+  protocol: google-gemini
+  model: slm-classifier
+  systemPrompt: Classify support tickets. Answer with JSON only.
+  behavior:
+    scenarios:
+      - name: mixed-signals
+        match: { content_regex: "(?is)ticket:.*((invoice|refund|charge|billing).*(crash|error|bug|timeout)|(crash|error|bug|timeout).*(invoice|refund|charge|billing))" }
+        response:
+          content: |
+            {"category": "billing", "confidence": 0.48, "urgency": "medium"}
+      - name: billing
+        match: { content_regex: "(?is)ticket:.*(refund|charge|invoice|billing|payment)" }
+        response:
+          content: |
+            {"category": "billing", "confidence": 0.94, "urgency": "high"}
+      - name: technical
+        match: { content_regex: "(?is)ticket:.*(error|crash|bug|timeout|504|500)" }
+        response:
+          content: |
+            {"category": "technical", "confidence": 0.91, "urgency": "high"}
+      - name: default
+        response:
+          content: |
+            {"category": "general", "confidence": 0.72, "urgency": "low"}

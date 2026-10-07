@@ -388,6 +388,21 @@ The demo retrieves through [VectorMock](site/docs/guides/vector-mock.md), using
 the shared-store Qdrant profile and a declarative `VectorCollection`; Pinecone
 and Chroma profiles expose the same store. CI runs it on every push.
 
+## The Agent Playground: every feature in one app
+
+[`demo/agent-playground/`](demo/agent-playground) is a multi-agent application
+(REST API, web UI and CLI) that runs entirely on MockAgents. It has 23 agents
+across the OpenAI, Anthropic and Gemini wire formats and four workflows:
+orchestrator, router, arbitration and resilience drill. It also includes SLM/LLM
+routing, retries with exponential backoff, fallback chains, a hallucination guard,
+human review gates, run traces and an OpenAPI 3.1 spec. One command, nothing else
+to install:
+
+```bash
+go run ./demo/agent-playground/cmd/playground serve      # open http://127.0.0.1:7070
+go run ./demo/agent-playground/cmd/playground verify --embedded   # 52-check self-test
+```
+
 ## What it is *not*
 
 MockAgents mocks the **wire protocol, not the model**. It won't tell you whether
@@ -762,6 +777,7 @@ of it. **See the [Multi-Tenant & Control-Plane guide](docs/guides/multi-tenant.m
 - [Observability & Metrics](site/docs/guides/observability.md)
 - [Evals vs. tests](docs/EVALS_VS_TESTS.md) — why you need both, and which one catches what
 - [RAG demo](demo/rag-agent/README.md) — a complete runnable app + test suite, CI-verified
+- [Agent Playground](demo/agent-playground/README.md) — multi-agent workflows, SLM/LLM routing, retries, human review, traces, OpenAPI
 - [Multi-Tenant & Control Plane](docs/guides/multi-tenant.md)
 
 ## Contributing

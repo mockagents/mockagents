@@ -1,0 +1,221 @@
+{
+  "defaults": {
+    "retry": { "max_retries": 3, "initial_backoff_ms": 200, "max_backoff_ms": 4000, "multiplier": 2.0, "jitter": 0.2 },
+    "attempt_timeout_ms": 15000,
+    "run_timeout_ms": 1800000,
+    "max_tool_turns": 6,
+    "review": { "mode": "manual", "timeout_ms": 900000, "on_timeout": "fail", "max_revisions": 2 }
+  },
+  "router": {
+    "policy": {
+      "plan": "llm", "reason": "llm", "verify": "llm", "judge": "llm", "chat": "llm",
+      "summarize": "slm", "classify": "slm", "extract": "slm", "generate": "slm"
+    },
+    "escalation_threshold": 0.6,
+    "escalate_on_guard_failure": true
+  },
+  "workflows": {
+    "arbitration_threshold": 0.6,
+    "max_grounding_regenerations": 1,
+    "watchdog_stall_ms": 120000
+  },
+  "agents": [
+    {
+      "name": "planner", "role": "plan", "tier": "auto",
+      "description": "Breaks a research topic into a JSON plan for the other agents.",
+      "models": { "llm": { "provider": "anthropic", "model": "llm-planner" } },
+      "system_prompt": "You plan research briefs and answer with a JSON plan.",
+      "temperature": 0.2, "max_tokens": 800, "mock": ["pg-planner"]
+    },
+    {
+      "name": "researcher", "role": "reason", "tier": "auto",
+      "description": "Gathers evidence with search_kb and calculator, then reports cited findings.",
+      "models": { "llm": { "provider": "openai", "model": "llm-researcher" } },
+      "system_prompt": "You research topics with tools and cite knowledge-base articles as [KB-nnn].",
+      "temperature": 0.1, "max_tokens": 1200, "tools": ["search_kb", "calculator"], "mock": ["pg-researcher"]
+    },
+    {
+      "name": "summarizer", "role": "summarize", "tier": "auto",
+      "description": "Condenses findings. SLM by default; escalated to the LLM when a guard fails.",
+      "models": {
+        "slm": { "provider": "openai", "model": "slm-summarizer" },
+        "llm": { "provider": "anthropic", "model": "llm-summarizer" }
+      },
+      "system_prompt": "You summarize findings in one or two sentences, using only figures present in the findings.",
+      "temperature": 0.0, "max_tokens": 400, "mock": ["pg-summarizer-slm", "pg-summarizer-llm"]
+    },
+    {
+      "name": "verifier", "role": "verify", "tier": "auto",
+      "description": "LLM-as-judge grounding check, augmented by the deterministic guard's flags.",
+      "models": { "llm": { "provider": "anthropic", "model": "llm-verifier" } },
+      "system_prompt": "You judge whether a summary is supported by its evidence. Answer with JSON.",
+      "temperature": 0.0, "max_tokens": 300, "mock": ["pg-verifier"]
+    },
+    {
+      "name": "classifier", "role": "classify", "tier": "auto",
+      "description": "Classifies support tickets. SLM (Gemini) first, escalated to the LLM on low confidence.",
+      "models": {
+        "slm": { "provider": "gemini", "model": "slm-classifier" },
+        "llm": { "provider": "anthropic", "model": "llm-classifier" }
+      },
+      "system_prompt": "Classify support tickets. Answer with JSON {category, confidence, urgency}.",
+      "temperature": 0.0, "max_tokens": 200, "mock": ["pg-classifier-slm", "pg-classifier-llm"]
+    },
+    {
+      "name": "billing-specialist", "role": "reason", "tier": "auto",
+      "description": "Resolves billing tickets; its issue_refund tool is gated on human approval.",
+      "models": { "llm": { "provider": "anthropic", "model": "llm-billing" } },
+      "system_prompt": "You resolve billing tickets using tools. Refunds need human approval.",
+      "temperature": 0.2, "max_tokens": 800, "tools": ["lookup_order", "issue_refund"], "mock": ["pg-billing-specialist"]
+    },
+    {
+      "name": "tech-specialist", "role": "reason", "tier": "auto",
+      "description": "Resolves technical tickets after searching the knowledge base.",
+      "models": { "llm": { "provider": "openai", "model": "llm-tech" } },
+      "system_prompt": "You resolve technical tickets. Search the knowledge base first and cite [KB-nnn].",
+      "temperature": 0.2, "max_tokens": 800, "tools": ["search_kb"], "mock": ["pg-tech-specialist"]
+    },
+    {
+      "name": "reply-writer", "role": "generate", "tier": "auto",
+      "description": "Drafts general support replies (SLM tier).",
+      "models": { "slm": { "provider": "openai", "model": "slm-writer" } },
+      "system_prompt": "You write short, friendly support replies.",
+      "temperature": 0.5, "max_tokens": 400, "mock": ["pg-reply-writer"]
+    },
+    {
+      "name": "editor", "role": "generate", "tier": "auto",
+      "description": "Applies human reviewer feedback when a reviewer chooses 'revise'.",
+      "models": { "slm": { "provider": "openai", "model": "slm-editor" } },
+      "system_prompt": "You revise drafts according to reviewer feedback.",
+      "temperature": 0.2, "max_tokens": 800, "mock": ["pg-editor"]
+    },
+    {
+      "name": "proposer-a", "role": "reason", "tier": "auto",
+      "description": "Independent proposer A (OpenAI) for multi-agent arbitration.",
+      "models": { "llm": { "provider": "openai", "model": "llm-proposer-a" } },
+      "system_prompt": "You propose a decision with a rationale. Answer with JSON.",
+      "temperature": 0.4, "max_tokens": 600, "mock": ["pg-proposer-a"]
+    },
+    {
+      "name": "proposer-b", "role": "reason", "tier": "auto",
+      "description": "Independent proposer B (Anthropic): a cross-model check on proposer A.",
+      "models": { "llm": { "provider": "anthropic", "model": "llm-proposer-b" } },
+      "system_prompt": "You propose a decision with a rationale. Answer with JSON.",
+      "temperature": 0.4, "max_tokens": 600, "mock": ["pg-proposer-b"]
+    },
+    {
+      "name": "critic", "role": "judge", "tier": "auto",
+      "description": "Critiques disagreeing proposals before arbitration.",
+      "models": { "llm": { "provider": "openai", "model": "llm-critic" } },
+      "system_prompt": "You critique proposals. Be specific about evidence gaps.",
+      "temperature": 0.3, "max_tokens": 600, "mock": ["pg-critic"]
+    },
+    {
+      "name": "arbiter", "role": "judge", "tier": "auto",
+      "description": "Picks or synthesizes a decision and reports its confidence.",
+      "models": { "llm": { "provider": "anthropic", "model": "llm-arbiter" } },
+      "system_prompt": "You arbitrate between proposals. Answer with JSON.",
+      "temperature": 0.0, "max_tokens": 600, "mock": ["pg-arbiter"]
+    },
+    {
+      "name": "assistant", "role": "chat", "tier": "auto",
+      "description": "Streaming chat assistant that explains the playground.",
+      "models": { "llm": { "provider": "openai", "model": "llm-assistant" } },
+      "system_prompt": "You are the Agent Playground guide.",
+      "temperature": 0.7, "max_tokens": 800, "stream": true, "mock": ["pg-assistant"]
+    },
+    {
+      "name": "backup", "role": "generate", "tier": "auto",
+      "description": "Always-healthy backup model, used directly or as a fallback target.",
+      "models": { "slm": { "provider": "openai", "model": "slm-backup" } },
+      "system_prompt": "You are a backup model. Keep answers short.",
+      "mock": ["pg-backup"]
+    },
+    {
+      "name": "drill-flaky", "role": "reason", "tier": "auto",
+      "description": "Resilience drill: 503 on the first 2 requests, then healthy (recovers by retry).",
+      "models": { "llm": { "provider": "openai", "model": "llm-flaky" } },
+      "retry": { "max_retries": 3, "initial_backoff_ms": 100, "max_backoff_ms": 1000, "multiplier": 2.0, "jitter": 0.1 },
+      "mock": ["pg-drill-flaky"]
+    },
+    {
+      "name": "drill-ratelimited", "role": "reason", "tier": "auto",
+      "description": "Resilience drill: always 429 + Retry-After (recovers by fallback).",
+      "models": { "llm": { "provider": "openai", "model": "llm-ratelimited" } },
+      "retry": { "max_retries": 2, "initial_backoff_ms": 100, "max_backoff_ms": 1000, "multiplier": 2.0, "jitter": 0.1 },
+      "fallback": [{ "provider": "openai", "model": "slm-backup" }],
+      "mock": ["pg-drill-ratelimited"]
+    },
+    {
+      "name": "drill-overloaded", "role": "reason", "tier": "auto",
+      "description": "Resilience drill: always 503 and no fallback (fails cleanly).",
+      "models": { "llm": { "provider": "openai", "model": "llm-overloaded" } },
+      "retry": { "max_retries": 2, "initial_backoff_ms": 100, "max_backoff_ms": 500, "multiplier": 2.0, "jitter": 0.1 },
+      "mock": ["pg-drill-overloaded"]
+    },
+    {
+      "name": "drill-slow", "role": "reason", "tier": "auto",
+      "description": "Resilience drill: 2.5 s latency vs an 800 ms attempt timeout (recovers by fallback).",
+      "models": { "llm": { "provider": "openai", "model": "llm-slow" } },
+      "attempt_timeout_ms": 800,
+      "retry": { "max_retries": 1, "initial_backoff_ms": 100, "max_backoff_ms": 500, "multiplier": 2.0, "jitter": 0.1 },
+      "fallback": [{ "provider": "openai", "model": "slm-backup" }],
+      "mock": ["pg-drill-slow"]
+    },
+    {
+      "name": "drill-connreset", "role": "reason", "tier": "auto",
+      "description": "Resilience drill: the first connection is reset (transport error, recovers by retry).",
+      "models": { "llm": { "provider": "openai", "model": "llm-connreset" } },
+      "retry": { "max_retries": 2, "initial_backoff_ms": 100, "max_backoff_ms": 1000, "multiplier": 2.0, "jitter": 0.1 },
+      "mock": ["pg-drill-connreset"]
+    },
+    {
+      "name": "drill-truncated", "role": "reason", "tier": "auto",
+      "description": "Resilience drill: answer cut off (finish_reason length), completed by continuation.",
+      "models": { "llm": { "provider": "openai", "model": "llm-truncated" } },
+      "mock": ["pg-drill-truncated"]
+    },
+    {
+      "name": "drill-badargs", "role": "reason", "tier": "auto",
+      "description": "Resilience drill: malformed tool arguments, then model self-correction.",
+      "models": { "llm": { "provider": "openai", "model": "llm-badargs" } },
+      "tools": ["lookup_order"],
+      "mock": ["pg-drill-badargs"]
+    },
+    {
+      "name": "drill-streamcut", "role": "reason", "tier": "auto",
+      "description": "Resilience drill: SSE stream cut mid-answer (recovers by non-streaming retry).",
+      "models": { "llm": { "provider": "openai", "model": "llm-streamcut" } },
+      "stream": true,
+      "retry": { "max_retries": 2, "initial_backoff_ms": 100, "max_backoff_ms": 1000, "multiplier": 2.0, "jitter": 0.1 },
+      "mock": ["pg-drill-streamcut"]
+    }
+  ],
+  "pricing": {
+    "llm-planner":       { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-researcher":    { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-summarizer":    { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-verifier":      { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-classifier":    { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-billing":       { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-tech":          { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-proposer-a":    { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-proposer-b":    { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-critic":        { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-arbiter":       { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-assistant":     { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-flaky":         { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-ratelimited":   { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-overloaded":    { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-slow":          { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-connreset":     { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-truncated":     { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-badargs":       { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "llm-streamcut":     { "input_per_1k": 0.0025, "output_per_1k": 0.010 },
+    "slm-summarizer":    { "input_per_1k": 0.00015, "output_per_1k": 0.0006 },
+    "slm-classifier":    { "input_per_1k": 0.00015, "output_per_1k": 0.0006 },
+    "slm-writer":        { "input_per_1k": 0.00015, "output_per_1k": 0.0006 },
+    "slm-editor":        { "input_per_1k": 0.00015, "output_per_1k": 0.0006 },
+    "slm-backup":        { "input_per_1k": 0.00015, "output_per_1k": 0.0006 }
+  }
+}

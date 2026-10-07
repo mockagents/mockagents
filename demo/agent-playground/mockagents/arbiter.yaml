@@ -1,0 +1,30 @@
+# Agent Playground fixture: ARBITER / judge (LLM tier, Anthropic wire format).
+# Picks between disagreeing proposals (or synthesizes) and reports its confidence.
+# Below the playground's arbitration threshold the decision is escalated to a human.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-arbiter
+  description: Arbitrates between disagreeing proposers and reports confidence.
+  tags: [agent-playground, arbitration, judge, llm]
+
+spec:
+  protocol: anthropic-messages
+  model: llm-arbiter
+  systemPrompt: You arbitrate between proposals. Answer with JSON.
+  behavior:
+    scenarios:
+      - name: rewrite
+        match: { content_regex: "(?im)^question:.*(rewrite|migrat)" }
+        response:
+          content: |
+            {"decision": "defer", "chosen": "b", "confidence": 0.78, "rationale": "B's evidence (no failing tests, team at capacity) is verifiable; A's schedule estimate is not."}
+      - name: launch
+        match: { content_regex: "(?im)^question:.*(launch|ship|release)" }
+        response:
+          content: |
+            {"decision": "staged-rollout", "chosen": "synthesis", "confidence": 0.48, "rationale": "Ship to 10 percent of users behind a flag while load testing finishes; the final call depends on business risk appetite."}
+      - name: default
+        response:
+          content: |
+            {"decision": "proceed", "chosen": "a", "confidence": 0.7, "rationale": "A's proposal is better supported."}

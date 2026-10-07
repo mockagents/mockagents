@@ -1,0 +1,33 @@
+# Agent Playground fixture: CRITIC (LLM tier, OpenAI wire format).
+# Runs only when the proposers disagree: it critiques both proposals so the arbiter
+# decides with the strongest objections in view (a debate-style review).
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-critic
+  description: Critiques competing proposals before arbitration.
+  tags: [agent-playground, arbitration, llm]
+
+spec:
+  protocol: openai-chat-completions
+  model: llm-critic
+  systemPrompt: You critique proposals. Be specific about evidence gaps.
+  behavior:
+    scenarios:
+      - name: rewrite
+        match: { content_regex: "(?im)^question:.*(rewrite|migrat)" }
+        response:
+          content: >-
+            Proposal A assumes the rewrite fits in one sprint but cites no estimate. Proposal B's
+            claim of no failing tests is verifiable and lowers the urgency. B's deferral is the
+            lower-risk option unless a roadmap item is blocked this quarter.
+      - name: launch
+        match: { content_regex: "(?im)^question:.*(launch|ship|release)" }
+        response:
+          content: >-
+            Both proposals rest on unverified assumptions: A on beta demand, B on peak load. Neither
+            cites load-test data beyond 50 percent of peak. The decision depends on business risk
+            appetite, which the agents cannot know.
+      - name: default
+        response:
+          content: "Both proposals are plausible; neither cites strong evidence."

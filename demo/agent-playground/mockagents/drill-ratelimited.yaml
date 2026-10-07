@@ -1,0 +1,20 @@
+# Resilience drill: RATE-LIMITED upstream. Every request returns 429 with a Retry-After
+# header. Proves the retry policy honours Retry-After and that the fallback chain takes
+# over once retries are exhausted.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-drill-ratelimited
+  description: "Drill: every request is rate limited (429 + Retry-After)."
+  tags: [agent-playground, chaos, retry, fallback]
+
+spec:
+  protocol: openai-chat-completions
+  model: llm-ratelimited
+  behavior:
+    chaos:
+      preset: rate-limited
+    scenarios:
+      - name: default
+        response:
+          content: "unreachable: every request is rate limited"

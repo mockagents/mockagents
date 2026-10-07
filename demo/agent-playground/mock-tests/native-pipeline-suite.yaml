@@ -1,0 +1,15 @@
+# Fixture contract: the native mockagents pipeline visits its nodes in order.
+apiVersion: mockagents/v1
+kind: TestSuite
+metadata:
+  name: pg-native-pipeline-suite
+  description: pg-native-brief runs plan -> research -> summarize.
+spec:
+  target:
+    pipeline: pg-native-brief
+  cases:
+    - name: node-order
+      steps:
+        - { role: user, content: "Task: plan a research brief\nTopic: retry strategies" }
+      assertions:
+        - { type: node_sequence, sequence: [plan, research, summarize] }

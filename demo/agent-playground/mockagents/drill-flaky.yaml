@@ -1,0 +1,25 @@
+# Resilience drill: FLAKY upstream. The first 2 requests fail with 503, then it recovers.
+# Proves exponential backoff recovers without a fallback. The fail_first counter is
+# per agent, so the playground "re-arms" it before each drill by reloading the agent
+# through the mockagents management API (POST /api/v1/agents/pg-drill-flaky/reload),
+# which resets the counter.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-drill-flaky
+  description: "Drill: fails the first 2 requests with 503, then recovers."
+  tags: [agent-playground, chaos, retry]
+
+spec:
+  protocol: openai-chat-completions
+  model: llm-flaky
+  behavior:
+    chaos:
+      errors:
+        fail_first: 2
+        status_code: 503
+        message: "the server is temporarily overloaded, please retry"
+    scenarios:
+      - name: default
+        response:
+          content: "Recovered: the flaky upstream answered after transient 503s."

@@ -17,6 +17,7 @@ configuration is in [the configuration reference](site/docs/reference/configurat
 - `deploy/`, `.github/workflows/`, `.goreleaser.yml`: deployment and release supply chain.
 - `schema/`, `docs/api-spec.yaml`, `site/docs/`: schemas, API contract, and guides.
 - `gui/`: web console; `examples/` and `conformance/`: fixtures and compatibility tests.
+- `demo/agent-playground/`: Go multi-agent demo app (API, UI, CLI) built on mockagents; its tests run in `go test ./...`, and it imports `internal/` only from `internal/mockhost` (embedded server) and its fixture test.
 
 ## Risky surfaces
 

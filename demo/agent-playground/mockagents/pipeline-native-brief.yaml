@@ -1,0 +1,23 @@
+# Agent Playground: a NATIVE mockagents pipeline, for contrast with the playground's own
+# orchestrator. mockagents executes this sequential topology itself
+# (POST /api/v1/pipelines/pg-native-brief/run): each node's output becomes the next
+# node's input. No tools run and no retries, guards or reviews happen. It is a contract
+# simulation of the agent graph, useful in CI to pin the node sequence (see
+# mock-tests/native-pipeline-suite.yaml). The playground proxies it at
+# POST /api/mock/pipelines/pg-native-brief/run.
+apiVersion: mockagents/v1
+kind: Pipeline
+metadata:
+  name: pg-native-brief
+  description: Planner -> researcher -> SLM summarizer, executed natively by mockagents.
+  tags: [agent-playground, multi-agent]
+
+spec:
+  topology: sequential
+  agents:
+    - id: plan
+      ref: pg-planner
+    - id: research
+      ref: pg-researcher
+    - id: summarize
+      ref: pg-summarizer-slm

@@ -1,0 +1,107 @@
+# Agent Playground fixture: the RESEARCHER (LLM tier, OpenAI wire format, tool use).
+# A tool-using agent loop: turn 1 issues parallel tool calls (search_kb + calculator),
+# the playground executes the tools locally and sends the results back, and turn 2
+# returns grounded findings. Turn numbers advance because the playground sends a stable
+# X-Session-Id for the whole conversation.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-researcher
+  description: Tool-using researcher. Calls search_kb/calculator, then reports cited findings.
+  tags: [agent-playground, tools, llm]
+
+spec:
+  protocol: openai-chat-completions
+  model: llm-researcher
+  systemPrompt: You research topics with tools and cite knowledge-base articles.
+  tools:
+    - name: search_kb
+      description: Search the internal knowledge base.
+      parameters:
+        type: object
+        properties:
+          query: { type: string }
+        required: [query]
+    - name: calculator
+      description: Evaluate an arithmetic expression.
+      parameters:
+        type: object
+        properties:
+          expression: { type: string }
+        required: [expression]
+  behavior:
+    scenarios:
+      # ---- topic: retries / backoff ----
+      - name: retry-tools
+        match: { turn_number: 1, content_regex: "(?im)^topic:[^\\n]*retr" }
+        response:
+          content: "Searching the knowledge base and computing the backoff ceiling."
+          tool_calls:
+            - name: search_kb
+              arguments: { query: "retry backoff fallback" }
+            - name: calculator
+              arguments: { expression: "200 * 2^4" }
+      - name: retry-findings
+        match: { turn_number: 2, content_regex: "(?im)^topic:[^\\n]*retr" }
+        response:
+          content: >-
+            Transient failures (HTTP 429, 503 and connection resets) should be retried with
+            exponential backoff: a 200 ms base delay doubles each attempt, reaching 3200 ms by
+            the fifth retry [KB-101]. Cap retries at 5, add up to 20% jitter and honour
+            Retry-After on 429 responses [KB-101]. Once retries are exhausted, fall back to a
+            backup model rather than retrying forever [KB-102].
+
+      # ---- topic: SLM / LLM routing ----
+      - name: routing-tools
+        match: { turn_number: 1, content_regex: "(?im)^topic:[^\\n]*(rout|slm|llm|model)" }
+        response:
+          content: "Looking up tier pricing and computing the cost ratio."
+          tool_calls:
+            - name: search_kb
+              arguments: { query: "slm llm routing cost" }
+            - name: calculator
+              arguments: { expression: "0.6 / 10" }
+      - name: routing-findings
+        match: { turn_number: 2, content_regex: "(?im)^topic:[^\\n]*(rout|slm|llm|model)" }
+        response:
+          content: >-
+            Route summarization, classification and extraction to the SLM tier at about 0.6 USD
+            per million output tokens, and reserve the LLM tier (about 10 USD per million) for
+            planning, reasoning and judging [KB-103]. That is a cost ratio of 0.06. Escalate to
+            the LLM when classifier confidence drops below 0.6 [KB-103].
+
+      # ---- topic: hallucination / grounding ----
+      - name: grounding-tools
+        match: { turn_number: 1, content_regex: "(?im)^topic:[^\\n]*(halluc|ground|guard)" }
+        response:
+          content: "Searching for grounding and review guidance."
+          tool_calls:
+            - name: search_kb
+              arguments: { query: "grounding hallucination review" }
+      - name: grounding-findings
+        match: { turn_number: 2, content_regex: "(?im)^topic:[^\\n]*(halluc|ground|guard)" }
+        response:
+          content: >-
+            A grounding guard verifies that every figure and citation in a summary appears in the
+            retrieved evidence [KB-104]. Ungrounded output is regenerated once on the LLM tier with
+            a strict-grounding instruction and then routed to a human reviewer [KB-104], who may
+            request at most 2 revisions [KB-106].
+
+      # ---- any other topic ----
+      - name: generic-tools
+        match: { turn_number: 1 }
+        response:
+          content: "Searching the knowledge base."
+          tool_calls:
+            - name: search_kb
+              arguments: { query: "deterministic mock testing" }
+      - name: generic-findings
+        match: { turn_number: 2, content_regex: "(?im)^topic:\\s*(?P<topic>[^\\n]+)$" }
+        response:
+          content: >-
+            For {{ index .Match "topic" }}: deterministic mocks replay scripted scenarios, so a
+            suite of 120 agent calls runs in under 2 seconds with zero token spend [KB-100].
+            Scenario matching is case-insensitive and the first matching rule wins [KB-100].
+      - name: default
+        response:
+          content: "Deterministic mocks replay scripted scenarios with zero token spend [KB-100]."

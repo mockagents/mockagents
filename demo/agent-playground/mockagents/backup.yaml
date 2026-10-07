@@ -1,0 +1,22 @@
+# Agent Playground fixture: the FALLBACK model (SLM tier, OpenAI wire format).
+# Agents list it in their `fallback` chain; the playground switches to it once the
+# primary model's retries are exhausted. It always answers, and labels itself, so
+# reviewers can see a degraded-mode answer.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-backup
+  description: Always-healthy backup model used by fallback chains.
+  tags: [agent-playground, fallback, slm]
+
+spec:
+  protocol: openai-chat-completions
+  model: slm-backup
+  systemPrompt: You are a backup model. Keep answers short.
+  behavior:
+    scenarios:
+      - name: default
+        response:
+          content: >-
+            [fallback: slm-backup] The primary model was unavailable, so this answer came from the
+            backup tier. It is labelled so reviewers know it is a degraded-mode response.
