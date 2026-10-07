@@ -1,0 +1,23 @@
+# Resilience drill: TRUNCATED STREAM. Every SSE stream from this agent is cut after 3
+# chunks, with no finish frame and no [DONE]. The playground's stream reader treats a
+# stream without a terminal frame as an integrity failure and retries the attempt
+# without streaming. The non-streaming response is complete.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-drill-streamcut
+  description: "Drill: SSE streams are cut off mid-answer; non-streaming works."
+  tags: [agent-playground, streaming, chaos]
+
+spec:
+  protocol: openai-chat-completions
+  model: llm-streamcut
+  behavior:
+    streaming:
+      enabled: true
+      chunk_size: 2
+      truncate_after_chunks: 3
+    scenarios:
+      - name: default
+        response:
+          content: "The full status report: all services are healthy and the backlog is empty."

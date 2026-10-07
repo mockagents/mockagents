@@ -1,0 +1,65 @@
+# Agent Playground fixture: BILLING specialist (LLM tier, Anthropic wire format, tools).
+# A three-turn tool loop: lookup_order -> issue_refund -> customer reply. issue_refund is an
+# APPROVAL-GATED tool in the playground: the run pauses until a human approves or
+# declines it. On a decline the playground tells the model in a new user turn, and the
+# "refund-declined" scenario answers it.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-billing-specialist
+  description: Billing agent that looks up an order and proposes a refund (human-approved).
+  tags: [agent-playground, tools, human-in-the-loop, llm]
+
+spec:
+  protocol: anthropic-messages
+  model: llm-billing
+  systemPrompt: You resolve billing tickets using tools. Refunds need human approval.
+  tools:
+    - name: lookup_order
+      description: Fetch an order by id.
+      parameters:
+        type: object
+        properties:
+          order_id: { type: string }
+        required: [order_id]
+    - name: issue_refund
+      description: Refund an order. Requires human approval.
+      parameters:
+        type: object
+        properties:
+          order_id: { type: string }
+          amount: { type: number }
+          reason: { type: string }
+        required: [order_id, amount, reason]
+  behavior:
+    scenarios:
+      - name: refund-declined
+        match: { content_contains: "declined by a human reviewer" }
+        response:
+          content: >-
+            Thanks for your patience. I have confirmed the duplicate charge on order ORD-1001,
+            and a billing specialist will review the refund with you personally within one
+            business day.
+      - name: lookup
+        match: { turn_number: 1 }
+        response:
+          content: "Let me look up that order."
+          tool_calls:
+            - name: lookup_order
+              arguments: { order_id: "ORD-1001" }
+      - name: refund
+        match: { turn_number: 2 }
+        response:
+          content: "The order shows a duplicate charge, so I will refund it."
+          tool_calls:
+            - name: issue_refund
+              arguments: { order_id: "ORD-1001", amount: 49.99, reason: "duplicate charge" }
+      - name: resolved
+        match: { turn_number: 3 }
+        response:
+          content: >-
+            Sorry about the duplicate charge on order ORD-1001. I have refunded 49.99 USD to
+            your original payment method; it should appear within 5 business days.
+      - name: default
+        response:
+          content: "I can help with billing questions about your order."

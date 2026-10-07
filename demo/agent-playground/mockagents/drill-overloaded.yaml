@@ -1,0 +1,20 @@
+# Resilience drill: SERVER DOWN. Every request returns 503 (overloaded). With no fallback,
+# the step must FAIL cleanly after its retries. The drill either isolates the failure
+# (continue_on_error) or, with fail_hard, lets it end the run in the terminal `failed` state.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-drill-overloaded
+  description: "Drill: the upstream is down (503 on every request)."
+  tags: [agent-playground, chaos, retry]
+
+spec:
+  protocol: openai-chat-completions
+  model: llm-overloaded
+  behavior:
+    chaos:
+      preset: server-down
+    scenarios:
+      - name: default
+        response:
+          content: "unreachable: the upstream is down"

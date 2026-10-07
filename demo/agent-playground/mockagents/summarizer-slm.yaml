@@ -1,0 +1,58 @@
+# Agent Playground fixture: SUMMARIZER on the SLM tier (cheap, fast; OpenAI wire format).
+# Summaries are grounded in the researcher's findings. When the playground forwards the
+# "[simulate-hallucination]" fault toggle, this fixture returns a planted ungrounded summary
+# (advertised via the X-Mockagents-Hallucination header) so the grounding guard has
+# something real to catch.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-summarizer-slm
+  description: SLM-tier summarizer with a planted hallucination fixture.
+  tags: [agent-playground, slm, hallucination]
+
+spec:
+  protocol: openai-chat-completions
+  model: slm-summarizer
+  systemPrompt: You summarize findings in one or two sentences.
+  behavior:
+    scenarios:
+      - name: planted-hallucination
+        match: { content_contains: "[simulate-hallucination]" }
+        response:
+          content: >-
+            Exponential backoff cuts provider spend by 97% and guarantees 100% uptime,
+            according to a 2024 industry study [KB-999].
+          hallucination:
+            type: fabricated_fact
+            ground_truth: "The evidence contains no cost-saving or uptime figures; KB-999 does not exist."
+            note: "Planted by the Agent Playground to exercise the grounding guard."
+      - name: retry-summary
+        match: { content_regex: "(?im)^topic:[^\\n]*retr" }
+        response:
+          content: >-
+            Retry 429/503 errors and connection resets with exponential backoff from 200 ms up to
+            3200 ms, capped at 5 retries with 20% jitter and Retry-After honoured, then fall back
+            to a backup model [KB-101][KB-102].
+      - name: routing-summary
+        match: { content_regex: "(?im)^topic:[^\\n]*(rout|slm|llm|model)" }
+        response:
+          content: >-
+            Send summarization and classification to the SLM tier (0.6 USD per million output
+            tokens, a 0.06 cost ratio versus the 10 USD LLM tier) and escalate to the LLM when
+            confidence drops below 0.6 [KB-103].
+      - name: grounding-summary
+        match: { content_regex: "(?im)^topic:[^\\n]*(halluc|ground|guard)" }
+        response:
+          content: >-
+            Check every figure and citation against the evidence, regenerate ungrounded output
+            once on the LLM tier, and send the result to a human reviewer who can request up to
+            2 revisions [KB-104][KB-106].
+      - name: generic-summary
+        match: { content_regex: "(?im)^topic:\\s*(?P<topic>[^\\n]+)$" }
+        response:
+          content: >-
+            For {{ index .Match "topic" }}: deterministic mocks replay scripted scenarios, running
+            120 agent calls in under 2 seconds with zero token spend [KB-100].
+      - name: default
+        response:
+          content: "Deterministic mocks replay scripted scenarios with zero token spend [KB-100]."

@@ -1,0 +1,23 @@
+# Resilience drill: TRUNCATED answer (a semantic error, not an HTTP error).
+# The first answer stops with finish_reason "length". The playground detects that and
+# sends a continuation request, and the "continuation" scenario completes the answer.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-drill-truncated
+  description: "Drill: answers are cut off (finish_reason length) until asked to continue."
+  tags: [agent-playground, semantic-errors]
+
+spec:
+  protocol: openai-chat-completions
+  model: llm-truncated
+  behavior:
+    scenarios:
+      - name: continuation
+        match: { content_contains: "continue from where you stopped" }
+        response:
+          content: "the rollback completed at 09:12 and error rates were back to baseline by 09:15."
+      - name: default
+        response:
+          content: "Incident timeline: the deploy started at 09:00, error rates rose at 09:04, and"
+          finish_reason: length

@@ -1,0 +1,54 @@
+# Agent Playground with Docker Compose. Run from demo/agent-playground/.
+#
+# Default: one container, with mockagents embedded in the playground process.
+#   docker compose up --build
+#   open http://localhost:7070
+#
+# "external" profile: mockagents runs as its own container (the official image
+# built from the repo root), loaded with the playground fixtures and price
+# table; the playground talks to it over the network, as a real deployment
+# would talk to a provider.
+#   docker compose --profile external up --build playground-external mockagents
+#   open http://localhost:7071   (mockagents itself: http://localhost:8080)
+services:
+  playground:
+    build:
+      context: ../..
+      dockerfile: demo/agent-playground/Dockerfile
+    ports:
+      - "7070:7070"
+    environment:
+      # PLAYGROUND_TOKEN: change-me     # require a bearer token on mutating API calls
+      PLAYGROUND_REVIEW_MODE: manual
+    volumes:
+      - playground-data:/data
+
+  mockagents:
+    profiles: [external]
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      MOCKAGENTS_PRICING: /pricing/mock-pricing.yaml
+    volumes:
+      - ./mockagents:/agents:ro
+      - ./config/mock-pricing.yaml:/pricing/mock-pricing.yaml:ro
+
+  playground-external:
+    profiles: [external]
+    build:
+      context: ../..
+      dockerfile: demo/agent-playground/Dockerfile
+    command: ["serve", "--addr", "0.0.0.0:7070", "--mock", "http://mockagents:8080", "--state-file", "/data/runs.json"]
+    ports:
+      - "7071:7070"
+    depends_on:
+      - mockagents
+    volumes:
+      - playground-data-external:/data
+
+volumes:
+  playground-data:
+  playground-data-external:

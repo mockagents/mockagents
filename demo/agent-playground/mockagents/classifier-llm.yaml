@@ -1,0 +1,34 @@
+# Agent Playground fixture: ticket CLASSIFIER on the LLM tier (Anthropic wire format).
+# The escalation target when the SLM classifier is not confident.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-classifier-llm
+  description: LLM-tier ticket classifier used when the SLM is not confident.
+  tags: [agent-playground, llm, router]
+
+spec:
+  protocol: anthropic-messages
+  model: llm-classifier
+  systemPrompt: Classify support tickets carefully. Answer with JSON only.
+  behavior:
+    scenarios:
+      - name: mixed-signals
+        match: { content_regex: "(?is)ticket:.*((invoice|refund|charge|billing).*(crash|error|bug|timeout)|(crash|error|bug|timeout).*(invoice|refund|charge|billing))" }
+        response:
+          content: |
+            {"category": "technical", "confidence": 0.86, "urgency": "high", "reason": "The crash blocks the customer; the billing question is secondary."}
+      - name: billing
+        match: { content_regex: "(?is)ticket:.*(refund|charge|invoice|billing|payment)" }
+        response:
+          content: |
+            {"category": "billing", "confidence": 0.97, "urgency": "high"}
+      - name: technical
+        match: { content_regex: "(?is)ticket:.*(error|crash|bug|timeout|504|500)" }
+        response:
+          content: |
+            {"category": "technical", "confidence": 0.95, "urgency": "high"}
+      - name: default
+        response:
+          content: |
+            {"category": "general", "confidence": 0.84, "urgency": "low"}

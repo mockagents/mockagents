@@ -10,6 +10,19 @@ milestones that preceded it; all are on `main`.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Agent Playground demo** ([`demo/agent-playground/`](demo/agent-playground/README.md)): a Go
+  multi-agent application (REST API with an OpenAPI 3.1 spec, web UI, CLI) that runs entirely on
+  mockagents, embedded in-process or external. It has 23 agents across the OpenAI, Anthropic and Gemini
+  wire formats, 4 workflows (orchestrator, router, arbitration, resilience drill), SLM/LLM routing with
+  escalation, retries with exponential backoff (≤5) and fallback chains, a grounding guard plus an LLM
+  judge, human review gates and tool approvals, per-run traces, and runs that cannot get stuck. It ships
+  a Postman collection, a Docker image and compose file, and a `verify` self-test. `make playground`,
+  `make playground-verify`.
+
 ## [0.5.0] - 2026-09-09
 
 This release is dominated by the **production-readiness audit** of 2026-09-03

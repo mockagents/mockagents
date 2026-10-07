@@ -1,0 +1,30 @@
+# Agent Playground fixture: LLM-as-judge VERIFIER (Anthropic wire format).
+# The playground runs a deterministic grounding guard first and passes its flags to the
+# verifier, a "judge augmented by deterministic checks" pattern. The judge returns JSON.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-verifier
+  description: Grounding judge. Returns a JSON verdict for a summary plus its guard flags.
+  tags: [agent-playground, judge, llm]
+
+spec:
+  protocol: anthropic-messages
+  model: llm-verifier
+  systemPrompt: You judge whether a summary is supported by its evidence. Answer with JSON.
+  behavior:
+    scenarios:
+      - name: ungrounded
+        match: { content_regex: "(?im)^guard flags:\\s*unsupported" }
+        response:
+          content: |
+            {"verdict": "ungrounded", "confidence": 0.91, "issues": ["The summary states figures or citations that are absent from the evidence."]}
+      - name: grounded
+        match: { content_regex: "(?im)^guard flags:\\s*none" }
+        response:
+          content: |
+            {"verdict": "grounded", "confidence": 0.93, "issues": []}
+      - name: default
+        response:
+          content: |
+            {"verdict": "grounded", "confidence": 0.7, "issues": ["No guard flags were supplied."]}

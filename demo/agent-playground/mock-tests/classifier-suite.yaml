@@ -1,0 +1,36 @@
+# Fixture contract: the SLM classifier's routing table. If someone edits
+# mockagents/classifier-slm.yaml, `mockagents test` catches a changed route
+# before the playground's support-triage workflow does.
+#
+#   mockagents test --agents-dir demo/agent-playground/mockagents demo/agent-playground/mock-tests/
+apiVersion: mockagents/v1
+kind: TestSuite
+metadata:
+  name: pg-classifier-suite
+  description: The SLM classifier's categories and the low-confidence (escalation) path.
+spec:
+  target:
+    agent: pg-classifier-slm
+  cases:
+    - name: billing-ticket
+      steps:
+        - { role: user, content: "Task: classify support ticket\nTicket: I was charged twice for order ORD-1001." }
+      assertions:
+        - { type: scenario_matched, value: billing }
+        - { type: response_contains, value: '"confidence": 0.94' }
+    - name: technical-ticket
+      steps:
+        - { role: user, content: "Task: classify support ticket\nTicket: The export page crashes with a 504." }
+      assertions:
+        - { type: scenario_matched, value: technical }
+    - name: mixed-ticket-is-low-confidence
+      steps:
+        - { role: user, content: "Task: classify support ticket\nTicket: My last invoice looks wrong and the app crashes." }
+      assertions:
+        - { type: scenario_matched, value: mixed-signals }
+        - { type: response_contains, value: '"confidence": 0.48' }
+    - name: general-ticket
+      steps:
+        - { role: user, content: "Task: classify support ticket\nTicket: How do I change my notification settings?" }
+      assertions:
+        - { type: scenario_matched, value: default }

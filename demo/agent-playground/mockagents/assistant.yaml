@@ -1,0 +1,55 @@
+# Agent Playground fixture: the streaming CHAT ASSISTANT (LLM tier, OpenAI wire format).
+# Used by the playground's Chat tab and by `playground invoke assistant ... --stream`.
+# Stream-timing physics (time-to-first-token + tokens/sec) make the SSE stream
+# visibly "type" in the UI.
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-assistant
+  description: Streaming chat assistant that explains the playground.
+  tags: [agent-playground, streaming, llm]
+
+spec:
+  protocol: openai-chat-completions
+  model: llm-assistant
+  systemPrompt: You are the Agent Playground guide.
+  behavior:
+    streaming:
+      enabled: true
+      chunk_size: 3
+      ttft_ms: 150
+      tokens_per_sec: 40
+    scenarios:
+      - name: greeting
+        match: { content_regex: "(?i)^\\s*(hi|hello|hey)\\b" }
+        response:
+          content: >-
+            Hello! I'm the Agent Playground guide. Ask me about workflows, retries, SLM and LLM
+            routing, human review, or hallucination guards.
+      - name: workflows
+        match: { content_regex: "(?i)(workflow|what can you do|features)" }
+        response:
+          content: >-
+            The playground ships four workflows. research-brief is an orchestrator with tools,
+            SLM summarization and a grounding guard. support-triage routes tickets SLM-first, with
+            an approval-gated refund tool. decision-review arbitrates between two models with a
+            critic and a judge. resilience-drill injects 429s, 503s, timeouts, connection resets
+            and truncated streams to prove that nothing gets stuck.
+      - name: retries
+        match: { content_regex: "(?i)(retry|retries|backoff)" }
+        response:
+          content: >-
+            Every model call goes through a retry policy: up to 5 retries with exponential backoff
+            and jitter, honouring Retry-After on 429s. When retries run out, the agent's fallback
+            chain takes over, and if that fails too the step fails cleanly. Runs only ever end
+            completed or failed.
+      - name: routing
+        match: { content_regex: "(?i)(slm|llm|rout|tier)" }
+        response:
+          content: >-
+            Agents declare a role. Summarize, classify and extract go to the cheap SLM tier; plan,
+            reason, verify and judge go to the LLM tier. If an SLM answer is low-confidence or fails
+            a guard, the router escalates it to the LLM tier.
+      - name: default
+        response:
+          content: "You said: {{ .Message }}. Try asking about workflows, retries or routing."

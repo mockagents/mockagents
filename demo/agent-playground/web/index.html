@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Playground</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%233b5bdb'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+  <header class="top">
+    <h1><span class="logo"></span> Agent Playground <span class="muted small">for mockagents</span></h1>
+    <nav class="tabs" id="tabs">
+      <button data-tab="workflows" class="active">Workflows</button>
+      <button data-tab="runs">Runs</button>
+      <button data-tab="reviews">Reviews <span class="count hidden" id="review-count">0</span></button>
+      <button data-tab="agents">Agents &amp; Config</button>
+      <button data-tab="chat">Chat</button>
+      <button data-tab="mock">Mock</button>
+      <button data-tab="api">API</button>
+    </nav>
+    <span class="spacer"></span>
+    <span class="row small" id="mock-pill"><span class="status-dot" id="mock-dot"></span><span id="mock-label">mock: …</span></span>
+  </header>
+
+  <main>
+    <!-- Workflows -->
+    <section id="tab-workflows">
+      <div class="panel">
+        <h2>Workflows</h2>
+        <p class="muted small">Each workflow is a multi-agent program running against <b>mockagents</b>. Every model call goes over the real OpenAI, Anthropic or Gemini wire format, costs nothing, and behaves the same way every time. Pick an example, edit the input, and launch.</p>
+      </div>
+      <div class="grid cards" id="workflow-cards"></div>
+    </section>
+
+    <!-- Runs -->
+    <section id="tab-runs" class="hidden">
+      <div class="split">
+        <div class="panel">
+          <div class="row"><h2 style="margin:0">Runs</h2><span class="spacer" style="flex:1"></span>
+            <select id="runs-filter"><option value="">all</option><option>in_progress</option><option>completed</option><option>failed</option></select></div>
+          <div class="row small muted" id="run-counts" style="margin:6px 0"></div>
+          <table><thead><tr><th>Run</th><th>Status</th><th class="num">ms</th></tr></thead><tbody id="runs-body"></tbody></table>
+        </div>
+        <div id="run-detail"><div class="panel empty">Select a run, or launch one from the Workflows tab.</div></div>
+      </div>
+    </section>
+
+    <!-- Reviews -->
+    <section id="tab-reviews" class="hidden">
+      <div class="panel">
+        <div class="row"><h2 style="margin:0">Human review</h2><span style="flex:1"></span>
+          <label class="row small"><input type="checkbox" id="reviews-audit"> include audit items</label>
+          <label class="row small"><input type="checkbox" id="reviews-history"> include decided</label></div>
+        <p class="muted small">Blocking checkpoints (<b>output_gate</b>, <b>tool_approval</b>) hold a run in <code>awaiting_review</code> or <code>awaiting_approval</code> until you decide, or until the review timeout fires. Every AI output is also logged as a non-blocking <b>output_audit</b> item that you can approve or flag.</p>
+        <label class="field" style="max-width:220px">Reviewer name<input id="reviewer" value="playground-user"></label>
+      </div>
+      <div id="reviews-list"></div>
+    </section>
+
+    <!-- Agents & config -->
+    <section id="tab-agents" class="hidden">
+      <div class="split">
+        <div class="panel">
+          <h2>Agents</h2>
+          <table><thead><tr><th>Agent</th><th>Role</th><th>Routes to</th></tr></thead><tbody id="agents-body"></tbody></table>
+        </div>
+        <div>
+          <div id="agent-editor"><div class="panel empty">Select an agent to configure it.</div></div>
+          <div class="panel" id="config-panel"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Chat -->
+    <section id="tab-chat" class="hidden">
+      <div class="panel">
+        <div class="row">
+          <label class="field">Agent<select id="chat-agent"></select></label>
+          <label class="field">Tier<select id="chat-tier"><option value="">auto</option><option>slm</option><option>llm</option></select></label>
+          <label class="row small" style="margin-top:16px"><input type="checkbox" id="chat-stream" checked> stream (SSE)</label>
+          <span style="flex:1"></span>
+          <button class="ghost" id="chat-clear" style="margin-top:16px">Clear</button>
+        </div>
+        <p class="muted small">Messages go through <code>POST /api/agents/{name}/invoke</code>. Try <i>hello</i>, <i>what workflows exist?</i> or <i>how do retries work?</i> with the assistant. Pick <b>drill-flaky</b>, <b>drill-streamcut</b> or <b>drill-ratelimited</b> to watch retries, stream recovery and fallback happen live.</p>
+        <div class="chat-log" id="chat-log"></div>
+        <div class="row" style="margin-top:10px"><input id="chat-input" style="flex:1" placeholder="Type a message and press Enter"><button class="primary" id="chat-send">Send</button></div>
+      </div>
+    </section>
+
+    <!-- Mock -->
+    <section id="tab-mock" class="hidden">
+      <div class="grid two">
+        <div class="panel" id="mock-status"></div>
+        <div class="panel" id="mock-costs"></div>
+      </div>
+      <div class="panel">
+        <div class="row"><h2 style="margin:0">Interaction log</h2><span style="flex:1"></span><input id="logs-prefix" placeholder="session prefix (run id)"><button id="logs-refresh">Refresh</button></div>
+        <p class="muted small">mockagents records every request it serves. This view is the mock's side of the conversation: the matched scenario, token counts and cost.</p>
+        <div id="mock-logs"></div>
+      </div>
+      <div class="grid two">
+        <div class="panel">
+          <h2>Native pipeline</h2>
+          <p class="muted small"><code>pg-native-brief</code> runs inside mockagents (planner → researcher → SLM summarizer). It is a contract simulation with no tools, retries or reviews. Compare it with the playground's <b>research-brief</b> orchestrator.</p>
+          <textarea id="pipeline-input" class="code">Task: plan a research brief
+Topic: retry strategies</textarea>
+          <button class="primary" id="pipeline-run">Run pipeline</button>
+          <div id="pipeline-out"></div>
+        </div>
+        <div class="panel">
+          <h2>Fixture editor</h2>
+          <p class="muted small">Edit a mock fixture live through the mockagents write API (<code>PUT /api/v1/agents/{name}</code>). The registry swaps it in atomically and validates it first. <b>Reload</b> restores the file on disk and re-arms <code>fail_first</code> chaos counters.</p>
+          <div class="row"><select id="fixture-name"></select><button id="fixture-load">Load</button><button id="fixture-reload">Reload from disk</button></div>
+          <textarea id="fixture-body" class="code" style="min-height:260px"></textarea>
+          <button class="primary" id="fixture-save">Save fixture</button>
+          <div id="fixture-out"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- API -->
+    <section id="tab-api" class="hidden">
+      <div class="panel">
+        <h2>REST API</h2>
+        <p class="muted small">OpenAPI 3.1: <a href="/openapi.yaml" target="_blank">/openapi.yaml</a> · <a href="/openapi.json" target="_blank">/openapi.json</a> · Prometheus: <a href="/metrics" target="_blank">/metrics</a>. Import <code>demo/agent-playground/postman/agent-playground.postman_collection.json</code> into Postman, or the OpenAPI document directly.</p>
+        <div id="api-ops"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/ui/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+# Agent Playground fixture: general REPLY WRITER (SLM tier, OpenAI wire format).
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-reply-writer
+  description: SLM-tier writer for general support replies.
+  tags: [agent-playground, slm]
+
+spec:
+  protocol: openai-chat-completions
+  model: slm-writer
+  systemPrompt: You write short, friendly support replies.
+  behavior:
+    scenarios:
+      - name: default
+        response:
+          content: >-
+            Thanks for reaching out! Your note is with the right team, and you will hear back
+            within one business day. Reply to this message if anything changes in the meantime.

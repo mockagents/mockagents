@@ -1,0 +1,41 @@
+# Agent Playground fixture: PROPOSER A (LLM tier, OpenAI wire format).
+# One of two independent proposers in the decision-review (multi-agent arbitration)
+# workflow. Its counterpart, proposer B, runs on a different provider, so agreement
+# between them is a cross-model consistency signal that reduces hallucination risk.
+#
+# Question keywords drive the three demo paths:
+#   storage / sqlite / database -> both proposers AGREE   (consensus short-circuit)
+#   rewrite / migrate           -> they DISAGREE           (arbiter decides confidently)
+#   launch / ship / release     -> they DISAGREE           (arbiter unsure -> human decides)
+apiVersion: mockagents/v1
+kind: Agent
+metadata:
+  name: pg-proposer-a
+  description: Independent proposer A for multi-agent arbitration.
+  tags: [agent-playground, arbitration, llm]
+
+spec:
+  protocol: openai-chat-completions
+  model: llm-proposer-a
+  systemPrompt: You propose a decision with a rationale. Answer with JSON.
+  behavior:
+    scenarios:
+      - name: storage
+        match: { content_regex: "(?im)^question:.*(sqlite|storage|database)" }
+        response:
+          content: |
+            {"decision": "adopt-sqlite", "confidence": 0.82, "rationale": "A single-node deployment needs no database server, and SQLite in WAL mode handles the expected write rate.", "risks": ["Multi-replica deployments will need Postgres later."]}
+      - name: rewrite
+        match: { content_regex: "(?im)^question:.*(rewrite|migrat)" }
+        response:
+          content: |
+            {"decision": "proceed", "confidence": 0.71, "rationale": "The legacy module blocks two roadmap items; rewriting it now avoids compounding debt.", "risks": ["Schedule slip of one sprint."]}
+      - name: launch
+        match: { content_regex: "(?im)^question:.*(launch|ship|release)" }
+        response:
+          content: |
+            {"decision": "ship-now", "confidence": 0.58, "rationale": "The feature is complete and the beta cohort is waiting.", "risks": ["Load testing covered only 50 percent of peak traffic."]}
+      - name: default
+        response:
+          content: |
+            {"decision": "proceed", "confidence": 0.7, "rationale": "The benefits outweigh the identified risks.", "risks": []}

@@ -1,0 +1,35 @@
+# mockagents price table for the Agent Playground's model aliases. It powers
+# cost_usd on GET /api/v1/logs and the GET /api/v1/costs rollup.
+#
+# The embedded mock loads this file automatically. For an external mockagents
+# server, set:  MOCKAGENTS_PRICING=demo/agent-playground/config/mock-pricing.yaml
+#
+# LLM-tier aliases are priced like gpt-4o and SLM-tier aliases like gpt-4o-mini,
+# so the cost dashboard shows what SLM routing saves. Keep these numbers in
+# sync with the "pricing" block of config/playground.json.
+prices:
+  - { model: llm-planner,     prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-researcher,  prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-summarizer,  prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-verifier,    prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-classifier,  prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-billing,     prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-tech,        prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-proposer-a,  prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-proposer-b,  prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-critic,      prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-arbiter,     prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-assistant,   prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-flaky,       prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-ratelimited, prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-overloaded,  prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-slow,        prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-connreset,   prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-truncated,   prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-badargs,     prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: llm-streamcut,   prompt_per_1k_usd: 0.0025,  completion_per_1k_usd: 0.010 }
+  - { model: slm-summarizer,  prompt_per_1k_usd: 0.00015, completion_per_1k_usd: 0.0006 }
+  - { model: slm-classifier,  prompt_per_1k_usd: 0.00015, completion_per_1k_usd: 0.0006 }
+  - { model: slm-writer,      prompt_per_1k_usd: 0.00015, completion_per_1k_usd: 0.0006 }
+  - { model: slm-editor,      prompt_per_1k_usd: 0.00015, completion_per_1k_usd: 0.0006 }
+  - { model: slm-backup,      prompt_per_1k_usd: 0.00015, completion_per_1k_usd: 0.0006 }
