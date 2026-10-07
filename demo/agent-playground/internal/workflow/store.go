@@ -97,7 +97,7 @@ func (s *Store) update(id string, fn func(r *Run) bool) bool {
 		e.run.HeartbeatAt = now
 		s.dirty = true
 	}
-	subs := e.subs
+	subs := subscribers(e)
 	s.mu.Unlock()
 	if changed {
 		notify(subs)
@@ -135,7 +135,7 @@ func (s *Store) finish(id string, status Status, output any, runErr *RunError) b
 		}
 	}
 	s.dirty = true
-	subs := e.subs
+	subs := subscribers(e)
 	s.mu.Unlock()
 	notify(subs)
 	return true
@@ -152,12 +152,25 @@ func (s *Store) touch(id string) {
 	if !e.run.Terminal() {
 		e.run.HeartbeatAt = time.Now()
 	}
-	subs := e.subs
+	subs := subscribers(e)
 	s.mu.Unlock()
 	notify(subs)
 }
 
-func notify(subs map[int]chan struct{}) {
+// subscribers copies a run's subscriber channels. The caller must hold s.mu:
+// Subscribe and its unsubscribe func mutate the map, so it must never be
+// ranged over after the lock is released.
+func subscribers(e *entry) []chan struct{} {
+	out := make([]chan struct{}, 0, len(e.subs))
+	for _, ch := range e.subs {
+		out = append(out, ch)
+	}
+	return out
+}
+
+// notify signals each subscriber without blocking. Call it after releasing
+// s.mu, with a slice taken by subscribers while the lock was held.
+func notify(subs []chan struct{}) {
 	for _, ch := range subs {
 		select {
 		case ch <- struct{}{}:

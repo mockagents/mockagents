@@ -8,6 +8,7 @@ Reproduce with the commands in each row.
 | Check | Result | Command |
 |---|---|---|
 | Playground Go tests (unit, integration, contract, end-to-end) | **69 tests, all pass** | `go test ./demo/agent-playground/... -count=1` |
+| Same tests under the race detector | **all 10 packages pass**. CI's `-race` run found a data race in the run store's subscriber notification, which is fixed. It was re-verified in a Linux `golang:1.27.1` container, because this Windows box has no cgo | `go test -race ./demo/agent-playground/...` |
 | Statement coverage across playground packages | **73.0%** (agent runtime ≈91%, workflows 82%, guard 91%, retry 89%) | `go test ./demo/agent-playground/... -coverpkg=./demo/agent-playground/... -coverprofile=c.out` |
 | End-to-end self-test, embedded mock | **52 / 52 checks pass** | `playground verify --embedded` |
 | End-to-end self-test, external `mockagents` binary | **52 / 52 checks pass** | `mockagents start --agents-dir demo/agent-playground/mockagents` + `playground serve --mock …` + `playground verify` |
