@@ -110,6 +110,17 @@ Fixes from the 2026-10-06 full-application quality review (see
 
 Fixes from the 2026-10-14 bug sweep:
 
+- **Graph pipelines wait for every parent before running a join.** The
+  executor walked the graph depth-first and ran a node on the first edge that
+  reached it, so in the diamond `a → b`, `a → c`, `b → d`, `c → d` the order
+  was a, b, d, c: the join `d` saw only `b`'s output, and the final response
+  (what TestSuite outcome assertions read) was `c`'s rather than the sink
+  `d`'s. Nodes now run in topological order: a node runs once every parent has
+  run or been pruned by an unmet `when_contains` guard, and a join receives the
+  outputs of every parent whose edge fired, separated by a blank line, in the
+  order those parents ran. Graphs without joins keep their depth-first order.
+  **Migration:** `node_sequence` assertions and response checks on graph
+  pipelines with joins may need updating to the new order and join input.
 - **Agent writes no longer overwrite another definition's file.** Creating an
   agent (`POST`/`PUT /api/v1/agents`, MCP `create_agent`/`put_agent`) wrote it
   to `<name>.yaml` without checking what was there, so naming an agent

@@ -75,10 +75,10 @@ flowchart TD
   P --> PI[Collect in declaration order and join errors]
   T -->|graph| G[Reject cycles among known non-self edges]
   G --> Roots[Visit roots in declaration order]
-  Roots --> N[Depth-first invoke each unvisited node]
-  N --> Edges[Follow every matching outgoing substring guard in order]
-  Edges --> Traverse[First visit wins; continue remaining edges and roots]
-  Traverse --> GraphResult[Completed traversal or partial prefix on error]
+  Roots --> N[Settle a node once all its parents have settled]
+  N --> Edges[Run it if a root or any inbound edge fired, with parents' outputs joined]
+  Edges --> Traverse[Evaluate outgoing substring guards in order; release ready children depth-first]
+  Traverse --> GraphResult[Every node run or pruned, or partial prefix on error]
   SI --> Result[Result with nodes and aggregate duration]
   PI --> Result
   GraphResult --> Result
@@ -87,7 +87,7 @@ flowchart TD
   Error -->|no| OK[HTTP 200]
 ```
 
-For a diamond graph, a visited target runs once with the first traversed input; there is no fan-in join. The config validator rejects self-edges even though low-level executor cycle accounting excludes them.
+For a diamond graph, the join runs once, after both branches, with their outputs separated by a blank line; it is the last node in the result. The config validator rejects self-edges even though low-level executor cycle accounting excludes them.
 
 ## Configuration edit and persistence
 
