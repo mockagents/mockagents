@@ -7,6 +7,8 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,6 +205,29 @@ func TestImportVCR_RedactMasksSecrets(t *testing.T) {
 	}
 	if resp["id"] != "chatcmpl-1" {
 		t.Errorf("response id lost through redaction: %v", resp["id"])
+	}
+}
+
+// The record path hashes the ORIGINAL request body before redacting (R-03), so
+// a replayed, un-redacted request still matches. Import redacted first and let
+// AppendAll hash the masked body, so every --redact import missed on replay.
+func TestImportVCR_RedactedCassetteStillReplaysOriginalRequest(t *testing.T) {
+	fixture := vcrFixture(t)
+
+	cassette := runImport(t, "vcr", fixture, "--redact")
+
+	cass, raw := readCassette(t, cassette)
+	if strings.Contains(raw, fakeOpenAIKey) {
+		t.Fatal("the OpenAI key survived --redact")
+	}
+	// The request exactly as the client sends it: the secret is still in it.
+	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"use ` + fakeOpenAIKey + `"}]}`
+	rec := httptest.NewRecorder()
+	recording.NewReplay(cass).ServeHTTP(rec,
+		httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+	if rec.Code != http.StatusOK || rec.Header().Get("X-Mockagents-Replay") != "hit" {
+		t.Fatalf("redacted import missed on replay of the original request: status=%d replay=%q body=%s",
+			rec.Code, rec.Header().Get("X-Mockagents-Replay"), rec.Body.String())
 	}
 }
 

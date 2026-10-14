@@ -133,7 +133,13 @@ func (rp *Replay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var it *Interaction
 	if rp.Matcher.active() {
 		it = rp.nextFromMatchIndex(rp.Matcher.Key(r.Method, r.URL.Path, body))
-	} else {
+	}
+	// The match index is keyed on each STORED body, which --redact has masked,
+	// while the stored Hash covers the original body. So when the index misses,
+	// fall back to the exact hash: --match-ignore must never match less than
+	// plain replay does. The exact path keeps its own per-hash cursor, so a
+	// sequence served this way still advances turn by turn (R-04).
+	if it == nil {
 		it = rp.next(hash)
 		// Recordings made before the hash covered the query (and imported
 		// cassettes, which carry no query) are keyed on the path alone.

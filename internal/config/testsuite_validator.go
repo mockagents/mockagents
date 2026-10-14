@@ -21,7 +21,8 @@ import (
 //   - exactly one of spec.target.agent / spec.target.pipeline
 //   - spec.cases non-empty
 //   - every case has a name and at least one step
-//   - every step has a role + content
+//   - every step has content; role is optional (empty = user) and, when
+//     set, one of user | assistant | system
 //   - every assertion has a known type, the right fields for that
 //     type, and valid max_ms (> 0) when type is latency_ms_lt
 func ValidateTestSuite(def *types.TestSuiteDefinition, filePath string, node *yaml.Node) *ValidationErrorList {
@@ -111,13 +112,19 @@ func validateTestSuiteCases(ctx *validationContext, def *types.TestSuiteDefiniti
 		}
 		if len(c.Steps) == 0 {
 			ctx.addError(field+".steps", "case has no steps",
-				"Add at least one step with a role and content.")
+				"Add at least one step with content (and optionally a role).")
 		} else {
 			for j, s := range c.Steps {
 				stepField := fmt.Sprintf("%s.steps[%d]", field, j)
-				if s.Role == "" {
-					ctx.addError(stepField+".role", "required field missing",
-						"Set role to user, assistant, or system.")
+				// role is optional (empty = user, as the runner replays it) but,
+				// when set, must be one of the schema's enum values: the runner
+				// silently skips any other role, dropping the step.
+				switch s.Role {
+				case "", "user", "assistant", "system":
+				default:
+					ctx.addError(stepField+".role",
+						fmt.Sprintf("unknown step role %q", s.Role),
+						"Set role to user, assistant, or system (or omit it for user).")
 				}
 				if s.Content == "" {
 					ctx.addError(stepField+".content", "required field missing",

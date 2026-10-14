@@ -122,6 +122,41 @@ spec:
 	}
 }
 
+// The duplicate-id error is reported on spec.agents[1].id. NodeAt only
+// understood dot paths, so that bracket path never resolved and the error
+// pointed at 0:0 instead of the offending node.
+func TestValidatePipeline_DuplicateNodeIDReportsPosition(t *testing.T) {
+	def, node := decodePipelineYAML(t, `apiVersion: mockagents/v1
+kind: Pipeline
+metadata:
+  name: x
+spec:
+  topology: sequential
+  agents:
+    - id: w
+      ref: writer
+    - id: w
+      ref: reviewer
+`)
+	errs := ValidatePipeline(def, "", node)
+	if errs == nil {
+		t.Fatal("expected error")
+	}
+	var dup *ValidationError
+	for _, e := range errs.Errors {
+		if e.Field == "spec.agents[1].id" {
+			dup = e
+		}
+	}
+	if dup == nil {
+		t.Fatalf("no spec.agents[1].id error: %v", errs.Error())
+	}
+	// Line 10 is the second node's "- id: w"; the value starts at column 11.
+	if dup.Line != 10 || dup.Column != 11 {
+		t.Errorf("duplicate id reported at %d:%d, want 10:11", dup.Line, dup.Column)
+	}
+}
+
 func TestValidatePipeline_EdgeReferencesUnknownNode(t *testing.T) {
 	def, node := decodePipelineYAML(t, `apiVersion: mockagents/v1
 kind: Pipeline

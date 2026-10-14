@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -27,6 +28,18 @@ var llmPaths = map[string]bool{
 	"/v1/embeddings":       true,
 	"/v1/responses":        true,
 	"/v1/moderations":      true,
+}
+
+// LLMPaths returns the endpoints in llmPaths, sorted. The record and replay
+// servers mount exactly these, so every interaction an import keeps by default
+// is reachable on replay instead of 404ing at the mux.
+func LLMPaths() []string {
+	out := make([]string, 0, len(llmPaths))
+	for p := range llmPaths {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // sensitiveHeaderSubstrings / sensitiveHeaderExact decide which headers are

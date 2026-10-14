@@ -18,8 +18,9 @@ import (
 var recordCmd = &cobra.Command{
 	Use:   "record",
 	Short: "Proxy requests to a real upstream LLM API and record them to a cassette",
-	Long: `Start an HTTP server that forwards /v1/chat/completions and /v1/messages
-requests to a real upstream (OpenAI, Anthropic, or compatible), captures every
+	Long: `Start an HTTP server that forwards /v1/chat/completions, /v1/messages,
+/v1/responses, /v1/embeddings and /v1/moderations requests to a real upstream
+(OpenAI, Anthropic, or compatible), captures every
 exchange to a JSON-lines cassette file, and returns the upstream response to
 the client. Point your SDK at this server to record live interactions that
 can later be replayed offline with "mockagents replay".
@@ -50,6 +51,17 @@ func init() {
 	rootCmd.AddCommand(recordCmd)
 }
 
+// newRecordMux routes the LLM endpoints to the recording proxy and serves
+// /healthz.
+func newRecordMux(proxy http.Handler, cass *recording.Cassette) *http.ServeMux {
+	mux := http.NewServeMux()
+	mountLLMRoutes(mux, proxy)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "ok: %d interactions recorded\n", cass.Len())
+	})
+	return mux
+}
+
 func runRecord(cmd *cobra.Command, args []string) error {
 	if recordUpstream == "" {
 		return errors.New("--upstream is required")
@@ -74,12 +86,7 @@ func runRecord(cmd *cobra.Command, args []string) error {
 		fmt.Println("redaction enabled: API keys + custom patterns will be masked in the cassette")
 	}
 
-	mux := http.NewServeMux()
-	mux.Handle("/v1/chat/completions", proxy)
-	mux.Handle("/v1/messages", proxy)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "ok: %d interactions recorded\n", cass.Len())
-	})
+	mux := newRecordMux(proxy, cass)
 
 	// Loopback by default (audit M-22): the proxy relays the operator's
 	// provider key upstream for every request it receives.

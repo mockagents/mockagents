@@ -47,6 +47,39 @@ items:
 	assert.Equal(t, "second", result.Value)
 }
 
+// Validators build indexed paths with fmt "%s[%d]" (spec.agents[0].id,
+// spec.cases[0].steps[1].role), not the dot form; NodeAt only split on "." so
+// "agents[0]" never resolved and every such error reported 0:0.
+func TestNodeAt_BracketIndex(t *testing.T) {
+	node := parseNode(t, `
+spec:
+  items:
+    - name: first
+    - name: second
+      steps:
+        - role: user
+        - role: system
+  matrix:
+    - [a, b]
+    - [c, d]
+`)
+	for path, want := range map[string]string{
+		"spec.items[1].name":          "second",
+		"spec.items[1].steps[1].role": "system",
+		"spec.items.1.steps.0.role":   "user", // dot form keeps working
+		"spec.items[1].steps.1.role":  "system",
+		"spec.matrix[1][0]":           "c",
+	} {
+		got := NodeAt(node, path)
+		if assert.NotNil(t, got, path) {
+			assert.Equal(t, want, got.Value, path)
+		}
+	}
+	for _, path := range []string{"spec.items[2].name", "spec.items[x].name", "spec.items[-1]", "spec.items[1"} {
+		assert.Nil(t, NodeAt(node, path), path)
+	}
+}
+
 func TestNodeAt_InvalidPath(t *testing.T) {
 	node := parseNode(t, `key: value`)
 	assert.Nil(t, NodeAt(node, "nonexistent"))
