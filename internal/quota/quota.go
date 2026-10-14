@@ -211,23 +211,27 @@ func (e *Enforcer) AddSpend(tenantID string, usd float64) {
 	e.mu.Unlock()
 
 	if backend != nil {
+		// Claim the unsynced spend for this write. Only reading it let two
+		// concurrent calls both send the same pending amount to the ledger,
+		// charging it twice and driving unsynced negative.
 		e.mu.Lock()
-		pending := e.counterForMonthLocked(tenantID, month).unsynced
+		c := e.counterForMonthLocked(tenantID, month)
+		pending := c.unsynced
+		c.unsynced = 0
 		e.mu.Unlock()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		total, err := backend.AddSpend(ctx, tenantID, month, usd+pending)
 		cancel()
 		e.mu.Lock()
-		c := e.counterForMonthLocked(tenantID, month)
+		c = e.counterForMonthLocked(tenantID, month)
 		if err == nil {
-			// The write carried the earlier unsynced spend too; anything
-			// accrued since the read above stays pending.
-			c.unsynced -= pending
+			// The write carried the claimed pending spend too; anything that
+			// failed since the claim is still in unsynced.
 			c.usd = total + c.unsynced // authoritative cross-replica total
 			c.expiry = e.now().Add(spendCacheTTL)
 		} else {
-			c.unsynced += usd // kept until a write succeeds
+			c.unsynced += usd + pending // hand the claim back until a write succeeds
 			c.usd += usd
 		}
 		e.mu.Unlock()

@@ -336,6 +336,26 @@ func TestRecorderAnonymousFallback(t *testing.T) {
 	}
 }
 
+// A client that disconnects after its mutation committed cancels the request
+// context; the audit row for that mutation must still be written.
+func TestRecordHTTPSurvivesCancelledRequest(t *testing.T) {
+	s := newTestStore(t)
+	r := NewRecorder(s, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/keys/k1", http.NoBody).WithContext(ctx)
+	cancel() // client went away after the change committed
+	r.RecordHTTP(req, EventAPIKeyDeleted, "k1", "")
+
+	events, err := s.List(context.Background(), Query{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != EventAPIKeyDeleted {
+		t.Fatalf("audit row lost on client disconnect: %+v", events)
+	}
+}
+
 func TestRecorderSurvivesStoreAppendFailure(t *testing.T) {
 	// A nil store inside a non-nil recorder must be a silent no-op.
 	r := &Recorder{Store: nil}

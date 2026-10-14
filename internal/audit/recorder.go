@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/mockagents/mockagents/internal/clientip"
 )
@@ -58,8 +59,18 @@ func (r *Recorder) RecordHTTP(req *http.Request, kind EventKind, target, details
 		return
 	}
 	e := r.EventFromHTTP(req, kind, target, details)
-	r.Record(req.Context(), kind, e.Actor, target, details)
+	// The mutation being audited has already committed, so the client going
+	// away must not cancel the append: with the request context, an aborted
+	// connection dropped the audit row for a change that did happen. Keep the
+	// request's values but not its cancellation, under a bound of our own.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(req.Context()), recordTimeout)
+	defer cancel()
+	r.Record(ctx, kind, e.Actor, target, details)
 }
+
+// recordTimeout bounds a synchronous audit append that no longer inherits the
+// request's cancellation.
+const recordTimeout = 5 * time.Second
 
 // EventFromHTTP builds the event RecordHTTP would append, without appending
 // it, so a caller can hand it to an AsyncWriter. Safe on a nil Recorder
