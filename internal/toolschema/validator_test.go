@@ -1,6 +1,8 @@
 package toolschema
 
 import (
+	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/mockagents/mockagents/internal/types"
@@ -190,6 +192,58 @@ func TestEqualScalar_TypeAware(t *testing.T) {
 	assert.False(t, EqualScalar("red", "blue"))
 }
 
+// Numeric coercion applies at every depth: a YAML int nested in an array or
+// object equals the JSON float64 in the same position. Previously nested
+// values fell to reflect.DeepEqual, so int(1) never equalled float64(1).
+func TestEqualScalar_NestedNumericCoercion(t *testing.T) {
+	assert.True(t, EqualScalar([]any{1, 2}, []any{1.0, 2.0}))
+	assert.True(t, EqualScalar(
+		map[string]any{"x": 1, "tags": []any{"a", int64(2)}},
+		map[string]any{"x": 1.0, "tags": []any{"a", 2.0}}))
+	assert.True(t, EqualScalar([]any{map[string]any{"n": 3}}, []any{map[string]any{"n": 3.0}}))
+	assert.True(t, EqualScalar([]any{}, []any{}))
+	assert.True(t, EqualScalar(map[string]any{}, map[string]any{}))
+
+	// Kinds are still never conflated, at any depth.
+	assert.False(t, EqualScalar([]any{1}, []any{"1"}))
+	assert.False(t, EqualScalar(map[string]any{"b": true}, map[string]any{"b": "true"}))
+	// Shape must match: length, keys, and container kind.
+	assert.False(t, EqualScalar([]any{1, 2}, []any{1}))
+	assert.False(t, EqualScalar([]any{1, 2}, []any{2, 1}))
+	assert.False(t, EqualScalar(map[string]any{"x": 1}, map[string]any{"y": 1.0}))
+	assert.False(t, EqualScalar(map[string]any{"x": 1}, map[string]any{"x": 1.0, "y": 2.0}))
+	assert.False(t, EqualScalar([]any{1}, map[string]any{"0": 1.0}))
+	assert.False(t, EqualScalar([]any{1}, 1.0))
+}
+
+// The enum check is where nested coercion matters in practice: a YAML enum
+// of arrays holds ints while the JSON argument holds float64s.
+func TestValidator_EnumOfArrays(t *testing.T) {
+	v := NewValidator()
+	schema := objectSchema(
+		map[string]any{
+			"pair": map[string]any{
+				"type": "array",
+				"enum": []any{[]any{1, 2}, []any{3, 4}},
+			},
+		},
+		nil,
+	)
+	var args map[string]any
+	if err := json.Unmarshal([]byte(`{"pair": [1, 2]}`), &args); err != nil {
+		t.Fatal(err)
+	}
+	assert.Empty(t, v.ValidateParameters(schema, args))
+
+	if err := json.Unmarshal([]byte(`{"pair": [2, 1]}`), &args); err != nil {
+		t.Fatal(err)
+	}
+	errs := v.ValidateParameters(schema, args)
+	if assert.Len(t, errs, 1) {
+		assert.Contains(t, errs[0], "not in allowed values")
+	}
+}
+
 func TestValidator_inEnum_TypeAware(t *testing.T) {
 	v := NewValidator()
 	// JSON-decoded float64 arg matches an int enum entry by value.
@@ -277,6 +331,35 @@ func TestValidator_IntegerFromFloat64(t *testing.T) {
 	errs = v.ValidateParameters(schema, map[string]any{"count": float64(3.14)})
 	assert.Len(t, errs, 1)
 	assert.Contains(t, errs[0], "expected integer")
+}
+
+// Integral numbers beyond the int64 range are still integers. The old check
+// round-tripped through int64, an implementation-defined conversion out of
+// range, so 1e19 was rejected as "expected integer".
+func TestValidator_IntegerBeyondInt64Range(t *testing.T) {
+	v := NewValidator()
+	schema := objectSchema(
+		map[string]any{
+			"count": map[string]any{"type": "integer"},
+		},
+		nil,
+	)
+	for _, raw := range []string{`{"count": 1e19}`, `{"count": -1e19}`, `{"count": 9223372036854775808}`} {
+		var args map[string]any
+		if err := json.Unmarshal([]byte(raw), &args); err != nil {
+			t.Fatalf("unmarshal %s: %v", raw, err)
+		}
+		assert.Empty(t, v.ValidateParameters(schema, args), "%s is an integer", raw)
+	}
+
+	// Non-finite values are not integers (they cannot come from JSON, but
+	// an in-process caller can pass them).
+	for _, f := range []float64{math.Inf(1), math.Inf(-1), math.NaN()} {
+		errs := v.ValidateParameters(schema, map[string]any{"count": f})
+		if assert.Len(t, errs, 1, "%v must be rejected", f) {
+			assert.Contains(t, errs[0], "expected integer")
+		}
+	}
 }
 
 func TestValidator_MultipleErrors(t *testing.T) {

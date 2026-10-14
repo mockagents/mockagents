@@ -319,9 +319,10 @@ func (c *ChaosInjector) maybeInjectConnectionFault(scope string, cc *types.Chaos
 	return &ChaosError{Connection: mode}
 }
 
-// After sleeps for the configured latency distribution. Called once response
-// generation has completed successfully, so latency is visible to clients
-// without blocking error injection above.
+// After sleeps for the configured latency distribution. Called once the
+// request has passed error injection and validation but before the turn is
+// committed, so latency is visible to clients without delaying injected
+// errors, and a client that cancels mid-sleep does not advance its session.
 func (c *ChaosInjector) After(ctx context.Context, agent *types.AgentDefinition) {
 	cfg := chaosFor(agent)
 	if cfg == nil || cfg.Latency == nil {

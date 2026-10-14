@@ -70,6 +70,73 @@ func TestStreamPacer_FirstByteRespectsContext(t *testing.T) {
 	}
 }
 
+// TTFT is the delay before the FIRST content chunk: once firstByte has slept
+// it, chunk 0 must not also wait an inter-chunk delay (which landed the first
+// chunk at TTFT + one ITL). Later chunks still pace.
+func TestStreamPacer_TTFTNotStackedOnFirstChunk(t *testing.T) {
+	p := newPacer(&types.StreamingConfig{TTFTMs: 1, ChunkDelayMs: types.Ptr(60_000)})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := p.firstByte(ctx); err != nil {
+		t.Fatalf("firstByte: %v", err)
+	}
+	if trunc, err := p.beforeChunk(ctx, 0, 1); err != nil || trunc {
+		t.Fatalf("chunk 0 after TTFT: got (truncate=%v, err=%v), want an immediate (false, nil)", trunc, err)
+	}
+
+	short, cancelShort := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancelShort()
+	if _, err := p.beforeChunk(short, 1, 1); err == nil {
+		t.Error("chunk 1 must still wait the inter-chunk delay")
+	}
+}
+
+// Without a TTFT the legacy chunk_delay_ms pacing is unchanged: the first
+// content chunk still waits one chunk delay.
+func TestStreamPacer_NoTTFTFirstChunkKeepsChunkDelay(t *testing.T) {
+	p := newPacer(&types.StreamingConfig{ChunkDelayMs: types.Ptr(60_000)})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := p.firstByte(ctx); err != nil {
+		t.Fatalf("firstByte with no TTFT: %v", err)
+	}
+	if _, err := p.beforeChunk(ctx, 0, 1); err == nil {
+		t.Error("with no TTFT, chunk 0 must still wait the chunk delay")
+	}
+}
+
+// End to end on every protocol: a single-chunk stream with a TTFT finishes in
+// about the TTFT, not TTFT + chunk_delay_ms.
+func TestStream_TTFTNotStackedOnFirstChunk_AllProtocols(t *testing.T) {
+	cfg := &types.StreamingConfig{ChunkSize: 100, TTFTMs: 20, ChunkDelayMs: types.Ptr(3_000)}
+	streams := map[string]func(*httptest.ResponseRecorder, *engine.Response) error{
+		"openai": func(rec *httptest.ResponseRecorder, resp *engine.Response) error {
+			return StreamOpenAI(context.Background(), rec, resp, cfg)
+		},
+		"anthropic": func(rec *httptest.ResponseRecorder, resp *engine.Response) error {
+			return StreamAnthropic(context.Background(), rec, resp, cfg)
+		},
+		"gemini": func(rec *httptest.ResponseRecorder, resp *engine.Response) error {
+			return StreamGemini(context.Background(), rec, resp, cfg, 0, 0)
+		},
+	}
+	for name, stream := range streams {
+		t.Run(name, func(t *testing.T) {
+			start := time.Now()
+			rec := httptest.NewRecorder()
+			if err := stream(rec, &engine.Response{Content: "hello", Model: "m"}); err != nil {
+				t.Fatalf("stream: %v", err)
+			}
+			if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+				t.Errorf("single-chunk stream took %v: chunk_delay_ms was stacked on ttft_ms", elapsed)
+			}
+			if !strings.Contains(rec.Body.String(), "hello") {
+				t.Errorf("stream missing its content:\n%s", rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestStreamPacer_BeforeChunkTruncation(t *testing.T) {
 	p := newPacer(&types.StreamingConfig{TruncateAfterChunks: 3})
 	for i := 0; i < 3; i++ {

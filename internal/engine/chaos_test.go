@@ -372,6 +372,59 @@ func TestEngine_CancelledContextShortCircuits(t *testing.T) {
 	}
 }
 
+// A client that cancels DURING the injected latency must get the context
+// error, not a success it never received — and the abandoned call must not
+// advance the session's turn.
+func TestEngine_CancelDuringChaosLatencyFails(t *testing.T) {
+	reg := NewAgentRegistry()
+	reg.Register(&types.AgentDefinition{
+		APIVersion: types.AgentAPIVersion, Kind: types.AgentKind,
+		Metadata: types.Metadata{Name: "slow"},
+		Spec: types.AgentSpec{
+			Protocol: "openai-chat-completions",
+			Behavior: types.BehaviorConfig{
+				Scenarios: []types.Scenario{{
+					Name:     "default",
+					Response: types.ScenarioResponse{Content: "turn={{ .TurnNumber }}"},
+				}},
+				Chaos: &types.ChaosConfig{
+					Latency: &types.ChaosLatencyConfig{Distribution: "fixed", MinMs: 250},
+				},
+			},
+		},
+	})
+	eng := NewEngine(reg, state.NewMemoryStore(state.DefaultSessionTTL),
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	inj, _, _ := newChaosInjectorForTest(1)
+	eng.Chaos = inj
+	req := func() *InboundRequest {
+		return &InboundRequest{
+			AgentName: "slow",
+			SessionID: "s1",
+			Messages:  []RequestMessage{{Role: "user", Content: "hi"}},
+		}
+	}
+
+	// The client gives up while the latency sleep is in progress.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inj.Sleep = func(time.Duration) { cancel() }
+	resp, err := eng.ProcessRequestContext(ctx, req())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled during latency: got (%v, %v), want context.Canceled", resp, err)
+	}
+
+	// The abandoned call did not commit a turn: the next one is turn 1.
+	inj.Sleep = func(time.Duration) {}
+	resp, err = eng.ProcessRequestContext(context.Background(), req())
+	if err != nil {
+		t.Fatalf("follow-up request: %v", err)
+	}
+	if resp.Content != "turn=1" {
+		t.Errorf("follow-up content = %q, want turn=1 (cancelled call must not advance the session)", resp.Content)
+	}
+}
+
 // TestChaosFailFirstThenRecovers covers the Nth-call stateful trigger (FB-03):
 // the first N requests fail deterministically, then every request recovers —
 // the canonical retry/backoff fixture. Rate is 0, proving FailFirst drives

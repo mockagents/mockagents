@@ -236,8 +236,8 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 	}
 
 	// 1a. Chaos injection runs before any work so 429s and injected errors
-	// are cheap and latency is tacked on at the end. Injected sleeps honor
-	// ctx cancellation (see ChaosInjector.sleep).
+	// are cheap; latency is applied later (2a), once the request is valid.
+	// Injected sleeps honor ctx cancellation (see ChaosInjector.sleep).
 	if e.Chaos != nil {
 		if chaosErr := e.Chaos.Before(ctx, agent); chaosErr != nil {
 			e.Logger.Info("chaos injected", "agent", agent.Metadata.Name, "error", chaosErr)
@@ -306,6 +306,18 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 					return nil, err
 				}
 			}
+		}
+	}
+
+	// 2a. Inject latency once the request is known to be valid, so injected
+	// errors and strict-tool 400s above stay immediate. It runs BEFORE the
+	// turn is committed: the sleep is cut short if the client cancels, and
+	// a client that gave up gets its context error rather than a success it
+	// never received — without its abandoned call advancing the session.
+	if e.Chaos != nil {
+		e.Chaos.After(ctx, agent)
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 	}
 
@@ -399,8 +411,18 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 		// re-issue directly after a tool result is consumed (the model "used"
 		// the output — the reply becomes content-only); a DIFFERENT call, a
 		// deliberate multi-step chain, still goes out.
-		if len(resp.ToolCalls) > 0 && tailIsToolResult(req.Messages) &&
-			sameToolCalls(resp.ToolCalls, lastEchoedToolCalls(req.Messages)) {
+		//
+		// Under an enforced strict parallel cap the client only ever saw the
+		// FIRST call (applyStrictToolChoice caps below), so the echo is
+		// compared against that — comparing the full list never matched and
+		// re-issued the capped call forever.
+		guardCalls := resp.ToolCalls
+		if strictModes.ToolChoice == StrictEnforce && req.ToolChoice.ParallelDisabled &&
+			!req.ToolChoice.None && len(guardCalls) > 1 {
+			guardCalls = guardCalls[:1]
+		}
+		if len(guardCalls) > 0 && tailIsToolResult(req.Messages) &&
+			sameToolCalls(guardCalls, lastEchoedToolCalls(req.Messages)) {
 			e.Logger.Info("tool-loop convergence: identical re-issue after a tool result consumed",
 				"agent", agent.Metadata.Name, "scenario", scenario.Name)
 			resp.ToolCalls = nil
@@ -485,13 +507,6 @@ func (e *Engine) ProcessRequestContext(ctx context.Context, req *InboundRequest)
 	// and ApplyTurn mutated it under the session lock, so the changes are
 	// already persisted. The previous States.Save here was redundant and
 	// could resurrect a session that Cleanup/Get concurrently evicted.
-
-	// 8. Inject latency now that the real work is done. Sleeping here keeps
-	// behavior visible to clients without blocking error injection above.
-	// The sleep is cut short if the client cancels.
-	if e.Chaos != nil {
-		e.Chaos.After(ctx, agent)
-	}
 
 	return resp, nil
 }

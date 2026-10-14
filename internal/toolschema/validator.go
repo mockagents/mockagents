@@ -2,6 +2,7 @@ package toolschema
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"unicode/utf8"
 
@@ -198,7 +199,10 @@ func (v *Validator) checkType(name string, val any, expectedType string) string 
 	case "integer":
 		switch val.(type) {
 		case int, int32, int64, float64:
-			if f, ok := val.(float64); ok && f != float64(int64(f)) {
+			// Trunc, not an int64 round-trip: converting an out-of-range
+			// float to int64 is implementation-defined, so integral values
+			// like 1e19 were rejected. NaN fails the comparison too.
+			if f, ok := val.(float64); ok && (math.IsInf(f, 0) || f != math.Trunc(f)) {
 				return fmt.Sprintf("parameter %q: expected integer, got float", name)
 			}
 		default:
@@ -241,7 +245,8 @@ func (v *Validator) inEnum(val any, allowed []any) bool {
 // are never conflated: a number never equals a string, and a bool never
 // equals the string "true". This replaces the previous
 // fmt.Sprintf("%v") comparison, which matched 1 == "1" and true ==
-// "true" (review finding X-04).
+// "true" (review finding X-04). Arrays and objects compare element-wise
+// with the same rules, so a YAML [1, 2] equals a JSON [1.0, 2.0].
 func EqualScalar(a, b any) bool {
 	if af, ok := toFloat(a); ok {
 		bf, ok := toFloat(b)
@@ -250,8 +255,33 @@ func EqualScalar(a, b any) bool {
 	if _, ok := toFloat(b); ok {
 		return false // non-number vs number
 	}
-	// Neither is numeric: DeepEqual handles strings, bools, and nested
-	// arrays/objects, and returns false across mismatched dynamic types.
+	switch av := a.(type) {
+	case []any:
+		bv, ok := b.([]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for i := range av {
+			if !EqualScalar(av[i], bv[i]) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		bv, ok := b.(map[string]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for k, x := range av {
+			y, ok := bv[k]
+			if !ok || !EqualScalar(x, y) {
+				return false
+			}
+		}
+		return true
+	}
+	// Neither is numeric nor a container: DeepEqual handles strings and
+	// bools, and returns false across mismatched dynamic types.
 	return reflect.DeepEqual(a, b)
 }
 
