@@ -553,7 +553,13 @@ func (s *Session) handle(ctx context.Context, ce *ClientEvent) []Event {
 		committedMs, committedAudio := s.bufferedMs, s.audioBuf
 		if s.vadCommitting && s.audioWindowStartMs > 0 && s.audioWindowStartMs < committedMs {
 			committedMs -= s.audioWindowStartMs
-			if off := int(s.audioWindowStartMs * codecFor(s.cfg.inputFormat).bytesPerMs); off < len(committedAudio) {
+			// The start is a float ms sum: round it to bytes (truncating
+			// 9.999… gave 9) and align down to a sample boundary — an odd
+			// PCM16 offset shifts every stored sample by a byte (noise).
+			codec := codecFor(s.cfg.inputFormat)
+			off := int(math.Round(s.audioWindowStartMs * codec.bytesPerMs))
+			off -= off % codec.sampleBytes
+			if off < len(committedAudio) {
 				committedAudio = committedAudio[off:]
 			} else {
 				committedAudio = nil

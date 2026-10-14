@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -241,14 +242,25 @@ func (s *Server) HandleBytes(body []byte) ([]byte, error) {
 	}
 	var req Request
 	if err := json.Unmarshal(body, &req); err != nil {
-		resp := newError(nil, ErrParseError, "invalid JSON", err.Error())
-		return json.Marshal(resp)
+		return json.Marshal(decodeErrorResponse(body, err))
 	}
 	resp := s.Handle(&req)
 	if resp == nil {
 		return nil, nil
 	}
 	return json.Marshal(resp)
+}
+
+// decodeErrorResponse classifies a body that would not decode into a
+// Request. Only a body that is not JSON at all is a Parse error (-32700);
+// well-formed JSON that is not a Request object — a bare number, string or
+// bool, or a member of the wrong type — is an Invalid Request (-32600)
+// (JSON-RPC 2.0 §5.1).
+func decodeErrorResponse(body []byte, err error) *Response {
+	if json.Valid(body) {
+		return newError(nil, ErrInvalidRequest, "invalid request", err.Error())
+	}
+	return newError(nil, ErrParseError, "invalid JSON", err.Error())
 }
 
 // isBatchBody reports whether a raw body is a JSON ARRAY. Batches are
@@ -502,11 +514,25 @@ func matchArgs(match, args map[string]any) bool {
 		if !ok {
 			return false
 		}
-		if !reflect.DeepEqual(got, v) {
+		if !argEqual(v, got) {
 			return false
 		}
 	}
 	return true
+}
+
+// argEqual compares a configured match value with a decoded argument. YAML
+// decodes integers as int while JSON-RPC arguments decode every number as
+// float64, so a plain DeepEqual never matched `match: {days: 3}` against
+// {"days":3}; comparing the JSON encodings normalizes numbers at any depth
+// (nested objects encode with sorted keys) while keeping types distinct.
+func argEqual(want, got any) bool {
+	if reflect.DeepEqual(want, got) {
+		return true
+	}
+	wb, werr := json.Marshal(want)
+	gb, gerr := json.Marshal(got)
+	return werr == nil && gerr == nil && bytes.Equal(wb, gb)
 }
 
 func (s *Server) findTool(name string) *types.MCPTool {

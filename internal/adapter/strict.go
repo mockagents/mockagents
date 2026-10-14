@@ -111,8 +111,11 @@ func writeResponsesStrictError(w http.ResponseWriter, se *engine.StrictToolError
 	}})
 }
 
-// writeAnthropicStrictError renders the Messages API 400.
-func writeAnthropicStrictError(w http.ResponseWriter, se *engine.StrictToolError) {
+// writeAnthropicStrictError renders the Messages API 400. systemOffset is how
+// many engine messages the adapter synthesized ahead of the wire `messages`
+// (1 when a top-level `system` was prepended), so messages.N names the WIRE
+// index rather than the engine slice index.
+func writeAnthropicStrictError(w http.ResponseWriter, se *engine.StrictToolError, systemOffset int) {
 	var msg string
 	switch se.Kind {
 	case "orphan", "unknown":
@@ -120,7 +123,7 @@ func writeAnthropicStrictError(w http.ResponseWriter, se *engine.StrictToolError
 		if id == "" {
 			id = "(missing)"
 		}
-		msg = fmt.Sprintf("messages.%d.content: unexpected `tool_use_id` found in `tool_result` blocks: %s. Each `tool_result` block must have a corresponding `tool_use` block in the previous message.", se.Index, id)
+		msg = fmt.Sprintf("messages.%d.content: unexpected `tool_use_id` found in `tool_result` blocks: %s. Each `tool_result` block must have a corresponding `tool_use` block in the previous message.", se.Index-systemOffset, id)
 	case "unanswered":
 		msg = fmt.Sprintf("`tool_use` ids were found without `tool_result` blocks immediately after: %s. Each `tool_use` block must have a corresponding `tool_result` block in the next message.", strings.Join(se.UnansweredIDs, ", "))
 	case "unknown_tool":

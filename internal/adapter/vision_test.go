@@ -429,3 +429,51 @@ func TestGemini_Vision_NonImageMediaDoesNotMatchHasImage(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Equal(t, "No image.", resp.Candidates[0].Content.Parts[0].Text)
 }
+
+// --- Responses e2e ---
+
+// responsesOutputText returns the first output_text of a Responses body.
+func responsesOutputText(t *testing.T, body []byte) string {
+	t.Helper()
+	var resp struct {
+		Output []struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	require.NoError(t, json.Unmarshal(body, &resp))
+	require.NotEmpty(t, resp.Output)
+	require.NotEmpty(t, resp.Output[0].Content)
+	return resp.Output[0].Content[0].Text
+}
+
+// An input_image part is the Responses analogue of Chat's image_url: an
+// image-only turn must not 400 as empty, has_image must match, and the image
+// count header must be set — the text flattener used to drop the part.
+func TestResponses_Vision_ImageOnly(t *testing.T) {
+	h := NewResponsesHandler(testEngine(visionOpenAIAgent()), nil)
+	rec := doResponses(t, h, `{"model":"gpt-4o-vision","input":[{"role":"user","content":[
+		{"type":"input_image","image_url":"https://x/y.png"},
+		{"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgo="}]}]}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Equal(t, "2", rec.Header().Get("X-Mockagents-Image-Count"))
+	assert.Equal(t, "I see an image.", responsesOutputText(t, rec.Body.Bytes()))
+}
+
+func TestResponses_Vision_TextAndImage_StreamingHeaderSet(t *testing.T) {
+	h := NewResponsesHandler(testEngine(testOpenAIAgent()), nil)
+	rec := doResponses(t, h, `{"model":"gpt-4o","stream":true,"input":[{"role":"user","content":[
+		{"type":"input_text","text":"hello"},{"type":"input_image","image_url":"https://x/y.png"}]}]}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Equal(t, "1", rec.Header().Get("X-Mockagents-Image-Count"))
+	assert.Contains(t, rec.Body.String(), `"text":"Hi there!"`, "text match unaffected by the image part")
+}
+
+func TestResponses_Vision_NoImage_HeaderAbsent(t *testing.T) {
+	h := NewResponsesHandler(testEngine(visionOpenAIAgent()), nil)
+	rec := doResponses(t, h, `{"model":"gpt-4o-vision","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Empty(t, rec.Header().Get("X-Mockagents-Image-Count"))
+	assert.Equal(t, "Hi there!", responsesOutputText(t, rec.Body.Bytes()))
+}
