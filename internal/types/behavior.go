@@ -158,8 +158,10 @@ type StreamingConfig struct {
 
 	// --- Stream-timing physics ---
 
-	// TTFTMs is the time-to-first-token: a delay before the first content
-	// chunk is emitted (the structural opening frame is sent immediately).
+	// TTFTMs is the time-to-first-token: a delay before the first frame is
+	// emitted. As with real providers, the opening (role / message_start)
+	// frame arrives at TTFT and the first content chunk follows it without a
+	// further inter-chunk delay.
 	TTFTMs int `yaml:"ttft_ms,omitempty" json:"ttft_ms,omitempty"`
 	// TokensPerSec, when > 0, paces content chunks at this rate (the per-chunk
 	// delay is derived from the chunk length), overriding ChunkDelayMs.
