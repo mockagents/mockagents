@@ -12,6 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/mockagents/mockagents/internal/config"
 	"github.com/mockagents/mockagents/internal/engine"
 	"github.com/mockagents/mockagents/internal/types"
 )
@@ -223,4 +224,46 @@ func TestSafePipelineName(t *testing.T) {
 func readBody(resp *http.Response) (string, error) {
 	b, err := io.ReadAll(resp.Body)
 	return string(b), err
+}
+
+// A pipeline loaded from a .json file must stay JSON after a PUT; YAML written
+// into it made the next start fail to parse the file and drop the pipeline.
+func TestUpdatePipeline_JSONSourceStaysJSON(t *testing.T) {
+	srv, preg, dir := newPipelineWriteServer(t, []string{"agent-a"})
+	def := samplePipeline("flow", "sequential", 1)
+	src := filepath.Join(dir, "flow.json")
+	b, err := json.Marshal(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	preg.RegisterWithSource(def, src)
+
+	etag, got := getPipelineETag(t, srv, "flow")
+	got.Metadata.Description = "edited"
+	resp := putPipeline(t, srv, "flow", etag, got)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := readBody(resp)
+		t.Fatalf("PUT status = %d, body = %s", resp.StatusCode, body)
+	}
+	onDisk, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(onDisk) {
+		t.Fatalf("flow.json is no longer JSON after PUT:\n%s", onDisk)
+	}
+	reloaded, err := config.LoadPipelineFile(src)
+	if err != nil {
+		t.Fatalf("reloading flow.json: %v", err)
+	}
+	if reloaded.Definition.Metadata.Description != "edited" {
+		t.Fatalf("edit not persisted: %+v", reloaded.Definition.Metadata)
+	}
+	if again, _ := getPipelineETag(t, srv, "flow"); again != resp.Header.Get("ETag") {
+		t.Errorf("post-write GET ETag %q != PUT ETag %q", again, resp.Header.Get("ETag"))
+	}
 }

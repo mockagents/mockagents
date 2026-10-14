@@ -150,6 +150,21 @@ func TestMetering_BatchAndPipelineAccrueSpend(t *testing.T) {
 	require.Contains(t, e.get(t, "/v1/messages/batches/"+batch.ID+"/results"), "spend_quota_exceeded")
 }
 
+// Direct provider calls accrue spend even with no interaction-log store: the
+// accrual used to ride on log capture alone, so a server whose log DB could
+// not be opened never enforced the monthly cap for direct traffic.
+func TestMetering_DirectCallsAccrueSpendWithoutLogStore(t *testing.T) {
+	e := newMeteredServer(t, quota.NewEnforcer(quota.Config{MonthlySpendUSD: 1000}))
+
+	code, body := e.post(t, "/v1/chat/completions", `{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`)
+	require.Equal(t, http.StatusOK, code, body)
+	require.Positive(t, e.enf.Usage(e.tid).SpendUSD, "a direct call must accrue spend without a log store")
+
+	e.enf.AddSpend(e.tid, 10_000)
+	code, _ = e.post(t, "/v1/chat/completions", `{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`)
+	require.Equal(t, http.StatusPaymentRequired, code)
+}
+
 // A tenant admin's view of the live-feed metrics covers only its own
 // subscriptions (review S-06).
 func TestLogBroadcaster_SnapshotTenantScopes(t *testing.T) {

@@ -51,7 +51,12 @@ func (h *QuotaHandlers) SetTenantQuota(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
 	var cfg quota.Config
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+	// The body replaces the tenant's limits, and an omitted field means
+	// unlimited, so a misspelled key ("monthly_spend") must be refused rather
+	// than silently lifting every limit.
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cfg); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}

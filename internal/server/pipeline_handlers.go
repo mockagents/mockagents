@@ -326,7 +326,15 @@ func (h *PipelineHandlers) UpdatePipeline(w http.ResponseWriter, r *http.Request
 		writeServerError(w, err)
 		return
 	}
-	if err := atomicWriteFile(target, yamlBytes); err != nil {
+	// Keep the source's framing: a pipeline loaded from a .json file must stay
+	// JSON, or the next start fails to parse it and silently drops the
+	// pipeline (the agent and MCP write paths already do this — review P-10).
+	data, err := config.EncodeForPath(target, yamlBytes)
+	if err != nil {
+		writeServerError(w, fmt.Errorf("encoding pipeline: %w", err))
+		return
+	}
+	if err := atomicWriteFile(target, data); err != nil {
 		writeServerError(w, fmt.Errorf("writing pipeline: %w", err))
 		return
 	}
@@ -342,8 +350,8 @@ func (h *PipelineHandlers) UpdatePipeline(w http.ResponseWriter, r *http.Request
 		h.Logger.Info("pipeline saved", "name", name, "file", filepath.Base(target))
 	}
 
-	// We wrote yamlBytes to target, so the new file hash is hashHex(yamlBytes).
-	w.Header().Set("ETag", `"`+hashHex(yamlBytes)+`"`)
+	// We wrote data to target, so the new file hash is hashHex(data).
+	w.Header().Set("ETag", `"`+hashHex(data)+`"`)
 	writeJSON(w, http.StatusOK, &def)
 }
 

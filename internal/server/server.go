@@ -293,10 +293,12 @@ func New(eng *engine.Engine, cfg Config, logger *slog.Logger) *Server {
 	// InteractionCapture (so the adapter-stamped protocol/agent are readable).
 	// See MetricsCapture's doc comment.
 	handler = MetricsCapture(cfg.Metrics)(handler)
-	if s.logWorker != nil {
-		// When quotas + pricing are configured, accrue each response's cost
-		// against the tenant's monthly spend as it's captured.
-		handler = InteractionCapture(s.logWorker, NormalizeLogBodyMode(string(cfg.LogBodyMode)), s.spendHook())(handler)
+	// When quotas + pricing are configured, accrue each response's cost
+	// against the tenant's monthly spend as it's captured. The capture is
+	// installed for spend accrual even when there is no log store, so the
+	// monthly cap keeps working when the log DB could not be opened.
+	if spend := s.spendHook(); s.logWorker != nil || spend != nil {
+		handler = InteractionCapture(s.logWorker, NormalizeLogBodyMode(string(cfg.LogBodyMode)), spend)(handler)
 	}
 	handler = WithPrincipalTenantScope(handler)
 	// Tenancy auth gates every /api/v1/* route when multi-tenant mode

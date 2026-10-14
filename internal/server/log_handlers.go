@@ -389,7 +389,12 @@ func InteractionCapture(worker *LogWorker, bodyMode LogBodyMode, spendHook ...fu
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if worker == nil || worker.store == nil {
+			// Without a log store the capture still runs for the spend hook:
+			// spend accrual must not depend on interaction logging being on, or
+			// the monthly cap silently stops working when the log DB is
+			// unavailable.
+			logging := worker != nil && worker.store != nil
+			if !logging && hook == nil {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -509,6 +514,9 @@ func InteractionCapture(worker *LogWorker, bodyMode LogBodyMode, spendHook ...fu
 			// counted (a documented soft-margin limitation).
 			if hook != nil {
 				hook(entry.TenantID, path, respBody)
+			}
+			if !logging {
+				return
 			}
 			// Submit is non-blocking and drops on a full queue. The drop is
 			// already metered (worker.Metrics().Dropped); surface it at debug

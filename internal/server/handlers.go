@@ -186,7 +186,9 @@ func (h *Handlers) ListAgents(w http.ResponseWriter, r *http.Request) {
 			ToolCount:     len(a.Spec.Tools),
 			Tags:          a.Metadata.Tags,
 		}
-		source := h.Engine.Registry.Source(a.Metadata.Name, tenantID)
+		// Sources are tracked under the agent's OWNER; a global agent listed
+		// for a tenant caller lives in the global bucket, not the caller's.
+		source := h.Engine.Registry.Source(a.Metadata.Name, a.Metadata.TenantID)
 		summary.Persistence, summary.File = summarizePersistence(source)
 		// Only the effective revision, so this stays a marshal per agent with
 		// no file read. Drift against the file on disk is a per-agent question
@@ -217,7 +219,7 @@ func (h *Handlers) GetAgent(w http.ResponseWriter, r *http.Request) {
 	// UX-03: publish the revision an editor echoes back as If-Match. The body
 	// is the COMPLETE definition (not the reduced summary type), so what a
 	// client reads here is what it can safely round-trip.
-	if rev, err := revisionFor(agent, h.Engine.Registry.Source(name, tenantID)); err == nil {
+	if rev, err := revisionFor(agent, h.Engine.Registry.Source(name, agent.Metadata.TenantID)); err == nil {
 		setRevisionHeaders(w, rev)
 	}
 
