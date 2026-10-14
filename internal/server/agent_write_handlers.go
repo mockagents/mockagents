@@ -317,6 +317,12 @@ func (h *Handlers) agentFilePath(name, tenantID string) (string, error) {
 	if h.AgentsDir == "" {
 		return "", nil
 	}
+	// Re-check the name where the path is built: it reaches here from a
+	// request body (via the decoded definition), and only a kebab-case name is
+	// a safe single path segment.
+	if !agentNameRe.MatchString(name) {
+		return "", fmt.Errorf("invalid agent name %q", name)
+	}
 	fname := name
 	if tenantID != "" {
 		fname = sanitizeFilenamePart(tenantID) + "." + name

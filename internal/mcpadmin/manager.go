@@ -330,6 +330,11 @@ var errAgentFileTaken = errors.New("the agents directory already has a file for 
 // agentFilePath returns the on-disk path for (name, tenant), confined to the
 // agents directory as defense in depth.
 func (m *Manager) agentFilePath(name string) (string, error) {
+	// Re-check the name where the path is built: only a kebab-case name is a
+	// safe single path segment.
+	if !safeAgentName(name) {
+		return "", fmt.Errorf("invalid agent name %q", name)
+	}
 	fname := name
 	if m.tenantID != "" {
 		fname = sanitizeFilenamePart(m.tenantID) + "." + name
