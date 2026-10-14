@@ -1,6 +1,6 @@
 # Developer onboarding and handoff checklist
 
-Read [CONTRIBUTING.md](../../CONTRIBUTING.md), [ARCHITECTURE.md](../../ARCHITECTURE.md), and repository [AGENTS.md](../../AGENTS.md) before making changes. Read [SECURITY.md](../../SECURITY.md) for security-boundary work. This workspace uses Go 1.26.1 as the language floor and pins toolchain 1.26.6 in `go.mod`; use the repository-selected toolchain rather than a version copied from an older guide.
+Read [CONTRIBUTING.md](../../CONTRIBUTING.md), [ARCHITECTURE.md](../../ARCHITECTURE.md), and repository [AGENTS.md](../../AGENTS.md) before making changes. Read [SECURITY.md](../../SECURITY.md) for security-boundary work. This workspace uses Go 1.26.1 as the language floor and pins toolchain 1.26.9 in `go.mod`; use the repository-selected toolchain rather than a version copied from an older guide.
 
 ## First working session
 

@@ -143,8 +143,14 @@ spec:
 	}
 }
 
-func TestValidateTestSuite_StepMissingRole(t *testing.T) {
-	def, node := decodeTestSuiteYAML(t, `apiVersion: mockagents/v1
+// testSuiteWithStep is a valid suite whose only step carries roleLine verbatim
+// ("" omits the role key entirely).
+func testSuiteWithStep(roleLine string) string {
+	step := "        - content: hi\n"
+	if roleLine != "" {
+		step = "        - " + roleLine + "\n          content: hi\n"
+	}
+	return `apiVersion: mockagents/v1
 kind: TestSuite
 metadata:
   name: x
@@ -154,11 +160,36 @@ spec:
   cases:
     - name: c
       steps:
-        - content: hi
-`)
-	errs := ValidateTestSuite(def, "", node)
-	if errs == nil || !containsField(errs, "spec.cases[0].steps[0].role") {
-		t.Errorf("expected step.role error: %v", errs)
+` + step + `      assertions:
+        - type: response_contains
+          value: hi
+`
+}
+
+// The schema makes steps[].role optional (enum user|assistant|system) and the
+// runner replays an empty role as a user turn. The validator used to REQUIRE a
+// role yet accept any value, so a schema-valid suite was rejected while a typo'd
+// role (silently skipped by the runner) passed.
+func TestValidateTestSuite_StepRoleOptional(t *testing.T) {
+	def, node := decodeTestSuiteYAML(t, testSuiteWithStep(""))
+	if errs := ValidateTestSuite(def, "", node); errs != nil {
+		t.Errorf("a step without a role defaults to user and must validate: %v", errs.Error())
+	}
+}
+
+func TestValidateTestSuite_StepRoleEnum(t *testing.T) {
+	for _, role := range []string{"user", "assistant", "system"} {
+		def, node := decodeTestSuiteYAML(t, testSuiteWithStep("role: "+role))
+		if errs := ValidateTestSuite(def, "", node); errs != nil {
+			t.Errorf("role %q should validate: %v", role, errs.Error())
+		}
+	}
+	for _, role := range []string{"tool", "User", "bot"} {
+		def, node := decodeTestSuiteYAML(t, testSuiteWithStep("role: "+role))
+		errs := ValidateTestSuite(def, "", node)
+		if errs == nil || !containsField(errs, "spec.cases[0].steps[0].role") {
+			t.Errorf("role %q: expected a spec.cases[0].steps[0].role error, got %v", role, errs)
+		}
 	}
 }
 

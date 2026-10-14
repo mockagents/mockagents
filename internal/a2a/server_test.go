@@ -481,6 +481,24 @@ func TestIdleNonTerminalTaskExpires(t *testing.T) {
 	assert.Equal(t, errTaskNotFound, gone.Error.Code)
 }
 
+// tasks/cancel prunes expired tasks first, as tasks/get does: a past-TTL task
+// is gone for every method — cancel used to find it, refresh its expiry and
+// bring it back while tasks/get answered 404.
+func TestCancelDoesNotReviveExpiredTask(t *testing.T) {
+	now := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+	s := NewServerWithOptions(testDef(), ServerOptions{MaxTasks: 4, MaxTaskBytes: 1 << 20, MaxHistory: 4, TaskTTL: time.Minute, Now: func() time.Time { return now }})
+	abandoned := sendMessage(t, s, "slow")
+	require.Equal(t, "working", abandoned.Status.State)
+
+	now = now.Add(2 * time.Minute)
+	canceled := call(t, s, "tasks/cancel", map[string]any{"id": abandoned.ID})
+	require.NotNil(t, canceled.Error, "an expired task must not be cancelable")
+	assert.Equal(t, errTaskNotFound, canceled.Error.Code)
+	gone := call(t, s, "tasks/get", map[string]any{"id": abandoned.ID})
+	require.NotNil(t, gone.Error)
+	assert.Equal(t, errTaskNotFound, gone.Error.Code)
+}
+
 // JSON-RPC envelope rules (audit L-39): a notification for a known method is
 // processed but not answered, and a batch is an Invalid Request (-32600),
 // not a parse error.

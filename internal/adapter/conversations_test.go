@@ -126,6 +126,38 @@ func TestConversation_CreateWithItemsAndEmptyBody(t *testing.T) {
 	assert.Regexp(t, `^msg_`, items[0]["id"])
 }
 
+// Only an empty (or all-whitespace) body means "no fields supplied". A
+// TRUNCATED body fails json.Unmarshal with the same "unexpected end of JSON
+// input" message, and used to silently create an empty conversation / leave
+// metadata untouched with a 200 instead of a 400.
+func TestConversation_TruncatedBodyIs400(t *testing.T) {
+	rig := newConvRig()
+	assert.Regexp(t, `^conv_`, rig.create(t, "", " \r\n\t").ID, "whitespace-only body is still empty")
+	c := rig.create(t, "", `{"metadata":{"topic":"orig"}}`)
+
+	for _, body := range []string{`{"items":[{"type":"message"`, `{`, `{"metadata":`} {
+		rec := httptest.NewRecorder()
+		rig.conv.HandleCreate(rec, httptest.NewRequest("POST", "/v1/conversations", strings.NewReader(body)))
+		assert.Equal(t, http.StatusBadRequest, rec.Code, "create %q: %s", body, rec.Body.String())
+
+		req := httptest.NewRequest("POST", "/v1/conversations/"+c.ID, strings.NewReader(body))
+		req.SetPathValue("id", c.ID)
+		rec = httptest.NewRecorder()
+		rig.conv.HandleUpdate(rec, req)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, "update %q: %s", body, rec.Body.String())
+	}
+
+	// Whitespace-only update is a no-op, as an empty one is.
+	req := httptest.NewRequest("POST", "/v1/conversations/"+c.ID, strings.NewReader("  \n"))
+	req.SetPathValue("id", c.ID)
+	rec := httptest.NewRecorder()
+	rig.conv.HandleUpdate(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var got Conversation
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, "orig", got.Metadata["topic"])
+}
+
 func TestConversation_ItemsCRUD(t *testing.T) {
 	rig := newConvRig()
 	c := rig.create(t, "", ``)

@@ -47,6 +47,10 @@ type streamPacer struct {
 	// overriding the fixed ttft / perToken.
 	ttftP50, ttftP95 time.Duration
 	itlP50, itlP95   time.Duration
+
+	// ttftApplied records that firstByte slept a non-zero TTFT, which already
+	// covers the wait for content chunk 0.
+	ttftApplied bool
 }
 
 // maxStreamSampleMs caps a single sampled delay so a pathological lognormal
@@ -125,18 +129,26 @@ func (p *streamPacer) sampleLognormal(p50, p95 time.Duration) time.Duration {
 // firstByte sleeps the time-to-first-token before the first content chunk —
 // sampled from the TTFT distribution when configured, else the fixed value.
 func (p *streamPacer) firstByte(ctx context.Context) error {
+	d := p.ttft
 	if p.ttftP50 > 0 {
-		return sleepCtx(ctx, p.sampleLognormal(p.ttftP50, p.ttftP95))
+		d = p.sampleLognormal(p.ttftP50, p.ttftP95)
 	}
-	return sleepCtx(ctx, p.ttft)
+	p.ttftApplied = d > 0
+	return sleepCtx(ctx, d)
 }
 
 // beforeChunk is called before emitting content chunk i (0-based). It reports
 // whether the stream should be truncated here, and otherwise sleeps the
-// inter-chunk delay (tokens-per-sec or chunk delay, plus jitter).
+// inter-chunk delay (tokens-per-sec or chunk delay, plus jitter). Chunk 0 is
+// due AT the TTFT, so once firstByte slept one it is not delayed again (that
+// landed the first chunk at TTFT + one inter-chunk delay); without a TTFT the
+// legacy chunk_delay_ms pacing still delays chunk 0.
 func (p *streamPacer) beforeChunk(ctx context.Context, i, chunkLen int) (truncate bool, err error) {
 	if p.truncateAfter > 0 && i >= p.truncateAfter {
 		return true, nil
+	}
+	if i == 0 && p.ttftApplied {
+		return false, ctx.Err()
 	}
 	return false, sleepCtx(ctx, p.delayFor(chunkLen))
 }

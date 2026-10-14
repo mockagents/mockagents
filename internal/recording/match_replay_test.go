@@ -125,6 +125,51 @@ func TestReplayMatchIgnore_ConcurrentSafe(t *testing.T) {
 	}
 }
 
+// redactedInteraction mirrors the proxy's record path under --redact: the hash
+// covers the ORIGINAL request body, then the stored copy is masked.
+func redactedInteraction(t *testing.T, reqBody, respBody string) *Interaction {
+	t.Helper()
+	it := &Interaction{
+		Method: "POST", Path: "/v1/chat/completions", ResponseStatus: 200,
+		RequestBody: json.RawMessage(reqBody), ResponseBody: json.RawMessage(respBody),
+	}
+	it.Hash = HashRequest(it.Method, it.Path, []byte(reqBody))
+	rd, err := NewRedactor(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rd.Apply(it); err != nil {
+		t.Fatal(err)
+	}
+	if string(it.RequestBody) == reqBody {
+		t.Fatal("fixture request was not redacted; the test would prove nothing")
+	}
+	return it
+}
+
+// The match index is keyed on the STORED (redacted) body while the incoming
+// request carries the original, so --match-ignore never hit a redacted
+// cassette — even for a byte-identical request plain replay serves. A match
+// index miss must fall back to the exact stored hash, keeping the R-04
+// sequence cursor.
+func TestReplayMatchIgnore_FallsBackToExactHashOnRedactedCassette(t *testing.T) {
+	req := `{"model":"gpt-4o","messages":[{"role":"user","content":"use sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"}],"temperature":0.2}`
+	srv := matchReplayServer(t, []string{"temperature"},
+		redactedInteraction(t, req, `{"turn":1}`),
+		redactedInteraction(t, req, `{"turn":2}`))
+
+	for i, want := range []string{`"turn":1`, `"turn":2`, `"turn":2`} { // then repeat-last
+		resp, body := post(t, srv.URL, req)
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Mockagents-Replay") != "hit" {
+			t.Fatalf("request %d: status=%d replay=%q, want a hit; body=%s",
+				i+1, resp.StatusCode, resp.Header.Get("X-Mockagents-Replay"), body)
+		}
+		if !strings.Contains(body, want) {
+			t.Errorf("request %d: body=%s, want %s", i+1, body, want)
+		}
+	}
+}
+
 func TestReplayMiss_DiagnosticsBody(t *testing.T) {
 	srv := matchReplayServer(t, nil, &Interaction{
 		Method: "POST", Path: "/v1/chat/completions", ResponseStatus: 200, Hash: "abc123def456aaaa",

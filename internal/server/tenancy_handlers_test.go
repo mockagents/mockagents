@@ -184,6 +184,33 @@ func TestTenancyHandlers_RotateMyAPIKey(t *testing.T) {
 	}
 }
 
+// conflictingRotateStore loses every rotation to a concurrent one.
+type conflictingRotateStore struct{ tenancy.Store }
+
+func (conflictingRotateStore) RotateAPIKey(context.Context, string, string) (*tenancy.NewAPIKeyResult, string, error) {
+	return nil, "", tenancy.ErrConflict
+}
+
+// Two concurrent self-rotations of one key: the loser gets the same retryable
+// 409 the admin route returns, not a 500.
+func TestTenancyHandlers_SelfRotateConflictIs409(t *testing.T) {
+	recorder := audit.NewRecorder(nil, nil)
+	h := &TenancyHandlers{Store: conflictingRotateStore{}, Recorder: recorder}
+	p := &tenancy.Principal{TenantID: "ten_a", KeyID: "k_1", Role: tenancy.RoleViewer}
+	for name, handler := range map[string]http.HandlerFunc{"rotate": h.RotateMyAPIKey, "burn": h.BurnMyAPIKey} {
+		srv := httptest.NewServer(servePrincipal(p, handler))
+		resp, err := http.Post(srv.URL, "application/json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		srv.Close()
+		if resp.StatusCode != http.StatusConflict {
+			t.Errorf("%s: status = %d, want 409", name, resp.StatusCode)
+		}
+	}
+}
+
 // TestTenancyHandlers_RotateMyAPIKey_Unauthenticated covers the
 // defensive 401 path: without a Principal on the context, the
 // handler must refuse rather than blow up or read a nil key id.

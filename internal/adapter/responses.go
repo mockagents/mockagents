@@ -445,6 +445,11 @@ func (h *ResponsesHandler) HandleResponses(w http.ResponseWriter, r *http.Reques
 	setHallucinationHeader(w, resp)
 	setToolErrorsHeader(w, resp)
 	setStrictViolationHeader(w, resp)
+	imageCount := 0
+	for _, m := range inputMsgs {
+		imageCount += m.ImageCount
+	}
+	setImageCountHeader(w, imageCount)
 
 	if req.Stream {
 		streamCfg := h.streamConfigFor(r, req.Model)
@@ -639,10 +644,28 @@ func responsesItemToMessage(itemType, role string, content, output json.RawMessa
 		if role == "" {
 			role = "user"
 		}
-		return engine.RequestMessage{Role: role, Content: extractStringContent(decodeContent(content))}, true
+		parts := decodeContent(content)
+		// input_image parts are counted out-of-band, as Chat's image_url
+		// parts are (A-05): an image-only turn keeps a non-zero ImageCount so
+		// the engine does not reject it as empty, and has_image can match.
+		return engine.RequestMessage{Role: role, Content: extractStringContent(parts),
+			ImageCount: countResponsesImages(parts)}, true
 	default:
 		return engine.RequestMessage{}, false
 	}
+}
+
+// countResponsesImages counts the input_image parts of a decoded message
+// content array (a bare string carries none).
+func countResponsesImages(content any) int {
+	blocks, _ := content.([]any)
+	n := 0
+	for _, item := range blocks {
+		if m, ok := item.(map[string]any); ok && m["type"] == "input_image" {
+			n++
+		}
+	}
+	return n
 }
 
 // decodeContent unmarshals an input item's `content` (a string or an array of

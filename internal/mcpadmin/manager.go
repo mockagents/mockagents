@@ -14,6 +14,7 @@ package mcpadmin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -193,14 +194,12 @@ func (m *Manager) handleDelete(_ context.Context, args map[string]any) (mcp.Tool
 
 	// Remove the persisted file FIRST using the tracked source path, so a
 	// "deleted" response is never a lie if the file removal fails (FB04-01/02).
+	// Only the tracked source is ever removed: guessing <name>.yaml could delete
+	// a file that belongs to nothing being deleted — with no agents dir the
+	// guess resolved against the working directory (audit L-06, as the HTTP
+	// write API does).
 	var file string
-	target := m.registry.Source(name, m.tenantID)
-	if target == "" {
-		if t, perr := m.agentFilePath(name); perr == nil {
-			target = t
-		}
-	}
-	if target != "" {
+	if target := m.registry.Source(name, m.tenantID); target != "" {
 		if err := os.Remove(target); err == nil {
 			file = filepath.Base(target)
 		} else if !os.IsNotExist(err) {
@@ -264,6 +263,9 @@ func (m *Manager) apply(args map[string]any, allowReplace bool) (mcp.ToolResult,
 		return errorResult("agent %q already exists (use put_agent to replace)", name), nil
 	}
 	file, persisted, err := m.persistAndRegister(&def, name, canonical)
+	if errors.Is(err, errAgentFileTaken) {
+		return errorResult("%s", err), nil
+	}
 	if err != nil {
 		return mcp.ToolResult{}, err
 	}
@@ -306,12 +308,33 @@ func (m *Manager) resolveTarget(name string) (string, error) {
 	if src := m.registry.Source(name, m.tenantID); src != "" {
 		return src, nil
 	}
-	return m.agentFilePath(name)
+	target, err := m.agentFilePath(name)
+	if err != nil {
+		return "", err
+	}
+	// Never overwrite a name-derived file that holds a different definition.
+	ok, err := config.AgentFileReplaceable(target, name, m.tenantID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("%w: %s", errAgentFileTaken, filepath.Base(target))
+	}
+	return target, nil
 }
+
+// errAgentFileTaken reports that a new agent's name-derived file already holds
+// another definition; apply turns it into a tool error.
+var errAgentFileTaken = errors.New("the agents directory already has a file for this name that does not define this agent; refusing to overwrite it")
 
 // agentFilePath returns the on-disk path for (name, tenant), confined to the
 // agents directory as defense in depth.
 func (m *Manager) agentFilePath(name string) (string, error) {
+	// Re-check the name where the path is built: only a kebab-case name is a
+	// safe single path segment.
+	if !safeAgentName(name) {
+		return "", fmt.Errorf("invalid agent name %q", name)
+	}
 	fname := name
 	if m.tenantID != "" {
 		fname = sanitizeFilenamePart(m.tenantID) + "." + name

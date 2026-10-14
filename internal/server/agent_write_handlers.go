@@ -60,6 +60,10 @@ func (h *Handlers) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	file, persisted, err := h.persistAndRegister(def, name, tenantID, canonical)
+	if errors.Is(err, errAgentFileTaken) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	if err != nil {
 		writeServerError(w, err)
 		return
@@ -114,6 +118,10 @@ func (h *Handlers) PutAgent(w http.ResponseWriter, r *http.Request) {
 	existed := h.Engine.Registry.GetOwnedForTenant(name, tenantID) != nil
 
 	file, persisted, err := h.persistAndRegister(def, name, tenantID, canonical)
+	if errors.Is(err, errAgentFileTaken) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	if err != nil {
 		writeServerError(w, err)
 		return
@@ -309,6 +317,12 @@ func (h *Handlers) agentFilePath(name, tenantID string) (string, error) {
 	if h.AgentsDir == "" {
 		return "", nil
 	}
+	// Re-check the name where the path is built: it reaches here from a
+	// request body (via the decoded definition), and only a kebab-case name is
+	// a safe single path segment.
+	if !agentNameRe.MatchString(name) {
+		return "", fmt.Errorf("invalid agent name %q", name)
+	}
 	fname := name
 	if tenantID != "" {
 		fname = sanitizeFilenamePart(tenantID) + "." + name
@@ -367,8 +381,27 @@ func (h *Handlers) resolveAgentTarget(name, tenantID string) (string, error) {
 	if src := h.Engine.Registry.Source(name, tenantID); src != "" {
 		return src, nil
 	}
-	return h.agentFilePath(name, tenantID)
+	target, err := h.agentFilePath(name, tenantID)
+	if err != nil {
+		return "", err
+	}
+	// The name-derived file may already hold a different definition (example
+	// files are often named after something other than the agent they define).
+	// Overwriting it would destroy that definition, and a later delete of the
+	// other agent would then remove this one's file.
+	ok, err := config.AgentFileReplaceable(target, name, tenantID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("%w: %s", errAgentFileTaken, filepath.Base(target))
+	}
+	return target, nil
 }
+
+// errAgentFileTaken reports that a new agent's name-derived file already holds
+// another definition. Handlers answer it with 409.
+var errAgentFileTaken = errors.New("the agents directory already has a file for this name that does not define this agent; refusing to overwrite it")
 
 // recordAgentEvent records an audit event for an agent mutation when auditing
 // is enabled (Recorder may be nil in single-tenant local-dev mode).

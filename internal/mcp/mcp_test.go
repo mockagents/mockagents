@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/mockagents/mockagents/internal/types"
+	"gopkg.in/yaml.v3"
 )
 
 // testDef builds a fully populated MCPServer definition used across the
@@ -113,6 +114,46 @@ func TestToolsCallMatchesSpecificResponse(t *testing.T) {
 	body, _ := json.Marshal(resp.Result)
 	if !bytes.Contains(body, []byte("sunny, 22C")) {
 		t.Errorf("match-based response not returned: %s", body)
+	}
+}
+
+// A YAML-declared `match` decodes integers as int, while JSON-RPC arguments
+// decode every number as float64 — the comparison must be number-aware, at
+// the top level and inside nested objects/arrays, or `match: {days: 3}`
+// never matches {"days":3}.
+func TestToolsCallMatchesYAMLNumbers(t *testing.T) {
+	var match map[string]any
+	if err := yaml.Unmarshal([]byte("days: 3\nopts:\n  limit: 5\n  units: metric\nids: [1, 2.5]\n"), &match); err != nil {
+		t.Fatalf("yaml: %v", err)
+	}
+	def := testDef()
+	def.Spec.Tools[0].Responses = append([]types.MCPToolResponse{{
+		Match:   match,
+		Content: []types.MCPContentBlock{{Type: "text", Text: "three-day outlook"}},
+	}}, def.Spec.Tools[0].Responses...)
+	srv := NewServer(def)
+
+	call := func(args string) string {
+		t.Helper()
+		resp := mustHandle(t, srv, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_forecast","arguments":`+args+`}}`)
+		if resp.Error != nil {
+			t.Fatalf("tools/call error: %v", resp.Error)
+		}
+		body, _ := json.Marshal(resp.Result)
+		return string(body)
+	}
+	if body := call(`{"days":3,"opts":{"units":"metric","limit":5},"ids":[1,2.5],"extra":true}`); !strings.Contains(body, "three-day outlook") {
+		t.Errorf("integer match did not fire: %s", body)
+	}
+	for _, args := range []string{
+		`{"days":4,"opts":{"units":"metric","limit":5},"ids":[1,2.5]}`,
+		`{"days":"3","opts":{"units":"metric","limit":5},"ids":[1,2.5]}`,
+		`{"days":3,"opts":{"units":"metric","limit":6},"ids":[1,2.5]}`,
+		`{"days":3,"opts":{"units":"metric","limit":5},"ids":[2.5,1]}`,
+	} {
+		if body := call(args); !strings.Contains(body, "overcast, 15C") {
+			t.Errorf("args %s should fall back to default: %s", args, body)
+		}
 	}
 }
 

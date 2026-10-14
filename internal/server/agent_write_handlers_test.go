@@ -107,6 +107,50 @@ func TestCreateAgent_DuplicateConflict(t *testing.T) {
 	}
 }
 
+// A new agent's name-derived file can already hold a different definition:
+// examples/chaos-agent.yaml defines flaky-agent. Creating an agent named
+// chaos-agent must not overwrite it.
+func TestCreateAgent_DoesNotOverwriteAnotherDefinitionsFile(t *testing.T) {
+	dir := t.TempDir()
+	srv, h := newAgentWriteServer(t, dir)
+	other := filepath.Join(dir, "chaos-agent.yaml")
+	original := agentYAML("flaky-agent", "flaky-model")
+	if err := os.WriteFile(other, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.LoadFile(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Engine.Registry.RegisterWithSource(loaded.Definition, other)
+
+	for _, tc := range []struct{ method, url string }{
+		{"POST", srv.URL + "/api/v1/agents"},
+		{"PUT", srv.URL + "/api/v1/agents/chaos-agent"},
+	} {
+		code, body := doReq(t, tc.method, tc.url, "application/yaml", agentYAML("chaos-agent", "m"))
+		if code != http.StatusConflict {
+			t.Fatalf("%s status = %d, want 409; body=%s", tc.method, code, body)
+		}
+	}
+	got, _ := os.ReadFile(other)
+	if string(got) != original {
+		t.Fatalf("flaky-agent's file was overwritten:\n%s", got)
+	}
+	if h.Engine.Registry.GetForTenant("chaos-agent", "") != nil {
+		t.Fatal("refused agent must not be registered")
+	}
+
+	// A leftover file that holds this very agent (DELETE ?keep_file=true) is
+	// its own file, so re-creating over it is fine.
+	if err := os.WriteFile(filepath.Join(dir, "kept.yaml"), []byte(agentYAML("kept", "m")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := doReq(t, "POST", srv.URL+"/api/v1/agents", "application/yaml", agentYAML("kept", "m2")); code != http.StatusCreated {
+		t.Fatalf("re-create over own file status = %d, want 201; body=%s", code, body)
+	}
+}
+
 func TestCreateAgent_InvalidValidation(t *testing.T) {
 	srv, _ := newAgentWriteServer(t, t.TempDir())
 	// Missing scenarios → validator rejects with 422.

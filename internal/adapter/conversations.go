@@ -1,9 +1,11 @@
 package adapter
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"sync"
@@ -286,16 +288,9 @@ func (h *ConversationsHandler) HandleCreate(w http.ResponseWriter, r *http.Reque
 
 	var req createConversationRequest
 	// An empty body is valid (create an empty conversation), so tolerate it.
-	if err := decodeJSONBody(r, &req); err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			writeError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "request body too large")
-			return
-		}
-		if !isEmptyBodyDecodeErr(err) {
-			writeError(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("invalid JSON: %s", err))
-			return
-		}
+	if err := decodeOptionalJSONBody(r, &req); err != nil {
+		writeConversationDecodeError(w, err)
+		return
 	}
 	defer r.Body.Close()
 
@@ -331,7 +326,7 @@ func (h *ConversationsHandler) HandleUpdate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var req updateConversationRequest
-	if err := decodeJSONBody(r, &req); err != nil && !isEmptyBodyDecodeErr(err) {
+	if err := decodeOptionalJSONBody(r, &req); err != nil {
 		writeConversationDecodeError(w, err)
 		return
 	}
@@ -590,11 +585,20 @@ func resolveConversationID(raw json.RawMessage) (string, error) {
 	return "", fmt.Errorf("conversation must be a conversation id string or an object with an 'id'")
 }
 
-// isEmptyBodyDecodeErr reports whether a decodeJSONBody error is just an empty
-// request body (json.Unmarshal of zero bytes), which the create/update routes
-// treat as "no fields supplied" rather than a malformed request.
-func isEmptyBodyDecodeErr(err error) bool {
-	return err != nil && err.Error() == "unexpected end of JSON input"
+// decodeOptionalJSONBody is decodeJSONBody for the create/update routes, where
+// an empty (or all-whitespace) body means "no fields supplied": it leaves v
+// untouched and returns nil. Matching json's "unexpected end of JSON input"
+// error instead also swallowed TRUNCATED bodies such as `{"items":[`, which
+// fail with the same message, so they 200'd instead of 400.
+func decodeOptionalJSONBody(r *http.Request, v any) error {
+	body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxDecodeBodyBytes))
+	if err != nil {
+		return err
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil
+	}
+	return json.Unmarshal(body, v)
 }
 
 // writeConversationDecodeError reports a body decode failure: 413 for an

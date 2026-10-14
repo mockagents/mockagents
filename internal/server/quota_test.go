@@ -149,6 +149,18 @@ func TestQuotaHandlers_SetTenantQuota(t *testing.T) {
 	if badRec.Code != http.StatusBadRequest {
 		t.Errorf("negative quota = %d, want 400", badRec.Code)
 	}
+
+	// A misspelled key decoded to all-zero limits, which mean unlimited, and
+	// silently lifted every limit. It is refused and the override is kept.
+	typo := httptest.NewRequest(http.MethodPut, "/api/v1/tenants/ten_a/quota", strings.NewReader(`{"monthly_spend":50}`))
+	typoRec := httptest.NewRecorder()
+	mux.ServeHTTP(typoRec, typo)
+	if typoRec.Code != http.StatusBadRequest {
+		t.Errorf("unknown field = %d, want 400", typoRec.Code)
+	}
+	if got := enf.Effective("ten_a"); got.MonthlySpendUSD != 100 {
+		t.Errorf("rejected body changed the override: %+v", got)
+	}
 }
 
 // TestQuotaHandlers_SetTenantQuota_Persists verifies that with a Store wired in,

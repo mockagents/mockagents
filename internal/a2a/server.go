@@ -433,6 +433,9 @@ func (s *Server) handleTasksCancel(req *rpcRequest) *rpcResponse {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Prune first, as tasks/get does: otherwise a past-TTL task could be
+	// canceled — refreshing its expiry — while tasks/get reports it gone.
+	s.pruneExpiredLocked()
 	task, ok := s.tasks[p.ID]
 	if !ok {
 		return newError(req.ID, errTaskNotFound, fmt.Sprintf("task %q not found", p.ID), nil)

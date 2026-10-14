@@ -99,6 +99,38 @@ func TestCostsHandler_LimitOutOfRange400(t *testing.T) {
 	}
 }
 
+// A limit above the store's per-query cap scans that many rows; one query used
+// to stop at storage.MaxLimit and under-report the window.
+func TestCostsHandler_LimitAboveStoreCapScansAllRows(t *testing.T) {
+	store := newTestStore(t)
+	const n = storage.MaxLimit + 5
+	for range n {
+		seedCostRow(t, store, "", "weather", "gpt-4o", 1, 1)
+	}
+	h := &CostsHandlers{Store: store}
+	for _, tc := range []struct {
+		query string
+		want  int
+	}{
+		{"?limit=5000", n},
+		{"?limit=1002", 1002},
+		{"", storage.MaxLimit}, // default scan is unchanged
+	} {
+		rec := httptest.NewRecorder()
+		h.ListCosts(rec, httptest.NewRequest("GET", "/api/v1/costs"+tc.query, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d; body=%s", tc.query, rec.Code, rec.Body.String())
+		}
+		var resp CostsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Requests != tc.want {
+			t.Errorf("%s: requests = %d, want %d", tc.query, resp.Requests, tc.want)
+		}
+	}
+}
+
 // TestCostsHandler_TenantFilter covers per-tenant scoping (F-CO-001): a
 // caller only sees their own tenant's costs.
 func TestCostsHandler_TenantFilter(t *testing.T) {

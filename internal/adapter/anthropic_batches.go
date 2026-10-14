@@ -325,7 +325,8 @@ func (h *AnthropicBatchesHandler) HandleCreate(w http.ResponseWriter, r *http.Re
 	if err := decodeJSONBody(r, &req); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "request body too large")
+			writeAnthropicError(w, http.StatusRequestEntityTooLarge,
+				anthropicChaosErrorType(http.StatusRequestEntityTooLarge), "request body too large")
 			return
 		}
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("invalid JSON: %s", err))

@@ -118,6 +118,13 @@ func redactImported(interactions []*recording.Interaction) error {
 		return fmt.Errorf("compiling redact patterns: %w", err)
 	}
 	for _, it := range interactions {
+		// Hash the ORIGINAL request body before masking it, as the record proxy
+		// does (R-03): importers leave Hash blank, and AppendAll would otherwise
+		// hash the redacted body, so the real (un-redacted) request a client
+		// replays would never match.
+		if it.Hash == "" {
+			it.Hash = recording.HashRequest(it.Method, it.Path, it.RequestBodyBytes())
+		}
 		rd.Apply(it)
 	}
 	fmt.Println("redaction enabled: API keys + custom patterns will be masked in the cassette")

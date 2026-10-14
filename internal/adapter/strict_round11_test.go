@@ -135,6 +135,57 @@ func TestStrictIDs_Anthropic(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 }
 
+// The 400 names the WIRE message index. The adapter prepends a top-level
+// `system` as engine message 0, so the engine's index is one past the wire
+// index whenever system is set — the error used to blame messages.N+1.
+func TestStrictIDs_AnthropicIndexIgnoresSystem(t *testing.T) {
+	h := &AnthropicHandler{Engine: testEngine(strictAgent("anthropic-messages", "claude-3-opus", "strict"))}
+	msgs := []AnthropicMessage{
+		{Role: "user", Content: "what is the weather?"},
+		{Role: "assistant", Content: []any{map[string]any{
+			"type": "tool_use", "id": "toolu_real", "name": "get_weather",
+			"input": map[string]any{"city": "NYC"}}}},
+		{Role: "user", Content: []any{map[string]any{
+			"type": "tool_result", "tool_use_id": "toolu_BOGUS", "content": "72F"}}},
+	}
+	for name, system := range map[string]any{
+		"no system":     nil,
+		"string system": "You are a weather bot.",
+		"block system":  []any{map[string]any{"type": "text", "text": "You are a weather bot."}},
+	} {
+		rec := doAnthropicRequest(t, h.HandleMessages, AnthropicRequest{
+			Model: "claude-3-opus", MaxTokens: 100, System: system, Messages: msgs,
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, name)
+		assert.Contains(t, rec.Body.String(), "messages.2.content: unexpected `tool_use_id`", name)
+	}
+
+	// Orphan (no tool_use anywhere) reports the wire index too.
+	rec := doAnthropicRequest(t, h.HandleMessages, AnthropicRequest{
+		Model: "claude-3-opus", MaxTokens: 100, System: "You are a weather bot.",
+		Messages: []AnthropicMessage{{Role: "user", Content: []any{map[string]any{
+			"type": "tool_result", "tool_use_id": "toolu_orphan", "content": "72F"}}}},
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "messages.0.content: unexpected `tool_use_id` found in `tool_result` blocks: toolu_orphan")
+}
+
+// On Chat Completions the system prompt IS a wire message, so the engine
+// index already is the wire index.
+func TestStrictIDs_OpenAIIndexCountsSystem(t *testing.T) {
+	h := &OpenAIHandler{Engine: testEngine(strictAgent("openai-chat-completions", "gpt-4o", "strict"))}
+	rec := doOpenAIRequest(t, h.HandleChatCompletions, ChatCompletionRequest{
+		Model: "gpt-4o",
+		Messages: []OpenAIMessage{
+			{Role: "system", Content: "You are a weather bot."},
+			{Role: "user", Content: "what is the weather?"},
+			{Role: "tool", Content: `{"temp":72}`, ToolCallID: "call_orphan"},
+		},
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `"param":"messages.[2].role"`)
+}
+
 func TestStrictIDs_Gemini(t *testing.T) {
 	h := &GeminiHandler{Engine: testEngine(strictAgent("google-gemini", "gemini-2.0-flash", "strict"))}
 	rec := doGeminiRequest(t, h, "gemini-2.0-flash", "generateContent", GeminiRequest{

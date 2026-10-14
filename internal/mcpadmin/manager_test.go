@@ -245,3 +245,44 @@ func TestInMemoryMode_NoPersistence(t *testing.T) {
 		t.Error("in-memory agent should still be registered/served")
 	}
 }
+
+// With no agents dir, delete_agent used to guess <name>.yaml relative to the
+// working directory and remove an unrelated file of that name.
+func TestInMemoryDelete_LeavesWorkingDirectoryAlone(t *testing.T) {
+	wd := t.TempDir()
+	t.Chdir(wd)
+	bystander := filepath.Join(wd, "mem.yaml")
+	if err := os.WriteFile(bystander, []byte("not an agent of ours\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg := engine.NewAgentRegistry()
+	mem := &rig{registry: reg, srv: mcp.NewServer(minimalDef())}
+	NewManager(reg, "", "").Register(mem.srv)
+	if text, isErr := mem.call(t, "create_agent", map[string]any{"definition": agentYAML("mem", "gpt-4o")}); isErr {
+		t.Fatalf("create: %s", text)
+	}
+	if text, isErr := mem.call(t, "delete_agent", map[string]any{"name": "mem"}); isErr {
+		t.Fatalf("delete: %s", text)
+	}
+	if _, err := os.Stat(bystander); err != nil {
+		t.Fatalf("delete_agent removed an unrelated ./mem.yaml: %v", err)
+	}
+}
+
+// create_agent must not overwrite a name-derived file that defines a different
+// agent.
+func TestCreate_DoesNotOverwriteAnotherDefinitionsFile(t *testing.T) {
+	r := newRig(t)
+	other := filepath.Join(r.dir, "chaos-agent.yaml")
+	original := agentYAML("flaky-agent", "flaky-model")
+	if err := os.WriteFile(other, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	text, isErr := r.call(t, "put_agent", map[string]any{"definition": agentYAML("chaos-agent", "m")})
+	if !isErr || !strings.Contains(text, "refusing to overwrite") {
+		t.Fatalf("put_agent over another definition's file: isError=%v text=%s", isErr, text)
+	}
+	if got, _ := os.ReadFile(other); string(got) != original {
+		t.Fatalf("file overwritten:\n%s", got)
+	}
+}

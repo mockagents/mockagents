@@ -1,13 +1,18 @@
 package recording
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // countingUpstream returns an httptest upstream that increments *hits per
@@ -220,6 +225,147 @@ func TestProxy_StreamMidFailureNotCachedOnMiss(t *testing.T) {
 		post(t, srv.URL, `{"model":"x","stream":true}`)
 		if cass.Len() != 1 {
 			t.Errorf("faithful capture should record the partial stream, len=%d", cass.Len())
+		}
+	})
+}
+
+// sseFrames is a complete two-frame SSE response.
+var sseFrames = []string{"data: {\"chunk\":1}\n\n", "data: [DONE]\n\n"}
+
+// completeSSEUpstream streams sseFrames, flushing each one.
+func completeSSEUpstream(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		for _, f := range sseFrames {
+			_, _ = io.WriteString(w, f)
+			w.(http.Flusher).Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// goneClientWriter is a ResponseWriter whose client has disconnected: every body
+// write fails, as it does on a closed connection.
+type goneClientWriter struct{ h http.Header }
+
+func (w *goneClientWriter) Header() http.Header       { return w.h }
+func (w *goneClientWriter) WriteHeader(int)           {}
+func (w *goneClientWriter) Write([]byte) (int, error) { return 0, errors.New("write: broken pipe") }
+func (w *goneClientWriter) Flush()                    {}
+
+// cancelAfterFirstWrite delivers the first chunk, then cancels the request
+// context — how net/http reports a client that hung up between chunks.
+type cancelAfterFirstWrite struct {
+	*httptest.ResponseRecorder
+	cancel context.CancelFunc
+}
+
+func (w *cancelAfterFirstWrite) Write(b []byte) (int, error) {
+	n, err := w.ResponseRecorder.Write(b)
+	w.cancel()
+	return n, err
+}
+
+// A stream the CLIENT cut short is truncated at a point the client chose, not
+// one the upstream produced, so it must never become the canonical recording:
+// replay would serve a [DONE]-less stream forever. The write-failure path used
+// to break out without flagging anything, so even SkipRecordOnError recorded it.
+func TestProxy_StreamClientAbortNotRecorded(t *testing.T) {
+	upstream := completeSSEUpstream(t)
+
+	for _, skip := range []bool{true, false} {
+		t.Run(fmt.Sprintf("write fails, SkipRecordOnError=%v", skip), func(t *testing.T) {
+			cass := New("")
+			proxy, _ := NewProxy(upstream.URL, cass)
+			proxy.SkipRecordOnError = skip
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"x","stream":true}`))
+			proxy.ServeHTTP(&goneClientWriter{h: http.Header{}}, req)
+			if cass.Len() != 0 {
+				t.Errorf("a client-aborted stream was recorded, len=%d", cass.Len())
+			}
+		})
+	}
+
+	t.Run("request context canceled mid-stream, faithful capture", func(t *testing.T) {
+		// Upstream sends one frame, then holds the stream open until the proxy
+		// gives up on it.
+		stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(200)
+			_, _ = io.WriteString(w, sseFrames[0])
+			w.(http.Flusher).Flush()
+			select {
+			case <-r.Context().Done():
+			case <-time.After(5 * time.Second):
+			}
+		}))
+		defer stalled.Close()
+
+		cass := New("")
+		proxy, _ := NewProxy(stalled.URL, cass) // SkipRecordOnError=false (all/record)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"x","stream":true}`)).WithContext(ctx)
+		proxy.ServeHTTP(&cancelAfterFirstWrite{ResponseRecorder: httptest.NewRecorder(), cancel: cancel}, req)
+		if cass.Len() != 0 {
+			t.Errorf("a stream the client hung up on was recorded, len=%d", cass.Len())
+		}
+	})
+
+	t.Run("a complete stream is still recorded", func(t *testing.T) {
+		cass := New("")
+		proxy, _ := NewProxy(upstream.URL, cass)
+		proxy.SkipRecordOnError = true
+		srv := httptest.NewServer(proxy)
+		defer srv.Close()
+		post(t, srv.URL, `{"model":"x","stream":true}`)
+		if cass.Len() != 1 {
+			t.Errorf("a complete stream must be recorded, len=%d", cass.Len())
+		}
+	})
+}
+
+// Streaming headers are committed before recording finishes, so the proxy
+// reports record and upstream failures as trailers — which net/http only sends
+// when declared before WriteHeader. Record-Error was declared only with a
+// Redactor and Upstream-Error never, so plain `record` silently dropped both.
+func TestProxy_StreamErrorTrailersWithoutRedactor(t *testing.T) {
+	t.Run("record error", func(t *testing.T) {
+		upstream := completeSSEUpstream(t)
+		// A cassette in a directory that does not exist: the append fails.
+		cass := New(filepath.Join(t.TempDir(), "missing", "c.jsonl"))
+		proxy, _ := NewProxy(upstream.URL, cass)
+		srv := httptest.NewServer(proxy)
+		defer srv.Close()
+
+		resp, body := post(t, srv.URL, `{"model":"x","stream":true}`)
+		if body != strings.Join(sseFrames, "") {
+			t.Fatalf("client should get the full stream, got %q", body)
+		}
+		if got := resp.Trailer.Get("X-Mockagents-Record-Error"); got == "" {
+			t.Errorf("record error trailer missing; trailers=%v", resp.Trailer)
+		}
+	})
+
+	t.Run("upstream error", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(200)
+			_, _ = io.WriteString(w, sseFrames[0])
+			w.(http.Flusher).Flush()
+			panic(http.ErrAbortHandler) // drop the connection mid-stream
+		}))
+		defer upstream.Close()
+		proxy, _ := NewProxy(upstream.URL, New(""))
+		srv := httptest.NewServer(proxy)
+		defer srv.Close()
+
+		resp, _ := post(t, srv.URL, `{"model":"x","stream":true}`)
+		if got := resp.Trailer.Get("X-Mockagents-Upstream-Error"); got == "" {
+			t.Errorf("upstream error trailer missing; trailers=%v", resp.Trailer)
 		}
 	})
 }

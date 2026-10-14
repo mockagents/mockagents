@@ -174,6 +174,16 @@ func TestStateFileRecoveryFailsInterruptedRuns(t *testing.T) {
 	okRun, _ := e1.Start("ok", nil, RunOptions{}, StartOptions{})
 	wait(t, e1, okRun.ID)
 	hung, _ := e1.Start("hang", nil, RunOptions{}, StartOptions{})
+	// The run executes on its own goroutine; persisting before it records its
+	// first span left no trace to restore, so this flaked.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if spans, _ := e1.Store.Trace(hung.ID); len(spans) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the hung run never recorded a span")
+		}
+	}
 	e1.persist() // simulate a crash: state on disk still says in_progress
 
 	e2 := newEngine(t)

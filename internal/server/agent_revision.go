@@ -151,7 +151,9 @@ func (h *Handlers) agentRevisionFor(name, tenantID string) (agentRevision, bool,
 	if def == nil {
 		return agentRevision{}, false, nil
 	}
-	rev, err := revisionFor(def, h.Engine.Registry.Source(name, tenantID))
+	// The source is tracked under the agent's owner, which for a global agent
+	// seen by a tenant is not the caller's tenant.
+	rev, err := revisionFor(def, h.Engine.Registry.Source(name, def.Metadata.TenantID))
 	return rev, true, err
 }
 

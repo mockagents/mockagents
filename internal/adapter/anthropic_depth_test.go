@@ -58,6 +58,25 @@ func TestCountTokens_Errors(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// An oversized body is a 413 with the real API's `request_too_large` error
+// type — the same mapping the chaos path uses — on every Messages route.
+func TestAnthropic_OversizedBodyIsRequestTooLarge(t *testing.T) {
+	h := anthropicHandler()
+	big := `{"model":"claude-3-opus","pad":"` + strings.Repeat("a", maxDecodeBodyBytes+1024) + `"}`
+	for path, handler := range map[string]http.HandlerFunc{
+		"/v1/messages":              h.HandleMessages,
+		"/v1/messages/count_tokens": h.HandleCountTokens,
+		"/v1/messages/batches":      newAnthropicBatchTestRig().batches.HandleCreate,
+	} {
+		rec := doAnthropicRaw(t, handler, path, big, nil)
+		require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code, path)
+		var env anthropicErrorEnvelope
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &env), path)
+		assert.Equal(t, "error", env.Type, path)
+		assert.Equal(t, "request_too_large", env.Error.Type, path)
+	}
+}
+
 func TestCountTokens_MissingAPIKey(t *testing.T) {
 	h := anthropicHandler()
 	req := httptest.NewRequest("POST", "/v1/messages/count_tokens",

@@ -184,7 +184,10 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 	if err := decodeJSONBody(r, &req); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "request body too large")
+			// The real API (and the chaos mapping) types a 413 as
+			// request_too_large, not invalid_request_error.
+			writeAnthropicError(w, http.StatusRequestEntityTooLarge,
+				anthropicChaosErrorType(http.StatusRequestEntityTooLarge), "request body too large")
 			return
 		}
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("invalid JSON: %s", err))
@@ -239,7 +242,9 @@ func (h *AnthropicHandler) HandleMessages(w http.ResponseWriter, r *http.Request
 			return
 		}
 		if se := engine.AsStrictToolError(err); se != nil {
-			writeAnthropicStrictError(w, se)
+			// convertedMsgs carries any `system` as message 0; the
+			// difference is that prepend, so the 400 names the wire index.
+			writeAnthropicStrictError(w, se, len(convertedMsgs)-len(req.Messages))
 			return
 		}
 		status := engineErrorStatus(err)
@@ -576,7 +581,8 @@ func (h *AnthropicHandler) HandleCountTokens(w http.ResponseWriter, r *http.Requ
 	if err := decodeJSONBody(r, &req); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "request body too large")
+			writeAnthropicError(w, http.StatusRequestEntityTooLarge,
+				anthropicChaosErrorType(http.StatusRequestEntityTooLarge), "request body too large")
 			return
 		}
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("invalid JSON: %s", err))

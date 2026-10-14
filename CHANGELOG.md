@@ -108,6 +108,73 @@ Fixes from the 2026-10-06 full-application quality review (see
 
 ### Fixed
 
+Fixes from the 2026-10-14 bug sweep:
+
+- **Agent writes no longer overwrite another definition's file.** Creating an
+  agent (`POST`/`PUT /api/v1/agents`, MCP `create_agent`/`put_agent`) wrote it
+  to `<name>.yaml` without checking what was there, so naming an agent
+  `chaos-agent` replaced `examples/chaos-agent.yaml`, which defines
+  `flaky-agent`. The write is now refused with 409 (a tool error over MCP)
+  unless the file is absent or already holds exactly that agent.
+- MCP `delete_agent` with no agents directory no longer deletes an unrelated
+  `<name>.yaml` from the working directory; only an agent's tracked source
+  file is ever removed, as on the HTTP API.
+- **Monthly spend caps work without the interaction log.** Spend from direct
+  provider calls was accrued only while logging interactions, so when the log
+  database could not be opened the cap was never enforced for direct traffic.
+- Two concurrent requests could both send spend left unsynced by a failed
+  ledger write, over-charging the tenant on the shared ledger.
+- An audit event is no longer lost when the client disconnects after its
+  mutation committed (the append was cancelled with the request).
+- `PUT /api/v1/pipelines/{name}` keeps a `.json` source as JSON; it wrote YAML
+  into it, so the next start failed to parse the file and dropped the pipeline.
+- `PUT /api/v1/tenants/{id}/quota` rejects unknown fields: a misspelled key
+  decoded to all-zero limits, which mean unlimited.
+- `GET /api/v1/costs?limit=N` above 1000 now scans N rows as documented (up to
+  10000); it silently stopped at 1000.
+- Self-rotation and burn (`/api/v1/keys/me/rotate`, `/burn`) answer a
+  concurrent-rotation conflict with 409, like the admin route, instead of 500.
+- A file-backed global agent listed or fetched by a tenant caller showed as
+  `persistence: runtime` and GET omitted its source revision.
+- **Strict tools:** with `parallel_tool_calls: false` under strict mode, the
+  tool-loop convergence guard compared the client's echo against the uncapped
+  call list, so the capped call was re-issued forever.
+- A request cancelled during injected chaos latency returned success and
+  advanced its session turn; latency now runs before the turn is committed and
+  a cancellation returns the context error.
+- **Streaming:** the first content chunk arrived at TTFT plus one inter-chunk
+  delay; it now arrives at the TTFT. `chunk_delay_ms` pacing without a TTFT is
+  unchanged.
+- Tool-argument validation accepts integral values beyond the int64 range
+  (`1e19`) as `integer`, and enum/const comparison coerces numbers inside
+  arrays and objects (`enum: [[1, 2]]` accepts a JSON `[1, 2]`).
+- **Record/replay:** `import --redact` hashes the original request before
+  masking it, so a redacted import still replays; `record`/`replay` serve
+  `/v1/responses`, `/v1/embeddings` and `/v1/moderations`, which the importers
+  produce; `replay --match-ignore` falls back to the exact stored hash, so a
+  redacted cassette matches; a stream the client abandoned is no longer
+  recorded as a truncated replay; the streaming proxy's upstream- and
+  record-error trailers are declared up front and logged.
+- TestSuite `steps[].role` is optional (empty means user) and must be `user`,
+  `assistant` or `system` when set, matching the schema and the runner; any
+  other value used to validate and then be skipped silently.
+- Validation errors on indexed paths (`spec.agents[1].id`) report their line
+  and column instead of 0:0.
+- **Responses API:** `input_image` parts count as images, so an image-only turn
+  no longer fails as an empty message, `has_image` scenarios match, and
+  `X-Mockagents-Image-Count` is set.
+- **Anthropic:** a strict-tools 400 names the wire `messages.N` index when a
+  top-level `system` is present (it was off by one), and an oversized body is
+  typed `request_too_large` like the real API.
+- **Conversations:** a truncated JSON body on create/update is a 400; only an
+  empty body means "no fields" (a truncated one used to succeed as a no-op).
+- **MCP:** a tool response `match` on a number (`match: {days: 3}`) now matches
+  the JSON argument `3`; well-formed JSON that is not a request object is
+  `-32600 Invalid Request`, not `-32700 Parse error`.
+- **A2A:** `tasks/cancel` no longer revives a task past its TTL.
+- **Realtime:** audio committed by server VAD is cut on a sample boundary; an
+  odd PCM16 byte offset made `conversation.item.retrieve` return noise.
+
 - **Go SDK `NewInProcessClient` ignored chaos presets.** It registered agents without
   `config.ApplyDefaults`, so `chaos.preset` names (`rate-limited`, `server-down`, `flaky`, …) never
   expanded and the agent answered 200. In-process agents now get defaults applied and are validated

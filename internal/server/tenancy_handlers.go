@@ -438,6 +438,12 @@ func (h *TenancyHandlers) RotateMyAPIKey(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusNotFound, "api key not found")
 			return
 		}
+		if errors.Is(err, tenancy.ErrConflict) {
+			// A concurrent rotation of the same key won the swap; as on the
+			// admin route, this is a retryable 409, not a server error.
+			writeError(w, http.StatusConflict, "api key changed concurrently; retry the rotation")
+			return
+		}
 		writeServerError(w, err)
 		return
 	}
@@ -482,6 +488,12 @@ func (h *TenancyHandlers) BurnMyAPIKey(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "api key not found")
+			return
+		}
+		if errors.Is(err, tenancy.ErrConflict) {
+			// A concurrent rotation of the same key won the swap; as on the
+			// admin route, this is a retryable 409, not a server error.
+			writeError(w, http.StatusConflict, "api key changed concurrently; retry the rotation")
 			return
 		}
 		writeServerError(w, err)

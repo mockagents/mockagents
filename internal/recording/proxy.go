@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -245,24 +246,33 @@ func (p *Proxy) skipRecording(status int) bool {
 	return p.SkipRecordOnError && status >= 400
 }
 
+// Trailers the streaming path reports failures through: its headers are
+// committed before the stream ends, so these can only travel as trailers.
+const (
+	recordErrorTrailer   = "X-Mockagents-Record-Error"
+	upstreamErrorTrailer = "X-Mockagents-Upstream-Error"
+)
+
 // serveStreaming copies SSE chunks from upstreamResp to the client and
 // captures each chunk as an Interaction.StreamEvent. Headers are
 // flushed before any chunk so clients that rely on Content-Type (every
 // SSE client) see it before the first event. Append happens after the
 // stream finishes so a half-closed upstream still produces a usable
-// (partial) cassette entry.
+// (partial) cassette entry — but a stream the CLIENT abandoned is never
+// recorded (see below).
 func (p *Proxy) serveStreaming(w http.ResponseWriter, r *http.Request, reqBody []byte, upstreamResp *http.Response) {
 	copyHeaders(w.Header(), upstreamResp.Header)
 	// The upstream may have buffered its SSE response and supplied a content
 	// length. The proxy streams and may need trailers, so it must frame the
 	// downstream response itself.
 	w.Header().Del("Content-Length")
-	// Streaming headers are committed before recording finishes. Declare the
-	// recording error trailer up front so redaction/append failures remain
-	// observable instead of being silently discarded after WriteHeader.
-	if p.Redactor != nil {
-		w.Header().Add("Trailer", "X-Mockagents-Record-Error")
-	}
+	// Streaming headers are committed before recording finishes, and net/http
+	// only sends trailers declared before WriteHeader. Declare both error
+	// trailers up front, unconditionally, so an upstream failure or a cassette
+	// write failure stays observable on plain `record` too (not only when a
+	// Redactor is set).
+	w.Header().Add("Trailer", recordErrorTrailer)
+	w.Header().Add("Trailer", upstreamErrorTrailer)
 	w.WriteHeader(upstreamResp.StatusCode)
 	flusher, _ := w.(http.Flusher)
 	if flusher != nil {
@@ -270,7 +280,7 @@ func (p *Proxy) serveStreaming(w http.ResponseWriter, r *http.Request, reqBody [
 	}
 
 	var events []StreamEvent
-	var upstreamErrored bool
+	var upstreamErrored, clientAborted bool
 	start := time.Now()
 	buf := make([]byte, 4096)
 	for {
@@ -279,12 +289,8 @@ func (p *Proxy) serveStreaming(w http.ResponseWriter, r *http.Request, reqBody [
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
 			if _, werr := w.Write(chunk); werr != nil {
-				// Client disconnected; stop streaming but still save
-				// what we captured so the partial recording is useful.
-				events = append(events, StreamEvent{
-					DelayMs: time.Since(start).Milliseconds(),
-					Data:    string(chunk),
-				})
+				// Client disconnected; stop streaming.
+				clientAborted = true
 				break
 			}
 			if flusher != nil {
@@ -299,13 +305,32 @@ func (p *Proxy) serveStreaming(w http.ResponseWriter, r *http.Request, reqBody [
 			break
 		}
 		if rerr != nil {
-			// Surface the upstream read error as a trailing header on
-			// the cassette entry; the client has already seen whatever
-			// bytes we managed to forward.
-			w.Header().Set("X-Mockagents-Upstream-Error", rerr.Error())
+			// The upstream read is bound to the client's request context, so a
+			// client that hung up between chunks surfaces here as a canceled
+			// read rather than as a failed write.
+			if r.Context().Err() != nil {
+				clientAborted = true
+				break
+			}
+			// Surface the upstream read error as a trailer; the client has
+			// already seen whatever bytes we managed to forward.
+			w.Header().Set(upstreamErrorTrailer, rerr.Error())
+			slog.Warn("recording proxy: upstream stream failed mid-response",
+				"method", r.Method, "path", r.URL.Path, "error", rerr)
 			upstreamErrored = true
 			break
 		}
+	}
+
+	// A stream the client abandoned is cut where the CLIENT stopped reading, not
+	// where the upstream ended it, so it is not a capture of anything the
+	// upstream did. Recording it would make a truncated, [DONE]-less stream the
+	// canonical (first-in-sequence) replay for that request, so it is never
+	// recorded — on record-on-miss or in a faithful `record`/`all` session.
+	// (A genuine upstream failure with the client still connected is different:
+	// faithful capture keeps it, record-on-miss skips it below.)
+	if clientAborted {
+		return
 	}
 
 	reqRaw, reqEnc := EncodeBody(reqBody)
@@ -328,14 +353,23 @@ func (p *Proxy) serveStreaming(w http.ResponseWriter, r *http.Request, reqBody [
 	if !p.skipRecording(it.ResponseStatus) && !(p.SkipRecordOnError && upstreamErrored) {
 		if p.Redactor != nil {
 			if err := p.Redactor.Apply(it); err != nil {
-				w.Header().Set("X-Mockagents-Record-Error", err.Error())
+				p.reportStreamRecordError(w, r, err)
 				return
 			}
 		}
 		if err := p.Cassette.Append(it); err != nil {
-			w.Header().Set("X-Mockagents-Record-Error", err.Error())
+			p.reportStreamRecordError(w, r, err)
 		}
 	}
+}
+
+// reportStreamRecordError surfaces a failure to record a stream: as the
+// declared trailer for the client, and in the log, since many SSE clients never
+// read trailers.
+func (p *Proxy) reportStreamRecordError(w http.ResponseWriter, r *http.Request, err error) {
+	w.Header().Set(recordErrorTrailer, err.Error())
+	slog.Warn("recording proxy: streamed interaction was not recorded",
+		"method", r.Method, "path", r.URL.Path, "error", err)
 }
 
 // copyHeaders duplicates src into dst, dropping hop-by-hop headers.

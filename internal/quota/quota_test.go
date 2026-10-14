@@ -248,3 +248,64 @@ func TestEnforcer_SpendDuringBackendOutageIsNotLost(t *testing.T) {
 		t.Fatalf("spend = %v, want 7 with nothing double counted", got)
 	}
 }
+
+// gatedBackend fails its first AddSpend, blocks the second until release is
+// closed, and records every amount it was sent.
+type gatedBackend struct {
+	*fakeSpendBackend
+	mu      sync.Mutex
+	calls   int
+	sent    []float64
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *gatedBackend) AddSpend(ctx context.Context, tenantID, month string, usd float64) (float64, error) {
+	g.mu.Lock()
+	g.calls++
+	call := g.calls
+	g.sent = append(g.sent, usd)
+	g.mu.Unlock()
+	switch call {
+	case 1:
+		return 0, errors.New("backend down")
+	case 2:
+		close(g.entered)
+		<-g.release
+	}
+	return g.fakeSpendBackend.AddSpend(ctx, tenantID, month, usd)
+}
+
+// Two charges in flight at once must not both carry the spend left unsynced by
+// an earlier ledger error: the ledger would be over-charged by that amount.
+func TestEnforcer_ConcurrentAddSpendSendsPendingOnce(t *testing.T) {
+	e, _ := newClocked(t, Config{MonthlySpendUSD: 100})
+	backend := &gatedBackend{
+		fakeSpendBackend: newFakeBackend(),
+		entered:          make(chan struct{}),
+		release:          make(chan struct{}),
+	}
+	e.SetSpendBackend(backend)
+
+	e.AddSpend("ten_a", 5) // ledger down: 5 stays unsynced
+
+	done := make(chan struct{})
+	go func() {
+		e.AddSpend("ten_a", 1) // carries the pending 5, blocks in the ledger
+		close(done)
+	}()
+	<-backend.entered
+	e.AddSpend("ten_a", 2) // concurrent: must not resend the pending 5
+	close(backend.release)
+	<-done
+
+	if got := backend.totals["ten_a|"+e.monthKey()]; got != 8 {
+		t.Fatalf("ledger total = %v (sent %v), want 8: pending spend charged twice", got, backend.sent)
+	}
+	e.mu.Lock()
+	unsynced := e.spendCache["ten_a"].unsynced
+	e.mu.Unlock()
+	if unsynced != 0 {
+		t.Fatalf("unsynced = %v, want 0", unsynced)
+	}
+}

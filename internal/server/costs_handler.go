@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"sort"
 
@@ -88,7 +89,7 @@ func (h *CostsHandlers) ListCosts(w http.ResponseWriter, r *http.Request) {
 		filter.Limit = n
 	}
 
-	rows, err := h.Store.Query(r.Context(), filter)
+	rows, err := h.scanRows(r.Context(), filter)
 	if err != nil {
 		writeServerError(w, err)
 		return
@@ -172,4 +173,36 @@ func flattenGroups(m map[string]*CostGroup) []CostGroup {
 		return out[i].Key < out[j].Key
 	})
 	return out
+}
+
+// scanRows reads up to filter.Limit matching rows. The store returns at most
+// storage.MaxLimit rows per query, so a wider scan (limit up to maxListLimit, as
+// documented) is read page by page; a single query used to stop at MaxLimit
+// and silently under-report the window. Rows a concurrent insert shifts onto a
+// later page are skipped by id.
+func (h *CostsHandlers) scanRows(ctx context.Context, filter storage.InteractionFilter) ([]storage.InteractionLog, error) {
+	want := filter.Limit
+	var rows []storage.InteractionLog
+	seen := make(map[int64]struct{})
+	for offset := 0; len(rows) < want; {
+		page := filter
+		page.Limit = min(want-len(rows), storage.MaxLimit)
+		page.Offset = offset
+		got, err := h.Store.Query(ctx, page)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range got {
+			if _, dup := seen[row.ID]; dup {
+				continue
+			}
+			seen[row.ID] = struct{}{}
+			rows = append(rows, row)
+		}
+		if len(got) < page.Limit {
+			break
+		}
+		offset += len(got)
+	}
+	return rows, nil
 }

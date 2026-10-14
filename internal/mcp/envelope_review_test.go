@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -47,6 +48,38 @@ func TestEnvelope_StreamableParseErrorIs400(t *testing.T) {
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("body %q: status %d, want 400", body, resp.StatusCode)
+		}
+	}
+}
+
+// Well-formed JSON that is not a Request object (a bare number, string, or
+// bool, or a field of the wrong type) is Invalid Request (-32600); Parse
+// error (-32700) is reserved for bodies that are not JSON at all (JSON-RPC
+// 2.0 §5.1). Both the HandleBytes path and Streamable HTTP agree.
+func TestEnvelope_NonObjectJSONIsInvalidRequest(t *testing.T) {
+	s := newTestMCPServer()
+	srv, _ := newStreamableTestServer(t)
+	for body, want := range map[string]string{
+		`123`:                                 `"code":-32600`,
+		`"x"`:                                 `"code":-32600`,
+		`true`:                                `"code":-32600`,
+		`{"jsonrpc":"2.0","id":1,"method":7}`: `"code":-32600`,
+		`{not json`:                           `"code":-32700`,
+		`12 34`:                               `"code":-32700`,
+	} {
+		out, err := s.HandleBytes([]byte(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), want) || !strings.Contains(string(out), `"id":null`) {
+			t.Errorf("HandleBytes(%s) = %s, want %s with id:null", body, out, want)
+		}
+
+		resp := postJSON(t, srv.URL+"/mcp", "", "application/json, text/event-stream", body)
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(raw), want) {
+			t.Errorf("streamable POST %s: status %d body %s, want 400 with %s", body, resp.StatusCode, raw, want)
 		}
 	}
 }

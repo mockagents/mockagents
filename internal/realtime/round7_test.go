@@ -6,6 +6,7 @@ package realtime
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -216,6 +217,38 @@ func TestStoredAudioExcludesLeadingSilence(t *testing.T) {
 	}
 	if wantBytes := 1100 * 48; len(raw) != wantBytes {
 		t.Errorf("stored audio = %dms, want 1100ms (prefix+speech+decision window)", len(raw)/48)
+	}
+}
+
+// The window offset comes from a float ms sum: 10 bytes of silence (10/48 ms)
+// then 100 ms of speech puts the window start at (10/48 + 100) − 100, which
+// float64 evaluates just under 10/48 — so start*48 = 9.999… truncated to an
+// ODD PCM16 byte offset and every stored sample was read one byte off
+// (noise). The offset must round onto a sample boundary.
+func TestStoredAudioWindowIsSampleAligned(t *testing.T) {
+	ctx := context.Background()
+	s := NewSession("r77a", "", fakeGen("ok"))
+	enableVAD(t, s, `{"audio":{"input":{"turn_detection":{"type":"server_vad","prefix_padding_ms":0,"create_response":false}}}}`)
+	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: base64.StdEncoding.EncodeToString(make([]byte, 10))})
+	s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(100, speechAmp)})
+	evs := s.Handle(ctx, &ClientEvent{Type: "input_audio_buffer.append", Audio: pcmChunk(600, quietAmp)})
+	committed := firstEvent(evs, "input_audio_buffer.committed")
+	if committed == nil {
+		t.Fatalf("turn did not commit: %v", typesOf(evs))
+	}
+
+	got := firstEvent(s.Handle(ctx, &ClientEvent{Type: "conversation.item.retrieve",
+		ItemID: committed["item_id"].(string)}), "conversation.item.retrieved")
+	audio, _ := got["item"].(map[string]any)["content"].([]any)[0].(map[string]any)["audio"].(string)
+	raw, err := base64.StdEncoding.DecodeString(audio)
+	if err != nil {
+		t.Fatalf("stored audio not base64: %v", err)
+	}
+	if wantBytes := 700 * 48; len(raw) != wantBytes {
+		t.Fatalf("stored audio = %d bytes, want %d (speech + decision window, sample-aligned)", len(raw), wantBytes)
+	}
+	if first := int16(binary.LittleEndian.Uint16(raw)); first != speechAmp {
+		t.Errorf("first stored sample = %d, want %d (offset misaligned)", first, speechAmp)
 	}
 }
 

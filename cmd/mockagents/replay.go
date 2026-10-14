@@ -18,8 +18,9 @@ import (
 var replayCmd = &cobra.Command{
 	Use:   "replay",
 	Short: "Serve a cassette file over the OpenAI/Anthropic API endpoints",
-	Long: `Start an HTTP server that replies to /v1/chat/completions and /v1/messages
-requests using interactions previously captured with "mockagents record".
+	Long: `Start an HTTP server that replies to /v1/chat/completions, /v1/messages,
+/v1/responses, /v1/embeddings and /v1/moderations requests using interactions
+previously captured with "mockagents record" or "mockagents import".
 Requests that don't match any recorded interaction return 404 by default.`,
 	RunE: runReplay,
 }
@@ -136,12 +137,7 @@ func runReplay(cmd *cobra.Command, args []string) error {
 		handler = rp
 	}
 
-	mux := http.NewServeMux()
-	mux.Handle("/v1/chat/completions", handler)
-	mux.Handle("/v1/messages", handler)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "ok: %d interactions loaded\n", cass.Len())
-	})
+	mux := newReplayMux(handler, cass)
 
 	// Loopback by default (audit M-22): record-on-miss relays --api-key upstream.
 	addr := net.JoinHostPort(replayBind, strconv.Itoa(replayPort))
@@ -174,6 +170,26 @@ func runReplay(cmd *cobra.Command, args []string) error {
 		}
 		return err
 	}
+}
+
+// mountLLMRoutes routes every LLM endpoint a cassette can hold to h — the same
+// set the importers keep — so an imported /v1/responses, /v1/embeddings or
+// /v1/moderations interaction can be recorded and replayed, not just chat
+// completions and messages.
+func mountLLMRoutes(mux *http.ServeMux, h http.Handler) {
+	for _, p := range recording.LLMPaths() {
+		mux.Handle(p, h)
+	}
+}
+
+// newReplayMux routes the LLM endpoints to handler and serves /healthz.
+func newReplayMux(handler http.Handler, cass *recording.Cassette) *http.ServeMux {
+	mux := http.NewServeMux()
+	mountLLMRoutes(mux, handler)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "ok: %d interactions loaded\n", cass.Len())
+	})
+	return mux
 }
 
 func validateStrictReplay(strict bool, mode recording.RecordMode, upstream, apiKey string) error {
