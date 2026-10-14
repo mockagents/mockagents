@@ -52,7 +52,7 @@ inputs:
   go-version:
     description: "Go version to install for building the CLI."
     required: false
-    default: "1.26.6"
+    default: "1.26.9"
 
   skip-validate:
     description: "Set to 'true' to skip the validate step."

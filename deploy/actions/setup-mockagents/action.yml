@@ -41,7 +41,7 @@ inputs:
   go-version:
     description: "Go version used to install the CLI."
     required: false
-    default: "1.26.6"
+    default: "1.26.9"
   export-env:
     description: >-
       When 'true' (default), export OPENAI_BASE_URL, ANTHROPIC_BASE_URL and

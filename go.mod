@@ -5,7 +5,7 @@ go 1.26.1
 // Pin the release toolchain to the current security patch level. Keep this in
 // sync with Dockerfile and verify every release candidate with govulncheck;
 // the `go` directive above remains the language compatibility floor.
-toolchain go1.26.6
+toolchain go1.26.9
 
 require (
 	github.com/coder/websocket v1.8.15

@@ -13,7 +13,7 @@ go build ./... && go test ./internal/...      # focused Go baseline; no Python o
 ```
 
 That is the focused Go toolchain. Use the exact toolchain selected by `go.mod`
-(currently Go 1.26.6). SQLite is
+(currently Go 1.26.9). SQLite is
 `modernc.org/sqlite`, so there is no C compiler, no database to install, and
 nothing to run in the background.
 
