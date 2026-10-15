@@ -193,6 +193,68 @@ func TestRunSuitePipelineTarget(t *testing.T) {
 	}
 }
 
+// TestRunSuitePipelineGraphDiamondAssertsOnSink: outcome assertions on a
+// graph pipeline read the sink. In p → l, p → r, l → m, r → m the final
+// response is the join m, which saw both l and r. Before the executor ran
+// graphs in topological order the final response was r's.
+func TestRunSuitePipelineGraphDiamondAssertsOnSink(t *testing.T) {
+	reg := engine.NewAgentRegistry()
+	for _, name := range []string{"plan", "left", "right", "merge"} {
+		reg.Register(&types.AgentDefinition{
+			APIVersion: types.AgentAPIVersion, Kind: types.AgentKind,
+			Metadata: types.Metadata{Name: name},
+			Spec: types.AgentSpec{
+				Protocol: "openai-chat-completions",
+				Behavior: types.BehaviorConfig{
+					Scenarios: []types.Scenario{{Name: "s", Response: types.ScenarioResponse{Content: name + "({{.Message}})"}}},
+				},
+			},
+		})
+	}
+	eng := engine.NewEngine(reg, state.NewMemoryStore(state.DefaultSessionTTL),
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	pipeReg := engine.NewPipelineRegistry()
+	pipeReg.Register(&types.PipelineDefinition{
+		APIVersion: types.AgentAPIVersion, Kind: types.PipelineKind,
+		Metadata: types.Metadata{Name: "diamond"},
+		Spec: types.PipelineSpec{
+			Topology: types.TopologyGraph,
+			Agents: []types.PipelineAgent{
+				{ID: "p", Ref: "plan"}, {ID: "l", Ref: "left"}, {ID: "r", Ref: "right"}, {ID: "m", Ref: "merge"},
+			},
+			Edges: []types.PipelineEdge{
+				{From: "p", To: "l"}, {From: "p", To: "r"}, {From: "l", To: "m"}, {From: "r", To: "m"},
+			},
+		},
+	})
+	r := New(eng, pipeReg)
+
+	suite := &types.TestSuiteDefinition{
+		Metadata: types.Metadata{Name: "diamond-suite"},
+		Spec: types.TestSuiteSpec{
+			Target: types.TestTarget{Pipeline: "diamond"},
+			Cases: []types.TestCase{{
+				Name:  "join",
+				Steps: []types.TestStep{{Role: "user", Content: "x"}},
+				Assertions: []types.TestAssertion{
+					{Type: types.AssertResponseContains, Value: "merge(left(plan(x))\n\nright(plan(x)))"},
+					{Type: types.AssertNodeSequence, Sequence: []string{"p", "l", "r", "m"}},
+				},
+			}},
+		},
+	}
+	res, err := r.RunSuite(suite)
+	if err != nil {
+		t.Fatalf("RunSuite error: %v", err)
+	}
+	if res.Failed != 0 {
+		t.Fatalf("expected 0 failures, got %d: %+v", res.Failed, res.Cases[0].Failures)
+	}
+	if got := res.Cases[0].FinalNode; got != "m" {
+		t.Errorf("FinalNode = %q, want the sink %q", got, "m")
+	}
+}
+
 func intPtr(n int) *int { return &n }
 
 // multiToolAgent emits two ordered tool calls (alpha then beta) so the

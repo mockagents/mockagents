@@ -279,6 +279,225 @@ func TestPipelineGraphMultiRoot(t *testing.T) {
 	}
 }
 
+func nodeOrder(res *PipelineResult) []string {
+	ids := make([]string, 0, len(res.Nodes))
+	for _, n := range res.Nodes {
+		ids = append(ids, n.NodeID)
+	}
+	return ids
+}
+
+// TestPipelineGraphDiamondJoinWaitsForAllParents: in a → b, a → c, b → d,
+// c → d the join d must run after both b and c and see both outputs. The old
+// depth-first walk ran d as soon as b reached it (order a, b, d, c), so d
+// saw only b's output and FinalResponse returned c, which is not a sink.
+func TestPipelineGraphDiamondJoinWaitsForAllParents(t *testing.T) {
+	eng := newPipelineTestEngine(t, "alpha", "beta", "gamma", "delta")
+	exec := NewPipelineExecutor(eng)
+
+	def := &types.PipelineDefinition{
+		Metadata: types.Metadata{Name: "diamond"},
+		Spec: types.PipelineSpec{
+			Topology: types.TopologyGraph,
+			Agents: []types.PipelineAgent{
+				{ID: "a", Ref: "alpha"},
+				{ID: "b", Ref: "beta"},
+				{ID: "c", Ref: "gamma"},
+				{ID: "d", Ref: "delta"},
+			},
+			Edges: []types.PipelineEdge{
+				{From: "a", To: "b"},
+				{From: "a", To: "c"},
+				{From: "b", To: "d"},
+				{From: "c", To: "d"},
+			},
+		},
+	}
+
+	res, err := exec.Run(def, "hi", "session-diamond")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got, want := strings.Join(nodeOrder(res), ","), "a,b,c,d"; got != want {
+		t.Errorf("node order = %s, want %s", got, want)
+	}
+	// The join receives every parent's output, in the order the parents ran.
+	wantD := "delta:beta:alpha:hi\n\ngamma:alpha:hi"
+	if d := res.ResponseByNodeID("d"); d == nil || d.Content != wantD {
+		t.Errorf("join d response = %+v, want content %q", d, wantD)
+	}
+	if final := res.FinalResponse(); final == nil || final.Content != wantD {
+		t.Errorf("FinalResponse = %+v, want the sink d's content %q", final, wantD)
+	}
+}
+
+// TestPipelineGraphJoinAcrossRoots: two roots feeding one join. The old walk
+// ran the join straight after r1, before r2 had run at all.
+func TestPipelineGraphJoinAcrossRoots(t *testing.T) {
+	eng := newPipelineTestEngine(t, "alpha", "beta", "gamma")
+	exec := NewPipelineExecutor(eng)
+
+	def := &types.PipelineDefinition{
+		Metadata: types.Metadata{Name: "two-root-join"},
+		Spec: types.PipelineSpec{
+			Topology: types.TopologyGraph,
+			Agents: []types.PipelineAgent{
+				{ID: "r1", Ref: "alpha"},
+				{ID: "j", Ref: "gamma"},
+				{ID: "r2", Ref: "beta"},
+			},
+			Edges: []types.PipelineEdge{
+				{From: "r1", To: "j"},
+				{From: "r2", To: "j"},
+			},
+		},
+	}
+
+	res, err := exec.Run(def, "hi", "session-two-root-join")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got, want := strings.Join(nodeOrder(res), ","), "r1,r2,j"; got != want {
+		t.Errorf("node order = %s, want %s", got, want)
+	}
+	want := "gamma:alpha:hi\n\nbeta:hi"
+	if final := res.FinalResponse(); final == nil || final.Content != want {
+		t.Errorf("FinalResponse = %+v, want %q", final, want)
+	}
+}
+
+// TestPipelineGraphJoinWithPrunedParent: a parent pruned by an unmet guard
+// does not hold the join back. The join runs on the parents that did run.
+func TestPipelineGraphJoinWithPrunedParent(t *testing.T) {
+	eng := newPipelineTestEngine(t, "router", "left", "right", "merge")
+	exec := NewPipelineExecutor(eng)
+
+	def := &types.PipelineDefinition{
+		Metadata: types.Metadata{Name: "pruned-join"},
+		Spec: types.PipelineSpec{
+			Topology: types.TopologyGraph,
+			Agents: []types.PipelineAgent{
+				{ID: "r", Ref: "router"},
+				{ID: "l", Ref: "left"},
+				{ID: "x", Ref: "right"},
+				{ID: "m", Ref: "merge"},
+			},
+			Edges: []types.PipelineEdge{
+				{From: "r", To: "l", WhenContains: "go-left"},
+				{From: "r", To: "x", WhenContains: "go-right"},
+				{From: "l", To: "m"},
+				{From: "x", To: "m"},
+			},
+		},
+	}
+
+	res, err := exec.Run(def, "go-left", "session-pruned-join")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got, want := strings.Join(nodeOrder(res), ","), "r,l,m"; got != want {
+		t.Errorf("node order = %s, want %s", got, want)
+	}
+	want := "merge:left:router:go-left"
+	if final := res.FinalResponse(); final == nil || final.Content != want {
+		t.Errorf("FinalResponse = %+v, want %q", final, want)
+	}
+}
+
+// TestPipelineGraphGuardedEdgesToOneNode: two edges from the same parent with
+// different guards are alternatives. When both fire, the child runs once and
+// gets the parent's output once.
+func TestPipelineGraphGuardedEdgesToOneNode(t *testing.T) {
+	eng := newPipelineTestEngine(t, "alpha", "beta")
+	exec := NewPipelineExecutor(eng)
+
+	def := &types.PipelineDefinition{
+		Metadata: types.Metadata{Name: "or-guards"},
+		Spec: types.PipelineSpec{
+			Topology: types.TopologyGraph,
+			Agents: []types.PipelineAgent{
+				{ID: "a", Ref: "alpha"},
+				{ID: "b", Ref: "beta"},
+			},
+			Edges: []types.PipelineEdge{
+				{From: "a", To: "b", WhenContains: "red"},
+				{From: "a", To: "b", WhenContains: "blue"},
+			},
+		},
+	}
+
+	res, err := exec.Run(def, "red and blue", "session-or-guards")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got, want := strings.Join(nodeOrder(res), ","), "a,b"; got != want {
+		t.Errorf("node order = %s, want %s", got, want)
+	}
+	want := "beta:alpha:red and blue"
+	if final := res.FinalResponse(); final == nil || final.Content != want {
+		t.Errorf("FinalResponse = %+v, want %q", final, want)
+	}
+}
+
+// TestPipelineGraphFiredEdgeToUnknownNodeErrors: a programmatic pipeline
+// skips the validator, so an edge to an undeclared node must fail the run
+// when it fires, keeping the nodes that ran.
+func TestPipelineGraphFiredEdgeToUnknownNodeErrors(t *testing.T) {
+	eng := newPipelineTestEngine(t, "alpha")
+	exec := NewPipelineExecutor(eng)
+
+	def := &types.PipelineDefinition{
+		Metadata: types.Metadata{Name: "dangling"},
+		Spec: types.PipelineSpec{
+			Topology: types.TopologyGraph,
+			Agents:   []types.PipelineAgent{{ID: "a", Ref: "alpha"}},
+			Edges:    []types.PipelineEdge{{From: "a", To: "ghost"}},
+		},
+	}
+
+	res, err := exec.Run(def, "hi", "session-dangling")
+	if err == nil || !strings.Contains(err.Error(), `unknown node id "ghost"`) {
+		t.Fatalf("err = %v, want unknown node id %q", err, "ghost")
+	}
+	if got, want := strings.Join(nodeOrder(res), ","), "a"; got != want {
+		t.Errorf("node order = %s, want %s", got, want)
+	}
+}
+
+// TestPipelineGraphTreeKeepsDepthFirstOrder pins that a graph without joins
+// still runs in the depth-first order it always had: a node runs as soon as
+// its only parent reaches it.
+func TestPipelineGraphTreeKeepsDepthFirstOrder(t *testing.T) {
+	eng := newPipelineTestEngine(t, "alpha", "beta", "gamma", "delta")
+	exec := NewPipelineExecutor(eng)
+
+	def := &types.PipelineDefinition{
+		Metadata: types.Metadata{Name: "tree"},
+		Spec: types.PipelineSpec{
+			Topology: types.TopologyGraph,
+			Agents: []types.PipelineAgent{
+				{ID: "a", Ref: "alpha"},
+				{ID: "b", Ref: "beta"},
+				{ID: "c", Ref: "gamma"},
+				{ID: "e", Ref: "delta"},
+			},
+			Edges: []types.PipelineEdge{
+				{From: "a", To: "b"},
+				{From: "a", To: "c"},
+				{From: "b", To: "e"},
+			},
+		},
+	}
+
+	res, err := exec.Run(def, "hi", "session-tree")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got, want := strings.Join(nodeOrder(res), ","), "a,b,e,c"; got != want {
+		t.Errorf("node order = %s, want %s", got, want)
+	}
+}
+
 // TestPipelineGraphCycleErrors covers F-PL-005: a fully cyclic graph has no
 // zero-incoming node. The old executor fell back to Agents[0] as the start
 // and let `visited` truncate the walk, running a partial subset and

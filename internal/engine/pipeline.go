@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -99,6 +100,8 @@ type PipelineResult struct {
 }
 
 // FinalResponse returns the last non-nil response produced by the run, or nil.
+// A graph run lists nodes in topological order, so after a successful run the
+// last node is a sink: none of its outgoing edges fired.
 func (r *PipelineResult) FinalResponse() *Response {
 	for i := len(r.Nodes) - 1; i >= 0; i-- {
 		if r.Nodes[i].Response != nil {
@@ -263,47 +266,84 @@ func (p *PipelineExecutor) runGraph(ctx context.Context, def *types.PipelineDefi
 		return fmt.Errorf("%w: nodes %v", ErrPipelineCycle, cyclic)
 	}
 
-	visited := make(map[string]bool)
+	// Kahn's algorithm, taken depth-first. A node settles once every inbound
+	// edge has been evaluated: waiting counts those still pending. A settled
+	// node runs if it is a root or at least one inbound edge fired; otherwise
+	// it was pruned, and settling it still releases its successors so a join
+	// is never held back by a branch that will not run. The old walk ran a
+	// node on the first edge to reach it, so a join ran before its other
+	// parents and saw only one of their outputs (a diamond a→b, a→c, b→d, c→d
+	// ran a, b, d, c). Taking ready nodes depth-first keeps that old order for
+	// any graph without joins.
+	waiting := maps.Clone(indegree)
+	// inputs holds, per node, the output of each parent whose edge fired, in
+	// the order those parents ran.
+	inputs := make(map[string][]string)
+	settled := make(map[string]bool, len(nodesByID))
 
-	var walk func(id, input string) error
-	walk = func(id, input string) error {
-		if visited[id] {
-			return nil
+	var settle func(id string) error
+	settle = func(id string) error {
+		if settled[id] {
+			return nil // def.Spec.Agents repeats a root id
 		}
-		visited[id] = true
-		node, ok := nodesByID[id]
-		if !ok {
-			return fmt.Errorf("pipeline %q references unknown node id %q", def.Metadata.Name, id)
+		settled[id] = true
+
+		ran := indegree[id] == 0 || len(inputs[id]) > 0
+		var content string
+		if ran {
+			input := userMsg
+			if indegree[id] > 0 {
+				// A join sees every parent's output, separated by a blank line.
+				input = strings.Join(inputs[id], "\n\n")
+			}
+			nr, err := p.invokeNode(ctx, def.Metadata.Name, nodesByID[id], input, sessionID)
+			res.Nodes = append(res.Nodes, nr)
+			if err != nil {
+				return err
+			}
+			content = nr.Response.Content
 		}
-		nr, err := p.invokeNode(ctx, def.Metadata.Name, node, input, sessionID)
-		res.Nodes = append(res.Nodes, nr)
-		if err != nil {
-			return err
-		}
+
+		fed := make(map[string]bool)
 		for _, edge := range outgoing[id] {
+			if edge.From == edge.To {
+				continue
+			}
 			// WhenContains is a substring guard (see types.PipelineEdge): an
 			// empty guard is unconditional, otherwise the edge fires only when
 			// the upstream output contains it. Deliberately strings.Contains,
 			// not equality — routing on a keyword anywhere in the output.
-			if edge.WhenContains != "" && !strings.Contains(nr.Response.Content, edge.WhenContains) {
+			fires := ran && (edge.WhenContains == "" || strings.Contains(content, edge.WhenContains))
+			if _, ok := nodesByID[edge.To]; !ok {
+				if fires {
+					return fmt.Errorf("pipeline %q references unknown node id %q", def.Metadata.Name, edge.To)
+				}
 				continue
 			}
-			if err := walk(edge.To, nr.Response.Content); err != nil {
-				return err
+			// Two guarded edges to the same node pass this output once.
+			if fires && !fed[edge.To] {
+				fed[edge.To] = true
+				inputs[edge.To] = append(inputs[edge.To], content)
+			}
+			waiting[edge.To]--
+			if waiting[edge.To] == 0 {
+				if err := settle(edge.To); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
 	}
 
-	// Walk from every root (zero incoming edges), in definition order. The old
-	// code started from a single root, so a multi-root or disconnected DAG had
-	// every node outside the first root's reachable subgraph silently dropped
-	// from res.Nodes (F-PL-004). In an acyclic graph every node is reachable
-	// from some root, so the only nodes left unvisited are those deliberately
-	// pruned by an unmet edge `When` condition.
+	// Settle from every root (zero incoming edges), in definition order. The
+	// old code started from a single root, so a multi-root or disconnected DAG
+	// had every node outside the first root's reachable subgraph silently
+	// dropped from res.Nodes (F-PL-004). The graph is acyclic, so every node
+	// settles; the only ones that do not run are those pruned by unmet edge
+	// guards.
 	for _, n := range def.Spec.Agents {
 		if indegree[n.ID] == 0 {
-			if err := walk(n.ID, userMsg); err != nil {
+			if err := settle(n.ID); err != nil {
 				return err
 			}
 		}
