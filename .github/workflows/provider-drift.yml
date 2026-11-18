@@ -32,7 +32,7 @@ jobs:
             --baseline testdata/drift/tavily/baseline.json \
             --format json \
             --output drift-reports/tavily-search.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: provider-drift-offline
           path: drift-reports/
@@ -86,7 +86,7 @@ jobs:
             --ignore-path '$.id' \
             --format json \
             --output drift-reports/cohere-live-report.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.credentials.outputs.enabled == 'true'
         with:
           name: provider-drift-cohere-live
@@ -140,7 +140,7 @@ jobs:
             --mock testdata/drift/openai-moderation/mock.json \
             --format json \
             --output drift-reports/openai-moderation-live-report.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.credentials.outputs.enabled == 'true'
         with:
           name: provider-drift-openai-moderation-live
@@ -194,7 +194,7 @@ jobs:
             --mock testdata/drift/tavily/mock.json \
             --format json \
             --output drift-reports/tavily-live-report.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.credentials.outputs.enabled == 'true'
         with:
           name: provider-drift-tavily-live
